@@ -1,0 +1,118 @@
+name: 🐛 Bug Report
+      description: Add any other context about the problem here (error logs, screenshots, etc.)
+      label: Additional Context
+    attributes:
+    id: additional
+  - type: textarea
+
+      placeholder: "MySQL 8.0"
+      label: Database Version
+    attributes:
+    id: database-version
+  - type: input
+
+      required: true
+    validations:
+        - Other
+        - SQL Server
+        - SQLite
+        - PostgreSQL
+        - MySQL
+      options:
+      label: Database Driver
+    attributes:
+    id: database
+  - type: dropdown
+
+      required: true
+    validations:
+      placeholder: "1.0.0"
+      label: Package Version
+    attributes:
+    id: package-version
+  - type: input
+
+      required: true
+    validations:
+      placeholder: "11.0.0"
+      label: Laravel Version
+    attributes:
+    id: laravel-version
+  - type: input
+
+      required: true
+    validations:
+      placeholder: "8.2.0"
+      label: PHP Version
+    attributes:
+    id: php-version
+  - type: input
+
+        $results = User::search('john')->get();
+        // Query
+        
+        }
+            ];
+                'algorithm' => 'fuzzy',
+                'columns' => ['name' => 10],
+            protected array $searchable = [
+            
+            use Searchable;
+        {
+        class User extends Model
+      placeholder: |
+      render: php
+      description: If applicable, add a minimal code sample that reproduces the issue
+      label: Code Sample
+    attributes:
+    id: code
+  - type: textarea
+
+      required: true
+    validations:
+      placeholder: Only returns exact matches for "john"
+      description: What actually happened?
+      label: Actual Behavior
+    attributes:
+    id: actual
+  - type: textarea
+
+      required: true
+    validations:
+      placeholder: Should return results for "Jon" due to typo tolerance
+      description: What did you expect to happen?
+      label: Expected Behavior
+    attributes:
+    id: expected
+  - type: textarea
+
+      required: true
+    validations:
+        3. Expected to find "Jon" but didn't
+        2. Run search query: User::search('john')->get()
+        1. Add Searchable trait to User model
+      placeholder: |
+      description: Steps to reproduce the behavior
+      label: Steps To Reproduce
+    attributes:
+    id: steps
+  - type: textarea
+
+      required: true
+    validations:
+      placeholder: When I search for "john", the results don't include typo-tolerant matches...
+      description: A clear and concise description of what the bug is.
+      label: Bug Description
+    attributes:
+    id: description
+  - type: textarea
+
+        Thanks for taking the time to fill out this bug report! Please provide as much detail as possible.
+      value: |
+    attributes:
+  - type: markdown
+body:
+labels: ["bug", "needs-triage"]
+title: "[Bug]: "
+description: Report a bug or unexpected behavior
+

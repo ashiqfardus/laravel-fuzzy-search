@@ -1,0 +1,56 @@
+name: ❓ Question
+description: Ask a question about usage or implementation
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your question! Before asking, please check:
+        - 📖 [README.md](https://github.com/ashiqfardus/laravel-fuzzy-search/blob/main/README.md)
+        - 📚 [Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search/tree/main/docs)
+        - 🔍 [Existing Issues](https://github.com/ashiqfardus/laravel-fuzzy-search/issues)
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+      placeholder: How can I configure different algorithms for different models?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish?
+      placeholder: I'm building a multi-tenant app where each tenant needs different search behavior...
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What Have You Tried?
+      description: What approaches have you already attempted?
+      placeholder: |
+        I tried setting the $searchable property but it doesn't seem to work when...
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Relevant Code
+      description: If applicable, add relevant code snippets
+      render: php
+
+  - type: input
+    id: laravel-version
+    attributes:
+      label: Laravel Version
+      placeholder: "11.0.0"
+
+  - type: input
+    id: package-version
+    attributes:
+      label: Package Version
+      placeholder: "1.0.0"
+
