@@ -19,6 +19,58 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Allow Empty Search
+    |--------------------------------------------------------------------------
+    |
+    | If true, empty search terms will return all results instead of throwing exception
+    |
+    */
+    'allow_empty_search' => false,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Search Presets
+    |--------------------------------------------------------------------------
+    |
+    | Predefined configurations for common use cases.
+    | Use with: $model->search('term')->preset('blog')
+    |
+    */
+    'presets' => [
+        'blog' => [
+            'columns' => ['title' => 10, 'body' => 5, 'excerpt' => 3],
+            'algorithm' => 'fuzzy',
+            'typo_tolerance' => 2,
+            'stop_words_enabled' => true,
+            'accent_insensitive' => true,
+        ],
+        'ecommerce' => [
+            'columns' => ['name' => 10, 'description' => 5, 'sku' => 8, 'brand' => 6],
+            'algorithm' => 'fuzzy',
+            'typo_tolerance' => 1,
+            'partial_match' => true,
+            'stop_words_enabled' => false,
+        ],
+        'users' => [
+            'columns' => ['name' => 10, 'email' => 8, 'username' => 9],
+            'algorithm' => 'levenshtein',
+            'typo_tolerance' => 2,
+            'accent_insensitive' => true,
+        ],
+        'phonetic' => [
+            'algorithm' => 'soundex',
+            'typo_tolerance' => 0,
+            'columns' => ['name' => 10],
+        ],
+        'exact' => [
+            'algorithm' => 'simple',
+            'typo_tolerance' => 0,
+            'partial_match' => true,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Typo Tolerance
     |--------------------------------------------------------------------------
     */
