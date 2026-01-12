@@ -9,6 +9,9 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Closure;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
 
 /**
  * SearchBuilder - Fluent API for building fuzzy search queries
@@ -71,10 +74,22 @@ class SearchBuilder
 
     /**
      * Set the search term
+     *
+     * @param string $term
+     * @return self
+     * @throws EmptySearchTermException if term is empty and config doesn't allow it
      */
     public function search(string $term): self
     {
         $this->searchTerm = trim($term);
+
+        // Check if empty search is allowed in config
+        $allowEmpty = config('fuzzy-search.allow_empty_search', false);
+
+        if (empty($this->searchTerm) && !$allowEmpty) {
+            throw new EmptySearchTermException();
+        }
+
         return $this;
     }
 
@@ -97,9 +112,19 @@ class SearchBuilder
 
     /**
      * Set search algorithm
+     *
+     * @param string $algorithm
+     * @return self
+     * @throws InvalidAlgorithmException if algorithm is not supported
      */
     public function using(string $algorithm): self
     {
+        $supportedAlgorithms = ['fuzzy', 'levenshtein', 'soundex', 'trigram', 'simple'];
+
+        if (!in_array($algorithm, $supportedAlgorithms)) {
+            throw new InvalidAlgorithmException($algorithm);
+        }
+
         $this->algorithm = $algorithm;
         return $this;
     }
@@ -257,12 +282,48 @@ class SearchBuilder
 
     /**
      * Enable debug/explain score mode
+     *
+     * @param bool $verbose Show detailed breakdown
+     * @param string|null $logChannel Laravel log channel to use (null = no logging)
+     * @return self
      */
-    public function debugScore(): self
+    public function debugScore(bool $verbose = true, ?string $logChannel = null): self
     {
         $this->debugMode = true;
         $this->withRelevance = true;
+        $this->options['debug_verbose'] = $verbose;
+        $this->options['debug_log_channel'] = $logChannel;
         return $this;
+    }
+
+    /**
+     * Get debug information for the current search configuration
+     *
+     * @return array
+     */
+    public function getDebugInfo(): array
+    {
+        return [
+            'search_term' => $this->searchTerm,
+            'algorithm' => $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
+            'searchable_columns' => $this->searchableColumns,
+            'column_weights' => $this->columnWeights,
+            'typo_tolerance' => $this->typoTolerance,
+            'tokenize' => $this->tokenizeSearch,
+            'token_match_mode' => $this->tokenMatchMode,
+            'stop_words' => $this->stopWords,
+            'synonyms' => $this->synonyms,
+            'accent_insensitive' => $this->accentInsensitiveEnabled,
+            'unicode_normalize' => $this->unicodeNormalizeEnabled,
+            'prefix_boost' => $this->prefixBoostMultiplier,
+            'partial_match' => $this->partialMatchEnabled,
+            'use_cache' => $this->cacheMinutes !== null,
+            'cache_ttl' => $this->cacheMinutes,
+            'use_index' => $this->useSearchIndex,
+            'stable_ranking' => $this->stableRankingEnabled,
+            'fallback_algorithms' => $this->fallbackAlgorithms,
+            'options' => $this->options,
+        ];
     }
 
     /**
@@ -357,6 +418,57 @@ class SearchBuilder
     public function withRelevance(bool $include = true): self
     {
         $this->withRelevance = $include;
+        return $this;
+    }
+
+    /**
+     * Apply a predefined configuration preset
+     *
+     * @param string $presetName Name of preset from config (blog, ecommerce, users, phonetic, exact)
+     * @return self
+     * @throws InvalidConfigException if preset not found
+     */
+    public function preset(string $presetName): self
+    {
+        $presets = config('fuzzy-search.presets', []);
+
+        if (!isset($presets[$presetName])) {
+            throw new InvalidConfigException("Preset '{$presetName}' not found. Available presets: " . implode(', ', array_keys($presets)));
+        }
+
+        $preset = $presets[$presetName];
+
+        // Apply columns if specified
+        if (isset($preset['columns']) && is_array($preset['columns'])) {
+            $this->searchIn($preset['columns']);
+        }
+
+        // Apply algorithm
+        if (isset($preset['algorithm'])) {
+            $this->using($preset['algorithm']);
+        }
+
+        // Apply typo tolerance
+        if (isset($preset['typo_tolerance'])) {
+            $this->typoTolerance($preset['typo_tolerance']);
+        }
+
+        // Apply accent insensitive
+        if (isset($preset['accent_insensitive']) && $preset['accent_insensitive']) {
+            $this->accentInsensitive();
+        }
+
+        // Apply partial match
+        if (isset($preset['partial_match']) && $preset['partial_match']) {
+            $this->partialMatch();
+        }
+
+        // Apply stop words
+        if (isset($preset['stop_words_enabled']) && $preset['stop_words_enabled']) {
+            $locale = $preset['locale'] ?? config('fuzzy-search.locale', 'en');
+            $this->ignoreStopWords(config("fuzzy-search.stop_words.{$locale}", []));
+        }
+
         return $this;
     }
 
