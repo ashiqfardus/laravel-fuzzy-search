@@ -33,6 +33,9 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 - **Recency boost** - Boost newer records with `boostRecent()`
 - **Custom scoring hooks** - Add your own scoring logic via callbacks
 - **Partial match support** - Match substrings within words
+- **Improved scoring algorithm** - Uses `similar_text()` for percentage-based similarity scoring
+- **Better Levenshtein distance scoring** - Proper weight calculation for fuzzy matches
+- **Consistent score rounding** - Scores rounded to 2 decimal places
 
 #### Text Processing
 - **Multi-word token search** - `tokenize()` with `matchAll()` or `matchAny()`
@@ -104,4 +107,3 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 ---
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
-

@@ -921,24 +921,34 @@ class SearchBuilder
                 $weight = $this->columnWeights[$column] ?? 1;
                 $colScore = 0;
 
-                // Exact match
+                // Exact match - highest score
                 if ($value === $term) {
                     $colScore = 100 * $weight;
                 }
-                // Prefix match
+                // Prefix match - very high score
                 elseif (str_starts_with($value, $term)) {
-                    $colScore = 50 * $weight * $this->prefixBoostMultiplier;
+                    $colScore = 80 * $weight * $this->prefixBoostMultiplier;
                 }
-                // Contains
+                // Contains - high score
                 elseif (str_contains($value, $term)) {
-                    $colScore = 25 * $weight;
+                    $colScore = 60 * $weight;
                 }
-                // Fuzzy match
+                // Similarity-based scoring for fuzzy matches
                 else {
+                    // Use similar_text for percentage-based similarity
+                    $similarity = 0;
+                    similar_text($term, $value, $similarity);
+
+                    // Also check Levenshtein distance
                     $distance = FuzzySearch::levenshteinDistance($value, $term);
-                    if ($distance <= $this->typoTolerance) {
-                        $colScore = max(0, (10 - $distance * 3)) * $weight;
-                    }
+
+                    // Use the better of the two scores
+                    $similarityScore = ($similarity / 100) * 50 * $weight;
+                    $levenshteinScore = ($distance <= $this->typoTolerance)
+                        ? max(0, (20 - $distance * 4)) * $weight
+                        : 0;
+
+                    $colScore = max($similarityScore, $levenshteinScore);
                 }
 
                 $columnScores[$column] = $colScore;
@@ -956,12 +966,12 @@ class SearchBuilder
 
             // Set score on item
             if (is_object($item)) {
-                $item->_score = $score;
+                $item->_score = round($score, 2);
                 if ($this->debugMode) {
                     $item->_column_scores = $columnScores;
                 }
             } elseif (is_array($item)) {
-                $item['_score'] = $score;
+                $item['_score'] = round($score, 2);
                 if ($this->debugMode) {
                     $item['_column_scores'] = $columnScores;
                 }
