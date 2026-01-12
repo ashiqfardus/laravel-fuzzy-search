@@ -5,6 +5,7 @@ How Laravel Fuzzy Search compares to other search solutions.
 ## Table of Contents
 
 - [Quick Comparison](#quick-comparison)
+- [Other Laravel Fuzzy Search Packages](#vs-other-laravel-fuzzy-search-packages)
 - [Laravel Scout](#vs-laravel-scout)
 - [TNTSearch](#vs-tntsearch)
 - [Meilisearch](#vs-meilisearch)
@@ -26,6 +27,76 @@ How Laravel Fuzzy Search compares to other search solutions.
 | **Scalability** | ⚠️ Up to ~500K rows | ✅ Millions | ⚠️ Up to 1M | ✅ Millions | ✅ Millions | ✅ Billions |
 | **Privacy** | ✅ Data stays local | ⚠️ Depends on driver | ✅ Local | ❌ External service | ❌ External service | ⚠️ Self-hosted |
 | **Learning Curve** | ⚡ Easy | ⚡ Easy | ⏱️ Medium | ⏱️ Medium | ⏱️ Medium | ⏱️ Steep |
+
+## Vs. Other Laravel Fuzzy Search Packages
+
+There are a few other "fuzzy search" packages for Laravel. Here's how we compare:
+
+### Comparison Table
+
+| Feature | **ashiqfardus/laravel-fuzzy-search** | soliyer/laravel-fuzzy-search | castellanos/laravel-fuzzy-search |
+|---------|:-----------------------------------:|:----------------------------:|:--------------------------------:|
+| **Multiple Algorithms** | ✅ 8 algorithms (fuzzy, levenshtein, soundex, trigram, simple, like, similar_text, metaphone) | ⚠️ Limited | ⚠️ Limited |
+| **Zero-Config Setup** | ✅ Auto-detects columns | ❌ Manual config | ❌ Manual config |
+| **Fluent API** | ✅ Full fluent chain | ⚠️ Basic | ⚠️ Basic |
+| **Field Weighting** | ✅ Customizable weights | ❌ No | ❌ No |
+| **Typo Tolerance** | ✅ Configurable (0-5) | ⚠️ Fixed | ⚠️ Fixed |
+| **Relevance Scoring** | ✅ With `_score` attribute | ❌ No | ❌ No |
+| **Highlighting** | ✅ Custom tags | ❌ No | ❌ No |
+| **Stop Words** | ✅ Multi-language (en, de, fr, es) | ❌ No | ❌ No |
+| **Synonyms** | ✅ Groups & mappings | ❌ No | ❌ No |
+| **Accent Insensitive** | ✅ Unicode support | ❌ No | ❌ No |
+| **Cache Support** | ✅ Redis/cache | ❌ No | ❌ No |
+| **Search Index** | ✅ Optional indexing | ❌ No | ❌ No |
+| **Queue Support** | ✅ Async indexing | ❌ No | ❌ No |
+| **Multi-Model Search** | ✅ FederatedSearch | ❌ No | ❌ No |
+| **Autocomplete** | ✅ `suggest()` method | ❌ No | ❌ No |
+| **Spell Correction** | ✅ `didYouMean()` | ❌ No | ❌ No |
+| **Debug Mode** | ✅ Score explanation | ❌ No | ❌ No |
+| **CLI Tools** | ✅ index, benchmark, explain | ❌ No | ❌ No |
+| **Config Presets** | ✅ blog, ecommerce, users, etc. | ❌ No | ❌ No |
+| **Pagination** | ✅ Offset, cursor, simple | ⚠️ Basic | ⚠️ Basic |
+| **Fallback Strategy** | ✅ Multiple fallbacks | ❌ No | ❌ No |
+| **Exception Handling** | ✅ Custom exceptions with context | ❌ Basic | ❌ Basic |
+| **Test Coverage** | ✅ 171+ tests | ⚠️ Unknown | ⚠️ Unknown |
+| **Documentation** | ✅ Comprehensive | ⚠️ Basic | ⚠️ Basic |
+| **Active Development** | ✅ Yes (2026) | ⚠️ Unknown | ⚠️ Unknown |
+| **Laravel 12 Support** | ✅ Yes | ⚠️ Unknown | ⚠️ Unknown |
+
+### Why Choose This Package?
+
+**1. Feature-Rich**: This is the most comprehensive fuzzy search package for Laravel, with features typically found only in external services.
+
+**2. Zero-Config**: Just add the trait and search. No configuration required to get started.
+
+**3. Production-Ready**: 171+ tests, proper exception handling, and extensive documentation.
+
+**4. Modern PHP**: Built for PHP 8.0+ with type hints, attributes, and modern patterns.
+
+**5. Actively Maintained**: Regular updates, Laravel 12 support, and responsive issue handling.
+
+### Example Comparison
+
+**With this package:**
+```php
+// Zero config, full features
+$results = User::search('jonh')  // typo
+    ->searchIn(['name' => 10, 'email' => 5])
+    ->typoTolerance(2)
+    ->accentInsensitive()
+    ->withSynonyms(['john' => ['jon', 'johnny']])
+    ->highlight('mark')
+    ->withRelevance()
+    ->cache(60)
+    ->paginate(15);
+```
+
+**With other packages:**
+```php
+// Typically just basic LIKE search
+$results = User::whereFuzzy('name', 'john')->get();
+```
+
 
 ## Vs. Laravel Scout
 

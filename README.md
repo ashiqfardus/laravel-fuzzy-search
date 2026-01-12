@@ -137,14 +137,18 @@ DB::table('products')->fuzzySearch(['title', 'description'], 'laptop')->get();
 |-----------|----------|----------------|-------|
 | `fuzzy` | General purpose | ✅ High | Fast |
 | `levenshtein` | Strict typo matching | ✅ Configurable | Medium |
-| `soundex` | Phonetic matching | ✅ Phonetic | Fast |
+| `soundex` | Phonetic matching (English names) | ✅ Phonetic | Fast |
+| `metaphone` | Phonetic matching (more accurate) | ✅ Phonetic | Fast |
 | `trigram` | Similarity matching | ✅ High | Medium |
-| `simple` | Exact substring | ❌ None | Fastest |
+| `similar_text` | Percentage similarity | ✅ Medium | Medium |
+| `simple` / `like` | Exact substring (LIKE) | ❌ None | Fastest |
 
 ```php
 // Use specific algorithm
 User::search('john')->using('levenshtein')->get();
 User::search('stephen')->using('soundex')->get();  // Finds "Steven"
+User::search('stephen')->using('metaphone')->get(); // More accurate phonetic
+User::search('laptop')->using('similar_text')->get(); // Percentage match
 ```
 
 ### Typo Tolerance
@@ -570,6 +574,44 @@ All queries use parameterized bindings. Search terms are automatically sanitized
 User::search("'; DROP TABLE users; --")->get();
 ```
 
+### Exception Handling
+
+The package provides custom exceptions for better error handling:
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
+
+// Catch all fuzzy search exceptions
+try {
+    $results = User::search($term)->get();
+} catch (LaravelFuzzySearchException $e) {
+    // Handle any fuzzy search error
+    Log::error('Search failed', $e->toArray());
+}
+
+// Catch specific exceptions
+try {
+    $results = User::search('')->get();  // Empty search
+} catch (EmptySearchTermException $e) {
+    return response()->json(['error' => 'Please enter a search term']);
+}
+
+try {
+    $results = User::search('test')->using('invalid')->get();
+} catch (InvalidAlgorithmException $e) {
+    return response()->json(['error' => $e->getMessage()]);
+}
+```
+
+**Available Exceptions:**
+- `LaravelFuzzySearchException` - Base exception (catch all)
+- `EmptySearchTermException` - Search term is empty
+- `InvalidAlgorithmException` - Invalid algorithm specified
+- `InvalidConfigException` - Configuration error
+- `SearchableColumnsNotFoundException` - No searchable columns found
+
 ## Configuration
 
 ### Config File
@@ -620,6 +662,36 @@ return [
         'chunk_size' => 1000,
     ],
 ];
+```
+
+### Config Presets
+
+Use predefined configurations for common use cases:
+
+```php
+// Use a preset instead of configuring everything manually
+User::search('john')->preset('users')->get();
+Post::search('laravel')->preset('blog')->get();
+Product::search('laptop')->preset('ecommerce')->get();
+```
+
+**Available Presets:**
+
+| Preset | Best For | Features |
+|--------|----------|----------|
+| `blog` | Blog posts, articles | title/body/excerpt weights, typo tolerance, stop words, accent-insensitive |
+| `ecommerce` | Product search | name/description/sku/brand, partial match, no stop words |
+| `users` | User search | name/email/username, levenshtein algorithm, accent-insensitive |
+| `phonetic` | Name pronunciation | soundex algorithm for similar-sounding names |
+| `exact` | Strict matching | simple LIKE, partial match, no typo tolerance |
+
+**Presets can be overridden:**
+```php
+// Use preset but override specific settings
+Post::search('laravel')
+    ->preset('blog')
+    ->typoTolerance(3)  // Override preset's default
+    ->get();
 ```
 
 ### Per-Model Customization
