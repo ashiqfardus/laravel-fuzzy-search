@@ -15,7 +15,7 @@ This guide will help you get up and running with Laravel Fuzzy Search in just a 
 ### Requirements
 
 - PHP 8.0 or higher
-- Laravel 9.x, 10.x, 11.x, or 12.x
+- Laravel 9.x, 10.x, 11.x, 12.x, or 13.x
 - MySQL, PostgreSQL, SQLite, or SQL Server
 
 ### Install via Composer
