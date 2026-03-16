@@ -61,7 +61,7 @@ There are a few other "fuzzy search" packages for Laravel. Here's how we compare
 | **Test Coverage** | ✅ 171+ tests | ⚠️ Unknown | ⚠️ Unknown |
 | **Documentation** | ✅ Comprehensive | ⚠️ Basic | ⚠️ Basic |
 | **Active Development** | ✅ Yes (2026) | ⚠️ Unknown | ⚠️ Unknown |
-| **Laravel 12 Support** | ✅ Yes | ⚠️ Unknown | ⚠️ Unknown |
+| **Laravel 13 Support** | ✅ Yes | ⚠️ Unknown | ⚠️ Unknown |
 
 ### Why Choose This Package?
 
@@ -73,7 +73,7 @@ There are a few other "fuzzy search" packages for Laravel. Here's how we compare
 
 **4. Modern PHP**: Built for PHP 8.0+ with type hints, attributes, and modern patterns.
 
-**5. Actively Maintained**: Regular updates, Laravel 12 support, and responsive issue handling.
+**5. Actively Maintained**: Regular updates, Laravel 13 support, and responsive issue handling.
 
 ### Example Comparison
 
