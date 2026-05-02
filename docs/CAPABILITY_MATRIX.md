@@ -13,13 +13,13 @@ This table shows **exactly what each algorithm does at the SQL level** on each s
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
 | **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Pattern set | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
 | **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true` | LIKE pattern set | LIKE pattern set |
-| **soundex** | Native `SOUNDEX()` | Native `SOUNDEX()` | Native `SOUNDEX()` via fuzzystrmatch if `use_native_functions=true`, else prefix LIKE | Prefix LIKE fallback | Prefix LIKE fallback |
+| **soundex** | Native `SOUNDEX()` — always on, no flag needed. Applied to **first word OR last word** of column to prevent multi-word false positives | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` extension if `use_native_functions=true`, else pattern fallback | Pattern fallback | Pattern fallback |
 | **metaphone** | Shadow column `{col}_metaphone` + exact `=` match | Shadow column | Shadow column | Shadow column | Shadow column |
 | **similar_text** | `LIKE '%term%'` (SQL); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'`; PHP scores | Same | Same |
 
 ## Notes
 
-- **Native functions** require `'use_native_functions' => true` in `config/fuzzy-search.php` AND the relevant extension/UDF installed.
+- **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. **MySQL `SOUNDEX()` is built-in and always active — no flag needed.** The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
 - **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager.
 - **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`
 - **fuzzystrmatch (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`
