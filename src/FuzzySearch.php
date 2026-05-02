@@ -108,6 +108,12 @@ class FuzzySearch
 
     protected function resolveDriver(string $algorithm, Builder $query, array $config): BaseDriver
     {
+        // Guard: only allow lowercase letters and underscores to prevent
+        // class-loading attacks via the raw applyFuzzyWhere() API.
+        if (!preg_match('/^[a-z_]+$/', $algorithm)) {
+            throw new InvalidAlgorithmException($algorithm);
+        }
+
         $dbDriver = $this->getDriver($query);
 
         if (!isset($this->registry[$algorithm])) {

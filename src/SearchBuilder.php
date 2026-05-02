@@ -70,6 +70,7 @@ class SearchBuilder
     {
         $this->query = $query;
         $this->fuzzySearch = $fuzzySearch;
+        $this->accentInsensitiveEnabled = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
     }
 
     /**
@@ -557,6 +558,7 @@ class SearchBuilder
     protected function executeSearch(): Collection
     {
         $this->buildQuery();
+        $startTime = microtime(true);
 
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
 
@@ -579,6 +581,14 @@ class SearchBuilder
         if ($this->debugMode) {
             $results = $this->addDebugInfo($results);
         }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
+            candidateCount: $candidates->count(),
+            latencyMs:      round((microtime(true) - $startTime) * 1000, 2),
+        ));
 
         return $results;
     }

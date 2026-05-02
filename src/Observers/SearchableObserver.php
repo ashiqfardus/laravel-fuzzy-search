@@ -6,6 +6,9 @@ use Illuminate\Database\Eloquent\Model;
 
 class SearchableObserver
 {
+    /** @var array<string, bool> */
+    protected static array $columnCache = [];
+
     /**
      * Populate shadow columns when a model is saved.
      * Only populates columns that actually exist on the table
@@ -27,22 +30,22 @@ class SearchableObserver
             return;
         }
 
-        $columns = $model->getSearchableColumns();
-
-        if (empty($columns)) {
-            return;
-        }
-
         $schema  = $model->getConnection()->getSchemaBuilder();
         $table   = $model->getTable();
+        $columns = $model->getSearchableColumns();
         $updates = [];
 
         foreach ($columns as $column) {
             $metaphoneCol = $column . '_metaphone';
+            $cacheKey     = $table . '.' . $metaphoneCol;
 
-            if ($schema->hasColumn($table, $metaphoneCol)) {
-                $value                   = $model->getAttribute($column);
-                $updates[$metaphoneCol]  = $value !== null ? metaphone((string) $value) : null;
+            if (!array_key_exists($cacheKey, static::$columnCache)) {
+                static::$columnCache[$cacheKey] = $schema->hasColumn($table, $metaphoneCol);
+            }
+
+            if (static::$columnCache[$cacheKey]) {
+                $value               = $model->getAttribute($column);
+                $updates[$metaphoneCol] = $value !== null ? metaphone((string) $value) : null;
             }
         }
 

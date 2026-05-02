@@ -41,6 +41,17 @@ class AddShadowColumnCommand extends Command
             return self::FAILURE;
         }
 
+        // Reject framework-internal or third-party model classes
+        $appNamespace = rtrim(app()->getNamespace(), '\\');
+        $normalised   = ltrim($modelClass, '\\');
+        if (!str_starts_with($normalised, $appNamespace . '\\')) {
+            $this->error(
+                "Model [{$modelClass}] is not in the application namespace [{$appNamespace}]. " .
+                "Only application models are supported."
+            );
+            return self::FAILURE;
+        }
+
         $table        = $model->getTable();
         $shadowColumn = $column . '_' . $type;
         $className    = 'Add' . Str::studly($shadowColumn) . 'To' . Str::studly($table) . 'Table';
