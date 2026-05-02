@@ -558,15 +558,19 @@ class SearchBuilder
     {
         $this->buildQuery();
 
-        $results = $this->query
-            ->limit($this->limit)
-            ->offset($this->offset)
-            ->get();
+        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
 
-        // Post-process results
+        // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet
+        $candidates = $this->query->limit($maxCandidates)->get();
+
+        // Rescore ALL candidates before slicing
         if ($this->withRelevance && !empty($this->searchTerm)) {
-            $results = $this->calculateRelevanceScores($results);
+            $candidates = $this->calculateRelevanceScores($candidates);
+            // calculateRelevanceScores already sorts by _score DESC and calls values()
         }
+
+        // Apply pagination on the fully-ranked collection
+        $results = $candidates->slice($this->offset, $this->limit)->values();
 
         if ($this->highlightTagOpen) {
             $results = $this->applyHighlighting($results);
@@ -806,7 +810,7 @@ class SearchBuilder
                                 $column,
                                 $term,
                                 $this->algorithm,
-                                $this->options,
+                                array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
                                 $boolean
                             );
                         }
@@ -827,7 +831,7 @@ class SearchBuilder
                             $column,
                             $term,
                             $this->algorithm,
-                            $this->options,
+                            array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
                             $boolean
                         );
                     }

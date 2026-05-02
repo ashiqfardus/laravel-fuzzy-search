@@ -9,6 +9,7 @@ use Ashiqfardus\LaravelFuzzySearch\Console\IndexCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\ClearCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\BenchmarkCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\ExplainCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\AddShadowColumnCommand;
 
 class FuzzySearchServiceProvider extends ServiceProvider
 {
@@ -43,6 +44,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
                 ClearCommand::class,
                 BenchmarkCommand::class,
                 ExplainCommand::class,
+                AddShadowColumnCommand::class,
             ]);
         }
 
