@@ -43,6 +43,11 @@ abstract class TestCase extends BaseTestCase
         ]);
     }
 
+    protected function defineDatabaseMigrations(): void
+    {
+        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -97,4 +102,3 @@ abstract class TestCase extends BaseTestCase
         parent::tearDown();
     }
 }
-
