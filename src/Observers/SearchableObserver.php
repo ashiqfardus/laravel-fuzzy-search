@@ -9,6 +9,12 @@ class SearchableObserver
     /** @var array<string, bool> */
     protected static array $columnCache = [];
 
+    /** Reset the schema-column cache (call between test cases to prevent cross-test contamination). */
+    public static function resetColumnCache(): void
+    {
+        static::$columnCache = [];
+    }
+
     /**
      * Populate shadow columns when a model is saved.
      * Only populates columns that actually exist on the table

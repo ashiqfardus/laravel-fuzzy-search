@@ -165,4 +165,28 @@ class IndexManagerTest extends TestCase
 
         $this->assertEquals(1, $count);
     }
+
+    public function test_observer_dispatches_index_job_on_model_save(): void
+    {
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => true]);
+
+        \Illuminate\Support\Facades\Queue::fake();
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+            protected $table    = 'users';
+            protected $fillable = ['name', 'email'];
+            public $timestamps  = true;
+            protected array $searchable = ['columns' => ['name' => 1]];
+        };
+
+        $model::create([
+            'name' => 'Index Observer Test',
+            'email' => 'observer' . uniqid() . '@test.com',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        \Illuminate\Support\Facades\Queue::assertPushed(\Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob::class);
+    }
 }
