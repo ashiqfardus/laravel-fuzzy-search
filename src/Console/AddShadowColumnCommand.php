@@ -20,6 +20,15 @@ class AddShadowColumnCommand extends Command
         $column     = $this->argument('column');
         $type       = $this->option('type');
 
+        // Sanitize: only allow word characters (letters, digits, underscores)
+        $column = preg_replace('/[^a-z0-9_]/i', '', $column);
+        $type   = preg_replace('/[^a-z0-9_]/i', '', $type);
+
+        if (empty($column) || empty($type)) {
+            $this->error('Invalid column name or type. Only letters, digits, and underscores are allowed.');
+            return self::FAILURE;
+        }
+
         if (!class_exists($modelClass)) {
             $this->error("Model class [{$modelClass}] not found.");
             return self::FAILURE;
