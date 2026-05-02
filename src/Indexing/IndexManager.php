@@ -11,7 +11,10 @@ class IndexManager
         private TokenizerInterface $tokenizer,
         private StemmerInterface   $stemmer,
         private array              $stopWords = [],
-    ) {}
+    ) {
+        // Normalise stop words to lowercase so they match tokenizer output regardless of caller casing
+        $this->stopWords = array_map('mb_strtolower', $stopWords);
+    }
 
     /**
      * Index (or re-index) a single model instance.
