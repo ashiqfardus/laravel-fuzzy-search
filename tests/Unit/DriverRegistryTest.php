@@ -123,4 +123,42 @@ class DriverRegistryTest extends TestCase
         $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'john', 'does_not_exist');
         $this->assertTrue(true);
     }
+
+    public function test_observer_populates_metaphone_shadow_column_on_save(): void
+    {
+        // Add the metaphone shadow column
+        $this->app['db']->connection()->getSchemaBuilder()->table('users', function ($table) {
+            $table->string('name_metaphone')->nullable();
+        });
+
+        // Anonymous model class with Searchable trait
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+            protected $table    = 'users';
+            protected $fillable = ['name', 'email'];
+            public    $timestamps = true;
+
+            protected array $searchable = [
+                'columns' => ['name' => 10],
+            ];
+        };
+
+        $instance = $model::create([
+            'name'  => 'Stephen',
+            'email' => 'stephen@test.com',
+        ]);
+
+        $row = $this->app['db']->table('users')->find($instance->id);
+
+        $this->assertEquals(metaphone('Stephen'), $row->name_metaphone);
+    }
+
+    public function test_add_shadow_column_command_rejects_non_model_class(): void
+    {
+        $this->artisan('fuzzy-search:add-shadow-column', [
+            'model'  => \stdClass::class,
+            'column' => 'name',
+        ])->assertExitCode(1);
+    }
 }

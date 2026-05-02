@@ -33,6 +33,28 @@ use Illuminate\Support\Facades\Schema;
 trait Searchable
 {
     /**
+     * Boot the Searchable trait — register the observer so shadow columns
+     * are populated whenever the model is saved.
+     */
+    public static function bootSearchable(): void
+    {
+        static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
+    }
+
+    /**
+     * Return the configured searchable column names.
+     * Used by SearchableObserver to resolve which shadow columns to populate.
+     */
+    public function getSearchableColumns(): array
+    {
+        if (isset($this->searchable['columns'])) {
+            return array_keys($this->searchable['columns']);
+        }
+
+        return [];
+    }
+
+    /**
      * Start a new search query
      */
     public static function search(string $term): SearchBuilder
