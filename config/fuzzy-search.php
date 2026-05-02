@@ -158,11 +158,27 @@ return [
     |
     */
     'indexing' => [
-        'enabled' => false,
-        'table' => 'search_index',
-        'async' => true,
-        'queue' => 'default',
+        'enabled'    => false,
+        'table'      => 'search_index',
+        'async'      => true,
+        'queue'      => 'default',
         'chunk_size' => 500,
+        'tokenizer'  => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
+        'stemmer'    => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | BM25 Ranking Parameters
+    |--------------------------------------------------------------------------
+    |
+    | k1: term-frequency saturation (1.2–2.0; default 1.5)
+    | b:  length normalisation (0–1; default 0.75)
+    |
+    */
+    'bm25' => [
+        'k1' => 1.5,
+        'b'  => 0.75,
     ],
 
     /*
