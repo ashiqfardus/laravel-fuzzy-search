@@ -1305,65 +1305,61 @@ class SearchBuilder
             return [];
         }
 
-        if (empty($this->searchableColumns)) {
+        $term    = strtolower(trim($this->searchTerm));
+        $termLen = strlen($term);
+
+        // Query the term dictionary — fast and accurate at any dataset size
+        $candidates = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+            ->select('term', 'doc_count')
+            ->where('term', '!=', $term)
+            ->whereRaw('LENGTH(term) BETWEEN ? AND ?', [
+                max(1, $termLen - 3),
+                $termLen + 3,
+            ])
+            ->orderByDesc('doc_count')
+            ->limit(300)
+            ->get();
+
+        if ($candidates->isEmpty()) {
             return [];
         }
 
-        $term = strtolower($this->searchTerm);
-        $termLen = strlen($term);
         $alternatives = [];
-        $candidateWords = [];
+        foreach ($candidates as $candidate) {
+            $distance = levenshtein($term, $candidate->term);
+            $maxLen   = max($termLen, strlen($candidate->term));
 
-        // Clone query to get sample values
-        $sampleQuery = clone $this->query;
-        $samples = $sampleQuery->limit(200)->get();
-
-        // Extract unique words from samples efficiently
-        foreach ($samples as $sample) {
-            foreach ($this->searchableColumns as $column) {
-                $value = (string) data_get($sample, $column, '');
-                // Split on non-alphanumeric characters
-                $words = preg_split('/[^a-zA-Z0-9]+/', strtolower($value), -1, PREG_SPLIT_NO_EMPTY);
-                foreach ($words as $word) {
-                    // Only consider words of similar length (+/- 3 characters)
-                    $wordLen = strlen($word);
-                    if ($wordLen >= 2 && abs($wordLen - $termLen) <= 3) {
-                        $candidateWords[$word] = true;
-                    }
-                }
-            }
-        }
-
-        // Find words with small edit distance
-        foreach (array_keys($candidateWords) as $word) {
-            // Skip if word is same as search term
-            if ($word === $term) {
-                continue;
-            }
-
-            $distance = levenshtein($term, $word);
-            $maxLen = max($termLen, strlen($word));
-
-            // Only suggest if edit distance is reasonable (1-3 edits) and less than half the word length
-            if ($distance > 0 && $distance <= 3 && $distance < $maxLen / 2) {
-                $confidence = round(1 - ($distance / $maxLen), 2);
+            if ($distance > 0 && $distance <= 3) {
                 $alternatives[] = [
-                    'term' => $word,
-                    'distance' => $distance,
-                    'confidence' => $confidence,
+                    'term'        => $candidate->term,
+                    'distance'    => $distance,
+                    'confidence'  => round(1 - ($distance / $maxLen), 2),
+                    '_doc_count'  => $candidate->doc_count,
                 ];
             }
         }
 
-        // Sort by distance (ascending), then by confidence (descending)
         usort($alternatives, function ($a, $b) {
+            // Sort by doc_count first (descending) — most common suggestions first
+            if ($a['_doc_count'] !== $b['_doc_count']) {
+                return $b['_doc_count'] - $a['_doc_count'];
+            }
+            // Then by distance (ascending) as tiebreaker
             if ($a['distance'] !== $b['distance']) {
                 return $a['distance'] - $b['distance'];
             }
+            // Finally by confidence (descending)
             return $b['confidence'] <=> $a['confidence'];
         });
 
-        return array_slice($alternatives, 0, $limit);
+        return array_slice(
+            array_map(
+                fn($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
+                $alternatives
+            ),
+            0,
+            $limit
+        );
     }
 
     /**
