@@ -65,6 +65,14 @@ class FuzzySearchServiceProvider extends ServiceProvider
             __DIR__ . '/../config/fuzzy-search.php' => config_path('fuzzy-search.php'),
         ], 'fuzzy-search-config');
 
+        // Load package migrations
+        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+
+        // Publish migrations
+        $this->publishes([
+            __DIR__ . '/../database/migrations' => database_path('migrations'),
+        ], 'fuzzy-search-migrations');
+
         // Register commands
         if ($this->app->runningInConsole()) {
             $this->commands([
