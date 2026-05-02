@@ -23,10 +23,14 @@ class SoundexDriver extends BaseDriver
         // = J200, which correctly does NOT match SOUNDEX('john') = J500.
         if ($this->driver === 'mysql') {
             $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-            // SUBSTRING_INDEX(col, ' ', 1) extracts the first word of a full-name column.
+            // Match first word OR last word of a full-name column.
+            // Rationale: SOUNDEX() on the full string (e.g. "Jake Jackson") ignores spaces
+            // and encodes everything as one token — SOUNDEX('Jake Jackson') = J500 = SOUNDEX('john'),
+            // producing false positives. By splitting to first/last word we get accurate per-token
+            // phonetic matching while supporting both first-name and last-name queries.
             return $query->$method(
-                "SOUNDEX(SUBSTRING_INDEX({$col}, ' ', 1)) = SOUNDEX(?)",
-                [$value]
+                "SOUNDEX(SUBSTRING_INDEX({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SUBSTRING_INDEX({$col}, ' ', -1)) = SOUNDEX(?)",
+                [$value, $value]
             );
         }
 
@@ -36,10 +40,10 @@ class SoundexDriver extends BaseDriver
             if (!($this->config['use_native_functions'] ?? false)) {
                 return $this->applyFallback($query, $column, $value, $boolean);
             }
-            // SPLIT_PART(col, ' ', 1) extracts first word on PostgreSQL
+            // Match first word OR last word on PostgreSQL
             return $query->$method(
-                "SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?)",
-                [$value]
+                "SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SPLIT_PART({$col}, ' ', -1)) = SOUNDEX(?)",
+                [$value, $value]
             );
         }
 
