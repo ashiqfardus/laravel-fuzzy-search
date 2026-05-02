@@ -39,22 +39,30 @@ class IndexManager
         DB::transaction(function () use ($modelType, $modelId, $tokens) {
             $this->removeFromIndex($modelType, $modelId, updateMeta: false);
 
+            // 1. Batch upsert all terms at once
+            DB::table('fuzzy_index_terms')->upsert(
+                array_map(fn($term) => ['term' => $term, 'doc_count' => 1], array_keys($tokens)),
+                ['term'],
+                ['doc_count' => DB::raw('doc_count + 1')]
+            );
+
+            // 2. Fetch all term IDs in one query
+            $termIds = DB::table('fuzzy_index_terms')
+                ->whereIn('term', array_keys($tokens))
+                ->pluck('id', 'term');
+
+            // 3. Bulk insert all postings
+            $postingRows = [];
             foreach ($tokens as $term => $frequency) {
-                DB::table('fuzzy_index_terms')
-                    ->upsert(
-                        ['term' => $term, 'doc_count' => 1],
-                        ['term'],
-                        ['doc_count' => DB::raw('doc_count + 1')]
-                    );
-
-                $termId = DB::table('fuzzy_index_terms')->where('term', $term)->value('id');
-
-                DB::table('fuzzy_index_postings')->insert([
-                    'term_id'    => $termId,
+                $postingRows[] = [
+                    'term_id'    => $termIds[$term],
                     'model_type' => $modelType,
                     'model_id'   => $modelId,
                     'frequency'  => $frequency,
-                ]);
+                ];
+            }
+            if (!empty($postingRows)) {
+                DB::table('fuzzy_index_postings')->insert($postingRows);
             }
 
             $this->upsertMeta($modelType, count($tokens), increment: true);
@@ -130,7 +138,9 @@ class IndexManager
 
     private function buildTokenFrequencyMap(Model $model, array $columns): array
     {
-        $tokens = [];
+        $tokens    = [];
+        $maxTokens = config('fuzzy-search.indexing.max_tokens_per_doc', 5000);
+
         foreach ($columns as $column) {
             $value = $model->getAttribute($column);
             if (empty($value)) {
@@ -142,6 +152,14 @@ class IndexManager
                 }
                 $stemmed          = $this->stemmer->stem($word);
                 $tokens[$stemmed] = ($tokens[$stemmed] ?? 0) + 1;
+
+                if (count($tokens) >= $maxTokens) {
+                    \Illuminate\Support\Facades\Log::warning(
+                        'fuzzy-search: Token cap (' . $maxTokens . ') reached for ' .
+                        get_class($model) . ' id=' . $model->getKey() . '. Extra tokens discarded.'
+                    );
+                    return $tokens;
+                }
             }
         }
         return $tokens;

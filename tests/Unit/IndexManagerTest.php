@@ -166,6 +166,54 @@ class IndexManagerTest extends TestCase
         $this->assertEquals(1, $count);
     }
 
+    public function test_token_cap_prevents_index_poisoning(): void
+    {
+        config(['fuzzy-search.indexing.max_tokens_per_doc' => 3]);
+
+        $manager = new \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager(
+            new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer(),
+            new \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer()
+        );
+
+        $model = $this->makeModel(['name' => 'alpha beta gamma delta epsilon']); // 5 unique tokens
+        $manager->indexModel($model);
+
+        // With cap=3, only 3 postings should be created
+        $count = $this->app['db']->table('fuzzy_index_postings')
+            ->where('model_type', get_class($model))
+            ->where('model_id', $model->id)
+            ->count();
+
+        $this->assertLessThanOrEqual(3, $count);
+    }
+
+    public function test_index_model_job_handle_indexes_model_in_sync_queue(): void
+    {
+        // Use sync queue so the job runs immediately
+        config(['queue.default' => 'sync']);
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+
+        $model = $this->makeModel(['name' => 'job pipeline test']);
+        $modelClass = get_class($model);
+        $modelId    = $model->id;
+
+        // Directly call the job's handle method (sync execution)
+        $job     = new \Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob($modelClass, $modelId);
+        $manager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $job->handle($manager);
+
+        // Verify the model was indexed
+        $this->assertDatabaseHas('fuzzy_index_terms', ['term' => 'job']);
+        $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', 'job')->value('id');
+        $this->assertNotNull($termId);
+        $count = $this->app['db']->table('fuzzy_index_postings')
+            ->where('model_type', $modelClass)
+            ->where('model_id', $modelId)
+            ->where('term_id', $termId)
+            ->count();
+        $this->assertEquals(1, $count);
+    }
+
     public function test_observer_dispatches_index_job_on_model_save(): void
     {
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => true]);
