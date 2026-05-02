@@ -158,13 +158,14 @@ return [
     |
     */
     'indexing' => [
-        'enabled'    => false,   // Set true to enable observer-based auto-indexing on model save/delete
-        'table'      => 'search_index',
-        'async'      => true,
-        'queue'      => 'default',
-        'chunk_size' => 500,
-        'tokenizer'  => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
-        'stemmer'    => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
+        'enabled'            => false,   // Set true to enable observer-based auto-indexing on model save/delete
+        'table'              => 'search_index',
+        'async'              => true,
+        'queue'              => 'default',
+        'chunk_size'         => 500,
+        'tokenizer'          => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
+        'stemmer'            => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
+        'max_tokens_per_doc' => 5000,  // Cap unique tokens per document to prevent index poisoning
     ],
 
     /*

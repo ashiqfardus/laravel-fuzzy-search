@@ -61,3 +61,91 @@ php artisan fuzzy-search:index "App\Models\User" --fresh
 ### No changes for: levenshtein, soundex, simple, like
 
 These algorithm names behave identically to v1.x (same driver, same SQL).
+
+---
+
+## Phase 1 changes (inverted index + BM25)
+
+Phase 1 adds an opt-in inverted index with BM25 ranking. All existing search behavior is unchanged if you do nothing — the new features activate only when you follow these steps.
+
+### Step-by-step upgrade to use Phase 1
+
+```bash
+# 1. Run the new migrations (creates fuzzy_index_terms, fuzzy_index_postings, fuzzy_index_meta)
+php artisan migrate
+
+# 2. Build the index for your searchable models
+php artisan fuzzy-search:rebuild "App\Models\User"
+php artisan fuzzy-search:rebuild "App\Models\Post"
+# ... repeat for each model
+
+# 3. (Optional) Enable automatic incremental updates on model save/delete
+#    Without this step the index goes stale after writes.
+```
+
+In `config/fuzzy-search.php`:
+
+```php
+'indexing' => [
+    'enabled' => true,    // ← set this to true
+    'async'   => true,    // dispatches IndexModelJob to queue on save/delete
+    'queue'   => 'default',
+],
+```
+
+### New artisan commands
+
+```bash
+php artisan fuzzy-search:status              # Show index statistics
+php artisan fuzzy-search:rebuild {Model}     # Rebuild (synchronous)
+php artisan fuzzy-search:rebuild {Model} --async   # Rebuild via queued batch jobs (for large tables)
+php artisan fuzzy-search:flush {Model}       # Remove all index entries for a model
+```
+
+### Using BM25 search
+
+```php
+// Drop-in addition to any existing search call
+$users = User::search('john')->useInvertedIndex()->get();
+
+// DB::table() callers — pass model class explicitly
+DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex('App\Models\User')->get();
+
+// didYouMean() now reads from the term dictionary (no table scan)
+$suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
+```
+
+### Scout driver
+
+```bash
+composer require laravel/scout
+```
+
+In `.env`:
+
+```env
+SCOUT_DRIVER=fuzzy-search
+```
+
+The Scout engine adapter is bundled — no separate package. See [Scout Driver docs](SCOUT_DRIVER.md).
+
+### Performance notes
+
+BM25 via `useInvertedIndex()` is faster than LIKE-pattern search on tables with **~500k+ rows**. On smaller tables the BM25 scoring overhead may be comparable to or slightly slower than LIKE. Always benchmark against your own dataset.
+
+For large table rebuilds (>100k rows) use `--async`:
+
+```bash
+php artisan fuzzy-search:rebuild "App\Models\User" --async --queue=indexing
+```
+
+### New Phase 1 config keys
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `indexing.enabled` | `false` | Set `true` to enable observer-based auto-indexing on save/delete |
+| `indexing.tokenizer` | `WhitespaceTokenizer` | Tokenizer class |
+| `indexing.stemmer` | `NullStemmer` | Stemmer class (use `PorterStemmer` for English stemming) |
+| `indexing.max_tokens_per_doc` | `5000` | Max unique tokens indexed per document (security cap) |
+| `bm25.k1` | `1.5` | BM25 k1 — term-frequency saturation |
+| `bm25.b` | `0.75` | BM25 b — length normalisation |

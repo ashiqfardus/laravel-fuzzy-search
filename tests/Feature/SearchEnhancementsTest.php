@@ -82,17 +82,28 @@ class SearchEnhancementsTest extends TestCase
 
     public function test_did_you_mean_returns_alternatives_with_distance(): void
     {
-        $alternatives = User::search('jonh')  // Typo
-            ->searchIn(['name'])
-            ->didYouMean(3);
+        // Seed term dictionary so didYouMean has something to find
+        $this->app['db']->table('fuzzy_index_terms')->insert([
+            ['term' => 'john',  'doc_count' => 50],
+            ['term' => 'jones', 'doc_count' => 20],
+            ['term' => 'jane',  'doc_count' => 30],
+        ]);
 
-        if (!empty($alternatives)) {
-            foreach ($alternatives as $alt) {
-                $this->assertArrayHasKey('term', $alt);
-                $this->assertArrayHasKey('distance', $alt);
-                $this->assertArrayHasKey('confidence', $alt);
-            }
-        }
+        // 'jonh' has Levenshtein distance 1 from 'john'
+        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
+        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            $fuzzySearch
+        );
+        $alternatives = $builder->search('jonh')->searchIn(['name'])->didYouMean(3);
+
+        $this->assertNotEmpty($alternatives);
+        $first = $alternatives[0];
+        $this->assertArrayHasKey('term', $first);
+        $this->assertArrayHasKey('distance', $first);
+        $this->assertArrayHasKey('confidence', $first);
+        $this->assertGreaterThan(0, $first['distance']);
+        $this->assertContains('john', array_column($alternatives, 'term'));
     }
 
     public function test_did_you_mean_respects_limit(): void
