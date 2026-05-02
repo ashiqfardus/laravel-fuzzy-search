@@ -214,6 +214,46 @@ class IndexManagerTest extends TestCase
         $this->assertEquals(1, $count);
     }
 
+    public function test_index_batch_indexes_multiple_models_with_few_queries(): void
+    {
+        $manager = $this->makeIndexManager();
+
+        $models = [];
+        for ($i = 0; $i < 5; $i++) {
+            $models[] = $this->makeModel(['name' => "user {$i} test"]);
+        }
+
+        $count = $manager->indexBatch(collect($models));
+
+        $this->assertEquals(5, $count);
+        foreach ($models as $model) {
+            $this->assertDatabaseHas('fuzzy_index_documents', [
+                'model_type' => get_class($model),
+                'model_id'   => $model->id,
+            ]);
+            $this->assertDatabaseHas('fuzzy_index_postings', [
+                'model_type' => get_class($model),
+                'model_id'   => $model->id,
+            ]);
+        }
+    }
+
+    public function test_meta_does_not_inflate_on_reindex(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'meta test']);
+
+        $manager->indexModel($model);
+        $manager->indexModel($model); // re-index — should NOT inflate
+        $manager->indexModel($model); // re-index again
+
+        $totalDocs = $this->app['db']->table('fuzzy_index_meta')
+            ->where('model_type', get_class($model))
+            ->value('total_docs');
+
+        $this->assertEquals(1, $totalDocs); // only ONE document, regardless of re-indexes
+    }
+
     public function test_observer_dispatches_index_job_on_model_save(): void
     {
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => true]);
