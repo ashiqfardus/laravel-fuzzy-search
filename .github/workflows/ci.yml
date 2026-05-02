@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v2, "v2/**"]
+  pull_request:
+    branches: [main, v2]
+
+jobs:
+  # ── SQLite ────────────────────────────────────────────────────────────────
+  # Full PHP × Laravel matrix; no service containers needed
+  test-sqlite:
+    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / SQLite"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.2", "8.3"]
+        laravel: ["9.*", "10.*", "11.*", "12.*"]
+        exclude:
+          - { php: "8.1", laravel: "11.*" }
+          - { php: "8.1", laravel: "12.*" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite
+          coverage: none
+      - name: Install deps
+        run: |
+          composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Run tests (SQLite)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security
+
+  # ── MySQL 8 ───────────────────────────────────────────────────────────────
+  # Representative subset: PHP 8.2/8.3 × Laravel 10/12
+  test-mysql:
+    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / MySQL 8"
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: fuzzy_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3"]
+        laravel: ["10.*", "12.*"]
+    env:
+      DB_TEST_DRIVER: mysql
+      DB_TEST_HOST: 127.0.0.1
+      DB_TEST_PORT: 3306
+      DB_TEST_DATABASE: fuzzy_test
+      DB_TEST_USERNAME: root
+      DB_TEST_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_mysql, pdo_sqlite
+          coverage: none
+      - name: Install deps
+        run: |
+          composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Run tests (MySQL)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+
+  # ── PostgreSQL 14 ─────────────────────────────────────────────────────────
+  # Representative subset: PHP 8.2/8.3 × Laravel 10/12
+  test-pgsql:
+    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / PostgreSQL 14"
+    runs-on: ubuntu-latest
+    services:
+      pgsql:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fuzzy_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3"]
+        laravel: ["10.*", "12.*"]
+    env:
+      DB_TEST_DRIVER: pgsql
+      DB_TEST_HOST: 127.0.0.1
+      DB_TEST_PORT: 5432
+      DB_TEST_DATABASE: fuzzy_test
+      DB_TEST_USERNAME: postgres
+      DB_TEST_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_pgsql, pdo_sqlite
+          coverage: none
+      - name: Install deps
+        run: |
+          composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Run tests (PostgreSQL)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
