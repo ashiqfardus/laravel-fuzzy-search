@@ -19,6 +19,33 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Candidate ceiling for PHP-side rescoring
+    |--------------------------------------------------------------------------
+    |
+    | executeSearch() fetches up to this many rows from SQL before PHP rescoring
+    | and slicing to the requested limit/offset. Higher = more accurate top-N
+    | at the cost of fetching more rows. For indexed search (Phase 1), this
+    | ceiling is replaced by BM25 scoring in SQL.
+    |
+    | Recommendation: lower to 200-500 on tables with 100k+ rows.
+    |
+    */
+    'max_candidates' => 1000,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Legacy dispatch fallback
+    |--------------------------------------------------------------------------
+    |
+    | When true, unknown algorithm names silently fall back to LevenshteinDriver
+    | (v1.x behavior). Set to false in production once all callers use valid
+    | algorithm names.
+    |
+    */
+    'legacy_dispatch' => false,
+
+    /*
+    |--------------------------------------------------------------------------
     | Allow Empty Search
     |--------------------------------------------------------------------------
     |
