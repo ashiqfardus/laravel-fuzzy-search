@@ -43,7 +43,10 @@ class FuzzySearch
         $algorithm = $algorithm ?? $this->config['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
 
-        // Accent-insensitive: Postgres with unaccent extension wraps the column
+        // accent_insensitive is a per-call flag, not a global config key.
+        // The global config/fuzzy-search.php 'unicode.accent_insensitive' key
+        // has no effect here by design — the Postgres unaccent path requires
+        // explicit opt-in via ->accentInsensitive() at the query level.
         if (($options['accent_insensitive'] ?? false)
             && $this->getDriver($query) === self::DRIVER_PGSQL
             && ($this->config['use_native_functions'] ?? false)

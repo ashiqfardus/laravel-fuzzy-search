@@ -810,7 +810,7 @@ class SearchBuilder
                                 $column,
                                 $term,
                                 $this->algorithm,
-                                $this->options,
+                                array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
                                 $boolean
                             );
                         }
@@ -831,7 +831,7 @@ class SearchBuilder
                             $column,
                             $term,
                             $this->algorithm,
-                            $this->options,
+                            array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
                             $boolean
                         );
                     }

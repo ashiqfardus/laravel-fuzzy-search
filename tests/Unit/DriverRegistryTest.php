@@ -161,4 +161,28 @@ class DriverRegistryTest extends TestCase
             'column' => 'name',
         ])->assertExitCode(1);
     }
+
+    public function test_accent_insensitive_strips_term_and_matches_unaccented_row(): void
+    {
+        // On SQLite: accentInsensitive() strips the search term from 'café' to 'cafe'
+        // then matches the unaccented column value 'cafe'
+        $this->app['db']->table('users')->insert([
+            'name' => 'cafe', 'email' => 'cafe@test.com',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)
+        );
+
+        $results = $builder
+            ->search('café')
+            ->searchIn(['name'])
+            ->accentInsensitive()
+            ->get();
+
+        $names = $results->pluck('name')->toArray();
+        $this->assertContains('cafe', $names);
+    }
 }
