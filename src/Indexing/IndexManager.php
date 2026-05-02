@@ -126,17 +126,35 @@ class IndexManager
      */
     public function flush(string $modelClass): void
     {
-        $termIds = DB::table('fuzzy_index_postings')
-            ->where('model_type', $modelClass)
-            ->pluck('term_id')
-            ->unique();
-
+        // Bulk delete index data for this model type — DB-side, no PHP memory load.
         DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->delete();
         DB::table('fuzzy_index_documents')->where('model_type', $modelClass)->delete();
         DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->delete();
 
-        if ($termIds->isNotEmpty()) {
-            DB::table('fuzzy_index_terms')->whereIn('id', $termIds)->delete();
+        // Clean up orphan terms (those with no remaining postings) via DB-side JOIN
+        // — avoids loading million-row term_id arrays into PHP memory.
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'mysql') {
+            DB::statement(
+                'DELETE t FROM fuzzy_index_terms t ' .
+                'LEFT JOIN fuzzy_index_postings p ON t.id = p.term_id ' .
+                'WHERE p.id IS NULL'
+            );
+        } elseif ($driver === 'pgsql') {
+            DB::statement(
+                'DELETE FROM fuzzy_index_terms t ' .
+                'WHERE NOT EXISTS (SELECT 1 FROM fuzzy_index_postings p WHERE p.term_id = t.id)'
+            );
+        } else {
+            // SQLite / SQL Server fallback — chunked PHP-side delete to bound memory
+            DB::table('fuzzy_index_terms')
+                ->whereNotExists(function ($q) {
+                    $q->selectRaw('1')
+                      ->from('fuzzy_index_postings')
+                      ->whereColumn('fuzzy_index_postings.term_id', 'fuzzy_index_terms.id');
+                })
+                ->delete();
         }
     }
 
