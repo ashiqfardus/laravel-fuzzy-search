@@ -8,6 +8,10 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 
+/**
+ * @deprecated v2.0.0 Use IndexModelJob (per-row) or RebuildIndexJob (bulk) instead.
+ *             This job performs a full-table reindex and will be removed in v3.0.0.
+ */
 class ReindexModelJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
