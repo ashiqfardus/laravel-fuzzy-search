@@ -158,7 +158,7 @@ return [
     |
     */
     'indexing' => [
-        'enabled'    => false,
+        'enabled'    => false,   // Set true to enable observer-based auto-indexing on model save/delete
         'table'      => 'search_index',
         'async'      => true,
         'queue'      => 'default',
