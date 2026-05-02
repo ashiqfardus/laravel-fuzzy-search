@@ -84,6 +84,16 @@ class FuzzySearchServiceProvider extends ServiceProvider
 
         // Register Eloquent Builder macros
         $this->registerEloquentBuilderMacros();
+
+        // Register Scout engine when laravel/scout is installed (no hard dependency)
+        if (class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->callAfterResolving(\Laravel\Scout\EngineManager::class, function ($manager) {
+                $manager->extend('fuzzy-search', fn () => new \Ashiqfardus\LaravelFuzzySearch\Scout\FuzzySearchEngine(
+                    app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class),
+                    app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class),
+                ));
+            });
+        }
     }
 
     protected function registerQueryBuilderMacros(): void
