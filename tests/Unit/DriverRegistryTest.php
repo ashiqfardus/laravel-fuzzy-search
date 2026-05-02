@@ -28,4 +28,31 @@ class DriverRegistryTest extends TestCase
         $this->assertStringContainsString('%', $bindings[0]);
         $this->assertStringContainsString('jo', $bindings[0]);
     }
+
+    public function test_metaphone_driver_queries_shadow_column(): void
+    {
+        // Add the shadow column to the test table
+        $this->app['db']->connection()->getSchemaBuilder()->table('users', function ($table) {
+            $table->string('name_metaphone')->nullable();
+        });
+
+        $query = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'stephen', 'metaphone');
+        $sql = strtolower($query->toSql());
+
+        // Must query the shadow column, not the original
+        $this->assertStringContainsString('name_metaphone', $sql);
+        // Must NOT use SOUNDEX (the old wrong behavior)
+        $this->assertStringNotContainsString('soundex', $sql);
+    }
+
+    public function test_metaphone_driver_throws_when_shadow_column_missing(): void
+    {
+        // No shadow column added — uses the plain 'users' table from setUp
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/name_metaphone/');
+
+        $query = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'stephen', 'metaphone');
+    }
 }
