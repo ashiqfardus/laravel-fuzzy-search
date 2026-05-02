@@ -30,4 +30,41 @@ class IndexManagerTest extends TestCase
         $this->assertTrue(Schema::hasColumn('fuzzy_index_meta', 'total_docs'));
         $this->assertTrue(Schema::hasColumn('fuzzy_index_meta', 'avg_doc_length'));
     }
+
+    public function test_whitespace_tokenizer_splits_on_word_boundaries(): void
+    {
+        $tokenizer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer();
+        $tokens = $tokenizer->tokenize('Hello World, PHP!');
+        $this->assertEquals(['hello', 'world', 'php'], $tokens);
+    }
+
+    public function test_whitespace_tokenizer_ignores_words_under_2_chars(): void
+    {
+        $tokenizer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer();
+        $tokens = $tokenizer->tokenize('a be cat dog');
+        $this->assertContains('be', $tokens);
+        $this->assertContains('cat', $tokens);
+        $this->assertNotContains('a', $tokens);
+    }
+
+    public function test_whitespace_tokenizer_lowercases(): void
+    {
+        $tokenizer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer();
+        $tokens = $tokenizer->tokenize('Laravel PHP');
+        $this->assertEquals(['laravel', 'php'], $tokens);
+    }
+
+    public function test_null_stemmer_returns_word_unchanged(): void
+    {
+        $stemmer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer();
+        $this->assertEquals('running', $stemmer->stem('running'));
+        $this->assertEquals('jumps', $stemmer->stem('jumps'));
+    }
+
+    public function test_porter_stemmer_stems_english_words(): void
+    {
+        $stemmer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer();
+        $this->assertEquals('run', $stemmer->stem('running'));
+        $this->assertEquals('jump', $stemmer->stem('jumps'));
+    }
 }
