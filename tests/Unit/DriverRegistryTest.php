@@ -55,4 +55,72 @@ class DriverRegistryTest extends TestCase
         $query = $this->app['db']->table('users');
         $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'stephen', 'metaphone');
     }
+
+    public function test_fuzzy_algorithm_produces_different_sql_from_levenshtein(): void
+    {
+        $fuzzyQ = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($fuzzyQ, 'name', 'john', 'fuzzy');
+
+        $levenQ = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($levenQ, 'name', 'john', 'levenshtein');
+
+        // Before the fix these were identical (both fell to LevenshteinDriver default).
+        $this->assertNotEquals($fuzzyQ->toSql(), $levenQ->toSql());
+    }
+
+    public function test_simple_algorithm_generates_single_like_clause(): void
+    {
+        $query = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'john', 'simple');
+        $sql = strtolower($query->toSql());
+        $bindings = $query->getBindings();
+
+        // toSql() uses ? placeholders — verify the single LIKE clause and binding separately
+        $this->assertStringContainsString('like', $sql);
+        // Confirm it's not generating the multi-pattern levenshtein output
+        $this->assertEquals(1, substr_count($sql, 'like'));
+        // Binding must be the wildcard-wrapped value
+        $this->assertCount(1, $bindings);
+        $this->assertEquals('%john%', $bindings[0]);
+    }
+
+    public function test_trigram_produces_different_sql_from_levenshtein(): void
+    {
+        $trigramQ = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($trigramQ, 'name', 'john', 'trigram');
+
+        $levenQ = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($levenQ, 'name', 'john', 'levenshtein');
+
+        $this->assertNotEquals($trigramQ->toSql(), $levenQ->toSql());
+    }
+
+    public function test_like_algorithm_is_alias_for_simple(): void
+    {
+        $likeQ = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($likeQ, 'name', 'test', 'like');
+
+        $simpleQ = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($simpleQ, 'name', 'test', 'simple');
+
+        $this->assertEquals($simpleQ->toSql(), $likeQ->toSql());
+    }
+
+    public function test_unknown_algorithm_throws_invalid_algorithm_exception(): void
+    {
+        $this->expectException(\Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException::class);
+        $query = $this->app['db']->table('users');
+        $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'john', 'does_not_exist');
+    }
+
+    public function test_legacy_dispatch_flag_suppresses_unknown_algorithm_exception(): void
+    {
+        config(['fuzzy-search.legacy_dispatch' => true]);
+        $this->fuzzySearch = new \Ashiqfardus\LaravelFuzzySearch\FuzzySearch(config('fuzzy-search'));
+
+        $query = $this->app['db']->table('users');
+        // Must not throw; falls back to LevenshteinDriver silently
+        $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'john', 'does_not_exist');
+        $this->assertTrue(true);
+    }
 }
