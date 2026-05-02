@@ -57,6 +57,7 @@ class IndexingPipelineTest extends TestCase
         $modelType = 'PipelineTestModel';
         // Seed directly with known model type
         $this->app['db']->table('fuzzy_index_postings')->update(['model_type' => $modelType]);
+        $this->app['db']->table('fuzzy_index_documents')->update(['model_type' => $modelType]);
         $this->app['db']->table('fuzzy_index_meta')->update(['model_type' => $modelType]);
 
         $terms   = $this->manager->processTerms('laravel');
@@ -84,6 +85,9 @@ class IndexingPipelineTest extends TestCase
         $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', 'laravel')->value('id');
         $this->app['db']->table('fuzzy_index_postings')->insert([
             'term_id' => $termId, 'model_type' => $modelType, 'model_id' => 9010, 'frequency' => 1
+        ]);
+        $this->app['db']->table('fuzzy_index_documents')->insert([
+            'model_type' => $modelType, 'model_id' => 9010, 'doc_length' => 1
         ]);
         $this->app['db']->table('fuzzy_index_meta')->insert([
             'model_type' => $modelType, 'total_docs' => 1, 'total_tokens' => 1, 'avg_doc_length' => 1

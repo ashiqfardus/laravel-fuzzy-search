@@ -43,6 +43,12 @@ class Bm25ScorerTest extends TestCase
         }
 
         $termCount = count($terms);
+
+        $this->app['db']->table('fuzzy_index_documents')->updateOrInsert(
+            ['model_type' => $this->modelType, 'model_id' => $id],
+            ['doc_length' => $termCount]
+        );
+
         $this->app['db']->table('fuzzy_index_meta')->upsert([
             'model_type' => $this->modelType, 'total_docs' => 1,
             'total_tokens' => $termCount, 'avg_doc_length' => $termCount,

@@ -46,14 +46,11 @@ class RebuildCommand extends Command
     private function rebuildSync(string $modelClass, int $chunkSize, IndexManager $indexManager, int $total): int
     {
         $this->info("Rebuilding index for [{$modelClass}] synchronously ({$total} records, chunk: {$chunkSize})...");
-        $this->line('Tip: use --async for large tables to avoid artisan process timeout.');
         $bar = $this->output->createProgressBar($total);
 
         $modelClass::orderBy('id')->chunk($chunkSize, function ($models) use ($indexManager, $bar) {
-            foreach ($models as $model) {
-                $indexManager->indexModel($model);
-                $bar->advance();
-            }
+            $indexManager->indexBatch($models);
+            $bar->advance($models->count());
         });
 
         $bar->finish();
