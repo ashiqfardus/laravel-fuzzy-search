@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **🚀 Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Performance Guide](docs/PERFORMANCE.md) • [Comparisons](docs/COMPARISON.md)
+**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Performance Guide](docs/PERFORMANCE.md) • [Comparisons](docs/COMPARISON.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
 
 ## ✨ Features
 
