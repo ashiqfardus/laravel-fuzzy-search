@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **🚀 Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Performance Guide](docs/PERFORMANCE.md) • [Comparisons](docs/COMPARISON.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
+**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Inverted Index](docs/INVERTED_INDEX.md) • [Scout Driver](docs/SCOUT_DRIVER.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
 
 ## ✨ Features
 
@@ -183,6 +183,26 @@ User::search('john doe developer')
     ->matchAny()        // Any token can match (OR)
     ->get();
 ```
+
+### BM25 Inverted Index (v2+)
+
+For large tables, the inverted index provides BM25-ranked results:
+
+```bash
+php artisan migrate
+php artisan fuzzy-search:rebuild "App\Models\User"
+```
+
+```php
+// BM25 search — faster + more relevant ranking on 10k+ rows
+$users = User::search('john')->useInvertedIndex()->get();
+
+// Scout driver — bundled, no separate package
+// Set SCOUT_DRIVER=fuzzy-search in .env
+$users = User::search('john')->get(); // via Scout
+```
+
+See [Inverted Index](docs/INVERTED_INDEX.md) and [Scout Driver](docs/SCOUT_DRIVER.md) docs.
 
 ## Field Weighting & Scoring
 
