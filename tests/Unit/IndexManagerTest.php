@@ -67,4 +67,102 @@ class IndexManagerTest extends TestCase
         $this->assertEquals('run', $stemmer->stem('running'));
         $this->assertEquals('jump', $stemmer->stem('jumps'));
     }
+
+    private function makeIndexManager(): \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager
+    {
+        return new \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager(
+            new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer(),
+            new \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer(),
+            stopWords: ['the', 'a', 'an']
+        );
+    }
+
+    /** Helper: create a minimal Eloquent model pointing at the users table */
+    private function makeModel(array $attributes): \Illuminate\Database\Eloquent\Model
+    {
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            protected $table    = 'users';
+            protected $fillable = ['name', 'email'];
+            public $timestamps  = true;
+            public function getSearchableColumns(): array { return ['name']; }
+        };
+
+        return $model::create(array_merge([
+            'email'      => 'test' . uniqid() . '@test.com',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $attributes));
+    }
+
+    public function test_index_model_writes_terms_to_terms_table(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'John Doe']);
+
+        $manager->indexModel($model);
+
+        $this->assertDatabaseHas('fuzzy_index_terms', ['term' => 'john']);
+        $this->assertDatabaseHas('fuzzy_index_terms', ['term' => 'doe']);
+    }
+
+    public function test_index_model_writes_postings_with_frequencies(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'john john doe']);
+
+        $manager->indexModel($model);
+
+        $termId  = $this->app['db']->table('fuzzy_index_terms')->where('term', 'john')->value('id');
+        $posting = $this->app['db']->table('fuzzy_index_postings')
+            ->where('term_id', $termId)->where('model_id', $model->id)->first();
+
+        $this->assertEquals(2, $posting->frequency);
+    }
+
+    public function test_index_model_updates_meta(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'hello world']);
+
+        $manager->indexModel($model);
+
+        $modelType = get_class($model);
+        $meta = $this->app['db']->table('fuzzy_index_meta')
+            ->where('model_type', $modelType)->first();
+
+        $this->assertEquals(1, $meta->total_docs);
+        $this->assertGreaterThan(0, $meta->avg_doc_length);
+    }
+
+    public function test_remove_from_index_cleans_postings(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'hello world']);
+
+        $manager->indexModel($model);
+        $manager->removeFromIndex(get_class($model), $model->id);
+
+        $count = $this->app['db']->table('fuzzy_index_postings')
+            ->where('model_type', get_class($model))
+            ->where('model_id', $model->id)
+            ->count();
+
+        $this->assertEquals(0, $count);
+    }
+
+    public function test_reindex_does_not_duplicate_on_double_index(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'hello']);
+
+        $manager->indexModel($model);
+        $manager->indexModel($model);
+
+        $count = $this->app['db']->table('fuzzy_index_postings')
+            ->where('model_type', get_class($model))
+            ->where('model_id', $model->id)
+            ->count();
+
+        $this->assertEquals(1, $count);
+    }
 }
