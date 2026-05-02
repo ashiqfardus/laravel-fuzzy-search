@@ -51,6 +51,7 @@ class SearchBuilder
     protected bool $unicodeNormalizeEnabled = false;
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
+    protected ?string $invertedIndexModelClass = null;
     protected ?int $cacheMinutes = null;
     protected ?string $cacheKey = null;
     protected bool $stableRankingEnabled = false;
@@ -329,12 +330,34 @@ class SearchBuilder
     }
 
     /**
-     * Use search index table
+     * Use the BM25 inverted index instead of LIKE-pattern search.
+     *
+     * @param  string|bool|null $modelClass
+     *   - true/null  auto-detect from Eloquent builder
+     *   - string     explicit model class (enables BM25 on DB::table() too)
+     *   - false      disable (reset to LIKE path)
      */
-    public function useIndex(): self
+    public function useInvertedIndex(string|bool|null $modelClass = true): self
     {
+        if ($modelClass === false) {
+            $this->useSearchIndex          = false;
+            $this->invertedIndexModelClass = null;
+            return $this;
+        }
+
         $this->useSearchIndex = true;
+
+        if (is_string($modelClass)) {
+            $this->invertedIndexModelClass = $modelClass;
+        }
+
         return $this;
+    }
+
+    /** Alias for useInvertedIndex() */
+    public function useIndex(string|bool|null $modelClass = true): self
+    {
+        return $this->useInvertedIndex($modelClass);
     }
 
     /**
@@ -557,6 +580,10 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
+        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+            return $this->executeIndexedSearch();
+        }
+
         $this->buildQuery();
         $startTime = microtime(true);
 
@@ -591,6 +618,89 @@ class SearchBuilder
         ));
 
         return $results;
+    }
+
+    /**
+     * Execute search via BM25 inverted index
+     */
+    protected function executeIndexedSearch(): Collection
+    {
+        $modelClass = $this->resolveIndexModelClass();
+
+        if ($modelClass === null) {
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: useInvertedIndex() skipped — cannot resolve model class. ' .
+                    'Pass the class explicitly: ->useInvertedIndex(App\Models\User::class)'
+                );
+            }
+            $this->useSearchIndex = false;
+            return $this->executeSearch();
+        }
+
+        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
+
+        $terms   = $indexManager->processTerms($this->searchTerm);
+        $results = $scorer->search($terms, $modelClass, ($this->limit + $this->offset) * 2);
+
+        if ($results->isEmpty()) {
+            return collect();
+        }
+
+        $ids      = $results->pluck('model_id')->toArray();
+        $scoreMap = $results->pluck('score', 'model_id');
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $keyName = $this->query->getModel()->getKeyName();
+            $models  = $this->query->whereIn($keyName, $ids)->get();
+        } else {
+            $models = $modelClass::whereIn((new $modelClass)->getKeyName(), $ids)->get();
+        }
+
+        $sorted = $models
+            ->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
+            ->values()
+            ->slice($this->offset, $this->limit)
+            ->values()
+            ->map(function ($item) use ($scoreMap) {
+                $item->_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                return $item;
+            });
+
+        if ($this->highlightTagOpen) {
+            $sorted = $this->applyHighlighting($sorted);
+        }
+
+        if ($this->debugMode) {
+            $sorted = $this->addDebugInfo($sorted);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      'bm25',
+            candidateCount: count($ids),
+            latencyMs:      0,
+        ));
+
+        return $sorted;
+    }
+
+    /**
+     * Resolve the model class for the inverted index lookup.
+     */
+    protected function resolveIndexModelClass(): ?string
+    {
+        if ($this->invertedIndexModelClass !== null) {
+            return $this->invertedIndexModelClass;
+        }
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            return $this->query->getModel()::class;
+        }
+
+        return null;
     }
 
     /**

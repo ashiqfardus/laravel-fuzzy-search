@@ -49,23 +49,25 @@ class Bm25Scorer
 
         $termIds = $termData->keys()->toArray();
 
-        // Fetch postings + per-document length in one join
-        $postings = DB::table('fuzzy_index_postings as p')
-            ->join(
-                DB::raw(
-                    '(SELECT model_id, SUM(frequency) as doc_len
-                      FROM fuzzy_index_postings
-                      WHERE model_type = ' . DB::connection()->getPdo()->quote($modelType) . '
-                      GROUP BY model_id) as dl'
-                ),
-                'p.model_id',
-                '=',
-                'dl.model_id'
-            )
-            ->where('p.model_type', $modelType)
-            ->whereIn('p.term_id', $termIds)
-            ->select('p.model_id', 'p.term_id', 'p.frequency', 'dl.doc_len')
+        // Fetch per-document lengths (total token count per doc) separately
+        $docLengths = DB::table('fuzzy_index_postings')
+            ->where('model_type', $modelType)
+            ->select('model_id', DB::raw('SUM(frequency) as doc_len'))
+            ->groupBy('model_id')
+            ->pluck('doc_len', 'model_id');
+
+        // Fetch relevant postings for the matched terms
+        $rawPostings = DB::table('fuzzy_index_postings')
+            ->where('model_type', $modelType)
+            ->whereIn('term_id', $termIds)
+            ->select('model_id', 'term_id', 'frequency')
             ->get();
+
+        // Attach doc_len to each posting row
+        $postings = $rawPostings->map(function ($row) use ($docLengths) {
+            $row->doc_len = $docLengths[$row->model_id] ?? 1;
+            return $row;
+        });
 
         $scores = [];
         foreach ($postings as $row) {

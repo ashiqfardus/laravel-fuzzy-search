@@ -91,4 +91,76 @@ class Bm25ScorerTest extends TestCase
         // 1003 has 'john' 3 times, should rank first (or at least be present)
         $this->assertEquals(1003, $results->first()->model_id);
     }
+
+    public function test_search_builder_use_inverted_index_returns_bm25_ordered_results(): void
+    {
+        $manager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+
+        $u1 = \Illuminate\Support\Facades\DB::table('users')->insertGetId([
+            'name' => 'laravel developer', 'email' => 'u1bm25@test.com',
+            'created_at' => now(), 'updated_at' => now()
+        ]);
+        $u2 = \Illuminate\Support\Facades\DB::table('users')->insertGetId([
+            'name' => 'php developer laravel laravel', 'email' => 'u2bm25@test.com',
+            'created_at' => now(), 'updated_at' => now()
+        ]);
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+            protected $table = 'users';
+            protected array $searchable = ['columns' => ['name' => 1]];
+        };
+
+        $manager->indexModel($model::find($u1));
+        $manager->indexModel($model::find($u2));
+
+        $results = $model::search('laravel')->useIndex()->get();
+
+        $this->assertGreaterThan(0, $results->count());
+        $this->assertEquals($u2, $results->first()->id); // u2 has 'laravel' twice → higher BM25
+    }
+
+    public function test_use_inverted_index_on_query_builder_falls_back_gracefully(): void
+    {
+        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
+        $builder     = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            $fuzzySearch
+        );
+
+        // Must NOT throw even without a model class — falls back to LIKE
+        $results = $builder->search('john')->searchIn(['name'])->useInvertedIndex()->get();
+        $this->assertInstanceOf(\Illuminate\Support\Collection::class, $results);
+    }
+
+    public function test_use_inverted_index_with_explicit_model_class_on_query_builder(): void
+    {
+        $manager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+            protected $table = 'users';
+            protected array $searchable = ['columns' => ['name' => 1]];
+        };
+
+        $id = \Illuminate\Support\Facades\DB::table('users')->insertGetId([
+            'name' => 'explicit test', 'email' => 'explicit' . uniqid() . '@test.com',
+            'created_at' => now(), 'updated_at' => now()
+        ]);
+        $manager->indexModel($model::find($id));
+
+        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
+        $builder     = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            $fuzzySearch
+        );
+
+        $results = $builder
+            ->search('explicit')
+            ->searchIn(['name'])
+            ->useInvertedIndex(get_class($model))
+            ->get();
+
+        $this->assertGreaterThan(0, $results->count());
+    }
 }
