@@ -43,6 +43,11 @@ abstract class TestCase extends BaseTestCase
         ]);
     }
 
+    protected function defineDatabaseMigrations(): void
+    {
+        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -94,7 +99,10 @@ abstract class TestCase extends BaseTestCase
         $this->app['db']->connection()->getSchemaBuilder()->dropIfExists('products');
         $this->app['db']->connection()->getSchemaBuilder()->dropIfExists('users');
 
+        // Reset the observer's schema column cache so static state does not
+        // leak between test cases that use different in-memory databases.
+        \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::resetColumnCache();
+
         parent::tearDown();
     }
 }
-

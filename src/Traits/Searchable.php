@@ -39,6 +39,7 @@ trait Searchable
     public static function bootSearchable(): void
     {
         static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
+        static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class);
     }
 
     /**

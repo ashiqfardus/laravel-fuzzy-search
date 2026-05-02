@@ -10,6 +10,9 @@ use Ashiqfardus\LaravelFuzzySearch\Console\ClearCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\BenchmarkCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\ExplainCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\AddShadowColumnCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\StatusCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\RebuildCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\FlushCommand;
 
 class FuzzySearchServiceProvider extends ServiceProvider
 {
@@ -28,6 +31,31 @@ class FuzzySearchServiceProvider extends ServiceProvider
                 $app->make(FuzzySearch::class)
             );
         });
+
+        // Bind IndexManager and Bm25Scorer as singletons
+        $this->app->singleton(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class, function ($app) {
+            $cfg          = config('fuzzy-search');
+            $tokenizerCls = $cfg['indexing']['tokenizer']
+                ?? \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class;
+            $stemmerCls   = $cfg['indexing']['stemmer']
+                ?? \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class;
+            $locale       = $cfg['locale'] ?? 'en';
+            $stopWords    = $cfg['stop_words'][$locale] ?? [];
+
+            return new \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager(
+                new $tokenizerCls(),
+                new $stemmerCls(),
+                $stopWords
+            );
+        });
+
+        $this->app->singleton(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class, function ($app) {
+            $cfg = config('fuzzy-search.bm25', []);
+            return new \Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer(
+                k1: (float) ($cfg['k1'] ?? 1.5),
+                b:  (float) ($cfg['b']  ?? 0.75),
+            );
+        });
     }
 
     public function boot(): void
@@ -37,6 +65,14 @@ class FuzzySearchServiceProvider extends ServiceProvider
             __DIR__ . '/../config/fuzzy-search.php' => config_path('fuzzy-search.php'),
         ], 'fuzzy-search-config');
 
+        // Load package migrations
+        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+
+        // Publish migrations
+        $this->publishes([
+            __DIR__ . '/../database/migrations' => database_path('migrations'),
+        ], 'fuzzy-search-migrations');
+
         // Register commands
         if ($this->app->runningInConsole()) {
             $this->commands([
@@ -45,6 +81,9 @@ class FuzzySearchServiceProvider extends ServiceProvider
                 BenchmarkCommand::class,
                 ExplainCommand::class,
                 AddShadowColumnCommand::class,
+                StatusCommand::class,
+                RebuildCommand::class,
+                FlushCommand::class,
             ]);
         }
 
@@ -53,6 +92,16 @@ class FuzzySearchServiceProvider extends ServiceProvider
 
         // Register Eloquent Builder macros
         $this->registerEloquentBuilderMacros();
+
+        // Register Scout engine when laravel/scout is installed (no hard dependency)
+        if (class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->callAfterResolving(\Laravel\Scout\EngineManager::class, function ($manager) {
+                $manager->extend('fuzzy-search', fn () => new \Ashiqfardus\LaravelFuzzySearch\Scout\FuzzySearchEngine(
+                    app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class),
+                    app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class),
+                ));
+            });
+        }
     }
 
     protected function registerQueryBuilderMacros(): void

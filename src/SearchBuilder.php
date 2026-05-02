@@ -51,6 +51,7 @@ class SearchBuilder
     protected bool $unicodeNormalizeEnabled = false;
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
+    protected ?string $invertedIndexModelClass = null;
     protected ?int $cacheMinutes = null;
     protected ?string $cacheKey = null;
     protected bool $stableRankingEnabled = false;
@@ -329,12 +330,34 @@ class SearchBuilder
     }
 
     /**
-     * Use search index table
+     * Use the BM25 inverted index instead of LIKE-pattern search.
+     *
+     * @param  string|bool|null $modelClass
+     *   - true/null  auto-detect from Eloquent builder
+     *   - string     explicit model class (enables BM25 on DB::table() too)
+     *   - false      disable (reset to LIKE path)
      */
-    public function useIndex(): self
+    public function useInvertedIndex(string|bool|null $modelClass = true): self
     {
+        if ($modelClass === false) {
+            $this->useSearchIndex          = false;
+            $this->invertedIndexModelClass = null;
+            return $this;
+        }
+
         $this->useSearchIndex = true;
+
+        if (is_string($modelClass)) {
+            $this->invertedIndexModelClass = $modelClass;
+        }
+
         return $this;
+    }
+
+    /** Alias for useInvertedIndex() */
+    public function useIndex(string|bool|null $modelClass = true): self
+    {
+        return $this->useInvertedIndex($modelClass);
     }
 
     /**
@@ -557,6 +580,10 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
+        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+            return $this->executeIndexedSearch();
+        }
+
         $this->buildQuery();
         $startTime = microtime(true);
 
@@ -591,6 +618,89 @@ class SearchBuilder
         ));
 
         return $results;
+    }
+
+    /**
+     * Execute search via BM25 inverted index
+     */
+    protected function executeIndexedSearch(): Collection
+    {
+        $modelClass = $this->resolveIndexModelClass();
+
+        if ($modelClass === null) {
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: useInvertedIndex() skipped — cannot resolve model class. ' .
+                    'Pass the class explicitly: ->useInvertedIndex(App\Models\User::class)'
+                );
+            }
+            $this->useSearchIndex = false;
+            return $this->executeSearch();
+        }
+
+        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
+
+        $terms   = $indexManager->processTerms($this->searchTerm);
+        $results = $scorer->search($terms, $modelClass, ($this->limit + $this->offset) * 2);
+
+        if ($results->isEmpty()) {
+            return collect();
+        }
+
+        $ids      = $results->pluck('model_id')->toArray();
+        $scoreMap = $results->pluck('score', 'model_id');
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $keyName = $this->query->getModel()->getKeyName();
+            $models  = $this->query->whereIn($keyName, $ids)->get();
+        } else {
+            $models = $modelClass::whereIn((new $modelClass)->getKeyName(), $ids)->get();
+        }
+
+        $sorted = $models
+            ->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
+            ->values()
+            ->slice($this->offset, $this->limit)
+            ->values()
+            ->map(function ($item) use ($scoreMap) {
+                $item->_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                return $item;
+            });
+
+        if ($this->highlightTagOpen) {
+            $sorted = $this->applyHighlighting($sorted);
+        }
+
+        if ($this->debugMode) {
+            $sorted = $this->addDebugInfo($sorted);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      'bm25',
+            candidateCount: count($ids),
+            latencyMs:      0,
+        ));
+
+        return $sorted;
+    }
+
+    /**
+     * Resolve the model class for the inverted index lookup.
+     */
+    protected function resolveIndexModelClass(): ?string
+    {
+        if ($this->invertedIndexModelClass !== null) {
+            return $this->invertedIndexModelClass;
+        }
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            return $this->query->getModel()::class;
+        }
+
+        return null;
     }
 
     /**
@@ -1195,65 +1305,61 @@ class SearchBuilder
             return [];
         }
 
-        if (empty($this->searchableColumns)) {
+        $term    = strtolower(trim($this->searchTerm));
+        $termLen = strlen($term);
+
+        // Query the term dictionary — fast and accurate at any dataset size
+        $candidates = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+            ->select('term', 'doc_count')
+            ->where('term', '!=', $term)
+            ->whereRaw('LENGTH(term) BETWEEN ? AND ?', [
+                max(1, $termLen - 3),
+                $termLen + 3,
+            ])
+            ->orderByDesc('doc_count')
+            ->limit(300)
+            ->get();
+
+        if ($candidates->isEmpty()) {
             return [];
         }
 
-        $term = strtolower($this->searchTerm);
-        $termLen = strlen($term);
         $alternatives = [];
-        $candidateWords = [];
+        foreach ($candidates as $candidate) {
+            $distance = levenshtein($term, $candidate->term);
+            $maxLen   = max($termLen, strlen($candidate->term));
 
-        // Clone query to get sample values
-        $sampleQuery = clone $this->query;
-        $samples = $sampleQuery->limit(200)->get();
-
-        // Extract unique words from samples efficiently
-        foreach ($samples as $sample) {
-            foreach ($this->searchableColumns as $column) {
-                $value = (string) data_get($sample, $column, '');
-                // Split on non-alphanumeric characters
-                $words = preg_split('/[^a-zA-Z0-9]+/', strtolower($value), -1, PREG_SPLIT_NO_EMPTY);
-                foreach ($words as $word) {
-                    // Only consider words of similar length (+/- 3 characters)
-                    $wordLen = strlen($word);
-                    if ($wordLen >= 2 && abs($wordLen - $termLen) <= 3) {
-                        $candidateWords[$word] = true;
-                    }
-                }
-            }
-        }
-
-        // Find words with small edit distance
-        foreach (array_keys($candidateWords) as $word) {
-            // Skip if word is same as search term
-            if ($word === $term) {
-                continue;
-            }
-
-            $distance = levenshtein($term, $word);
-            $maxLen = max($termLen, strlen($word));
-
-            // Only suggest if edit distance is reasonable (1-3 edits) and less than half the word length
-            if ($distance > 0 && $distance <= 3 && $distance < $maxLen / 2) {
-                $confidence = round(1 - ($distance / $maxLen), 2);
+            if ($distance > 0 && $distance <= 3) {
                 $alternatives[] = [
-                    'term' => $word,
-                    'distance' => $distance,
-                    'confidence' => $confidence,
+                    'term'        => $candidate->term,
+                    'distance'    => $distance,
+                    'confidence'  => round(1 - ($distance / $maxLen), 2),
+                    '_doc_count'  => $candidate->doc_count,
                 ];
             }
         }
 
-        // Sort by distance (ascending), then by confidence (descending)
         usort($alternatives, function ($a, $b) {
+            // Sort by doc_count first (descending) — most common suggestions first
+            if ($a['_doc_count'] !== $b['_doc_count']) {
+                return $b['_doc_count'] - $a['_doc_count'];
+            }
+            // Then by distance (ascending) as tiebreaker
             if ($a['distance'] !== $b['distance']) {
                 return $a['distance'] - $b['distance'];
             }
+            // Finally by confidence (descending)
             return $b['confidence'] <=> $a['confidence'];
         });
 
-        return array_slice($alternatives, 0, $limit);
+        return array_slice(
+            array_map(
+                fn($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
+                $alternatives
+            ),
+            0,
+            $limit
+        );
     }
 
     /**

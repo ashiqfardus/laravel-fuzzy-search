@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-alpha.2] — Phase 1: Real Search Engine
+
+### Added
+- Inverted index: `fuzzy_index_terms`, `fuzzy_index_postings`, `fuzzy_index_meta` tables
+- `IndexManager` — tokenize/stem/write postings; `removeFromIndex`; `flush`; `processTerms`
+- `TokenizerInterface` + `WhitespaceTokenizer` (Unicode-aware, ≥2 char filter)
+- `StemmerInterface` + `NullStemmer` + `PorterStemmer` (via `wamania/php-stemmer`)
+- `Bm25Scorer` — PHP-side BM25 computation over joined SQL query; works on MySQL/PG/SQLite
+- `IndexModelJob` — per-row incremental index update
+- `RebuildIndexJob` — bulk rebuild in batched chunks (uses `Bus::Batchable`)
+- `SearchableIndexingObserver` — auto-dispatches `IndexModelJob` on model `saved`/`deleted` (opt-in via `indexing.enabled`)
+- `SearchBuilder::useInvertedIndex(string|bool|null)` — BM25 fast path; alias `useIndex()`
+- `SearchBuilder::useInvertedIndex('App\Models\User')` — explicit model class for `DB::table()` callers
+- BM25 graceful fallback: `DB::table()` without model class falls back to LIKE path silently
+- `php artisan fuzzy-search:status` — index statistics per model
+- `php artisan fuzzy-search:rebuild {model} [--fresh]` — full rebuild
+- `php artisan fuzzy-search:flush {model}` — delete model's index
+- `SearchBuilder::didYouMean()` rewritten — queries `fuzzy_index_terms` directly; O(1) at any dataset size
+- `FuzzySearchEngine` (Scout adapter) — bundled in core; registers automatically when `laravel/scout` is present (`SCOUT_DRIVER=fuzzy-search`)
+- `docs/INVERTED_INDEX.md`
+- `docs/SCOUT_DRIVER.md`
+
+### Deprecated
+
+- `ReindexModelJob` — use `IndexModelJob` (per-row) or `RebuildIndexJob` (bulk). Removed in v3.0.0.
+
+### Changed
+
+- `config/fuzzy-search.php` updated with new indexing options: `indexing.enabled`, `indexing.tokenizer`, `indexing.stemmer`
+- BM25 parameters added: `bm25.k1` (default: 1.5), `bm25.b` (default: 0.75)
+
 ## [1.0.1] - 2026-03-16
 
 ### Added
