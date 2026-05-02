@@ -10,6 +10,9 @@ use Ashiqfardus\LaravelFuzzySearch\Console\ClearCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\BenchmarkCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\ExplainCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\AddShadowColumnCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\StatusCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\RebuildCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\FlushCommand;
 
 class FuzzySearchServiceProvider extends ServiceProvider
 {
@@ -26,6 +29,31 @@ class FuzzySearchServiceProvider extends ServiceProvider
             return new SearchBuilder(
                 $app['db']->query(),
                 $app->make(FuzzySearch::class)
+            );
+        });
+
+        // Bind IndexManager and Bm25Scorer as singletons
+        $this->app->singleton(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class, function ($app) {
+            $cfg          = config('fuzzy-search');
+            $tokenizerCls = $cfg['indexing']['tokenizer']
+                ?? \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class;
+            $stemmerCls   = $cfg['indexing']['stemmer']
+                ?? \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class;
+            $locale       = $cfg['locale'] ?? 'en';
+            $stopWords    = $cfg['stop_words'][$locale] ?? [];
+
+            return new \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager(
+                new $tokenizerCls(),
+                new $stemmerCls(),
+                $stopWords
+            );
+        });
+
+        $this->app->singleton(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class, function ($app) {
+            $cfg = config('fuzzy-search.bm25', []);
+            return new \Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer(
+                k1: (float) ($cfg['k1'] ?? 1.5),
+                b:  (float) ($cfg['b']  ?? 0.75),
             );
         });
     }
@@ -45,6 +73,9 @@ class FuzzySearchServiceProvider extends ServiceProvider
                 BenchmarkCommand::class,
                 ExplainCommand::class,
                 AddShadowColumnCommand::class,
+                StatusCommand::class,
+                RebuildCommand::class,
+                FlushCommand::class,
             ]);
         }
 
