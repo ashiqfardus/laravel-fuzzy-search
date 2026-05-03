@@ -32,7 +32,7 @@ jobs:
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run tests (SQLite)
-        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
 
   # ── MySQL 8 ───────────────────────────────────────────────────────────────
   # Representative subset: PHP 8.2/8.3 × Laravel 10/12
