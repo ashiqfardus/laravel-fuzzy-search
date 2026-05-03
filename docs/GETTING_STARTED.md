@@ -309,7 +309,7 @@ foreach ($results as $result) {
 
 ```php
 $results = Article::search('laravel')
-    ->scoreWith(function($article, $baseScore) {
+    ->customScore(function($article, $baseScore) {
         // Boost recent articles
         $recencyBoost = $article->created_at->gt(now()->subDays(7)) ? 20 : 0;
         
@@ -340,7 +340,7 @@ $results = Article::search('laravel')
     ->get();
 
 foreach ($results as $article) {
-    print_r($article->_score_breakdown);
+    print_r($article->_debug);
 }
 
 // Get debug info about search configuration

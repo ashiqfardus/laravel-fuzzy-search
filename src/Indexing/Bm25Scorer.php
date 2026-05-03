@@ -16,6 +16,33 @@ class Bm25Scorer
     ) {}
 
     /**
+     * Count the number of distinct models that contain at least one query term.
+     * Used by FuzzySearchEngine::paginate() to obtain an accurate total (C13).
+     *
+     * @param string[] $terms Already tokenized + stemmed query terms
+     */
+    public function count(array $terms, string $modelType): int
+    {
+        if (empty($terms)) {
+            return 0;
+        }
+
+        $termIds = DB::table('fuzzy_index_terms')
+            ->whereIn('term', $terms)
+            ->pluck('id');
+
+        if ($termIds->isEmpty()) {
+            return 0;
+        }
+
+        return (int) DB::table('fuzzy_index_postings')
+            ->where('model_type', $modelType)
+            ->whereIn('term_id', $termIds)
+            ->distinct('model_id')
+            ->count('model_id');
+    }
+
+    /**
      * Run BM25 over the inverted index and return scored model IDs.
      *
      * @param  string[] $terms     Already tokenized + stemmed query terms

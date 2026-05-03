@@ -52,14 +52,17 @@ class FuzzySearchEngine extends Engine
 
     public function paginate(Builder $builder, $perPage, $page)
     {
-        $terms   = $this->indexManager->processTerms($builder->query);
-        $offset  = ($page - 1) * $perPage;
+        $terms     = $this->indexManager->processTerms($builder->query);
+        $modelType = $builder->model::class;
+        $offset    = ($page - 1) * $perPage;
 
-        $allResults = $this->scorer->search($terms, $builder->model::class, $offset + $perPage);
+        // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
+        $total   = $this->scorer->count($terms, $modelType);
+        $results = $this->scorer->search($terms, $modelType, $offset + $perPage);
 
         return [
-            'results' => $allResults->slice($offset, $perPage)->values(),
-            'total'   => $allResults->count(),
+            'results' => $results->slice($offset, $perPage)->values(),
+            'total'   => $total,
         ];
     }
 

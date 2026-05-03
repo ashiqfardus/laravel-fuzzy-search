@@ -78,7 +78,7 @@ class InMemorySearch
     {
         throw new \BadMethodCallException(
             "InMemorySearch does not support {$name}(). " .
-            "Supported methods: search, searchIn, take, skip, withRelevance, highlight, get."
+            "Supported methods: search, searchIn, take, skip, withRelevance, get."
         );
     }
 

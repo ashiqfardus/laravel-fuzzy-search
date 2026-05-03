@@ -214,14 +214,15 @@ The raw BM25 value is always available as `_raw_score` on every result object.
 
 ### NEW: Extended search syntax (`->extended()` / `->searchBoolean()`)
 
-Phase 2 introduces a Fuse.js-style query language with prefix operators (`+`, `-`, `^`, `'`). Two new entry points activate it:
+Phase 2 introduces a Fuse.js-style query language with prefix operators (`!`, `=`, `^`, `'`). Two new entry points activate it:
 
 ```php
-// Fuse.js-style extended syntax
-$results = User::search("+john -doe 'exact")->extended()->get();
+// Extended syntax: prefix operators
+// '  = include-match (soft contains)   =  = exact   ^  = prefix   $  = suffix   !  = NOT
+$results = User::search("john !doe 'exact")->extended()->get();
 
-// Boolean AND/OR/NOT with parentheses
-$results = User::search("john AND doe OR (jane NOT smith)")->searchBoolean()->get();
+// Boolean syntax: implicit AND (space), | for OR, ! for NOT, parentheses for grouping
+$results = User::search("john doe | (jane !smith)")->searchBoolean()->get();
 ```
 
 Both entry points share the same query parser. Two new config keys cap parser resource usage:
