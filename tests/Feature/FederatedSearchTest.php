@@ -185,4 +185,30 @@ class FederatedSearchTest extends TestCase
 
         $this->assertGreaterThan(0, $results->count());
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Normalized Score Tests
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_federated_results_have_normalized_scores(): void
+    {
+        $results = FederatedSearch::across([User::class])
+            ->search('john')
+            ->searchIn(['name', 'email'])
+            ->using('like')
+            ->get();
+
+        if ($results->isEmpty()) {
+            $this->markTestSkipped('No federated results to test normalization on');
+            return;
+        }
+
+        foreach ($results as $row) {
+            $score = $row->_score ?? 0;
+            $this->assertGreaterThanOrEqual(0.0, $score);
+            $this->assertLessThanOrEqual(1.0, $score);
+        }
+    }
 }

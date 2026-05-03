@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch;
 use Illuminate\Database\Query\Builder;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\BaseDriver;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
+use Ashiqfardus\LaravelFuzzySearch\InMemorySearch;
 
 class FuzzySearch
 {
@@ -26,6 +27,18 @@ class FuzzySearch
         'simple'       => Drivers\SimpleDriver::class,
         'like'         => Drivers\SimpleDriver::class,
     ];
+
+    /**
+     * Create an in-memory search over a fixed iterable.
+     * Useful for static lists, config arrays, navigation menus.
+     *
+     * Example:
+     *   FuzzySearch::on($items)->search('term')->searchIn(['name'])->get()
+     */
+    public static function on(iterable $items): InMemorySearch
+    {
+        return new InMemorySearch($items);
+    }
 
     public function __construct(array $config)
     {
