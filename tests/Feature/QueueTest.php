@@ -67,7 +67,9 @@ class QueueTest extends TestCase
         User::reindex();
 
         Queue::assertPushed(ReindexModelJob::class, function ($job) {
-            return (new \ReflectionProperty($job, 'modelClass'))->getValue($job) === User::class;
+            $prop = new \ReflectionProperty($job, 'modelClass');
+            $prop->setAccessible(true);
+            return $prop->getValue($job) === User::class;
         });
     }
 

@@ -1026,8 +1026,7 @@ class SearchBuilder
         $this->offset = $offset;
         $all          = $this->get();
 
-        $hasMore = $all->count() > $perPage;
-        $items   = $all->take($perPage)->values();
+        $items = $all->take($perPage)->values();
 
         return new \Illuminate\Pagination\Paginator(
             $items, $perPage, $page,
@@ -1278,7 +1277,10 @@ class SearchBuilder
     protected function applyRelevanceOrdering(): void
     {
         $driver = $this->query->getConnection()->getDriverName();
-        $term = $this->searchTerm;
+        $term   = $this->searchTerm;
+        // Escape LIKE metacharacters so user input cannot widen the match set (consistent
+        // with all driver LIKE paths). The exact-match binding uses the raw term intentionally.
+        $safeTerm = addcslashes($term, '%_');
 
         $scoreExpressions = [];
         $bindings = [];
@@ -1295,8 +1297,8 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
                         $term, $weight * 100,
-                        $term . '%', $weight * 50 * $prefixBoost,
-                        '%' . $term . '%', $weight * 10,
+                        $safeTerm . '%', $weight * 50 * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * 10,
                     ]);
                     break;
 
@@ -1306,8 +1308,8 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
                         $term, $weight * 100,
-                        $term . '%', $weight * 50 * $prefixBoost,
-                        '%' . $term . '%', $weight * 10,
+                        $safeTerm . '%', $weight * 50 * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * 10,
                     ]);
                     break;
 
@@ -1317,8 +1319,8 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
                         $term, $weight * 100,
-                        $term . '%', $weight * 50 * $prefixBoost,
-                        '%' . $term . '%', $weight * 10,
+                        $safeTerm . '%', $weight * 50 * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * 10,
                     ]);
             }
         }

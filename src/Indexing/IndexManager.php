@@ -102,58 +102,61 @@ class IndexManager
      */
     public function removeFromIndex(string $modelType, int|string $modelId, bool $updateMeta = true): void
     {
-        $termIds = DB::table('fuzzy_index_postings')
-            ->where('model_type', $modelType)
-            ->where('model_id', $modelId)
-            ->pluck('term_id');
-
-        if ($termIds->isEmpty()) {
-            return;
-        }
-
-        // Capture old doc_length before the document row is deleted — needed to keep
-        // total_tokens (and thus avg_doc_length) accurate when updateMeta=true (C11)
-        $oldDocLength = $updateMeta
-            ? (int) (DB::table('fuzzy_index_documents')
+        DB::transaction(function () use ($modelType, $modelId, $updateMeta) {
+            $termIds = DB::table('fuzzy_index_postings')
                 ->where('model_type', $modelType)
                 ->where('model_id', $modelId)
-                ->value('doc_length') ?? 0)
-            : 0;
+                ->pluck('term_id');
 
-        DB::table('fuzzy_index_postings')
-            ->where('model_type', $modelType)
-            ->where('model_id', $modelId)
-            ->delete();
+            if ($termIds->isEmpty()) {
+                return;
+            }
 
-        DB::table('fuzzy_index_terms')
-            ->whereIn('id', $termIds)
-            ->decrement('doc_count');
+            // Capture old doc_length before the document row is deleted — needed to keep
+            // total_tokens (and thus avg_doc_length) accurate when updateMeta=true (C11)
+            $oldDocLength = $updateMeta
+                ? (int) (DB::table('fuzzy_index_documents')
+                    ->where('model_type', $modelType)
+                    ->where('model_id', $modelId)
+                    ->value('doc_length') ?? 0)
+                : 0;
 
-        DB::table('fuzzy_index_documents')
-            ->where('model_type', $modelType)
-            ->where('model_id', $modelId)
-            ->delete();
-
-        if ($updateMeta) {
-            // Atomically decrement both total_docs and total_tokens (C11)
-            DB::table('fuzzy_index_meta')
+            DB::table('fuzzy_index_postings')
                 ->where('model_type', $modelType)
-                ->update([
-                    'total_docs'   => DB::raw('CASE WHEN total_docs > 0 THEN total_docs - 1 ELSE 0 END'),
-                    'total_tokens' => DB::raw(
-                        'CASE WHEN total_tokens >= ' . $oldDocLength .
-                        ' THEN total_tokens - ' . $oldDocLength . ' ELSE 0 END'
-                    ),
-                ]);
+                ->where('model_id', $modelId)
+                ->delete();
 
-            DB::table('fuzzy_index_meta')
+            DB::table('fuzzy_index_terms')
+                ->whereIn('id', $termIds)
+                ->decrement('doc_count');
+
+            DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)
-                ->update([
-                    'avg_doc_length' => DB::raw(
-                        'CASE WHEN total_docs > 0 THEN 1.0 * total_tokens / total_docs ELSE 0 END'
-                    ),
-                ]);
-        }
+                ->where('model_id', $modelId)
+                ->delete();
+
+            if ($updateMeta) {
+                // Two-step meta update wrapped in the enclosing transaction so no concurrent
+                // BM25 read can observe an inconsistent avg_doc_length between the two UPDATEs
+                DB::table('fuzzy_index_meta')
+                    ->where('model_type', $modelType)
+                    ->update([
+                        'total_docs'   => DB::raw('CASE WHEN total_docs > 0 THEN total_docs - 1 ELSE 0 END'),
+                        'total_tokens' => DB::raw(
+                            'CASE WHEN total_tokens >= ' . $oldDocLength .
+                            ' THEN total_tokens - ' . $oldDocLength . ' ELSE 0 END'
+                        ),
+                    ]);
+
+                DB::table('fuzzy_index_meta')
+                    ->where('model_type', $modelType)
+                    ->update([
+                        'avg_doc_length' => DB::raw(
+                            'CASE WHEN total_docs > 0 THEN 1.0 * total_tokens / total_docs ELSE 0 END'
+                        ),
+                    ]);
+            }
+        });
     }
 
     /**
@@ -258,20 +261,23 @@ class IndexManager
                 ->pluck('model_id')
                 ->flip();
 
-            // For re-indexed models: capture old term_ids and old total_tokens BEFORE deleting.
-            // Decrementing old term doc_counts fixes the doc_count leak (C12).
-            // Old token sum is used to keep avg_doc_length accurate (C11).
-            $oldReindexTermIds = collect();
-            $oldReindexTokens  = 0;
+            // For re-indexed models: capture per-term model-counts and old total_tokens
+            // BEFORE deleting. We need per-term counts (not a flat -1) because N models
+            // may share a term — decrementing by 1 would under-correct doc_count. (C12)
+            // Old token sum is used to keep avg_doc_length accurate. (C11)
+            $oldReindexTermCounts = collect(); // term_id => number of re-indexed models that had it
+            $oldReindexTokens     = 0;
 
             if ($alreadyIndexed->isNotEmpty()) {
                 $reindexIds = $alreadyIndexed->keys()->toArray();
 
-                $oldReindexTermIds = DB::table('fuzzy_index_postings')
+                // COUNT(*) per term_id = number of models in the batch that had this term
+                $oldReindexTermCounts = DB::table('fuzzy_index_postings')
                     ->where('model_type', $modelType)
                     ->whereIn('model_id', $reindexIds)
-                    ->pluck('term_id')
-                    ->unique();
+                    ->groupBy('term_id')
+                    ->selectRaw('term_id, COUNT(*) as cnt')
+                    ->pluck('cnt', 'term_id');
 
                 $oldReindexTokens = (int) DB::table('fuzzy_index_documents')
                     ->where('model_type', $modelType)
@@ -287,11 +293,15 @@ class IndexManager
                     ->whereIn('model_id', $reindexIds)
                     ->delete();
 
-                // Decrement doc_count for terms that belonged to re-indexed documents (C12)
-                if ($oldReindexTermIds->isNotEmpty()) {
+                // Decrement doc_count by the exact number of removed models per term (C12)
+                foreach ($oldReindexTermCounts as $termId => $cnt) {
                     DB::table('fuzzy_index_terms')
-                        ->whereIn('id', $oldReindexTermIds->toArray())
-                        ->decrement('doc_count');
+                        ->where('id', $termId)
+                        ->update([
+                            'doc_count' => DB::raw(
+                                "CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END"
+                            ),
+                        ]);
                 }
             }
 
@@ -486,8 +496,7 @@ class IndexManager
             $updates['total_docs'] = DB::raw("total_docs + {$newDocs}");
         }
         if ($tokenAdjustment !== 0) {
-            $abs  = abs($tokenAdjustment);
-            $sign = $tokenAdjustment >= 0 ? '+' : '-';
+            $abs = abs($tokenAdjustment);
             $updates['total_tokens'] = DB::raw(
                 $tokenAdjustment >= 0
                     ? "total_tokens + {$abs}"
