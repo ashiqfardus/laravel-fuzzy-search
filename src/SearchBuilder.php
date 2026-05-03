@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Closure;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidConfigException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
 
 /**
