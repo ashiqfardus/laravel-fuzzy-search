@@ -221,6 +221,9 @@ See [Extended Search docs](docs/EXTENDED_SEARCH.md) for the operator reference.
 $matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->get();
 ```
 
+> **Supported methods:** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `highlight`, `get`.
+> Any other `SearchBuilder` method (e.g. `extended()`, `using()`, `preset()`, `paginate()`) will throw a `\BadMethodCallException` to prevent silent failures.
+
 ## Field Weighting & Scoring
 
 ### Weighted Columns

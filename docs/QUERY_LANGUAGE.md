@@ -45,3 +45,6 @@ $matches = FuzzySearch::on($navigation)
 ```
 
 The `max_items` config caps the collection size to prevent accidental memory bombs (default 10000).
+
+**Supported methods on `FuzzySearch::on()` (InMemorySearch):** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `highlight`, `get`.
+Calling any other method throws `\BadMethodCallException` immediately, so unsupported chains fail loudly instead of silently doing nothing.
