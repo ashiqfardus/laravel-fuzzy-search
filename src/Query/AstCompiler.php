@@ -82,12 +82,14 @@ class AstCompiler
 
     private function quoteColumn(string $column): string
     {
-        return match ($this->dbDriver) {
-            'mysql'  => '`' . str_replace('`', '``', $column) . '`',
-            'pgsql'  => '"' . str_replace('"', '""', $column) . '"',
-            'sqlsrv' => '[' . str_replace(']', ']]', $column) . ']',
-            default  => $column,
-        };
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($this->dbDriver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
     }
 
     private function extractTerm(AstNode $node): string
