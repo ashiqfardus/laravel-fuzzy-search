@@ -296,15 +296,21 @@ class IndexManager
                     ->whereIn('model_id', $reindexIds)
                     ->delete();
 
-                // Decrement doc_count by the exact number of removed models per term (C12)
-                foreach ($oldReindexTermCounts as $termId => $cnt) {
-                    DB::table('fuzzy_index_terms')
-                        ->where('id', $termId)
-                        ->update([
-                            'doc_count' => DB::raw(
-                                "CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END"
-                            ),
-                        ]);
+                // Decrement doc_count per term in a single UPDATE to avoid N round-trips.
+                // $termId and $cnt are PHP ints sourced from the DB — not user input.
+                if ($oldReindexTermCounts->isNotEmpty()) {
+                    $cases   = '';
+                    $termIds = [];
+                    foreach ($oldReindexTermCounts as $termId => $cnt) {
+                        $termId  = (int) $termId;
+                        $cnt     = (int) $cnt;
+                        $cases  .= " WHEN {$termId} THEN CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END";
+                        $termIds[] = $termId;
+                    }
+                    $inList = implode(',', $termIds);
+                    DB::statement(
+                        "UPDATE fuzzy_index_terms SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
+                    );
                 }
             }
 

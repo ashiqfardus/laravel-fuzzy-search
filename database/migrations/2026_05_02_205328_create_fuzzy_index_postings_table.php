@@ -12,7 +12,7 @@ return new class extends Migration
             $table->id();
             $table->unsignedBigInteger('term_id');
             $table->string('model_type', 191);
-            $table->unsignedBigInteger('model_id');
+            $table->string('model_id', 36); // supports both integer PKs and UUID/ULID
             $table->unsignedInteger('frequency')->default(1);
 
             $table->index(['term_id', 'model_type'], 'postings_term_model_idx');

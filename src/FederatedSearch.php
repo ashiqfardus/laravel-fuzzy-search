@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch;
 
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 
@@ -123,6 +124,10 @@ class FederatedSearch
      */
     public function get(): Collection
     {
+        if (empty($this->searchTerm) && !config('fuzzy-search.allow_empty_search', false)) {
+            throw new EmptySearchTermException();
+        }
+
         $allResults = collect();
 
         foreach ($this->models as $modelClass) {

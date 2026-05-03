@@ -1051,9 +1051,15 @@ class SearchBuilder
 
         // Fetch one extra item so Paginator::setItems() can detect whether a next
         // page exists (it sets hasMore = count($items) > $perPage, then trims internally).
+        // Save and restore so that a re-used SearchBuilder instance is not permanently
+        // mutated by the pagination call.
+        $savedLimit   = $this->limit;
+        $savedOffset  = $this->offset;
         $this->limit  = $perPage + 1;
         $this->offset = $offset;
         $all          = $this->get();
+        $this->limit  = $savedLimit;
+        $this->offset = $savedOffset;
 
         return new \Illuminate\Pagination\Paginator(
             $all, $perPage, $page,
@@ -1362,12 +1368,17 @@ class SearchBuilder
      */
     protected function quoteColumn(string $column, string $driver): string
     {
-        return match ($driver) {
-            'mysql' => "`{$column}`",
-            'pgsql' => "\"{$column}\"",
-            'sqlsrv' => "[{$column}]",
-            default => $column,
-        };
+        // Split on '.' so table-qualified names (e.g. "users.name") quote each part
+        // separately — wrapping the whole string in backticks makes MySQL treat
+        // "users.name" as a single identifier rather than table.column.
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($driver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
     }
 
     /**
