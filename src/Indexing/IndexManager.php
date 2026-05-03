@@ -5,6 +5,9 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ */
 class IndexManager
 {
     public function __construct(

@@ -9,6 +9,8 @@ use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
 use Illuminate\Database\Query\Builder;
 
 /**
+ * @internal This class is not part of the public API and may change without notice.
+ *
  * Walk the AST and apply WHERE clauses to a query builder.
  * All term values pass through PDO bindings — no string interpolation.
  */

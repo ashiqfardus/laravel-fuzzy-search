@@ -7,6 +7,9 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 // false for the Stemmer interface even when the package is present.
 use Wamania\Snowball\English as StemmerFactory;
 
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ */
 class PorterStemmer implements StemmerInterface
 {
     /** @var object */

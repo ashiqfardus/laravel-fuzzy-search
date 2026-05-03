@@ -2,6 +2,9 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Query\AstNodes;
 
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ */
 class AndNode implements AstNode
 {
     /** @param AstNode[] $children */

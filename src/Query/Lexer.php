@@ -4,6 +4,9 @@ namespace Ashiqfardus\LaravelFuzzySearch\Query;
 
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ */
 class Lexer
 {
     /**
