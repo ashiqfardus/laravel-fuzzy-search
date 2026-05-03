@@ -49,7 +49,12 @@ class Bm25Scorer
 
         $termIds = $termData->keys()->toArray();
 
-        // Join postings directly with documents table — eliminates the full-table GROUP BY scan
+        // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
+        // Order by frequency DESC and cap at max_postings_per_term so that a high-frequency
+        // term (e.g. "john" with 50k hits) cannot pull the entire posting list into PHP.
+        // High-frequency rows are prioritised, preserving BM25 accuracy for top results.
+        $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+
         $postings = DB::table('fuzzy_index_postings as p')
             ->join('fuzzy_index_documents as d', function ($join) use ($modelType) {
                 $join->on('p.model_id', '=', 'd.model_id')
@@ -58,6 +63,8 @@ class Bm25Scorer
             ->where('p.model_type', $modelType)
             ->whereIn('p.term_id', $termIds)
             ->select('p.model_id', 'p.term_id', 'p.frequency', 'd.doc_length as doc_len')
+            ->orderBy('p.frequency', 'desc')
+            ->limit($maxPostings)
             ->get();
 
         $scores = [];

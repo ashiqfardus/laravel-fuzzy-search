@@ -180,6 +180,14 @@ return [
     'bm25' => [
         'k1' => 1.5,
         'b'  => 0.75,
+        /*
+         * max_postings_per_term: SQL-side top-K cutoff per matched term.
+         * Postings are ordered by frequency DESC before the limit is applied,
+         * so the highest-signal rows are always retained.  For typical corpora
+         * this cap is never reached; it exists purely to bound memory usage
+         * when a term matches tens of thousands of documents.
+         */
+        'max_postings_per_term' => 50000,
     ],
 
     /*
