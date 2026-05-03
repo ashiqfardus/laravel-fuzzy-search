@@ -52,6 +52,7 @@ class SearchBuilder
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
     protected ?string $invertedIndexModelClass = null;
+    protected ?string $extendedQuery = null;
     protected ?int $cacheMinutes = null;
     protected ?string $cacheKey = null;
     protected bool $stableRankingEnabled = false;
@@ -110,6 +111,39 @@ class SearchBuilder
             }
         }
         return $this;
+    }
+
+    /**
+     * Use Fuse-style extended search syntax.
+     *
+     *   ' word     — substring include
+     *   = word     — exact equality
+     *   ^ word     — prefix
+     *   word $     — suffix
+     *   ! word     — exclude (NOT)
+     *   |          — OR (default is AND on whitespace)
+     *   ( ... )    — grouping
+     *   "phrase"   — quoted phrase as one token
+     *
+     * Pass the query string here, OR set it via search() and call extended() with no args.
+     */
+    public function extended(?string $query = null): self
+    {
+        if ($query !== null) {
+            $this->searchTerm = $query;
+        }
+        $this->extendedQuery = $this->searchTerm;
+        return $this;
+    }
+
+    /**
+     * Alias for extended() — same parser handles boolean syntax.
+     *
+     * Example: searchBoolean('term1 (term2 | term3) !term4')
+     */
+    public function searchBoolean(string $query): self
+    {
+        return $this->extended($query);
     }
 
     /**
@@ -580,6 +614,12 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
+        // Extended-search path (Fuse-style operators)
+        if ($this->extendedQuery !== null) {
+            return $this->executeExtendedSearch();
+        }
+
+        // BM25 fast path via inverted index
         if ($this->useSearchIndex && !empty($this->searchTerm)) {
             return $this->executeIndexedSearch();
         }
@@ -686,6 +726,83 @@ class SearchBuilder
         ));
 
         return $sorted;
+    }
+
+    /**
+     * Execute search using Fuse-style extended/boolean syntax.
+     * Routes through Lexer → ExtendedQueryParser → AstCompiler.
+     */
+    protected function executeExtendedSearch(): Collection
+    {
+        $startedAt = microtime(true);
+
+        $columns = !empty($this->searchableColumns)
+            ? $this->searchableColumns
+            : $this->autoDetectColumnsForExtended();
+
+        if (empty($columns)) {
+            throw new \Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException();
+        }
+
+        $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
+        $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
+
+        $compiler  = new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler();
+        $rawQuery  = $this->query instanceof \Illuminate\Database\Eloquent\Builder
+            ? $this->query->getQuery()
+            : $this->query;
+
+        $compiler->compile($ast, $rawQuery, $columns);
+
+        // Apply remaining filters (mirroring buildQuery behavior)
+        foreach ($this->filters as $filter) {
+            if ($filter['operator'] === 'IN') {
+                $this->query->whereIn($filter['column'], $filter['value']);
+            } else {
+                $this->query->where($filter['column'], $filter['operator'], $filter['value']);
+            }
+        }
+
+        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
+        $candidates = $this->query->limit($maxCandidates)->get();
+
+        if ($this->withRelevance) {
+            $candidates = $this->calculateRelevanceScores($candidates);
+        }
+
+        $results = $candidates->slice($this->offset, $this->limit)->values();
+
+        if ($this->highlightTagOpen) {
+            $results = $this->applyHighlighting($results);
+        }
+
+        if ($this->debugMode) {
+            $results = $this->addDebugInfo($results);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->extendedQuery,
+            columns:        $columns,
+            algorithm:      'extended',
+            candidateCount: $candidates->count(),
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+        ));
+
+        return $results;
+    }
+
+    /**
+     * Auto-detect searchable columns for extended search from the model.
+     */
+    private function autoDetectColumnsForExtended(): array
+    {
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $model = $this->query->getModel();
+            if (method_exists($model, 'getSearchableColumns')) {
+                return $model->getSearchableColumns();
+            }
+        }
+        return [];
     }
 
     /**

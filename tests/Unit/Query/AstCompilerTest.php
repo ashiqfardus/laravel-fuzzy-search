@@ -80,4 +80,40 @@ class AstCompilerTest extends TestCase
         $this->assertContains('Alice Smith', $names);
         $this->assertContains('Bob Johnson', $names);
     }
+
+    public function test_search_builder_extended_method_works_end_to_end(): void
+    {
+        $fuzzy = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
+        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            $fuzzy
+        );
+
+        $results = $builder
+            ->extended('alice | bob')
+            ->searchIn(['name'])
+            ->get();
+
+        $names = $results->pluck('name')->toArray();
+        $this->assertContains('Alice Smith', $names);
+        $this->assertContains('Bob Johnson', $names);
+    }
+
+    public function test_search_boolean_alias_works(): void
+    {
+        $fuzzy = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
+        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            $fuzzy
+        );
+
+        $results = $builder
+            ->searchBoolean('alice | bob')
+            ->searchIn(['name'])
+            ->get();
+
+        $names = $results->pluck('name')->toArray();
+        $this->assertContains('Alice Smith', $names);
+        $this->assertContains('Bob Johnson', $names);
+    }
 }
