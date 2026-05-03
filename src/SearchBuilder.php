@@ -1535,6 +1535,10 @@ class SearchBuilder
             'filters' => $this->filters,
             'limit' => $this->limit,
             'offset' => $this->offset,
+            'use_search_index' => $this->useSearchIndex,
+            'extended_query' => $this->extendedQuery,
+            'column_weights' => $this->columnWeights,
+            'stop_words' => $this->stopWords,
         ];
 
         return 'fuzzy_search_' . md5(serialize($data));
