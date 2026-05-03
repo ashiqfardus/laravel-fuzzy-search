@@ -79,20 +79,20 @@ class SearchBuilder
     /**
      * Set the search term
      *
+     * The empty-search guard is deferred to executeSearch() so that callers
+     * using the extended()/searchBoolean() pattern can override the term
+     * before execution:
+     *
+     *   User::search('')->extended('=John ^Doe')->get();  // safe
+     *   User::search('=John ^Doe')->extended()->get();    // also safe (preferred)
+     *
      * @param string $term
      * @return self
-     * @throws EmptySearchTermException if term is empty and config doesn't allow it
+     * @throws EmptySearchTermException (deferred to get()) if term is empty and config doesn't allow it
      */
     public function search(string $term): self
     {
         $this->searchTerm = trim($term);
-
-        // Check if empty search is allowed in config
-        $allowEmpty = config('fuzzy-search.allow_empty_search', false);
-
-        if (empty($this->searchTerm) && !$allowEmpty) {
-            throw new EmptySearchTermException();
-        }
 
         return $this;
     }
@@ -140,9 +140,11 @@ class SearchBuilder
     /**
      * Alias for extended() — same parser handles boolean syntax.
      *
+     * Pass the query string here, OR set it via search() and call searchBoolean() with no args.
+     *
      * Example: searchBoolean('term1 (term2 | term3) !term4')
      */
-    public function searchBoolean(string $query): self
+    public function searchBoolean(?string $query = null): self
     {
         return $this->extended($query);
     }
@@ -615,6 +617,15 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
+        // Deferred empty-search guard (moved from search() so that extended()/searchBoolean()
+        // can supply their own query after an empty string was passed to search('').
+        if (empty($this->searchTerm) && $this->extendedQuery === null) {
+            $allowEmpty = config('fuzzy-search.allow_empty_search', false);
+            if (!$allowEmpty) {
+                throw new EmptySearchTermException();
+            }
+        }
+
         // Extended-search path (Fuse-style operators)
         if ($this->extendedQuery !== null) {
             return $this->executeExtendedSearch();

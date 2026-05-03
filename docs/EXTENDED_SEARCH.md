@@ -30,8 +30,8 @@ $users = User::search('=John ^Doe !banned')->extended()->get();
 // OR semantics with grouping
 $users = User::search('admin (john | jane)')->extended()->get();
 
-// Fluent alternative — pass query directly
-$users = User::search('')->extended('=John ^Doe')->get();
+// Fluent alternative — pass query directly to extended()
+$users = User::search('=John ^Doe')->extended()->get();
 ```
 
 ## Example queries

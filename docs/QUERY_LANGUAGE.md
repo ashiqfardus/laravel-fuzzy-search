@@ -17,8 +17,8 @@ User::search('=John ^Doe !banned')->extended()->get();
 `searchBoolean()` is an alias for `extended()` — same parser, same operators. Use whichever name reads better in your code.
 
 ```php
-User::search('')->searchBoolean('=John ^Doe !banned')->get();
-User::search('')->searchBoolean('admin (john | jane)')->get();
+User::search('=John ^Doe !banned')->searchBoolean()->get();
+User::search('admin (john | jane)')->searchBoolean()->get();
 ```
 
 ## Score normalization
