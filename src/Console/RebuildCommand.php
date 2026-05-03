@@ -48,7 +48,8 @@ class RebuildCommand extends Command
         $this->info("Rebuilding index for [{$modelClass}] synchronously ({$total} records, chunk: {$chunkSize})...");
         $bar = $this->output->createProgressBar($total);
 
-        $modelClass::orderBy('id')->chunk($chunkSize, function ($models) use ($indexManager, $bar) {
+        $keyName = (new $modelClass)->getKeyName();
+        $modelClass::orderBy($keyName)->chunk($chunkSize, function ($models) use ($indexManager, $bar) {
             $indexManager->indexBatch($models);
             $bar->advance($models->count());
         });
@@ -63,8 +64,9 @@ class RebuildCommand extends Command
     {
         $this->info("Dispatching async rebuild for [{$modelClass}] ({$total} records, chunk: {$chunkSize}, queue: {$queue})...");
 
-        $jobs  = [];
-        $modelClass::orderBy('id')->pluck('id')->chunk($chunkSize)->each(function ($ids) use ($modelClass, &$jobs) {
+        $jobs    = [];
+        $keyName = (new $modelClass)->getKeyName();
+        $modelClass::orderBy($keyName)->pluck($keyName)->chunk($chunkSize)->each(function ($ids) use ($modelClass, &$jobs) {
             $jobs[] = new RebuildIndexJob($modelClass, $ids->toArray());
         });
 

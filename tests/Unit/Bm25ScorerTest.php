@@ -169,4 +169,47 @@ class Bm25ScorerTest extends TestCase
 
         $this->assertGreaterThan(0, $results->count());
     }
+
+    public function test_paginate_uses_bm25_path_when_inverted_index_enabled(): void
+    {
+        $manager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+            protected $table = 'users';
+            protected array $searchable = ['columns' => ['name' => 1]];
+        };
+
+        // Insert 30 users — first 5 have 'laravel' twice (higher BM25 score)
+        $highScoreIds = [];
+        for ($i = 1; $i <= 30; $i++) {
+            $name = $i <= 5 ? "laravel laravel paginate$i" : "paginate user $i";
+            $id = \Illuminate\Support\Facades\DB::table('users')->insertGetId([
+                'name' => $name,
+                'email' => "paginatebm25_{$i}@test.com",
+                'created_at' => now(), 'updated_at' => now()
+            ]);
+            if ($i <= 5) {
+                $highScoreIds[] = $id;
+            }
+        }
+
+        // Only index the newly-inserted rows to avoid cross-test noise
+        foreach ($model::whereIn('id', array_merge(
+            $highScoreIds,
+            \Illuminate\Support\Facades\DB::table('users')
+                ->where('name', 'like', 'paginate user %')
+                ->pluck('id')->toArray()
+        ))->get() as $u) {
+            $manager->indexModel($u);
+        }
+
+        // Paginate via BM25 path
+        $page1 = $model::search('laravel')->useIndex()->paginate(5);
+
+        $this->assertInstanceOf(\Illuminate\Contracts\Pagination\LengthAwarePaginator::class, $page1);
+        $this->assertGreaterThan(0, $page1->count());
+        // The top result should be one of our high-score rows (laravel appearing twice)
+        $this->assertContains($page1->first()->id, $highScoreIds);
+    }
 }
