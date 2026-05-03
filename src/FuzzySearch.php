@@ -88,6 +88,11 @@ class FuzzySearch
 
     public function applyFuzzyOrder(Builder $query, string $column, string $value, string $direction = 'asc'): Builder
     {
+        $direction = strtolower(trim($direction));
+        if (!in_array($direction, ['asc', 'desc'], true)) {
+            throw new \InvalidArgumentException("Invalid sort direction [{$direction}]: must be 'asc' or 'desc'.");
+        }
+
         $driver = $this->getDriver($query);
         $col = $this->quoteColumnForDriver($column, $driver);
 
