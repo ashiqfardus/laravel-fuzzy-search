@@ -625,6 +625,7 @@ class SearchBuilder
      */
     protected function executeIndexedSearch(): Collection
     {
+        $startedAt  = microtime(true);
         $modelClass = $this->resolveIndexModelClass();
 
         if ($modelClass === null) {
@@ -681,7 +682,7 @@ class SearchBuilder
             columns:        $this->searchableColumns,
             algorithm:      'bm25',
             candidateCount: count($ids),
-            latencyMs:      0,
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
         ));
 
         return $sorted;
@@ -708,6 +709,11 @@ class SearchBuilder
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        // BM25 fast path via inverted index
+        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+            return $this->paginateIndexed($perPage, $pageName, $page);
+        }
+
         $this->buildQuery();
 
         $page = $page ?: request()->input($pageName, 1);
@@ -720,6 +726,90 @@ class SearchBuilder
         }
 
         return $results;
+    }
+
+    /**
+     * Paginate using BM25 inverted index
+     */
+    protected function paginateIndexed(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    {
+        $startedAt  = microtime(true);
+        $modelClass = $this->resolveIndexModelClass();
+
+        if ($modelClass === null) {
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: paginate() with useInvertedIndex() skipped — could not resolve model class. Falling back to LIKE.'
+                );
+            }
+            $this->useSearchIndex = false;
+            return $this->paginate($perPage, $pageName, $page);
+        }
+
+        $page   = $page ?: request()->input($pageName, 1);
+        $offset = ($page - 1) * $perPage;
+
+        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
+
+        $terms = $indexManager->processTerms($this->searchTerm);
+
+        // Fetch enough results to cover the page (cap at a reasonable max)
+        $maxResults = min($offset + $perPage * 5, 10000);
+        $allResults = $scorer->search($terms, $modelClass, $maxResults);
+        $total      = $allResults->count();
+
+        $pageResults = $allResults->slice($offset, $perPage)->values();
+
+        if ($pageResults->isEmpty()) {
+            event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+                searchTerm:     $this->searchTerm,
+                columns:        $this->searchableColumns,
+                algorithm:      'bm25',
+                candidateCount: $total,
+                latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+            ));
+
+            return new \Illuminate\Pagination\LengthAwarePaginator(
+                [], $total, $perPage, $page,
+                ['path' => request()->url(), 'pageName' => $pageName]
+            );
+        }
+
+        $ids      = $pageResults->pluck('model_id')->toArray();
+        $scoreMap = $pageResults->pluck('score', 'model_id');
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $keyName = $this->query->getModel()->getKeyName();
+            $models  = $this->query->whereIn($keyName, $ids)->get();
+        } else {
+            $keyName = (new $modelClass)->getKeyName();
+            $models  = $modelClass::whereIn($keyName, $ids)->get();
+        }
+
+        $sorted = $models->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
+            ->values()
+            ->map(function ($item) use ($scoreMap) {
+                $item->_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                return $item;
+            });
+
+        if ($this->highlightTagOpen) {
+            $sorted = $this->applyHighlighting($sorted);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      'bm25',
+            candidateCount: $total,
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+        ));
+
+        return new \Illuminate\Pagination\LengthAwarePaginator(
+            $sorted, $total, $perPage, $page,
+            ['path' => request()->url(), 'pageName' => $pageName]
+        );
     }
 
     /**
@@ -1308,17 +1398,27 @@ class SearchBuilder
         $term    = strtolower(trim($this->searchTerm));
         $termLen = strlen($term);
 
-        // Query the term dictionary — fast and accurate at any dataset size
-        $candidates = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
-            ->select('term', 'doc_count')
-            ->where('term', '!=', $term)
-            ->whereRaw('LENGTH(term) BETWEEN ? AND ?', [
-                max(1, $termLen - 3),
-                $termLen + 3,
-            ])
-            ->orderByDesc('doc_count')
-            ->limit(300)
-            ->get();
+        try {
+            // Query the term dictionary — fast and accurate at any dataset size
+            $candidates = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+                ->select('term', 'doc_count')
+                ->where('term', '!=', $term)
+                ->whereRaw('LENGTH(term) BETWEEN ? AND ?', [
+                    max(1, $termLen - 3),
+                    $termLen + 3,
+                ])
+                ->orderByDesc('doc_count')
+                ->limit(300)
+                ->get();
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Index tables don't exist — gracefully return empty
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: didYouMean() returning empty — fuzzy_index_terms table missing. Run migrations.'
+                );
+            }
+            return [];
+        }
 
         if ($candidates->isEmpty()) {
             return [];

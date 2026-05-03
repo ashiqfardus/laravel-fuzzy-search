@@ -24,7 +24,8 @@ class RebuildIndexJob implements ShouldQueue
 
     public function handle(IndexManager $indexManager): void
     {
-        $models = $this->modelClass::whereIn('id', $this->modelIds)->get();
+        $keyName = (new $this->modelClass)->getKeyName();
+        $models  = $this->modelClass::whereIn($keyName, $this->modelIds)->get();
         $indexManager->indexBatch($models);
     }
 }

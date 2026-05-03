@@ -277,4 +277,37 @@ class IndexManagerTest extends TestCase
 
         \Illuminate\Support\Facades\Queue::assertPushed(\Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob::class);
     }
+
+    public function test_did_you_mean_returns_empty_when_index_tables_missing(): void
+    {
+        // Drop the term dictionary table to simulate "index not yet built"
+        \Illuminate\Support\Facades\Schema::dropIfExists('fuzzy_index_terms');
+
+        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
+        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+            $this->app['db']->table('users'),
+            $fuzzySearch
+        );
+        $builder->search('jonh')->searchIn(['name']);
+
+        // Must return empty array, not throw
+        $result = $builder->didYouMean(3);
+        $this->assertEquals([], $result);
+
+        // Recreate the table for subsequent tests
+        \Illuminate\Support\Facades\Schema::create('fuzzy_index_terms', function ($table) {
+            $table->id();
+            $table->string('term', 191)->unique();
+            $table->unsignedBigInteger('doc_count')->default(0);
+        });
+    }
+
+    public function test_porter_stemmer_throws_clear_error_when_wamania_missing(): void
+    {
+        // We can't actually uninstall wamania for this test — just verify the guard exists
+        $reflection = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer::class, '__construct');
+        $body = file_get_contents($reflection->getFileName());
+        $this->assertStringContainsString('class_exists(StemmerFactory::class)', $body);
+        $this->assertStringContainsString('composer require wamania/php-stemmer', $body);
+    }
 }

@@ -633,6 +633,34 @@ try {
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
 
+## Events
+
+### `FuzzySearchExecuted`
+
+Fired after every `->get()` or `->paginate()` call. Useful for monitoring search latency and volume in production.
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
+
+Event::listen(FuzzySearchExecuted::class, function ($event) {
+    Log::info('search', [
+        'term'      => $event->searchTerm,
+        'columns'   => $event->columns,
+        'algorithm' => $event->algorithm,    // 'fuzzy', 'levenshtein', 'bm25', etc.
+        'count'     => $event->candidateCount,
+        'ms'        => $event->latencyMs,
+    ]);
+});
+```
+
+Properties:
+
+- `searchTerm` (string) — the user's query
+- `columns` (array) — columns being searched
+- `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, or `bm25`
+- `candidateCount` (int) — rows fetched from SQL before scoring
+- `latencyMs` (float) — total search time in milliseconds
+
 ## Configuration
 
 ### Config File
