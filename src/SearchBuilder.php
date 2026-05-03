@@ -892,11 +892,29 @@ class SearchBuilder
 
         $terms = $indexManager->processTerms($this->searchTerm);
 
-        // Fetch enough results to cover the page (cap at a reasonable max)
-        $maxResults = min($offset + $perPage * 5, 10000);
-        $allResults = $scorer->search($terms, $modelClass, $maxResults);
-        $total      = $allResults->count();
+        // Resolve term IDs so we can run a COUNT query with the same WHERE conditions.
+        $termIds = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+            ->whereIn('term', $terms)
+            ->pluck('id')
+            ->toArray();
 
+        // Compute the real total via a COUNT(DISTINCT) query — no artificial row cap.
+        if (empty($termIds)) {
+            $total = 0;
+        } else {
+            $total = (int) \Illuminate\Support\Facades\DB::table('fuzzy_index_postings as p')
+                ->join('fuzzy_index_documents as d', function ($join) use ($modelClass) {
+                    $join->on('p.model_id', '=', 'd.model_id')
+                         ->where('d.model_type', '=', $modelClass);
+                })
+                ->where('p.model_type', $modelClass)
+                ->whereIn('p.term_id', $termIds)
+                ->distinct()
+                ->count('p.model_id');
+        }
+
+        // Fetch only the rows needed for this page (naturally bounded by offset + perPage).
+        $allResults  = $scorer->search($terms, $modelClass, $offset + $perPage);
         $pageResults = $allResults->slice($offset, $perPage)->values();
 
         if ($pageResults->isEmpty()) {
