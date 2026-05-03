@@ -54,7 +54,7 @@ These prevent adversarial DoS queries.
 
 ## Match offsets
 
-Results from `extended()` (and any search with `highlight()` enabled) include a `_matches` array:
+Results with `->highlight()` enabled (including `extended()` with highlighting) include a `_matches` array:
 
 ```php
 $first = $results->first();

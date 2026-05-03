@@ -206,7 +206,8 @@ return [
     |
     */
     'in_memory' => [
-        'max_items' => 10_000,
+        'max_items'      => 10_000,
+        'min_similarity' => 60,    // 0–100; similarity threshold for FuzzySearch::on() results
     ],
 
     /*

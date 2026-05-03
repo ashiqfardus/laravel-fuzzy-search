@@ -81,13 +81,14 @@ class AstCompiler
 
     private function patternFor(AstNode $node, string $term): string
     {
+        $safe = addcslashes($term, '%_');
         return match (true) {
-            $node instanceof FuzzyTerm        => '%' . $term . '%',
-            $node instanceof IncludeMatchTerm => '%' . $term . '%',
-            $node instanceof PrefixTerm       => $term . '%',
-            $node instanceof SuffixTerm       => '%' . $term,
-            $node instanceof ExactTerm        => $term, // not used as LIKE
-            default                            => '%' . $term . '%',
+            $node instanceof FuzzyTerm        => '%' . $safe . '%',
+            $node instanceof IncludeMatchTerm => '%' . $safe . '%',
+            $node instanceof PrefixTerm       => $safe . '%',
+            $node instanceof SuffixTerm       => '%' . $safe,
+            $node instanceof ExactTerm        => $term, // uses = operator, not LIKE
+            default                            => '%' . $safe . '%',
         };
     }
 }

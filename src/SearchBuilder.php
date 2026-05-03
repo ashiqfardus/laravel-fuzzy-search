@@ -705,9 +705,18 @@ class SearchBuilder
             ->slice($this->offset, $this->limit)
             ->values()
             ->map(function ($item) use ($scoreMap) {
-                $item->_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_raw_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_score     = $item->_raw_score;
                 return $item;
             });
+
+        $bm25Max = $sorted->max(fn($m) => $m->_raw_score ?? 0);
+        if ($bm25Max > 0) {
+            $sorted = $sorted->map(function ($item) use ($bm25Max) {
+                $item->_score = round($item->_raw_score / $bm25Max, 6);
+                return $item;
+            });
+        }
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted);
@@ -907,9 +916,18 @@ class SearchBuilder
         $sorted = $models->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
             ->values()
             ->map(function ($item) use ($scoreMap) {
-                $item->_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_raw_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_score     = $item->_raw_score;
                 return $item;
             });
+
+        $bm25Max = $sorted->max(fn($m) => $m->_raw_score ?? 0);
+        if ($bm25Max > 0) {
+            $sorted = $sorted->map(function ($item) use ($bm25Max) {
+                $item->_score = round($item->_raw_score / $bm25Max, 6);
+                return $item;
+            });
+        }
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted);
