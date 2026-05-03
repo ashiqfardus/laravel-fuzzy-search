@@ -971,6 +971,10 @@ class SearchBuilder
             $sorted = $this->applyHighlighting($sorted);
         }
 
+        if ($this->debugMode) {
+            $sorted = $this->addDebugInfo($sorted);
+        }
+
         event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
             searchTerm:     $this->searchTerm,
             columns:        $this->searchableColumns,
