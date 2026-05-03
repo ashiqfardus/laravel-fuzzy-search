@@ -1,11 +1,53 @@
 # Changelog
 
+<!-- markdownlint-disable MD024 -->
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [2.0.0-alpha.4] — Bug-fixes, security hardening, and schema improvements
+
+### Fixed
+
+- **Lexer:** `!` is now treated as an operator boundary — `=John!!!` no longer parses the `!` characters as part of the term (fixes zero-result queries using NOT operators adjacent to other tokens)
+- **`searchIn()`:** Duplicate column names are deduplicated — chaining `->searchIn(['name'])` after the `Searchable` trait already included `name` no longer produces triple-binding SQL `(name = ? OR email = ? OR name = ?)`
+- **Extended search empty-guard:** `->extended($query)` and `->searchBoolean($query)` now bypass the empty-term guard when a query string is provided, so `User::search('')->extended('john')` works correctly
+- **Cache key:** `useSearchIndex`, `extendedQuery`, `columnWeights`, and `stopWords` are now included in the cache key — prevents cross-search result poisoning when two different searches share the same base query string
+- **BM25 paginate total:** `paginateIndexed()` computes the real total via `COUNT(DISTINCT model_id)` instead of inferring it from a bounded fetch — page counts are now accurate for large result sets
+- **BM25 debug output:** `debugScore()` information is now emitted in both BM25 code paths (direct and paginated)
+
+### Security
+
+- **`@fuzzyHighlight` tag whitelist:** The `$tag` argument is validated against `[a-zA-Z][a-zA-Z0-9-]*` — user-controlled tag values can no longer inject arbitrary HTML attributes or close tags
+- **Column name validation:** Column names passed to `searchIn()` and `applyFuzzyWhere()` are validated against `/^[a-zA-Z_][a-zA-Z0-9_.]*$/` — blocks backtick-injection on MySQL
+- **ORDER BY direction validation:** `$direction` in `applyFuzzyOrder()` is now validated to `asc` or `desc` — prevents SQL injection via raw `ORDER BY` interpolation
+- **`paginateIndexed()` page-size cap:** `$perPage` is clamped to a maximum of 100 — prevents DoS via abnormally large page size requests
+
+### Added
+
+- **`InMemorySearch` method guard:** Calling an unsupported method on an `InMemorySearch` instance now throws `BadMethodCallException` with a list of supported methods, rather than failing silently
+
+### Changed
+
+- **Observer skips unchanged models:** `SearchableIndexingObserver` no longer dispatches `IndexModelJob` when a `saved` event fires but no searchable column was actually modified — reduces background job volume on high-write tables
+- **BM25 per-term posting cap:** The BM25 scorer now applies a SQL-side `LIMIT` before fetching postings, controlled by `bm25.max_postings_per_term` (default 50 000) — bounds peak memory usage per search request
+
+### Database migrations
+
+Two new migrations are included and run automatically on `php artisan migrate`:
+
+- `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` — adds a `UNIQUE` constraint on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing
+- `2026_05_03_000002_widen_term_column_to_255` — widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` to accommodate longer stemmed token forms
+
+See the [upgrade guide](docs/UPGRADE_v1_TO_v2.md) for a deduplication SQL snippet if you are upgrading from alpha.3 with an existing index.
+
+### Config
+
+- `bm25.max_postings_per_term` (default `50000`) — new key controlling the SQL-side per-term posting cutoff
 
 ## [2.0.0-alpha.3] — Phase 2: Differentiators
 

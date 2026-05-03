@@ -1,6 +1,39 @@
 # Upgrading from v1.x to v2.0.0
 
-> **v2 automatically registers four new tables.** When you run `php artisan migrate` after upgrading to v2, four new tables (`fuzzy_index_terms`, `fuzzy_index_postings`, `fuzzy_index_meta`, `fuzzy_index_documents`) will be created regardless of whether you enable BM25 indexing. These tables are harmless if unused but are not optional. If you never plan to use BM25 search, simply ignore them.
+> **v2 automatically registers migrations for new tables and schema changes.** When you run `php artisan migrate` after upgrading to v2, the following migrations are applied automatically:
+>
+> | Migration | What it does |
+> | --- | --- |
+> | `create_fuzzy_index_terms_table` | Creates `fuzzy_index_terms` |
+> | `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` |
+> | `create_fuzzy_index_meta_table` | Creates `fuzzy_index_meta` |
+> | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
+> | `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` | *(alpha.4)* Adds a unique index on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing |
+> | `2026_05_03_000002_widen_term_column_to_255` | *(alpha.4)* Widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` |
+>
+> The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
+>
+> **Upgrading from alpha.3?** Before running the unique-index migration, clean up any duplicate postings created by concurrent indexing:
+>
+> ```sql
+> -- MySQL / MariaDB
+> DELETE p1 FROM fuzzy_index_postings p1
+> INNER JOIN fuzzy_index_postings p2
+>   ON  p1.term_id    = p2.term_id
+>   AND p1.model_type = p2.model_type
+>   AND p1.model_id   = p2.model_id
+>   AND p1.id > p2.id;
+>
+> -- PostgreSQL
+> DELETE FROM fuzzy_index_postings
+> WHERE id NOT IN (
+>     SELECT MIN(id)
+>     FROM   fuzzy_index_postings
+>     GROUP  BY term_id, model_type, model_id
+> );
+> ```
+>
+> Then run `php artisan migrate`.
 
 ## Phase 0 changes
 
@@ -224,8 +257,11 @@ foreach ($results as $result) {
 Phase 2 adds a dedicated Blade directive that wraps matched tokens in `<mark>` tags. It is XSS-safe — all output is passed through `e()` before wrapping.
 
 ```blade
-{{-- Replaces manually echoing _highlighted values --}}
-@fuzzyHighlight($result->name, $result->_matches['name'] ?? [])
+{{-- Pass the result object and the column name --}}
+@fuzzyHighlight($result, 'name')
+
+{{-- Optional third argument overrides the wrapping tag (default: "mark") --}}
+@fuzzyHighlight($result, 'name', 'strong')
 ```
 
 This replaces the previous pattern of echoing `$result->_highlighted['name']` directly, which was not XSS-safe unless the caller remembered to escape it.
