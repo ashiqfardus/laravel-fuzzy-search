@@ -328,7 +328,10 @@ class IndexManager
                 if (in_array($word, $this->stopWords, true)) {
                     continue;
                 }
-                $stemmed          = $this->stemmer->stem($word);
+                $stemmed = $this->stemmer->stem($word);
+                if (strlen($stemmed) > 255) {
+                    continue; // token exceeds varchar(255) — skip rather than truncate silently
+                }
                 $tokens[$stemmed] = ($tokens[$stemmed] ?? 0) + 1;
 
                 if (count($tokens) >= $maxTokens) {
