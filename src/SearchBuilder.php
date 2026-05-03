@@ -1479,6 +1479,10 @@ class SearchBuilder
      */
     public static function renderHighlighted($result, string $column, string $tag = 'mark'): string
     {
+        if (!preg_match('/^[a-zA-Z][a-zA-Z0-9-]*$/', $tag)) {
+            throw new \InvalidArgumentException("Invalid HTML tag name for fuzzyHighlight: [{$tag}]");
+        }
+
         $matches = is_object($result) ? ($result->_matches ?? []) : ($result['_matches'] ?? []);
         $value   = (string) data_get($result, $column, '');
 
