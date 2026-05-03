@@ -72,13 +72,14 @@ class Lexer
                     $i++;
                 }
 
-                // Read bare word
+                // Read bare word — stop at whitespace, grouping chars, OR '!' (prefix operator)
                 $start = $i;
                 while ($i < $len
                     && !ctype_space($query[$i])
                     && $query[$i] !== '|'
                     && $query[$i] !== '('
                     && $query[$i] !== ')'
+                    && $query[$i] !== '!'
                 ) {
                     $i++;
                 }

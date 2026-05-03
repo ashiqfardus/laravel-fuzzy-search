@@ -103,10 +103,14 @@ class SearchBuilder
     {
         foreach ($columns as $key => $value) {
             if (is_string($key)) {
-                $this->searchableColumns[] = $key;
+                if (!in_array($key, $this->searchableColumns, true)) {
+                    $this->searchableColumns[] = $key;
+                }
                 $this->columnWeights[$key] = (int) $value;
             } else {
-                $this->searchableColumns[] = $value;
+                if (!in_array($value, $this->searchableColumns, true)) {
+                    $this->searchableColumns[] = $value;
+                }
                 $this->columnWeights[$value] = 1;
             }
         }
