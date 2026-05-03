@@ -291,47 +291,47 @@ class SearchBuilderTest extends TestCase
 
     public function test_typo_tolerance_is_clamped_to_max(): void
     {
-        // The method should clamp value to max of 5
         $this->builder->typoTolerance(10);
-        
-        // Just verify it doesn't throw
-        $this->assertTrue(true);
+
+        $prop = new \ReflectionProperty($this->builder, 'typoTolerance');
+        $prop->setAccessible(true);
+        $this->assertSame(5, $prop->getValue($this->builder));
     }
 
     public function test_typo_tolerance_is_clamped_to_min(): void
     {
-        // The method should clamp value to min of 0
         $this->builder->typoTolerance(-5);
-        
-        // Just verify it doesn't throw
-        $this->assertTrue(true);
+
+        $prop = new \ReflectionProperty($this->builder, 'typoTolerance');
+        $prop->setAccessible(true);
+        $this->assertSame(0, $prop->getValue($this->builder));
     }
 
     public function test_prefix_boost_has_minimum_of_one(): void
     {
-        // Prefix boost should be at least 1.0
         $this->builder->prefixBoost(0.5);
-        
-        // Just verify it doesn't throw
-        $this->assertTrue(true);
+
+        $prop = new \ReflectionProperty($this->builder, 'prefixBoostMultiplier');
+        $prop->setAccessible(true);
+        $this->assertSame(1.0, $prop->getValue($this->builder));
     }
 
     public function test_min_match_length_has_minimum_of_one(): void
     {
-        // Min match length should be at least 1
         $this->builder->minMatchLength(0);
-        
-        // Just verify it doesn't throw
-        $this->assertTrue(true);
+
+        $prop = new \ReflectionProperty($this->builder, 'minMatchLength');
+        $prop->setAccessible(true);
+        $this->assertSame(1, $prop->getValue($this->builder));
     }
 
     public function test_max_patterns_has_minimum_of_ten(): void
     {
-        // Max patterns should be at least 10
         $this->builder->maxPatterns(5);
-        
-        // Just verify it doesn't throw
-        $this->assertTrue(true);
+
+        $prop = new \ReflectionProperty($this->builder, 'maxPatterns');
+        $prop->setAccessible(true);
+        $this->assertSame(10, $prop->getValue($this->builder));
     }
 
     /*

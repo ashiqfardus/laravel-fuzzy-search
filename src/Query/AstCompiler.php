@@ -69,15 +69,25 @@ class AstCompiler
                 $rawMethod = $idx === 0 ? 'whereRaw' : 'orWhereRaw';
                 $colMethod = $idx === 0 ? 'where'    : 'orWhere';
                 if ($node instanceof ExactTerm) {
-                    // Case-insensitive exact: LOWER(col) = LOWER(?) on all drivers
-                    $q->$rawMethod('LOWER(' . $column . ') = LOWER(?)', [$term]);
+                    // Case-insensitive exact: LOWER(quoted_col) = LOWER(?) on all drivers
+                    $q->$rawMethod('LOWER(' . $this->quoteColumn($column) . ') = LOWER(?)', [$term]);
                 } elseif ($isPgsql) {
-                    $q->$rawMethod('"' . $column . '" ILIKE ?', [$pattern]);
+                    $q->$rawMethod($this->quoteColumn($column) . ' ILIKE ?', [$pattern]);
                 } else {
                     $q->$colMethod($column, 'LIKE', $pattern);
                 }
             }
         });
+    }
+
+    private function quoteColumn(string $column): string
+    {
+        return match ($this->dbDriver) {
+            'mysql'  => '`' . str_replace('`', '``', $column) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $column) . '"',
+            'sqlsrv' => '[' . $column . ']',
+            default  => $column,
+        };
     }
 
     private function extractTerm(AstNode $node): string

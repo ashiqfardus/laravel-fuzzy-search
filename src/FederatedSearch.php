@@ -54,6 +54,12 @@ class FederatedSearch
     public function searchIn(array $columns): self
     {
         foreach ($columns as $key => $value) {
+            $column = is_string($key) ? $key : $value;
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+                throw new \InvalidArgumentException(
+                    "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
+                );
+            }
             if (is_string($key)) {
                 $this->searchableColumns[] = $key;
                 $this->columnWeights[$key] = (int) $value;
@@ -184,16 +190,28 @@ class FederatedSearch
 
         // Try to get from model's searchable property
         if (isset($instance->searchable['columns'])) {
-            return array_keys($instance->searchable['columns']);
+            return $this->validateColumns(array_keys($instance->searchable['columns']));
         }
 
         // Try to get from fuzzySearchable property
         if (isset($instance->fuzzySearchable)) {
-            return $instance->fuzzySearchable;
+            return $this->validateColumns($instance->fuzzySearchable);
         }
 
         // Default fallback columns
         return ['name', 'title'];
+    }
+
+    private function validateColumns(array $columns): array
+    {
+        foreach ($columns as $column) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+                throw new \InvalidArgumentException(
+                    "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
+                );
+            }
+        }
+        return $columns;
     }
 
     /**

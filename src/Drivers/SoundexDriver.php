@@ -40,9 +40,11 @@ class SoundexDriver extends BaseDriver
             if (!($this->config['use_native_functions'] ?? false)) {
                 return $this->applyFallback($query, $column, $value, $boolean);
             }
-            // Match first word OR last word on PostgreSQL
+            // Match first word OR last word on PostgreSQL.
+            // SPLIT_PART(col, ' ', -1) requires PostgreSQL 14+. Use SUBSTRING with a
+            // POSIX regex to extract the last space-delimited token — works on all versions.
             return $query->$method(
-                "SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SPLIT_PART({$col}, ' ', -1)) = SOUNDEX(?)",
+                "SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(TRIM(SUBSTRING({$col} FROM '[^ ]+$'))) = SOUNDEX(?)",
                 [$value, $value]
             );
         }

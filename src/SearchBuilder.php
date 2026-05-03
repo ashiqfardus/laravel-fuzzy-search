@@ -481,6 +481,11 @@ class SearchBuilder
      */
     public function facet(string $column): self
     {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            throw new \InvalidArgumentException(
+                "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
+            );
+        }
         $this->facets[] = $column;
         return $this;
     }
@@ -634,6 +639,15 @@ class SearchBuilder
             $allowEmpty = config('fuzzy-search.allow_empty_search', false);
             if (!$allowEmpty) {
                 throw new EmptySearchTermException();
+            }
+        }
+
+        // min_search_length guard — return empty results for terms that are too short
+        // without throwing, so autocomplete/type-ahead UIs get a clean empty state.
+        if ($this->extendedQuery === null && !empty($this->searchTerm)) {
+            $minLength = (int) config('fuzzy-search.min_search_length', 1);
+            if (strlen($this->searchTerm) < $minLength) {
+                return collect();
             }
         }
 
@@ -865,9 +879,11 @@ class SearchBuilder
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        // Extended/boolean syntax requires in-memory scoring which cannot produce a DB-level COUNT.
-        // simplePaginate() delegates to get() and correctly honours the AST.
-        if ($this->extendedQuery !== null && !$this->useSearchIndex) {
+        // Extended/boolean syntax is compiled to an in-memory AST that neither the LIKE
+        // driver path nor paginateIndexed() honours — both would silently discard all
+        // boolean operators.  simplePaginate() delegates to get() which routes through
+        // executeExtendedSearch() correctly.
+        if ($this->extendedQuery !== null) {
             throw new \BadMethodCallException(
                 'paginate() does not support extended/boolean query syntax. ' .
                 'Use simplePaginate() or get() instead.'
@@ -1033,15 +1049,14 @@ class SearchBuilder
         $page   = $page ?: (int) request()->input($pageName, 1);
         $offset = ($page - 1) * $perPage;
 
-        // Fetch one extra item to determine whether a next page exists
+        // Fetch one extra item so Paginator::setItems() can detect whether a next
+        // page exists (it sets hasMore = count($items) > $perPage, then trims internally).
         $this->limit  = $perPage + 1;
         $this->offset = $offset;
         $all          = $this->get();
 
-        $items = $all->take($perPage)->values();
-
         return new \Illuminate\Pagination\Paginator(
-            $items, $perPage, $page,
+            $all, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
     }
