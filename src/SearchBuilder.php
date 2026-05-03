@@ -1243,7 +1243,7 @@ class SearchBuilder
     {
         $term = strtolower($this->searchTerm);
 
-        return $results->map(function ($item) use ($term) {
+        $results = $results->map(function ($item) use ($term) {
             $score = 0;
             $columnScores = [];
 
@@ -1312,6 +1312,29 @@ class SearchBuilder
         })->sortByDesc(function ($item) {
             return is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
         })->values();
+
+        // Score normalization to [0,1] range
+        // Preserve raw score for backwards compatibility under _raw_score
+        $max = $results->max(function ($item) {
+            return is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
+        });
+
+        if ($max > 0) {
+            $results = $results->map(function ($item) use ($max) {
+                $raw = is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
+                $normalized = round($raw / $max, 6);
+                if (is_object($item)) {
+                    $item->_raw_score = $raw;
+                    $item->_score     = $normalized;
+                } elseif (is_array($item)) {
+                    $item['_raw_score'] = $raw;
+                    $item['_score']     = $normalized;
+                }
+                return $item;
+            });
+        }
+
+        return $results;
     }
 
     /**
@@ -1320,26 +1343,124 @@ class SearchBuilder
     protected function applyHighlighting(Collection $results): Collection
     {
         $term = $this->searchTerm;
-        $open = $this->highlightTagOpen;
-        $close = $this->highlightTagClose;
+        if (empty($term)) {
+            return $results;
+        }
+
+        $open  = $this->highlightTagOpen ?? '<em>';
+        $close = $this->highlightTagClose ?? '</em>';
 
         return $results->map(function ($item) use ($term, $open, $close) {
+            $matches     = [];
             $highlighted = [];
 
             foreach ($this->searchableColumns as $column) {
                 $value = (string) data_get($item, $column, '');
-                $pattern = '/(' . preg_quote($term, '/') . ')/i';
-                $highlighted[$column] = preg_replace($pattern, "{$open}$1{$close}", $value);
+                if ($value === '') {
+                    continue;
+                }
+
+                $indices = $this->findMatchOffsets($value, $term);
+
+                if (!empty($indices)) {
+                    $matches[] = [
+                        'column'  => $column,
+                        'value'   => $value,
+                        'indices' => $indices,
+                    ];
+                    $highlighted[$column] = $this->wrapWithTags($value, $indices, $open, $close);
+                } else {
+                    $highlighted[$column] = $value;
+                }
             }
 
             if (is_object($item)) {
+                $item->_matches     = $matches;
                 $item->_highlighted = $highlighted;
             } elseif (is_array($item)) {
+                $item['_matches']     = $matches;
                 $item['_highlighted'] = $highlighted;
             }
 
             return $item;
         });
+    }
+
+    /**
+     * Find all case-insensitive occurrences of $term in $value.
+     * Returns array of [startIdx, endIdx] inclusive ranges.
+     */
+    private function findMatchOffsets(string $value, string $term): array
+    {
+        if ($term === '') {
+            return [];
+        }
+        $indices = [];
+        $offset  = 0;
+        $lower   = strtolower($value);
+        $needle  = strtolower($term);
+
+        while (($pos = strpos($lower, $needle, $offset)) !== false) {
+            $indices[] = [$pos, $pos + strlen($term) - 1];
+            $offset    = $pos + strlen($term);
+        }
+        return $indices;
+    }
+
+    private function wrapWithTags(string $value, array $indices, string $open, string $close): string
+    {
+        if (empty($indices)) {
+            return $value;
+        }
+        // Walk back-to-front so offsets stay valid as we insert
+        $result = $value;
+        foreach (array_reverse($indices) as [$start, $end]) {
+            $matched = substr($result, $start, $end - $start + 1);
+            $result  = substr($result, 0, $start) . $open . $matched . $close . substr($result, $end + 1);
+        }
+        return $result;
+    }
+
+    /**
+     * Render a column's value with HTML-escaped match offsets wrapped in <mark>.
+     * Used by the @fuzzyHighlight Blade directive.
+     *
+     * @param mixed  $result A model/array/object with _matches populated
+     * @param string $column Column name to render
+     * @param string $tag    Wrapper tag (default 'mark')
+     */
+    public static function renderHighlighted($result, string $column, string $tag = 'mark'): string
+    {
+        $matches = is_object($result) ? ($result->_matches ?? []) : ($result['_matches'] ?? []);
+        $value   = (string) data_get($result, $column, '');
+
+        foreach ($matches as $match) {
+            if (($match['column'] ?? null) === $column) {
+                $indices = $match['indices'] ?? [];
+                return self::escapeAndWrap($value, $indices, $tag);
+            }
+        }
+
+        return e($value);
+    }
+
+    private static function escapeAndWrap(string $value, array $indices, string $tag): string
+    {
+        if (empty($indices)) {
+            return e($value);
+        }
+
+        usort($indices, fn($a, $b) => $a[0] <=> $b[0]);
+
+        $out  = '';
+        $last = 0;
+        foreach ($indices as [$start, $end]) {
+            $out .= e(substr($value, $last, $start - $last));
+            $out .= '<' . $tag . '>' . e(substr($value, $start, $end - $start + 1)) . '</' . $tag . '>';
+            $last = $end + 1;
+        }
+        $out .= e(substr($value, $last));
+        return $out;
     }
 
     /**

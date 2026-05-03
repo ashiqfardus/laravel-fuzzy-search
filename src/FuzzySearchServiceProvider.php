@@ -93,6 +93,11 @@ class FuzzySearchServiceProvider extends ServiceProvider
         // Register Eloquent Builder macros
         $this->registerEloquentBuilderMacros();
 
+        // Register @fuzzyHighlight Blade directive
+        \Illuminate\Support\Facades\Blade::directive('fuzzyHighlight', function (string $expression) {
+            return "<?php echo \\Ashiqfardus\\LaravelFuzzySearch\\SearchBuilder::renderHighlighted({$expression}); ?>";
+        });
+
         // Register Scout engine when laravel/scout is installed (no hard dependency)
         if (class_exists(\Laravel\Scout\EngineManager::class)) {
             $this->callAfterResolving(\Laravel\Scout\EngineManager::class, function ($manager) {
