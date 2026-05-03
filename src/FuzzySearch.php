@@ -53,6 +53,10 @@ class FuzzySearch
         ?array $options = [],
         string $boolean = 'and'
     ): Builder {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
+        }
+
         $algorithm = $algorithm ?? $this->config['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
 

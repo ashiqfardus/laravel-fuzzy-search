@@ -103,6 +103,10 @@ class SearchBuilder
     public function searchIn(array $columns): self
     {
         foreach ($columns as $key => $value) {
+            $col = is_string($key) ? $key : $value;
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $col)) {
+                throw new \InvalidArgumentException("Invalid column name [{$col}]: only letters, digits, underscores, and dots allowed.");
+            }
             if (is_string($key)) {
                 $this->searchableColumns[] = $key;
                 $this->columnWeights[$key] = (int) $value;
