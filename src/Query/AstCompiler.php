@@ -16,6 +16,8 @@ use Illuminate\Database\Query\Builder;
  */
 class AstCompiler
 {
+    public function __construct(private readonly string $dbDriver = 'mysql') {}
+
     /**
      * @param string[] $columns
      */
@@ -59,13 +61,18 @@ class AstCompiler
         // Leaf term — match against any of the given columns (OR'd)
         $term    = $this->extractTerm($node);
         $pattern = $this->patternFor($node, $term);
+        $isPgsql = $this->dbDriver === 'pgsql';
 
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $builder->$method(function (Builder $q) use ($columns, $node, $pattern, $term) {
+        $builder->$method(function (Builder $q) use ($columns, $node, $pattern, $term, $isPgsql) {
             foreach ($columns as $idx => $column) {
-                $colMethod = $idx === 0 ? 'where' : 'orWhere';
+                $rawMethod = $idx === 0 ? 'whereRaw' : 'orWhereRaw';
+                $colMethod = $idx === 0 ? 'where'    : 'orWhere';
                 if ($node instanceof ExactTerm) {
-                    $q->$colMethod($column, '=', $term);
+                    // Case-insensitive exact: LOWER(col) = LOWER(?) on all drivers
+                    $q->$rawMethod('LOWER(' . $column . ') = LOWER(?)', [$term]);
+                } elseif ($isPgsql) {
+                    $q->$rawMethod('"' . $column . '" ILIKE ?', [$pattern]);
                 } else {
                     $q->$colMethod($column, 'LIKE', $pattern);
                 }

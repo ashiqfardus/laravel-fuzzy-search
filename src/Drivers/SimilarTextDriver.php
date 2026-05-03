@@ -21,10 +21,10 @@ class SimilarTextDriver extends BaseDriver
 
         if ($this->driver === 'pgsql') {
             $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-            return $query->$rawMethod("{$col} ILIKE ?", ['%' . strtolower($value) . '%']);
+            return $query->$rawMethod("{$col} ILIKE ?", ['%' . $this->escapeLike(strtolower($value)) . '%']);
         }
 
-        return $query->$method($column, 'LIKE', '%' . strtolower($value) . '%');
+        return $query->$method($column, 'LIKE', '%' . $this->escapeLike(strtolower($value)) . '%');
     }
 
     public function getRelevanceExpression(string $column, string $value): string

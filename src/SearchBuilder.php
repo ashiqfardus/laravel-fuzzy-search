@@ -319,10 +319,13 @@ class SearchBuilder
     public function highlight(string $tagOrOpen = 'em', ?string $close = null): self
     {
         if ($close === null) {
-            $this->highlightTagOpen = "<{$tagOrOpen}>";
+            if (!preg_match('/^[a-zA-Z][a-zA-Z0-9-]*$/', $tagOrOpen)) {
+                throw new \InvalidArgumentException("Invalid HTML tag name for highlight(): [{$tagOrOpen}]");
+            }
+            $this->highlightTagOpen  = "<{$tagOrOpen}>";
             $this->highlightTagClose = "</{$tagOrOpen}>";
         } else {
-            $this->highlightTagOpen = $tagOrOpen;
+            $this->highlightTagOpen  = $tagOrOpen;
             $this->highlightTagClose = $close;
         }
         return $this;
@@ -779,7 +782,8 @@ class SearchBuilder
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
         $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
 
-        $compiler  = new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler();
+        $dbDriver  = $this->query->getConnection()->getDriverName();
+        $compiler  = new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver);
         $rawQuery  = $this->query instanceof \Illuminate\Database\Eloquent\Builder
             ? $this->query->getQuery()
             : $this->query;
@@ -873,6 +877,21 @@ class SearchBuilder
             $items = $this->calculateRelevanceScores(collect($results->items()));
             $results->setCollection($items);
         }
+
+        $items = collect($results->items());
+
+        if ($this->highlightTagOpen) {
+            $items = $this->applyHighlighting($items);
+            $results->setCollection($items);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
+            candidateCount: $results->total(),
+            latencyMs:      0.0,
+        ));
 
         return $results;
     }
@@ -994,19 +1013,41 @@ class SearchBuilder
     }
 
     /**
-     * Simple pagination
+     * Simple pagination (offset-based, no total count).
+     * Routes through the same search path as get() so extended-syntax and BM25 are honoured.
      */
-    public function simplePaginate(int $perPage = 15): \Illuminate\Contracts\Pagination\Paginator
+    public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\Paginator
     {
-        $this->buildQuery();
-        return $this->query->simplePaginate($perPage);
+        $page   = $page ?: (int) request()->input($pageName, 1);
+        $offset = ($page - 1) * $perPage;
+
+        // Fetch one extra item to determine whether a next page exists
+        $this->limit  = $perPage + 1;
+        $this->offset = $offset;
+        $all          = $this->get();
+
+        $hasMore = $all->count() > $perPage;
+        $items   = $all->take($perPage)->values();
+
+        return new \Illuminate\Pagination\Paginator(
+            $items, $perPage, $page,
+            ['path' => request()->url(), 'pageName' => $pageName]
+        );
     }
 
     /**
-     * Cursor pagination
+     * Cursor pagination is not compatible with in-memory PHP scoring.
+     * Use paginate() or simplePaginate() instead.
+     *
+     * @throws \BadMethodCallException
      */
     public function cursorPaginate(int $perPage = 15): \Illuminate\Contracts\Pagination\CursorPaginator
     {
+        if ($this->extendedQuery !== null || $this->useSearchIndex) {
+            throw new \BadMethodCallException(
+                'cursorPaginate() is not supported with extended() or useInvertedIndex() — use paginate() instead.'
+            );
+        }
         $this->buildQuery();
         return $this->query->cursorPaginate($perPage);
     }
@@ -1474,15 +1515,20 @@ class SearchBuilder
     private function wrapWithTags(string $value, array $indices, string $open, string $close): string
     {
         if (empty($indices)) {
-            return $value;
+            return e($value);
         }
-        // Walk back-to-front so offsets stay valid as we insert
-        $result = $value;
-        foreach (array_reverse($indices) as [$start, $end]) {
-            $matched = substr($result, $start, $end - $start + 1);
-            $result  = substr($result, 0, $start) . $open . $matched . $close . substr($result, $end + 1);
+
+        usort($indices, fn($a, $b) => $a[0] <=> $b[0]);
+
+        $out  = '';
+        $last = 0;
+        foreach ($indices as [$start, $end]) {
+            $out .= e(substr($value, $last, $start - $last));
+            $out .= $open . e(substr($value, $start, $end - $start + 1)) . $close;
+            $last = $end + 1;
         }
-        return $result;
+        $out .= e(substr($value, $last));
+        return $out;
     }
 
     /**
@@ -1640,7 +1686,7 @@ class SearchBuilder
         }
 
         $suggestions = [];
-        $term = strtolower($this->searchTerm);
+        $term = addcslashes(strtolower($this->searchTerm), '%_');
 
         // Clone query to avoid modifying the original
         $suggestQuery = clone $this->query;

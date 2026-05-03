@@ -61,6 +61,10 @@ class Lexer
                     if ($i >= $len) {
                         break;
                     }
+                    // !( is unsupported — NOT of a group would silently drop the operator
+                    if ($query[$i] === '(') {
+                        throw QuerySyntaxException::notBeforeGroup();
+                    }
                 }
 
                 $opPrefix = null;
@@ -114,7 +118,7 @@ class Lexer
                 $tokens[] = new Token($type, $term);
             }
 
-            if (count($tokens) > $maxTokens) {
+            if (count($tokens) >= $maxTokens) {
                 throw QuerySyntaxException::tokenLimitExceeded(count($tokens), $maxTokens);
             }
         }

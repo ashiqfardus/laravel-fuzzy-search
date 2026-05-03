@@ -96,17 +96,17 @@ class TrigramDriver extends BaseDriver
         foreach ($trigrams as $trigram) {
             $trigram = trim($trigram);
             if (!empty($trigram)) {
-                $patterns[] = '%' . $trigram . '%';
+                $patterns[] = '%' . $this->escapeLike($trigram) . '%';
             }
         }
 
         // Also add the original value
         $combined = trim(str_replace('  ', '', implode('', array_map('trim', $trigrams))));
         if (!empty($combined)) {
-            array_unshift($patterns, '%' . $combined . '%');
+            array_unshift($patterns, '%' . $this->escapeLike($combined) . '%');
         }
 
-        return array_slice(array_unique($patterns), 0, 10); // Limit patterns
+        return array_slice(array_unique($patterns), 0, 10);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

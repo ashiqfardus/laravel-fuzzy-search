@@ -89,27 +89,27 @@ class LevenshteinDriver extends BaseDriver
      */
     protected function generateLevenshteinPatterns(string $value): array
     {
-        $value = strtolower(trim($value));
+        $value    = strtolower(trim($value));
         $patterns = [];
-        $len = strlen($value);
+        $len      = strlen($value);
 
         // Distance 0: Exact match
-        $patterns[] = '%' . $value . '%';
+        $patterns[] = '%' . $this->escapeLike($value) . '%';
 
         if ($this->maxDistance >= 1) {
             // Distance 1: Single deletion
             for ($i = 0; $i < $len; $i++) {
-                $patterns[] = '%' . substr($value, 0, $i) . substr($value, $i + 1) . '%';
+                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i) . substr($value, $i + 1)) . '%';
             }
 
             // Distance 1: Single insertion (wildcard)
             for ($i = 0; $i <= $len; $i++) {
-                $patterns[] = '%' . substr($value, 0, $i) . '_' . substr($value, $i) . '%';
+                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i)) . '%';
             }
 
             // Distance 1: Single substitution (wildcard)
             for ($i = 0; $i < $len; $i++) {
-                $patterns[] = '%' . substr($value, 0, $i) . '_' . substr($value, $i + 1) . '%';
+                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i + 1)) . '%';
             }
         }
 
@@ -119,7 +119,7 @@ class LevenshteinDriver extends BaseDriver
                 for ($j = $i + 1; $j < $len; $j++) {
                     $str = substr($value, 0, $i) . substr($value, $i + 1, $j - $i - 1) . substr($value, $j + 1);
                     if (strlen($str) >= 2) {
-                        $patterns[] = '%' . $str . '%';
+                        $patterns[] = '%' . $this->escapeLike($str) . '%';
                     }
                 }
             }
@@ -127,17 +127,17 @@ class LevenshteinDriver extends BaseDriver
             // Distance 2: Transposition + deletion
             for ($i = 0; $i < $len - 1; $i++) {
                 $transposed = substr($value, 0, $i) . $value[$i + 1] . $value[$i] . substr($value, $i + 2);
-                $patterns[] = '%' . $transposed . '%';
+                $patterns[] = '%' . $this->escapeLike($transposed) . '%';
             }
         }
 
         if ($this->maxDistance >= 3 && $len > 3) {
             // Distance 3: Prefix matching with wildcards
-            $patterns[] = substr($value, 0, 2) . '%';
-            $patterns[] = '%' . substr($value, -2);
+            $patterns[] = $this->escapeLike(substr($value, 0, 2)) . '%';
+            $patterns[] = '%' . $this->escapeLike(substr($value, -2));
 
             // Keep first and last char with wildcard in between
-            $patterns[] = $value[0] . '%' . substr($value, -1);
+            $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -1));
         }
 
         return array_unique($patterns);

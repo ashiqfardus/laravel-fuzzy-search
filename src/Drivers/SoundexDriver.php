@@ -75,33 +75,26 @@ class SoundexDriver extends BaseDriver
      */
     protected function generatePhoneticPatterns(string $value): array
     {
-        $value = strtolower(trim($value));
+        $value    = strtolower(trim($value));
         $patterns = [];
 
         // Exact substring — always include
-        $patterns[] = '%' . $value . '%';
+        $patterns[] = '%' . $this->escapeLike($value) . '%';
 
-        // First 3+ chars prefix — minimum meaningful prefix for phonetic matching.
-        // Deliberately NOT adding single-char ($value[0].'%') — that matches every
-        // name sharing the first letter and produces nonsensical soundex results
-        // (e.g. "john" → j% matches Jake, Jessica, Jackson).
+        // First 3+ chars prefix
         if (strlen($value) >= 4) {
-            $patterns[] = substr($value, 0, 3) . '%';
+            $patterns[] = $this->escapeLike(substr($value, 0, 3)) . '%';
         }
 
-        // Vowel-stripped consonant skeleton — approximates soundex grouping.
-        // soundex('john') = J500: J + strip vowels from 'ohn' → 'jhn'.
-        // This matches "Jahn", "Jöhn", etc. without over-matching "Jackson".
+        // Vowel-stripped consonant skeleton
         if (strlen($value) > 2) {
             $consonants = $value[0] . preg_replace('/[aeiou]/i', '', substr($value, 1));
             if (strlen($consonants) >= 2 && $consonants !== $value) {
-                $patterns[] = '%' . $consonants . '%';
+                $patterns[] = '%' . $this->escapeLike($consonants) . '%';
             }
         }
 
-        // Targeted phonetic substitutions — only pairs that share a soundex code.
-        // ph/f share code 1; ck/k share code 2; s/z share code 2.
-        // Removed j/g swap — they share a soundex code but produce too many false positives.
+        // Targeted phonetic substitutions
         $substitutions = [
             'ph' => 'f',  'f'  => 'ph',
             'ck' => 'k',  'k'  => 'ck',
@@ -114,7 +107,7 @@ class SoundexDriver extends BaseDriver
             if (str_contains($value, $from)) {
                 $replaced = str_replace($from, $to, $value);
                 if ($replaced !== $value) {
-                    $patterns[] = '%' . $replaced . '%';
+                    $patterns[] = '%' . $this->escapeLike($replaced) . '%';
                 }
             }
         }

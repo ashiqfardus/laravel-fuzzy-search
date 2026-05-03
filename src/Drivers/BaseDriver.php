@@ -34,6 +34,14 @@ abstract class BaseDriver
     abstract public function getRelevanceBindings(string $value): array;
 
     /**
+     * Escape LIKE metacharacters in a user-supplied value so % and _ are treated literally.
+     */
+    protected function escapeLike(string $value): string
+    {
+        return addcslashes($value, '%_');
+    }
+
+    /**
      * Quote column name based on driver
      */
     protected function quoteColumn(string $column): string
