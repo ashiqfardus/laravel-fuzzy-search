@@ -184,6 +184,33 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Extended-search query parser
+    |--------------------------------------------------------------------------
+    |
+    | max_depth: maximum nesting depth of parentheses (DoS guard)
+    | max_tokens: maximum tokens in a single query (DoS guard)
+    |
+    */
+    'query' => [
+        'max_depth'  => 16,
+        'max_tokens' => 32,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | In-memory search
+    |--------------------------------------------------------------------------
+    |
+    | max_items: ceiling for FuzzySearch::on($collection) — prevents
+    | accidentally loading gigabytes into PHP memory.
+    |
+    */
+    'in_memory' => [
+        'max_items' => 10_000,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Cache Configuration
     |--------------------------------------------------------------------------
     */
