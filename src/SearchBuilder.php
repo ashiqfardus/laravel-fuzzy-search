@@ -878,6 +878,7 @@ class SearchBuilder
      */
     protected function paginateIndexed(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        $perPage    = min((int) $perPage, 100);
         $startedAt  = microtime(true);
         $modelClass = $this->resolveIndexModelClass();
 
