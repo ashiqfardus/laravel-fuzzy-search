@@ -75,6 +75,42 @@ class InjectionTest extends TestCase
         ];
     }
 
+    public function test_extended_search_escapes_like_wildcards(): void
+    {
+        // '%' in an extended FuzzyTerm must not match all rows — it should be treated as a literal.
+        $results = (new SearchBuilder(
+            $this->app['db']->table('users'),
+            $this->fuzzySearch
+        ))
+            ->search('%')
+            ->searchIn(['name'])
+            ->extended()
+            ->get();
+
+        // A literal '%' LIKE pattern '%\%%' should match only rows containing '%', not all rows.
+        $this->assertLessThan(
+            $this->baseline,
+            $results->count(),
+            'Extended-path FuzzyTerm with literal % must not match all rows (wildcard not escaped)'
+        );
+
+        // Same check for '_' which as an unescaped wildcard matches any single character.
+        $results = (new SearchBuilder(
+            $this->app['db']->table('users'),
+            $this->fuzzySearch
+        ))
+            ->search('_')
+            ->searchIn(['name'])
+            ->extended()
+            ->get();
+
+        $this->assertLessThan(
+            $this->baseline,
+            $results->count(),
+            'Extended-path FuzzyTerm with literal _ must not match all rows (wildcard not escaped)'
+        );
+    }
+
     public function test_column_name_from_searchin_does_not_allow_raw_sql(): void
     {
         // searchIn accepts developer-supplied column names.

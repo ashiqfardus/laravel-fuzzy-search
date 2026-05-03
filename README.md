@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **🚀 Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Inverted Index](docs/INVERTED_INDEX.md) • [Scout Driver](docs/SCOUT_DRIVER.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
+**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Inverted Index](docs/INVERTED_INDEX.md) • [Scout Driver](docs/SCOUT_DRIVER.md) • [Extended Search](docs/EXTENDED_SEARCH.md) • [Query Language](docs/QUERY_LANGUAGE.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
 
 ## ✨ Features
 
@@ -203,6 +203,23 @@ $users = User::search('john')->get(); // via Scout
 ```
 
 See [Inverted Index](docs/INVERTED_INDEX.md) and [Scout Driver](docs/SCOUT_DRIVER.md) docs.
+
+### Extended Search Syntax (v2+)
+
+Fuse.js-style operators for precise queries:
+
+```php
+$users = User::search('=John ^Doe !banned')->extended()->get();
+$users = User::search('admin (john | jane)')->extended()->get();
+```
+
+See [Extended Search docs](docs/EXTENDED_SEARCH.md) for the operator reference.
+
+### In-Memory Mode (v2+)
+
+```php
+$matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->get();
+```
 
 ## Field Weighting & Scoring
 

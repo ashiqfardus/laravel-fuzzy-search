@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-alpha.3] — Phase 2: Differentiators
+
+### Added
+
+- Extended-search syntax parser: `'word`, `=word`, `^word`, `word$`, `!word`, `|`, `( )`, `"quoted"`
+- `SearchBuilder::extended($query)` — Fuse-style query entry point
+- `SearchBuilder::searchBoolean($query)` — alias for `extended()`
+- `_matches` array on result objects: column, value, character indices
+- `@fuzzyHighlight` Blade directive — XSS-safe match rendering
+- `FuzzySearch::on($collection)` + `InMemorySearch` — fuzzy search over PHP collections
+- `docs/EXTENDED_SEARCH.md` and `docs/QUERY_LANGUAGE.md`
+- Adversarial fuzz suite (`tests/Security/QueryFuzzTest.php`) — 1000 random inputs
+
+### Changed
+
+- `_score` normalized to `[0, 1]` range across all search paths
+- `_highlighted` is now derived from `_matches` (still backwards-compatible)
+- `FederatedSearch` cross-model ranking uses normalized scores
+
+### Config
+
+- `query.max_tokens` (32), `query.max_depth` (16) — DoS guards on parser
+- `in_memory.max_items` (10000) — memory ceiling for `FuzzySearch::on()`
+
+### Backwards-compat
+
+- `_raw_score` preserved on results for code that depended on unbounded scores
+- `_highlighted` still populated when `highlight()` is called
+
 ## [2.0.0-alpha.2] — Phase 1: Real Search Engine
 
 ### Added
