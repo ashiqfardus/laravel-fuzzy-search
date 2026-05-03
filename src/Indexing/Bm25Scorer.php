@@ -52,7 +52,9 @@ class Bm25Scorer
         // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
         // Order by frequency DESC and cap at max_postings_per_term so that a high-frequency
         // term (e.g. "john" with 50k hits) cannot pull the entire posting list into PHP.
-        // High-frequency rows are prioritised, preserving BM25 accuracy for top results.
+        // High-frequency rows are prioritised globally across all matched terms; in a pathological
+        // corpus a single dominant term could consume the cap, but at the default 50k the bound
+        // is never reached for normal workloads.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
         $postings = DB::table('fuzzy_index_postings as p')
