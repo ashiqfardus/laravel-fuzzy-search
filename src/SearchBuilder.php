@@ -108,10 +108,14 @@ class SearchBuilder
                 throw new \InvalidArgumentException("Invalid column name [{$col}]: only letters, digits, underscores, and dots allowed.");
             }
             if (is_string($key)) {
-                $this->searchableColumns[] = $key;
+                if (!in_array($key, $this->searchableColumns, true)) {
+                    $this->searchableColumns[] = $key;
+                }
                 $this->columnWeights[$key] = (int) $value;
             } else {
-                $this->searchableColumns[] = $value;
+                if (!in_array($value, $this->searchableColumns, true)) {
+                    $this->searchableColumns[] = $value;
+                }
                 $this->columnWeights[$value] = 1;
             }
         }
