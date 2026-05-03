@@ -859,9 +859,21 @@ class SearchBuilder
 
     /**
      * Get paginated results
+     *
+     * @throws \BadMethodCallException when extended/boolean syntax is active — use simplePaginate() instead,
+     *   which correctly routes through the AST compiler.
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        // Extended/boolean syntax requires in-memory scoring which cannot produce a DB-level COUNT.
+        // simplePaginate() delegates to get() and correctly honours the AST.
+        if ($this->extendedQuery !== null && !$this->useSearchIndex) {
+            throw new \BadMethodCallException(
+                'paginate() does not support extended/boolean query syntax. ' .
+                'Use simplePaginate() or get() instead.'
+            );
+        }
+
         // BM25 fast path via inverted index
         if ($this->useSearchIndex && !empty($this->searchTerm)) {
             return $this->paginateIndexed($perPage, $pageName, $page);
@@ -1688,15 +1700,16 @@ class SearchBuilder
         }
 
         $suggestions = [];
-        $term = addcslashes(strtolower($this->searchTerm), '%_');
+        $rawTerm  = strtolower($this->searchTerm);          // used for PHP string comparisons
+        $safeTerm = addcslashes($rawTerm, '%_');            // used in LIKE bindings only
 
         // Clone query to avoid modifying the original
         $suggestQuery = clone $this->query;
 
         // Build a simple prefix query
-        $suggestQuery->where(function ($q) use ($term) {
+        $suggestQuery->where(function ($q) use ($safeTerm) {
             foreach ($this->searchableColumns as $column) {
-                $q->orWhere($column, 'LIKE', $term . '%');
+                $q->orWhere($column, 'LIKE', $safeTerm . '%');
             }
         });
 
@@ -1711,14 +1724,14 @@ class SearchBuilder
                     $words = preg_split('/\s+/', $value);
                     foreach ($words as $word) {
                         $wordLower = strtolower($word);
-                        if (str_starts_with($wordLower, $term) && strlen($word) > strlen($term)) {
+                        if (str_starts_with($wordLower, $rawTerm) && strlen($word) > strlen($rawTerm)) {
                             $suggestions[$wordLower] = $word;
                         }
                     }
 
-                    // Also add full column value if it starts with term
+                    // Also add full column value if it starts with the raw search term
                     $valueLower = strtolower($value);
-                    if (str_starts_with($valueLower, $term)) {
+                    if (str_starts_with($valueLower, $rawTerm)) {
                         $suggestions[$valueLower] = $value;
                     }
                 }

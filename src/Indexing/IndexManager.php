@@ -126,9 +126,12 @@ class IndexManager
                 ->where('model_id', $modelId)
                 ->delete();
 
+            // Guard against underflow on unsigned columns under concurrent deletes
             DB::table('fuzzy_index_terms')
                 ->whereIn('id', $termIds)
-                ->decrement('doc_count');
+                ->update([
+                    'doc_count' => DB::raw('CASE WHEN doc_count > 0 THEN doc_count - 1 ELSE 0 END'),
+                ]);
 
             DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)

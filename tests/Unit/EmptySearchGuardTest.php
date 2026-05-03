@@ -32,6 +32,48 @@ class EmptySearchGuardTest extends TestCase
     }
 
     /**
+     * paginate() must throw BadMethodCallException when extended syntax is active —
+     * the LIKE driver path would silently discard all AST operators.
+     * Use simplePaginate() or get() instead.
+     */
+    public function test_paginate_throws_for_extended_syntax(): void
+    {
+        $builder = new SearchBuilder(
+            $this->app['db']->table('users'),
+            app(FuzzySearch::class)
+        );
+
+        $this->expectException(\BadMethodCallException::class);
+        $this->expectExceptionMessageMatches('/extended/i');
+
+        $builder
+            ->search('alice')
+            ->extended()
+            ->searchIn(['name'])
+            ->paginate();
+    }
+
+    /**
+     * simplePaginate() must NOT throw for extended syntax — it delegates to get()
+     * which correctly routes through the AST compiler.
+     */
+    public function test_simple_paginate_works_for_extended_syntax(): void
+    {
+        $builder = new SearchBuilder(
+            $this->app['db']->table('users'),
+            app(FuzzySearch::class)
+        );
+
+        $result = $builder
+            ->search('alice')
+            ->extended()
+            ->searchIn(['name'])
+            ->simplePaginate(10);
+
+        $this->assertInstanceOf(\Illuminate\Contracts\Pagination\Paginator::class, $result);
+    }
+
+    /**
      * Regression test for P0-2: search('') with no extended/searchBoolean and
      * allow_empty_search=false (default) MUST throw EmptySearchTermException.
      */

@@ -24,14 +24,26 @@ abstract class BaseDriver
     abstract public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder;
 
     /**
-     * Get relevance expression for ordering
+     * Get relevance expression for ordering.
+     *
+     * @deprecated Not called by any internal code path — relevance ordering is handled
+     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v3.
      */
-    abstract public function getRelevanceExpression(string $column, string $value): string;
+    public function getRelevanceExpression(string $column, string $value): string
+    {
+        return '0';
+    }
 
     /**
-     * Get relevance bindings
+     * Get relevance bindings.
+     *
+     * @deprecated Not called by any internal code path — relevance ordering is handled
+     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v3.
      */
-    abstract public function getRelevanceBindings(string $value): array;
+    public function getRelevanceBindings(string $value): array
+    {
+        return [];
+    }
 
     /**
      * Escape LIKE metacharacters in a user-supplied value so % and _ are treated literally.

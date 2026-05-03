@@ -176,6 +176,6 @@ class FuzzySearch
         $col = $this->quoteColumnForDriver($column, 'pgsql');
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
-        return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . $value . '%']);
+        return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . addcslashes($value, '%_') . '%']);
     }
 }
