@@ -29,7 +29,7 @@ abstract class TestCase extends BaseTestCase
         $app['config']->set('fuzzy-search', [
             'default_algorithm'  => 'levenshtein',
             'allow_empty_search' => false,
-            'min_search_length'  => 1,
+            'min_search_length'  => 2, // matches config/fuzzy-search.php default
             'max_candidates'     => 1000,
             'levenshtein' => [
                 'max_distance' => 3,

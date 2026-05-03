@@ -59,10 +59,10 @@ abstract class BaseDriver
     protected function quoteColumn(string $column): string
     {
         return match ($this->driver) {
-            'mysql' => "`{$column}`",
-            'pgsql' => "\"{$column}\"",
-            'sqlsrv' => "[{$column}]",
-            default => $column,
+            'mysql'  => '`' . str_replace('`', '``', $column) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $column) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $column) . ']',
+            default  => $column,
         };
     }
 }

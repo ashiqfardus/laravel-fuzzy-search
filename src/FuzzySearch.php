@@ -164,9 +164,9 @@ class FuzzySearch
     protected function quoteColumnForDriver(string $column, string $driver): string
     {
         return match ($driver) {
-            'mysql'  => "`{$column}`",
-            'pgsql'  => "\"{$column}\"",
-            'sqlsrv' => "[{$column}]",
+            'mysql'  => '`' . str_replace('`', '``', $column) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $column) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $column) . ']',
             default  => $column,
         };
     }

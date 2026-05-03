@@ -85,7 +85,7 @@ class AstCompiler
         return match ($this->dbDriver) {
             'mysql'  => '`' . str_replace('`', '``', $column) . '`',
             'pgsql'  => '"' . str_replace('"', '""', $column) . '"',
-            'sqlsrv' => '[' . $column . ']',
+            'sqlsrv' => '[' . str_replace(']', ']]', $column) . ']',
             default  => $column,
         };
     }

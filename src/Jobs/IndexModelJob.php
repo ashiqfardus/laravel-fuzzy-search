@@ -20,9 +20,16 @@ class IndexModelJob implements ShouldQueue
 
     public function handle(IndexManager $indexManager): void
     {
-        $model = $this->modelClass::find($this->modelId);
+        // Use withTrashed() when available so SoftDeletes models are not silently
+        // excluded by the global scope. A soft-deleted model must be removed from
+        // the index, not re-indexed. A restored model (trashed=false) is re-indexed.
+        $query = method_exists($this->modelClass, 'withTrashed')
+            ? $this->modelClass::withTrashed()
+            : $this->modelClass::query();
 
-        if ($model === null) {
+        $model = $query->find($this->modelId);
+
+        if ($model === null || (method_exists($model, 'trashed') && $model->trashed())) {
             $indexManager->removeFromIndex($this->modelClass, $this->modelId);
             return;
         }

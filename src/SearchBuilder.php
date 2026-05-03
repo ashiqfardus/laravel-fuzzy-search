@@ -1726,8 +1726,13 @@ class SearchBuilder
         }
 
         $suggestions = [];
-        $rawTerm  = strtolower($this->searchTerm);          // used for PHP string comparisons
-        $safeTerm = addcslashes($rawTerm, '%_');            // used in LIKE bindings only
+        // $rawTerm  → PHP str_starts_with / strcmp comparisons (must be unescaped)
+        // $safeTerm → LIKE bindings only (% and _ escaped so they match literally)
+        // Never swap these: passing $safeTerm to str_starts_with would miss values
+        // containing literal '%' or '_', and passing $rawTerm to LIKE would treat
+        // those characters as wildcards.
+        $rawTerm  = strtolower($this->searchTerm);
+        $safeTerm = addcslashes($rawTerm, '%_');
 
         // Clone query to avoid modifying the original
         $suggestQuery = clone $this->query;

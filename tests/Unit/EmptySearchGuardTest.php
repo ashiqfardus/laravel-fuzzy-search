@@ -92,4 +92,46 @@ class EmptySearchGuardTest extends TestCase
             ->search('')
             ->get();
     }
+
+    /**
+     * min_search_length boundary: a single-character term must return empty
+     * collection when the published default (2) is active.
+     */
+    public function test_min_search_length_returns_empty_for_short_term(): void
+    {
+        config(['fuzzy-search.min_search_length' => 2, 'fuzzy-search.allow_empty_search' => true]);
+
+        $builder = new SearchBuilder(
+            $this->app['db']->table('users'),
+            app(FuzzySearch::class)
+        );
+
+        $results = $builder
+            ->search('j') // length 1 < min 2
+            ->searchIn(['name'])
+            ->get();
+
+        $this->assertCount(0, $results);
+    }
+
+    /**
+     * min_search_length boundary: a term at or above the minimum executes normally.
+     */
+    public function test_min_search_length_executes_for_term_at_minimum(): void
+    {
+        config(['fuzzy-search.min_search_length' => 2]);
+
+        $builder = new SearchBuilder(
+            $this->app['db']->table('users'),
+            app(FuzzySearch::class)
+        );
+
+        $results = $builder
+            ->search('jo') // length 2 == min 2 — must execute
+            ->searchIn(['name'])
+            ->get();
+
+        // 'jo' matches John, Johnny, Jon — expect at least one result
+        $this->assertNotEmpty($results);
+    }
 }
