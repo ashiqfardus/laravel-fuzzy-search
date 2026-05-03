@@ -1,5 +1,7 @@
 # Upgrading from v1.x to v2.0.0
 
+> **v2 automatically registers four new tables.** When you run `php artisan migrate` after upgrading to v2, four new tables (`fuzzy_index_terms`, `fuzzy_index_postings`, `fuzzy_index_meta`, `fuzzy_index_documents`) will be created regardless of whether you enable BM25 indexing. These tables are harmless if unused but are not optional. If you never plan to use BM25 search, simply ignore them.
+
 ## Phase 0 changes
 
 ### BREAKING: `using('fuzzy')`, `using('trigram')`, `using('simple')` now behave differently
@@ -149,3 +151,124 @@ php artisan fuzzy-search:rebuild "App\Models\User" --async --queue=indexing
 | `indexing.max_tokens_per_doc` | `5000` | Max unique tokens indexed per document (security cap) |
 | `bm25.k1` | `1.5` | BM25 k1 — term-frequency saturation |
 | `bm25.b` | `0.75` | BM25 b — length normalisation |
+
+---
+
+## Phase 2 changes
+
+### BREAKING: `_score` is now normalized to `[0, 1]`
+
+In Phase 1, `_score` was the raw BM25 float and could be any positive value. In Phase 2, `_score` is clamped and normalized to the range `[0, 1]` across the current result set.
+
+**Impact:** Any code that compared `_score` against a fixed threshold (e.g. `if ($result->_score > 5)`) or sorted results assuming an unbounded float will silently behave differently. Relative ordering within a single result set is preserved, but absolute values have changed.
+
+**Migration:** Replace threshold checks with relative comparisons, or read the preserved raw value:
+
+```php
+// Old — breaks silently
+if ($result->_score > 5) { ... }
+
+// New — use the normalized score on [0,1]
+if ($result->_score > 0.5) { ... }
+
+// Or access the original BM25 value
+if ($result->_raw_score > 5) { ... }
+```
+
+The raw BM25 value is always available as `_raw_score` on every result object.
+
+---
+
+### NEW: Extended search syntax (`->extended()` / `->searchBoolean()`)
+
+Phase 2 introduces a Fuse.js-style query language with prefix operators (`+`, `-`, `^`, `'`). Two new entry points activate it:
+
+```php
+// Fuse.js-style extended syntax
+$results = User::search("+john -doe 'exact")->extended()->get();
+
+// Boolean AND/OR/NOT with parentheses
+$results = User::search("john AND doe OR (jane NOT smith)")->searchBoolean()->get();
+```
+
+Both entry points share the same query parser. Two new config keys cap parser resource usage:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `query.max_tokens` | `32` | Maximum number of tokens the parser will process in a single query string |
+| `query.max_depth` | `16` | Maximum nesting depth for parenthesised sub-expressions |
+
+Queries that exceed either limit throw a `QuerySyntaxException` at parse time — they will not silently truncate.
+
+---
+
+### NEW: `_matches` array
+
+When `->highlight()` is chained together with an extended or boolean search, each result carries a `_matches` array that maps each matched column to the list of matched tokens:
+
+```php
+$results = User::search("+john")->extended()->highlight()->get();
+
+foreach ($results as $result) {
+    // e.g. ['name' => ['john'], 'email' => ['john']]
+    dump($result->_matches);
+}
+```
+
+> **Note:** `_matches` is populated only when `->highlight()` is also called. Calling `->extended()` alone does not populate `_matches`.
+
+---
+
+### NEW: `@fuzzyHighlight` Blade directive
+
+Phase 2 adds a dedicated Blade directive that wraps matched tokens in `<mark>` tags. It is XSS-safe — all output is passed through `e()` before wrapping.
+
+```blade
+{{-- Replaces manually echoing _highlighted values --}}
+@fuzzyHighlight($result->name, $result->_matches['name'] ?? [])
+```
+
+This replaces the previous pattern of echoing `$result->_highlighted['name']` directly, which was not XSS-safe unless the caller remembered to escape it.
+
+---
+
+### NEW: In-memory search (`FuzzySearch::on()`)
+
+`FuzzySearch::on($collection)` accepts any `Collection` or array and returns an `InMemorySearch` instance that runs the full fuzzy/BM25 pipeline entirely in PHP — no database queries.
+
+```php
+use Facades\LaravelFuzzySearch\FuzzySearch;
+
+$results = FuzzySearch::on($items)
+    ->searchIn(['name', 'bio'])
+    ->search('john')
+    ->get();
+```
+
+Two new config keys control in-memory behaviour:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `in_memory.max_items` | `10000` | Hard limit on collection size; larger collections throw `InMemoryLimitException` |
+| `in_memory.min_similarity` | `60` | Minimum similarity score (0–100) for a result to be included |
+
+---
+
+### New Phase 2 config keys
+
+If you published the config file under v1 or Phase 1, add the following keys to `config/fuzzy-search.php` to opt in to the new defaults and avoid falling back to hard-coded values:
+
+```php
+'query' => [
+    'syntax'     => 'standard', // 'standard' | 'extended' | 'boolean'
+    'max_tokens' => 32,
+    'max_depth'  => 16,
+],
+
+'in_memory' => [
+    'max_items'      => 10000,
+    'min_similarity' => 60,
+],
+```
+
+If you did not publish the config, these defaults are already active — no action required.
