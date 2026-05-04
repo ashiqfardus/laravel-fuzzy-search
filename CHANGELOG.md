@@ -7,24 +7,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- **IndexManager — concurrent upsert safety (C9):** `indexModel()` and `indexBatch()` now use `upsert()` on `fuzzy_index_postings` instead of `insert()` — eliminates `QueryException` when two workers index the same model simultaneously against the `UNIQUE (term_id, model_type, model_id)` constraint
-- **IndexManager — `avg_doc_length` drift (C11):** `removeFromIndex()` now subtracts the deleted document's `doc_length` from `total_tokens` before recomputing `avg_doc_length`; `indexModel()` applies a delta when re-indexing so `total_tokens` stays accurate across updates
-- **IndexManager — `doc_count` leak in batch re-index (C12):** `indexBatch()` now fetches and decrements `doc_count` for terms belonging to re-indexed documents before re-inserting, preventing monotonic inflation of IDF scores on every `fuzzy-search:rebuild` run
-- **IndexManager — first-insert race (C10):** `upsertMeta()` and `upsertMetaBulk()` now use `insertOrIgnore()` to guarantee the meta row exists before issuing atomic `UPDATE` increments — prevents concurrent first-ever indexing from throwing on the `UNIQUE` constraint
-- **`FuzzySearchEngine::paginate()` real total (C13):** Scout engine `paginate()` now calls `Bm25Scorer::count()` (a single `COUNT(DISTINCT model_id)` query) for the true match total instead of using the bounded fetch count — page counts are now correct for any result set size
-- **Migration dedup guard (C14-C7):** `add_unique_index_to_fuzzy_index_postings` now removes duplicate rows before adding the `UNIQUE` constraint, so the migration does not fail on databases with pre-existing duplicates from concurrent indexing
-- **Migration MySQL key-length (C14-C6):** `widen_term_column_to_255` now drops the unique index, widens the column, then recreates a `term(191)` prefix index on MySQL — safe on MySQL 5.7 where a full `varchar(255)` utf8mb4 index key would exceed the 767-byte limit
-- **False-positive test: federated `_model_type` (C15-E1):** `FederatedSearchTest::test_federated_search_includes_model_type` now asserts `isset($first->_model_type)` directly instead of using `|| true`
-- **False-positive test: queue job model check (C15-E2):** `QueueTest::test_reindex_job_contains_correct_model` callback now verifies the job's `modelClass` property equals `User::class` instead of always returning `true`
-- **Docs — `InMemorySearch::highlight()` (C16-F1):** Removed `highlight` from the `InMemorySearch` supported-methods list in `docs/QUERY_LANGUAGE.md` and the `__call()` error message — `highlight()` is not implemented on `InMemorySearch`
-- **Docs — extended syntax operators (C16-F2):** `docs/UPGRADE_v1_TO_v2.md` examples corrected to use actual Lexer operators (`!` for NOT, `'` for include-match) instead of unsupported Fuse.js `+`/`-` prefixes and `AND`/`OR`/`NOT` keywords
-- **Docs — `GETTING_STARTED.md` method names (C16-F3):** Corrected `scoreWith()` → `customScore()` and `_score_breakdown` → `_debug` to match the actual `SearchBuilder` API
-
-## [2.0.0-alpha.4] — Bug-fixes, security hardening, and schema improvements
+## [2.0.0-alpha.4] — 2026-05-04 — Bug-fixes, security hardening, schema improvements, and concurrency fixes
 
 ### Fixed
 
@@ -34,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cache key:** `useSearchIndex`, `extendedQuery`, `columnWeights`, and `stopWords` are now included in the cache key — prevents cross-search result poisoning when two different searches share the same base query string
 - **BM25 paginate total:** `paginateIndexed()` computes the real total via `COUNT(DISTINCT model_id)` instead of inferring it from a bounded fetch — page counts are now accurate for large result sets
 - **BM25 debug output:** `debugScore()` information is now emitted in both BM25 code paths (direct and paginated)
+- **IndexManager — concurrent upsert safety:** `indexModel()` and `indexBatch()` now use `upsert()` on `fuzzy_index_postings` instead of `insert()` — eliminates `QueryException` when two workers index the same model simultaneously against the `UNIQUE (term_id, model_type, model_id)` constraint
+- **IndexManager — first-insert race:** `upsertMeta()` and `upsertMetaBulk()` now use `insertOrIgnore()` to guarantee the meta row exists before issuing atomic `UPDATE` increments — prevents concurrent first-ever indexing from throwing on the `UNIQUE` constraint
+- **IndexManager — `avg_doc_length` drift:** `removeFromIndex()` now subtracts the deleted document's `doc_length` from `total_tokens` before recomputing `avg_doc_length`; `indexModel()` applies a delta when re-indexing so `total_tokens` stays accurate across updates
+- **IndexManager — `doc_count` leak in batch re-index:** `indexBatch()` now fetches and decrements `doc_count` for terms belonging to re-indexed documents before re-inserting, preventing monotonic inflation of IDF scores on every `fuzzy-search:rebuild` run
+- **`FuzzySearchEngine::paginate()` real total:** Scout engine `paginate()` now calls `Bm25Scorer::count()` (a single `COUNT(DISTINCT model_id)` query) for the true match total instead of using the bounded fetch count — page counts are now correct for any result set size
+- **Migration dedup guard:** `add_unique_index_to_fuzzy_index_postings` now removes duplicate rows before adding the `UNIQUE` constraint, so the migration does not fail on databases with pre-existing duplicates from concurrent indexing
+- **Migration MySQL key-length:** `widen_term_column_to_255` now drops the unique index, widens the column, then recreates a `term(191)` prefix index on MySQL — safe on MySQL 5.7 where a full `varchar(255)` utf8mb4 index key would exceed the 767-byte limit
+- **False-positive tests:** Fixed two tests that used `|| true` / always-true callbacks (`FederatedSearchTest`, `QueueTest`) — they now assert the actual values
+- **Docs — `InMemorySearch::highlight()`:** Removed `highlight` from the `InMemorySearch` supported-methods list in `docs/QUERY_LANGUAGE.md` — `highlight()` is not implemented on `InMemorySearch`
+- **Docs — extended syntax operators:** `docs/UPGRADE_v1_TO_v2.md` examples corrected to use actual Lexer operators (`!` for NOT, `'` for include-match) instead of unsupported Fuse.js `+`/`-` prefixes
+- **Docs — `GETTING_STARTED.md` method names:** Corrected `scoreWith()` → `customScore()` and `_score_breakdown` → `_debug` to match the actual `SearchBuilder` API
 
 ### Security
 

@@ -322,12 +322,14 @@ When the cap is hit, a `Log::warning()` is emitted and remaining tokens are disc
 
 ## Fallback behaviour
 
-If `useInvertedIndex()` is called without a resolvable model class (e.g. on a `DB::table()` query), it silently falls back to the LIKE-pattern path. No exception is thrown.
+`useInvertedIndex()` is a `SearchBuilder` method. It is available when searching through a model that uses the `Searchable` trait (`Model::search()`). The low-level Query Builder macro `fuzzySearch()` returns the plain Query Builder and does **not** expose `useInvertedIndex()`.
 
 ```php
-// Falls back to LIKE path silently — no crash
-DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex()->get();
+// ✓ BM25 path — useInvertedIndex() is available on SearchBuilder
+User::search('john')->useInvertedIndex()->get();
 
-// BM25 path works when you pass the model class explicitly
-DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex('App\Models\User')->get();
+// ✗ Wrong — DB::table()->fuzzySearch() returns a plain Builder, not a SearchBuilder
+// DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex(); // throws BadMethodCallException
 ```
+
+If the model class cannot be resolved at runtime (e.g. the table name does not map to a loaded model), `useInvertedIndex()` silently falls back to the LIKE-pattern path. No exception is thrown.

@@ -125,15 +125,14 @@ Product::search('laptop')
     ->get();
 ```
 
-### Strategy 2: Search Index Table (500K+ Records)
+### Strategy 2: BM25 Inverted Index (500K+ Records)
 
-Pre-compute searchable content in a dedicated index:
+Pre-compute a BM25 inverted index for ranked, fast results:
 
 ```php
 // config/fuzzy-search.php
 'indexing' => [
     'enabled' => true,
-    'table' => 'search_index',
     'async' => true,
     'queue' => 'search-indexing',
     'chunk_size' => 1000,
@@ -141,14 +140,14 @@ Pre-compute searchable content in a dedicated index:
 ```
 
 ```bash
-# Build index in background
-php artisan fuzzy-search:index Product --queue
+# Build BM25 index
+php artisan fuzzy-search:rebuild "App\Models\Product"
 ```
 
 ```php
-// Uses optimized index table instead of main table
+// Uses BM25 fuzzy_index_* tables instead of scanning the main table
 Product::search('laptop')
-    ->useIndex()
+    ->useInvertedIndex()
     ->get();
 ```
 
@@ -166,9 +165,9 @@ Schema::table('products', function (Blueprint $table) {
 ```
 
 ```php
-// Use native FULLTEXT search for large datasets
+// Use simple algorithm for large datasets (generates LIKE patterns)
 Product::search('laptop')
-    ->using('simple')  // Falls back to MATCH...AGAINST
+    ->using('simple')
     ->get();
 ```
 
@@ -339,7 +338,7 @@ class HybridSearchService
         $query = Product::search($term);
         
         if (config('fuzzy-search.indexing.enabled')) {
-            $query->useIndex();
+            $query->useInvertedIndex();
         }
         
         // Step 3: Apply partition hint if category filter present
@@ -502,17 +501,14 @@ $results = Product::search('laptop')
 Use the built-in benchmark command:
 
 ```bash
-# Benchmark all algorithms
-php artisan fuzzy-search:benchmark Article
+# Benchmark with default term and 100 iterations
+php artisan fuzzy-search:benchmark "App\Models\Article"
 
-# Benchmark specific algorithm
-php artisan fuzzy-search:benchmark Article --algorithm=fuzzy
+# Benchmark a specific algorithm and search term
+php artisan fuzzy-search:benchmark "App\Models\Article" --algorithm=fuzzy --term=laravel
 
-# Custom dataset size
-php artisan fuzzy-search:benchmark Article --rows=50000
-
-# Multiple queries
-php artisan fuzzy-search:benchmark Article --queries=1000
+# Control iteration count
+php artisan fuzzy-search:benchmark "App\Models\Article" --iterations=500
 ```
 
 ### Example Output
@@ -633,30 +629,22 @@ $results = Article::search('laravel')
     ->get();
 ```
 
-### 2. Tag-Based Cache Invalidation
+### 2. Cache Invalidation
+
+`cache()` accepts `(?int $minutes, ?string $key)` — there is no tag argument. Invalidate stale entries by busting the key manually or via a model observer:
 
 ```php
 // In your model
 class Article extends Model
 {
     use Searchable;
-    
+
     protected static function booted()
     {
-        static::saved(function ($article) {
-            Cache::tags(['articles'])->flush();
-        });
-        
-        static::deleted(function ($article) {
-            Cache::tags(['articles'])->flush();
-        });
+        static::saved(fn ($article) => Cache::forget('articles:search:laravel'));
+        static::deleted(fn ($article) => Cache::forget('articles:search:laravel'));
     }
 }
-
-// Use tagged cache
-$results = Article::search('laravel')
-    ->cache(3600, 'articles:search:laravel', ['articles'])
-    ->get();
 ```
 
 ### 3. Redis Configuration
@@ -697,7 +685,6 @@ public function autocomplete(Request $request)
 // config/fuzzy-search.php
 'indexing' => [
     'enabled' => true,
-    'table' => 'search_index',
     'async' => true,        // Use queue for indexing
     'queue' => 'default',
     'chunk_size' => 500,
@@ -707,40 +694,29 @@ public function autocomplete(Request $request)
 ### 2. Build Index
 
 ```bash
-# Index a model
-php artisan fuzzy-search:index Article
+# Build BM25 index for a model
+php artisan fuzzy-search:rebuild "App\Models\Article"
 
-# Reindex with progress
-php artisan fuzzy-search:index Article --fresh
-
-# Index multiple models
-php artisan fuzzy-search:index Article Product User
+# Rebuild with fresh index (flush first)
+php artisan fuzzy-search:rebuild "App\Models\Article" --fresh
 ```
 
 ### 3. Use Index in Queries
 
 ```php
 $results = Article::search('laravel')
-    ->useIndex()  // Use pre-built index
+    ->useInvertedIndex()
     ->get();
 ```
 
 ### 4. Automatic Index Updates
 
-Add to your model:
+The `Searchable` trait registers a model observer automatically when `indexing.enabled = true` in your config. No booted() wiring is needed. For manual dispatch:
 
 ```php
-class Article extends Model
-{
-    use Searchable;
-    
-    protected static function booted()
-    {
-        static::saved(function ($article) {
-            dispatch(new ReindexModelJob(Article::class, $article->id));
-        });
-    }
-}
+use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+
+IndexModelJob::dispatch(Article::class, $article->id);
 ```
 
 ### 5. Clear Index

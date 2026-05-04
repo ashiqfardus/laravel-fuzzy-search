@@ -439,7 +439,7 @@ if (!empty($searchTerm)) {
 ],
 
 // Build index
-php artisan fuzzy-search:index Article
+php artisan fuzzy-search:rebuild "App\Models\Article"
 ```
 
 2. **Enable caching:**
@@ -471,7 +471,7 @@ $results = Article::search('laravel')
 **Solution:** Use a valid algorithm:
 
 ```php
-// Valid algorithms: fuzzy, levenshtein, soundex, trigram, simple
+// Valid algorithms: fuzzy, levenshtein, soundex, trigram, metaphone, similar_text, simple, like
 $results = Article::search('test')
     ->using('fuzzy')  // ✓ Valid
     ->get();
@@ -482,8 +482,8 @@ $results = Article::search('test')
 - Read the [full documentation](../README.md)
 - Check out [performance tips](PERFORMANCE.md)
 - Learn about [algorithm comparison](COMPARISON.md)
-- View [API reference](API.md)
-- Browse [example implementations](../examples/)
+- Learn about [inverted index / BM25](INVERTED_INDEX.md)
+- Read the [upgrade guide (v1 → v2)](UPGRADE_v1_TO_v2.md)
 
 ## Need Help?
 

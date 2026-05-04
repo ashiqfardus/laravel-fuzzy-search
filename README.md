@@ -91,7 +91,7 @@ class User extends Model
     ];
 }
 
-// Option 2: Specify at query time (overrides $searchable)
+// Option 2: Specify at query time (merges with / adds to $searchable columns)
 $users = User::search('john')
     ->searchIn(['name' => 10, 'email' => 5])
     ->get();
@@ -218,10 +218,12 @@ See [Extended Search docs](docs/EXTENDED_SEARCH.md) for the operator reference.
 ### In-Memory Mode (v2+)
 
 ```php
+use Ashiqfardus\LaravelFuzzySearch\Facades\FuzzySearch;
+
 $matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->get();
 ```
 
-> **Supported methods:** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `highlight`, `get`.
+> **Supported methods:** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `get`.
 > Any other `SearchBuilder` method (e.g. `extended()`, `using()`, `preset()`, `paginate()`) will throw a `\BadMethodCallException` to prevent silent failures.
 
 ## Field Weighting & Scoring
@@ -484,25 +486,25 @@ foreach ($users as $user) {
 
 ## Performance & Indexing
 
-### Search Index Table
+### BM25 Inverted Index
+
+For tables with 10k+ rows, build the BM25 index for ranked, fast results:
 
 ```bash
-# Create search index
-php artisan fuzzy-search:index User
-
-# Rebuild index
-php artisan fuzzy-search:index User --fresh
-
-# Index specific columns
-php artisan fuzzy-search:index User --columns=name,email
+php artisan migrate
+php artisan fuzzy-search:rebuild "App\Models\User"
 ```
 
 ```php
-// Use indexed search (faster for large tables)
+// Use BM25 indexed search (faster + ranked for large tables)
 User::search('john')
-    ->useIndex()
+    ->useInvertedIndex()
     ->get();
 ```
+
+> **Note:** `useIndex()` is an alias for `useInvertedIndex()` — both query the BM25 `fuzzy_index_*` tables. The deprecated legacy `search_index` table from v1 is no longer used.
+
+See [Inverted Index](docs/INVERTED_INDEX.md) for production setup (queue workers, auto-indexing via observer, Horizon config).
 
 ### Async Indexing (Queue Support)
 
@@ -514,8 +516,9 @@ User::search('john')
     'chunk_size' => 500,
 ],
 
-// Dispatch indexing job
-User::reindex();  // Queued automatically
+// Re-index a single model (dispatches IndexModelJob to queue)
+// use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+IndexModelJob::dispatch(User::class, $user->id);
 ```
 
 ### Redis / Cache Support
@@ -568,6 +571,8 @@ $users = User::search('john')
     ->skip(20)
     ->get();
 ```
+
+> **Note:** `paginate()`, `simplePaginate()`, and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()`. Combining them throws a `BadMethodCallException`. Use `get()` when extended syntax is active. See [Extended Search](docs/EXTENDED_SEARCH.md#pagination) for details.
 
 ## Reliability & Safety
 
@@ -715,7 +720,6 @@ return [
     
     'indexing' => [
         'enabled' => false,
-        'table' => 'search_index',
         'async' => true,
         'queue' => 'default',
     ],
@@ -906,17 +910,17 @@ class Product extends Model
 ### Indexing Commands
 
 ```bash
-# Index a model
-php artisan fuzzy-search:index User
+# Build / rebuild BM25 index for a model
+php artisan fuzzy-search:rebuild "App\Models\User"
 
-# Index with fresh rebuild
-php artisan fuzzy-search:index User --fresh
+# Rebuild with fresh index (flush first)
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 
-# Index all searchable models
-php artisan fuzzy-search:index --all
+# Clear BM25 index for a model
+php artisan fuzzy-search:clear "App\Models\User"
 
-# Clear index
-php artisan fuzzy-search:clear User
+# Clear BM25 index for all models
+php artisan fuzzy-search:clear --all
 ```
 
 ### Benchmark Tools
@@ -965,7 +969,7 @@ composer benchmark
 
 ```php
 User::search('john')
-    ->useIndex()
+    ->useInvertedIndex()
     ->cache(60)
     ->searchIn(['name', 'email'])  // Not all columns
     ->maxPatterns(50)

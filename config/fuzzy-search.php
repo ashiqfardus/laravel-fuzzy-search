@@ -6,13 +6,15 @@ return [
     | Default Fuzzy Search Algorithm
     |--------------------------------------------------------------------------
     |
-    | Supported: "simple", "fuzzy", "levenshtein", "soundex", "trigram"
+    | Supported: "simple", "like", "fuzzy", "levenshtein", "soundex", "trigram", "metaphone", "similar_text"
     |
     | - "fuzzy": General purpose with typo tolerance (recommended)
     | - "levenshtein": Edit distance based, configurable tolerance
     | - "soundex": Phonetic matching for similar sounding words
     | - "trigram": N-gram similarity (best with PostgreSQL pg_trgm)
-    | - "simple": Basic LIKE matching (fastest, no typo tolerance)
+    | - "metaphone": Double-metaphone phonetic matching
+    | - "similar_text": PHP similar_text() percentage similarity
+    | - "simple" / "like": Basic LIKE matching (fastest, no typo tolerance)
     |
     */
     'default_algorithm' => 'fuzzy',

@@ -1,6 +1,6 @@
 # Capability Matrix
 
-> Last updated: v2.0.0-alpha.1 (Phase 0)
+> Last updated: v2.0.0-alpha.4
 
 This table shows **exactly what each algorithm does at the SQL level** on each supported database.
 "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns.

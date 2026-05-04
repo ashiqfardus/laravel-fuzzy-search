@@ -118,7 +118,7 @@ $results = User::whereFuzzy('name', 'john')->get();
 | **Real-time** | ✅ Instant updates | ⚠️ Queue delay |
 | **Privacy** | ✅ Data in your database | ⚠️ Depends on driver (Algolia, Meilisearch) |
 | **Cost** | ✅ Free | 💰 Most drivers are paid services |
-| **Multiple Algorithms** | ✅ 5 algorithms built-in | ❌ Single algorithm per driver |
+| **Multiple Algorithms** | ✅ 8 algorithms built-in | ❌ Single algorithm per driver |
 | **Query Builder Support** | ✅ Works with Query Builder | ❌ Eloquent only |
 
 ### Laravel Scout Advantages
@@ -199,7 +199,7 @@ $results = Article::search('laravel')->get();
 | **Setup** | ⚡ Zero config | ⏱️ Requires configuration & indexing |
 | **Real-time** | ✅ Instant updates | ❌ Requires manual reindexing |
 | **Database Native** | ✅ Direct DB queries | ❌ Separate SQLite index |
-| **Multiple Algorithms** | ✅ 5 algorithms | ⚠️ 1 algorithm |
+| **Multiple Algorithms** | ✅ 8 algorithms | ⚠️ 1 algorithm |
 | **Query Builder** | ✅ Supported | ❌ Eloquent only |
 
 ### TNTSearch Advantages

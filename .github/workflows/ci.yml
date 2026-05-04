@@ -15,11 +15,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.1", "8.2", "8.3"]
-        laravel: ["9.*", "10.*", "11.*", "12.*"]
+        php: ["8.1", "8.2", "8.3", "8.4"]
+        laravel: ["9.*", "10.*", "11.*", "12.*", "13.*"]
         exclude:
           - { php: "8.1", laravel: "11.*" }
           - { php: "8.1", laravel: "12.*" }
+          - { php: "8.1", laravel: "13.*" }
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -35,7 +36,7 @@ jobs:
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
 
   # ── MySQL 8 ───────────────────────────────────────────────────────────────
-  # Representative subset: PHP 8.2/8.3 × Laravel 10/12
+  # Representative subset: PHP 8.2/8.3/8.4 × Laravel 10/12/13
   test-mysql:
     name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / MySQL 8"
     runs-on: ubuntu-latest
@@ -54,8 +55,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.2", "8.3"]
-        laravel: ["10.*", "12.*"]
+        php: ["8.2", "8.3", "8.4"]
+        laravel: ["10.*", "12.*", "13.*"]
     env:
       DB_TEST_DRIVER: mysql
       DB_TEST_HOST: 127.0.0.1
@@ -78,7 +79,7 @@ jobs:
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
 
   # ── PostgreSQL 14 ─────────────────────────────────────────────────────────
-  # Representative subset: PHP 8.2/8.3 × Laravel 10/12
+  # Representative subset: PHP 8.2/8.3/8.4 × Laravel 10/12/13
   test-pgsql:
     name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / PostgreSQL 14"
     runs-on: ubuntu-latest
@@ -98,8 +99,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.2", "8.3"]
-        laravel: ["10.*", "12.*"]
+        php: ["8.2", "8.3", "8.4"]
+        laravel: ["10.*", "12.*", "13.*"]
     env:
       DB_TEST_DRIVER: pgsql
       DB_TEST_HOST: 127.0.0.1

@@ -163,12 +163,14 @@ class FuzzySearch
 
     protected function quoteColumnForDriver(string $column, string $driver): string
     {
-        return match ($driver) {
-            'mysql'  => '`' . str_replace('`', '``', $column) . '`',
-            'pgsql'  => '"' . str_replace('"', '""', $column) . '"',
-            'sqlsrv' => '[' . str_replace(']', ']]', $column) . ']',
-            default  => $column,
-        };
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($driver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
     }
 
     protected function applyWithUnaccent(Builder $query, string $column, string $value, string $boolean): Builder

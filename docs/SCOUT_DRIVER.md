@@ -31,7 +31,11 @@ use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable as FuzzySearchable;
 
 class User extends Model
 {
-    use Searchable, FuzzySearchable;
+    use Searchable, FuzzySearchable {
+        // Scout's Searchable::search() takes precedence; FuzzySearchable methods
+        // are available via the fluent builder returned by Scout's search().
+        FuzzySearchable::search insteadof Searchable;
+    }
 
     public function toSearchableArray(): array
     {
