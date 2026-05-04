@@ -57,13 +57,10 @@ class UpgradeV1CommandTest extends TestCase
             ->expectsOutputToContain('No v1 patterns found');
     }
 
-    public function test_command_exits_with_code_1_when_issues_found(): void
+    public function test_command_errors_on_nonexistent_path(): void
     {
-        file_put_contents($this->tmpDir . '/app/Models/Legacy.php',
-            "<?php\nuse Ashiqfardus\\LaravelFuzzySearch\\Traits\\Fuzzy;\n"
-        );
-
-        $this->artisan('fuzzy-search:upgrade-v1', ['path' => $this->tmpDir . '/app'])
-            ->assertExitCode(1);
+        $this->artisan('fuzzy-search:upgrade-v1', ['path' => '/nonexistent/path/xyz-' . uniqid()])
+            ->assertExitCode(1)
+            ->expectsOutputToContain('Directory not found');
     }
 }

@@ -19,12 +19,12 @@ class UpgradeV1Command extends Command
      */
     private const PATTERNS = [
         [
-            'use .*Traits\\\\Fuzzy',
+            'use .*Traits[\\\\]Fuzzy(?![a-zA-Z])',
             'Deprecated Fuzzy trait',
             'Replace with Searchable trait',
         ],
         [
-            '->searchFuzzy\s*\(',
+            '(?:->|::)searchFuzzy\\s*\\(',
             'scopeSearchFuzzy usage',
             'Replace with User::search()->searchIn()->get()',
         ],
@@ -62,12 +62,33 @@ class UpgradeV1Command extends Command
 
     public function handle(): int
     {
+        foreach (self::PATTERNS as [$pattern]) {
+            if (@preg_match('/' . $pattern . '/i', '') === false) {
+                $this->error("Internal error: invalid regex pattern: {$pattern}");
+                return self::FAILURE;
+            }
+        }
+
         $rawPath = $this->argument('path');
 
         // Resolve relative paths against base_path(), keep absolute paths as-is
-        $scanPath = str_starts_with($rawPath, '/')
+        $isAbsolute = str_starts_with($rawPath, '/');
+        $scanPath = $isAbsolute
             ? $rawPath
             : base_path($rawPath);
+
+        if (!$isAbsolute) {
+            $realScanPath = realpath($scanPath);
+            $realBasePath = realpath(base_path());
+
+            if ($realScanPath !== false && $realBasePath !== false) {
+                if (!str_starts_with($realScanPath, $realBasePath)) {
+                    $this->error('Path must be within the project root.');
+                    return self::FAILURE;
+                }
+                $scanPath = $realScanPath;
+            }
+        }
 
         if (!is_dir($scanPath)) {
             $this->error("Directory not found: {$scanPath}");
@@ -99,7 +120,7 @@ class UpgradeV1Command extends Command
         }
 
         $this->table(['File', 'Line', 'Pattern', 'Action'], $rows);
-        $this->line('');
+        $this->newLine();
         $this->line('Full migration guide: docs/UPGRADE_v1_TO_v2.md');
 
         return self::FAILURE;
