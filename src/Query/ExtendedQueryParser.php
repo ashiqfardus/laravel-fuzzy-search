@@ -9,6 +9,8 @@ use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
 };
 
 /**
+ * @internal This class is not part of the public API and may change without notice.
+ *
  * Recursive descent parser:
  *
  *   expr  := or

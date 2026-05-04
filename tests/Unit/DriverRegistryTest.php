@@ -120,8 +120,10 @@ class DriverRegistryTest extends TestCase
 
         $query = $this->app['db']->table('users');
         // Must not throw; falls back to LevenshteinDriver silently
-        $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'john', 'does_not_exist');
-        $this->assertTrue(true);
+        $result = $this->fuzzySearch->applyFuzzyWhere($query, 'name', 'john', 'does_not_exist');
+        $sql = strtolower($result->toSql());
+        $this->assertStringContainsString('like', $sql,
+            'Legacy dispatch fallback should produce a LIKE-based query via LevenshteinDriver');
     }
 
     public function test_observer_populates_metaphone_shadow_column_on_save(): void

@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('fuzzy_index_documents', function (Blueprint $table) {
             $table->string('model_type', 191);
-            $table->unsignedBigInteger('model_id');
+            $table->string('model_id', 36); // supports both integer PKs and UUID/ULID
             $table->unsignedInteger('doc_length')->default(0);
 
             $table->primary(['model_type', 'model_id']);

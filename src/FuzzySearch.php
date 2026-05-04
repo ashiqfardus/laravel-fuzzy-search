@@ -53,6 +53,10 @@ class FuzzySearch
         ?array $options = [],
         string $boolean = 'and'
     ): Builder {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
+        }
+
         $algorithm = $algorithm ?? $this->config['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
 
@@ -88,6 +92,11 @@ class FuzzySearch
 
     public function applyFuzzyOrder(Builder $query, string $column, string $value, string $direction = 'asc'): Builder
     {
+        $direction = strtolower(trim($direction));
+        if (!in_array($direction, ['asc', 'desc'], true)) {
+            throw new \InvalidArgumentException("Invalid sort direction [{$direction}]: must be 'asc' or 'desc'.");
+        }
+
         $driver = $this->getDriver($query);
         $col = $this->quoteColumnForDriver($column, $driver);
 
@@ -154,12 +163,14 @@ class FuzzySearch
 
     protected function quoteColumnForDriver(string $column, string $driver): string
     {
-        return match ($driver) {
-            'mysql'  => "`{$column}`",
-            'pgsql'  => "\"{$column}\"",
-            'sqlsrv' => "[{$column}]",
-            default  => $column,
-        };
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($driver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
     }
 
     protected function applyWithUnaccent(Builder $query, string $column, string $value, string $boolean): Builder
@@ -167,6 +178,6 @@ class FuzzySearch
         $col = $this->quoteColumnForDriver($column, 'pgsql');
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
-        return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . $value . '%']);
+        return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . addcslashes($value, '%_') . '%']);
     }
 }

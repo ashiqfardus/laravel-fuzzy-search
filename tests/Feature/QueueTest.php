@@ -67,8 +67,9 @@ class QueueTest extends TestCase
         User::reindex();
 
         Queue::assertPushed(ReindexModelJob::class, function ($job) {
-            // The job should be for the User model
-            return true; // Job was pushed with correct model
+            $prop = new \ReflectionProperty($job, 'modelClass');
+            $prop->setAccessible(true);
+            return $prop->getValue($job) === User::class;
         });
     }
 

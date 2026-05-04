@@ -68,6 +68,20 @@ class InMemorySearch
         return $this;
     }
 
+    /**
+     * Catch-all for unsupported SearchBuilder methods chained on InMemorySearch.
+     * Throws immediately so callers get a clear error instead of a silent no-op.
+     *
+     * @throws \BadMethodCallException
+     */
+    public function __call(string $name, array $args): never
+    {
+        throw new \BadMethodCallException(
+            "InMemorySearch does not support {$name}(). " .
+            "Supported methods: search, searchIn, take, skip, withRelevance, get."
+        );
+    }
+
     public function get(): Collection
     {
         if ($this->term === '' || empty($this->columns)) {

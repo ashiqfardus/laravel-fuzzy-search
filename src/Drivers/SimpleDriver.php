@@ -16,12 +16,11 @@ class SimpleDriver extends BaseDriver
         $col = $this->quoteColumn($column);
 
         if ($this->driver === 'pgsql') {
-            // PostgreSQL case-insensitive
             $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-            return $query->$rawMethod("{$col} ILIKE ?", ['%' . $value . '%']);
+            return $query->$rawMethod("{$col} ILIKE ?", ['%' . $this->escapeLike($value) . '%']);
         }
 
-        return $query->$method($column, 'LIKE', '%' . $value . '%');
+        return $query->$method($column, 'LIKE', '%' . $this->escapeLike($value) . '%');
     }
 
     public function getRelevanceExpression(string $column, string $value): string

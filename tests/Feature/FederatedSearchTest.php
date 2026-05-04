@@ -68,9 +68,11 @@ class FederatedSearchTest extends TestCase
         $this->assertGreaterThan(0, $results->count());
         
         $first = $results->first();
-        // Check if model type is set (may not be if using Searchable trait directly)
-        $hasModelType = isset($first->_model_type) || property_exists($first, '_model_type');
-        $this->assertTrue($hasModelType || true, 'Model type property check skipped for Searchable models');
+        $this->assertTrue(
+            isset($first->_model_type),
+            '_model_type must be set on every FederatedSearch result'
+        );
+        $this->assertNotEmpty($first->_model_type);
     }
 
     /*

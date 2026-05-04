@@ -17,6 +17,14 @@ class SearchableIndexingObserver
             return;
         }
 
+        $searchableCols = method_exists($model, 'getSearchableColumns')
+            ? $model->getSearchableColumns()
+            : [];
+
+        if (!empty($searchableCols) && !$model->wasRecentlyCreated && !$model->wasChanged($searchableCols)) {
+            return; // none of the indexed columns changed — skip dispatch
+        }
+
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 

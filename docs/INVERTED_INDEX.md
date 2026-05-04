@@ -45,6 +45,25 @@ User::create(['name' => 'John'])
 
 ---
 
+## Requirements and limitations
+
+**Integer primary keys required.** The BM25 inverted index assumes integer model primary keys (`unsignedBigInteger`). The `fuzzy_index_postings.model_id` column is `unsignedBigInteger`, so models with UUID or ULID primary keys are not currently supported for BM25 indexing. Use the standard LIKE or Levenshtein search paths for such models.
+
+**Column weights are not applied by BM25.** Column weights passed via `searchIn(['name' => 10, 'email' => 5])` are respected by the LIKE/Levenshtein scoring paths but are silently ignored when using the BM25 inverted index path. BM25 scores are computed from term frequency and inverse document frequency only — all columns are treated equally. If you call both `useInvertedIndex()` and `searchIn()` with weights, enable `app.debug` to receive a notice.
+
+---
+
+## Observer auto-attach
+
+Adding the `Searchable` trait to a model automatically registers two observers on that model class via `bootSearchable()`:
+
+- **`SearchableIndexingObserver`** — listens to `saved` and `deleted` events. Queues (or runs synchronously) an `IndexModelJob` to update the BM25 index. This is a **no-op** when `config('fuzzy-search.indexing.enabled')` is `false`, so it adds zero overhead for apps that have not enabled the inverted index.
+- **`SearchableObserver`** — listens to `saved` events and writes metaphone shadow columns if they exist on the table. It checks `hasColumn()` at runtime before writing, so it is **safe when no shadow columns are configured** — the observer simply finds no matching columns and exits without touching the database.
+
+No configuration is required for either observer if you are not using those features. The `Searchable` trait is intentionally zero-config: you can add it to a model and the observers will silently do nothing until the relevant features (indexing or shadow columns) are enabled.
+
+---
+
 ## Production setup (step by step)
 
 ### Step 1 — Run migrations
@@ -271,6 +290,8 @@ Supported languages (all from the `wamania/php-stemmer` Snowball library): Engli
 
 ## BM25 tuning
 
+> **Note on column weights.** Column weights passed via `searchIn()` are not applied when using the BM25 inverted index path. All columns are treated equally by BM25. Weighting is only effective on the LIKE/Levenshtein scoring path.
+
 ```php
 // config/fuzzy-search.php
 'bm25' => [
@@ -301,12 +322,14 @@ When the cap is hit, a `Log::warning()` is emitted and remaining tokens are disc
 
 ## Fallback behaviour
 
-If `useInvertedIndex()` is called without a resolvable model class (e.g. on a `DB::table()` query), it silently falls back to the LIKE-pattern path. No exception is thrown.
+`useInvertedIndex()` is a `SearchBuilder` method. It is available when searching through a model that uses the `Searchable` trait (`Model::search()`). The low-level Query Builder macro `fuzzySearch()` returns the plain Query Builder and does **not** expose `useInvertedIndex()`.
 
 ```php
-// Falls back to LIKE path silently — no crash
-DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex()->get();
+// ✓ BM25 path — useInvertedIndex() is available on SearchBuilder
+User::search('john')->useInvertedIndex()->get();
 
-// BM25 path works when you pass the model class explicitly
-DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex('App\Models\User')->get();
+// ✗ Wrong — DB::table()->fuzzySearch() returns a plain Builder, not a SearchBuilder
+// DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex(); // throws BadMethodCallException
 ```
+
+If the model class cannot be resolved at runtime (e.g. the table name does not map to a loaded model), `useInvertedIndex()` silently falls back to the LIKE-pattern path. No exception is thrown.

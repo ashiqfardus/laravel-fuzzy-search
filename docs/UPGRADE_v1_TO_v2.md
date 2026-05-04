@@ -1,5 +1,40 @@
 # Upgrading from v1.x to v2.0.0
 
+> **v2 automatically registers migrations for new tables and schema changes.** When you run `php artisan migrate` after upgrading to v2, the following migrations are applied automatically:
+>
+> | Migration | What it does |
+> | --- | --- |
+> | `create_fuzzy_index_terms_table` | Creates `fuzzy_index_terms` |
+> | `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` |
+> | `create_fuzzy_index_meta_table` | Creates `fuzzy_index_meta` |
+> | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
+> | `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` | *(alpha.4)* Adds a unique index on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing |
+> | `2026_05_03_000002_widen_term_column_to_255` | *(alpha.4)* Widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` |
+>
+> The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
+>
+> **Upgrading from alpha.3?** Before running the unique-index migration, clean up any duplicate postings created by concurrent indexing:
+>
+> ```sql
+> -- MySQL / MariaDB
+> DELETE p1 FROM fuzzy_index_postings p1
+> INNER JOIN fuzzy_index_postings p2
+>   ON  p1.term_id    = p2.term_id
+>   AND p1.model_type = p2.model_type
+>   AND p1.model_id   = p2.model_id
+>   AND p1.id > p2.id;
+>
+> -- PostgreSQL
+> DELETE FROM fuzzy_index_postings
+> WHERE id NOT IN (
+>     SELECT MIN(id)
+>     FROM   fuzzy_index_postings
+>     GROUP  BY term_id, model_type, model_id
+> );
+> ```
+>
+> Then run `php artisan migrate`.
+
 ## Phase 0 changes
 
 ### BREAKING: `using('fuzzy')`, `using('trigram')`, `using('simple')` now behave differently
@@ -44,7 +79,7 @@ The `metaphone` algorithm now uses PHP's `metaphone()` function against a precom
 ```bash
 php artisan fuzzy-search:add-shadow-column "App\Models\User" name --type=metaphone
 php artisan migrate
-php artisan fuzzy-search:index "App\Models\User" --fresh
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 ```
 
 ---
@@ -149,3 +184,132 @@ php artisan fuzzy-search:rebuild "App\Models\User" --async --queue=indexing
 | `indexing.max_tokens_per_doc` | `5000` | Max unique tokens indexed per document (security cap) |
 | `bm25.k1` | `1.5` | BM25 k1 — term-frequency saturation |
 | `bm25.b` | `0.75` | BM25 b — length normalisation |
+
+---
+
+## Phase 2 changes
+
+### BREAKING: `_score` is now normalized to `[0, 1]`
+
+In Phase 1, `_score` was the raw BM25 float and could be any positive value. In Phase 2, `_score` is clamped and normalized to the range `[0, 1]` across the current result set.
+
+**Impact:** Any code that compared `_score` against a fixed threshold (e.g. `if ($result->_score > 5)`) or sorted results assuming an unbounded float will silently behave differently. Relative ordering within a single result set is preserved, but absolute values have changed.
+
+**Migration:** Replace threshold checks with relative comparisons, or read the preserved raw value:
+
+```php
+// Old — breaks silently
+if ($result->_score > 5) { ... }
+
+// New — use the normalized score on [0,1]
+if ($result->_score > 0.5) { ... }
+
+// Or access the original BM25 value
+if ($result->_raw_score > 5) { ... }
+```
+
+The raw BM25 value is always available as `_raw_score` on every result object.
+
+---
+
+### NEW: Extended search syntax (`->extended()` / `->searchBoolean()`)
+
+Phase 2 introduces a Fuse.js-style query language with prefix operators (`!`, `=`, `^`, `'`). Two new entry points activate it:
+
+```php
+// Extended syntax: prefix operators
+// '  = include-match (soft contains)   =  = exact   ^  = prefix   $  = suffix   !  = NOT
+$results = User::search("john !doe 'exact")->extended()->get();
+
+// Boolean syntax: implicit AND (space), | for OR, ! for NOT, parentheses for grouping
+$results = User::search("john doe | (jane !smith)")->searchBoolean()->get();
+```
+
+Both entry points share the same query parser. Two new config keys cap parser resource usage:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `query.max_tokens` | `32` | Maximum number of tokens the parser will process in a single query string |
+| `query.max_depth` | `16` | Maximum nesting depth for parenthesised sub-expressions |
+
+Queries that exceed either limit throw a `QuerySyntaxException` at parse time — they will not silently truncate.
+
+---
+
+### NEW: `_matches` array
+
+When `->highlight()` is chained, each result carries a `_matches` array — a list of match objects, one per matched column:
+
+```php
+$results = User::search("'john")->extended()->highlight()->get();
+
+foreach ($results as $result) {
+    // e.g. [
+    //   ['column' => 'name',  'value' => 'John Doe',        'indices' => [[0, 4]]],
+    //   ['column' => 'email', 'value' => 'john@example.com', 'indices' => [[0, 4]]],
+    // ]
+    dump($result->_matches);
+}
+```
+
+Each entry has three keys: `column` (the column name), `value` (the raw column value), and `indices` (an array of `[start, end]` byte-offset pairs for each match).
+
+> **Note:** `_matches` is populated only when `->highlight()` is also called. Calling `->extended()` alone does not populate `_matches`.
+
+---
+
+### NEW: `@fuzzyHighlight` Blade directive
+
+Phase 2 adds a dedicated Blade directive that wraps matched tokens in `<mark>` tags. It is XSS-safe — all output is passed through `e()` before wrapping.
+
+```blade
+{{-- Pass the result object and the column name --}}
+@fuzzyHighlight($result, 'name')
+
+{{-- Optional third argument overrides the wrapping tag (default: "mark") --}}
+@fuzzyHighlight($result, 'name', 'strong')
+```
+
+This replaces the previous pattern of echoing `$result->_highlighted['name']` directly, which was not XSS-safe unless the caller remembered to escape it.
+
+---
+
+### NEW: In-memory search (`FuzzySearch::on()`)
+
+`FuzzySearch::on($collection)` accepts any `Collection` or array and returns an `InMemorySearch` instance that runs the full fuzzy/BM25 pipeline entirely in PHP — no database queries.
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Facades\FuzzySearch;
+
+$results = FuzzySearch::on($items)
+    ->searchIn(['name', 'bio'])
+    ->search('john')
+    ->get();
+```
+
+Two new config keys control in-memory behaviour:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `in_memory.max_items` | `10000` | Hard limit on collection size; larger collections throw `\InvalidArgumentException` |
+| `in_memory.min_similarity` | `60` | Minimum similarity score (0–100) for a result to be included |
+
+---
+
+### New Phase 2 config keys
+
+If you published the config file under v1 or Phase 1, add the following keys to `config/fuzzy-search.php` to opt in to the new defaults and avoid falling back to hard-coded values:
+
+```php
+'query' => [
+    'max_tokens' => 32,
+    'max_depth'  => 16,
+],
+
+'in_memory' => [
+    'max_items'      => 10000,
+    'min_similarity' => 60,
+],
+```
+
+If you did not publish the config, these defaults are already active — no action required.

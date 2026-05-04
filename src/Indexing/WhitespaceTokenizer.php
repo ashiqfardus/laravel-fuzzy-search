@@ -2,6 +2,9 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ */
 class WhitespaceTokenizer implements TokenizerInterface
 {
     public function tokenize(string $text): array

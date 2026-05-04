@@ -8,8 +8,8 @@ Use Fuse.js-style operators inside your search string for precise control over m
 
 | Token | Meaning | Example |
 | --- | --- | --- |
-| `word` | Fuzzy substring match (default) | `john` |
-| `'word` | Substring include | `'admin` |
+| `word` | Substring match (default) | `john` |
+| `'word` | Explicit substring include | `'admin` |
 | `=word` | Exact equality | `=John` |
 | `^word` | Prefix match | `^Doe` |
 | `word$` | Suffix match | `Sr$` |
@@ -30,8 +30,8 @@ $users = User::search('=John ^Doe !banned')->extended()->get();
 // OR semantics with grouping
 $users = User::search('admin (john | jane)')->extended()->get();
 
-// Fluent alternative — pass query directly
-$users = User::search('')->extended('=John ^Doe')->get();
+// Fluent alternative — pass query directly to extended()
+$users = User::search('=John ^Doe')->extended()->get();
 ```
 
 ## Example queries
@@ -51,6 +51,27 @@ $users = User::search('')->extended('=John ^Doe')->get();
 | Maximum nesting depth | 16 | `query.max_depth` |
 
 These prevent adversarial DoS queries.
+
+## Pagination
+
+> **Important:** `paginate()` and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()`. Calling them together throws a `BadMethodCallException`. `simplePaginate()` works correctly and can be used with extended queries.
+
+Use `get()` and slice manually, or use `simplePaginate()`, or switch to a standard (non-extended) query for full pagination:
+
+```php
+// ✗ These throw BadMethodCallException
+User::search('=John ^Doe')->extended()->paginate(15);
+User::search('=John ^Doe')->extended()->cursorPaginate(15);
+
+// ✓ simplePaginate works fine with extended()
+User::search('=John ^Doe')->extended()->simplePaginate(15);
+
+// ✓ Use get() and handle pagination yourself
+$results = User::search('=John ^Doe')->extended()->get();
+
+// ✓ Or use standard search with paginate()
+User::search('John')->paginate(15);
+```
 
 ## Match offsets
 

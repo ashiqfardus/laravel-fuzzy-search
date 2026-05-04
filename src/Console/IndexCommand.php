@@ -14,10 +14,14 @@ class IndexCommand extends Command
                             {--fresh : Drop and recreate the index}
                             {--columns= : Specific columns to index (comma-separated)}';
 
-    protected $description = 'Create or update the search index for a model';
+    protected $description = '[DEPRECATED v1] Use fuzzy-search:rebuild for BM25 inverted index. This command writes to the legacy search_index table.';
 
     public function handle(): int
     {
+        $this->warn('[DEPRECATED] fuzzy-search:index writes to the legacy v1 search_index table.');
+        $this->warn('For v2 BM25 inverted index use: php artisan fuzzy-search:rebuild "App\Models\ModelName"');
+        $this->newLine();
+
         $table = config('fuzzy-search.indexing.table', 'search_index');
 
         // Create index table if it doesn't exist

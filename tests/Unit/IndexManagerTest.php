@@ -238,6 +238,34 @@ class IndexManagerTest extends TestCase
         }
     }
 
+    public function test_index_batch_doc_count_accurate_on_reindex(): void
+    {
+        $manager = $this->makeIndexManager();
+
+        $model1 = $this->makeModel(['name' => 'hello world']);
+        $model2 = $this->makeModel(['name' => 'hello php']);
+
+        // First batch: both models share the term 'hello' → doc_count should be 2
+        $manager->indexBatch(collect([$model1, $model2]));
+
+        $helloAfterFirst = $this->app['db']->table('fuzzy_index_terms')
+            ->where('term', 'hello')
+            ->value('doc_count');
+        $this->assertEquals(2, $helloAfterFirst, 'doc_count must be 2 after first indexBatch');
+
+        // Re-index same models (simulates fuzzy-search:rebuild without --fresh)
+        $manager->indexBatch(collect([$model1, $model2]));
+
+        $helloAfterReindex = $this->app['db']->table('fuzzy_index_terms')
+            ->where('term', 'hello')
+            ->value('doc_count');
+        $this->assertEquals(
+            2,
+            $helloAfterReindex,
+            'doc_count must not inflate on repeated indexBatch of the same models'
+        );
+    }
+
     public function test_meta_does_not_inflate_on_reindex(): void
     {
         $manager = $this->makeIndexManager();

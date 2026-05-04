@@ -2,6 +2,9 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Performance;
 
+// Load shared models
+require_once __DIR__ . '/../TestModels.php';
+
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Support\Facades\DB;

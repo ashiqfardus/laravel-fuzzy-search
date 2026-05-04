@@ -298,15 +298,12 @@ class FuzzySearchTest extends TestCase
         $algorithms = ['like', 'levenshtein', 'soundex', 'similar_text'];
 
         foreach ($algorithms as $algorithm) {
-            try {
-                $results = DB::table('users')
-                    ->whereFuzzy('name', 'john', $algorithm)
-                    ->get();
+            $results = DB::table('users')
+                ->whereFuzzy('name', 'john', $algorithm)
+                ->get();
 
-                $this->assertTrue(true, "Algorithm {$algorithm} executed successfully");
-            } catch (\Exception $e) {
-                $this->fail("Algorithm {$algorithm} threw exception: " . $e->getMessage());
-            }
+            $this->assertInstanceOf(\Illuminate\Support\Collection::class, $results,
+                "Algorithm {$algorithm} should return a Collection");
         }
     }
 

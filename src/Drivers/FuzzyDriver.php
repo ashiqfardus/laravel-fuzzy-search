@@ -42,45 +42,45 @@ class FuzzyDriver extends BaseDriver
      */
     protected function generatePatterns(string $value): array
     {
-        $value = strtolower(trim($value));
+        $value    = strtolower(trim($value));
         $patterns = [];
-        $len = strlen($value);
+        $len      = strlen($value);
 
         // Exact with wildcards
-        $patterns[] = '%' . $value . '%';
+        $patterns[] = '%' . $this->escapeLike($value) . '%';
 
         // Starts with
-        $patterns[] = $value . '%';
+        $patterns[] = $this->escapeLike($value) . '%';
 
         // Single character omissions (typos)
         for ($i = 0; $i < $len; $i++) {
-            $patterns[] = '%' . substr($value, 0, $i) . '%' . substr($value, $i + 1) . '%';
+            $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '%' . $this->escapeLike(substr($value, $i + 1)) . '%';
         }
 
-        // Single character substitutions (using wildcard)
+        // Single character substitutions (using _ wildcard)
         for ($i = 0; $i < $len; $i++) {
-            $patterns[] = '%' . substr($value, 0, $i) . '_' . substr($value, $i + 1) . '%';
+            $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i + 1)) . '%';
         }
 
         // Character transpositions (swapped adjacent characters)
         for ($i = 0; $i < $len - 1; $i++) {
             $transposed = substr($value, 0, $i) . $value[$i + 1] . $value[$i] . substr($value, $i + 2);
-            $patterns[] = '%' . $transposed . '%';
+            $patterns[] = '%' . $this->escapeLike($transposed) . '%';
         }
 
         // Double character removal (common typo)
         if ($len > 4) {
             for ($i = 0; $i < $len - 1; $i++) {
                 if ($value[$i] === $value[$i + 1]) {
-                    $patterns[] = '%' . substr($value, 0, $i) . substr($value, $i + 1) . '%';
+                    $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i) . substr($value, $i + 1)) . '%';
                 }
             }
         }
 
         // Word boundaries (first and last chars)
         if ($len > 3) {
-            $patterns[] = $value[0] . '%' . substr($value, -2);
-            $patterns[] = substr($value, 0, 2) . '%' . substr($value, -1);
+            $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -2));
+            $patterns[] = $this->escapeLike(substr($value, 0, 2)) . '%' . $this->escapeLike(substr($value, -1));
         }
 
         // Split on spaces for multi-word search
@@ -88,7 +88,7 @@ class FuzzyDriver extends BaseDriver
         if (count($words) > 1) {
             foreach ($words as $word) {
                 if (strlen($word) > 2) {
-                    $patterns[] = '%' . $word . '%';
+                    $patterns[] = '%' . $this->escapeLike($word) . '%';
                 }
             }
         }

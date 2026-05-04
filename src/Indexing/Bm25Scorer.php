@@ -5,12 +5,42 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ */
 class Bm25Scorer
 {
     public function __construct(
         private float $k1 = 1.5,
         private float $b  = 0.75,
     ) {}
+
+    /**
+     * Count the number of distinct models that contain at least one query term.
+     * Used by FuzzySearchEngine::paginate() to obtain an accurate total (C13).
+     *
+     * @param string[] $terms Already tokenized + stemmed query terms
+     */
+    public function count(array $terms, string $modelType): int
+    {
+        if (empty($terms)) {
+            return 0;
+        }
+
+        $termIds = DB::table('fuzzy_index_terms')
+            ->whereIn('term', $terms)
+            ->pluck('id');
+
+        if ($termIds->isEmpty()) {
+            return 0;
+        }
+
+        return (int) DB::table('fuzzy_index_postings')
+            ->where('model_type', $modelType)
+            ->whereIn('term_id', $termIds)
+            ->distinct('model_id')
+            ->count('model_id');
+    }
 
     /**
      * Run BM25 over the inverted index and return scored model IDs.
@@ -49,7 +79,14 @@ class Bm25Scorer
 
         $termIds = $termData->keys()->toArray();
 
-        // Join postings directly with documents table — eliminates the full-table GROUP BY scan
+        // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
+        // Order by frequency DESC and cap at max_postings_per_term so that a high-frequency
+        // term (e.g. "john" with 50k hits) cannot pull the entire posting list into PHP.
+        // High-frequency rows are prioritised globally across all matched terms; in a pathological
+        // corpus a single dominant term could consume the cap, but at the default 50k the bound
+        // is never reached for normal workloads.
+        $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+
         $postings = DB::table('fuzzy_index_postings as p')
             ->join('fuzzy_index_documents as d', function ($join) use ($modelType) {
                 $join->on('p.model_id', '=', 'd.model_id')
@@ -58,6 +95,8 @@ class Bm25Scorer
             ->where('p.model_type', $modelType)
             ->whereIn('p.term_id', $termIds)
             ->select('p.model_id', 'p.term_id', 'p.frequency', 'd.doc_length as doc_len')
+            ->orderBy('p.frequency', 'desc')
+            ->limit($maxPostings)
             ->get();
 
         $scores = [];

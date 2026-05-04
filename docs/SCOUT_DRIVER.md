@@ -31,7 +31,12 @@ use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable as FuzzySearchable;
 
 class User extends Model
 {
-    use Searchable, FuzzySearchable;
+    use Searchable, FuzzySearchable {
+        // FuzzySearchable::search() takes precedence — it returns the fluent SearchBuilder.
+        // Scout's underlying engine (FuzzySearchEngine) is still used when SCOUT_DRIVER=fuzzy-search.
+        FuzzySearchable::search insteadof Searchable;
+        Searchable::search as scoutSearch; // keep Scout's search() available as scoutSearch() if needed
+    }
 
     public function toSearchableArray(): array
     {

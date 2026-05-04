@@ -1,13 +1,64 @@
 # Changelog
 
+<!-- markdownlint-disable MD024 -->
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0-alpha.4] — 2026-05-04 — Bug-fixes, security hardening, schema improvements, and concurrency fixes
 
-## [2.0.0-alpha.3] — Phase 2: Differentiators
+### Fixed
+
+- **Lexer:** `!` is now treated as an operator boundary — `=John!!!` no longer parses the `!` characters as part of the term (fixes zero-result queries using NOT operators adjacent to other tokens)
+- **`searchIn()`:** Duplicate column names are deduplicated — chaining `->searchIn(['name'])` after the `Searchable` trait already included `name` no longer produces triple-binding SQL `(name = ? OR email = ? OR name = ?)`
+- **Extended search empty-guard:** `->extended($query)` and `->searchBoolean($query)` now bypass the empty-term guard when a query string is provided, so `User::search('')->extended('john')` works correctly
+- **Cache key:** `useSearchIndex`, `extendedQuery`, `columnWeights`, and `stopWords` are now included in the cache key — prevents cross-search result poisoning when two different searches share the same base query string
+- **BM25 paginate total:** `paginateIndexed()` computes the real total via `COUNT(DISTINCT model_id)` instead of inferring it from a bounded fetch — page counts are now accurate for large result sets
+- **BM25 debug output:** `debugScore()` information is now emitted in both BM25 code paths (direct and paginated)
+- **IndexManager — concurrent upsert safety:** `indexModel()` and `indexBatch()` now use `upsert()` on `fuzzy_index_postings` instead of `insert()` — eliminates `QueryException` when two workers index the same model simultaneously against the `UNIQUE (term_id, model_type, model_id)` constraint
+- **IndexManager — first-insert race:** `upsertMeta()` and `upsertMetaBulk()` now use `insertOrIgnore()` to guarantee the meta row exists before issuing atomic `UPDATE` increments — prevents concurrent first-ever indexing from throwing on the `UNIQUE` constraint
+- **IndexManager — `avg_doc_length` drift:** `removeFromIndex()` now subtracts the deleted document's `doc_length` from `total_tokens` before recomputing `avg_doc_length`; `indexModel()` applies a delta when re-indexing so `total_tokens` stays accurate across updates
+- **IndexManager — `doc_count` leak in batch re-index:** `indexBatch()` now fetches and decrements `doc_count` for terms belonging to re-indexed documents before re-inserting, preventing monotonic inflation of IDF scores on every `fuzzy-search:rebuild` run
+- **`FuzzySearchEngine::paginate()` real total:** Scout engine `paginate()` now calls `Bm25Scorer::count()` (a single `COUNT(DISTINCT model_id)` query) for the true match total instead of using the bounded fetch count — page counts are now correct for any result set size
+- **Migration dedup guard:** `add_unique_index_to_fuzzy_index_postings` now removes duplicate rows before adding the `UNIQUE` constraint, so the migration does not fail on databases with pre-existing duplicates from concurrent indexing
+- **Migration MySQL key-length:** `widen_term_column_to_255` now drops the unique index, widens the column, then recreates a `term(191)` prefix index on MySQL — safe on MySQL 5.7 where a full `varchar(255)` utf8mb4 index key would exceed the 767-byte limit
+- **False-positive tests:** Fixed two tests that used `|| true` / always-true callbacks (`FederatedSearchTest`, `QueueTest`) — they now assert the actual values
+- **Docs — `InMemorySearch::highlight()`:** Removed `highlight` from the `InMemorySearch` supported-methods list in `docs/QUERY_LANGUAGE.md` — `highlight()` is not implemented on `InMemorySearch`
+- **Docs — extended syntax operators:** `docs/UPGRADE_v1_TO_v2.md` examples corrected to use actual Lexer operators (`!` for NOT, `'` for include-match) instead of unsupported Fuse.js `+`/`-` prefixes
+- **Docs — `GETTING_STARTED.md` method names:** Corrected `scoreWith()` → `customScore()` and `_score_breakdown` → `_debug` to match the actual `SearchBuilder` API
+
+### Security
+
+- **`@fuzzyHighlight` tag whitelist:** The `$tag` argument is validated against `[a-zA-Z][a-zA-Z0-9-]*` — user-controlled tag values can no longer inject arbitrary HTML attributes or close tags
+- **Column name validation:** Column names passed to `searchIn()` and `applyFuzzyWhere()` are validated against `/^[a-zA-Z_][a-zA-Z0-9_.]*$/` — blocks backtick-injection on MySQL
+- **ORDER BY direction validation:** `$direction` in `applyFuzzyOrder()` is now validated to `asc` or `desc` — prevents SQL injection via raw `ORDER BY` interpolation
+- **`paginateIndexed()` page-size cap:** `$perPage` is clamped to a maximum of 100 — prevents DoS via abnormally large page size requests
+
+### Added
+
+- **`InMemorySearch` method guard:** Calling an unsupported method on an `InMemorySearch` instance now throws `BadMethodCallException` with a list of supported methods, rather than failing silently
+
+### Changed
+
+- **Observer skips unchanged models:** `SearchableIndexingObserver` no longer dispatches `IndexModelJob` when a `saved` event fires but no searchable column was actually modified — reduces background job volume on high-write tables
+- **BM25 per-term posting cap:** The BM25 scorer now applies a SQL-side `LIMIT` before fetching postings, controlled by `bm25.max_postings_per_term` (default 50 000) — bounds peak memory usage per search request
+
+### Database migrations
+
+Two new migrations are included and run automatically on `php artisan migrate`:
+
+- `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` — adds a `UNIQUE` constraint on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing
+- `2026_05_03_000002_widen_term_column_to_255` — widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` to accommodate longer stemmed token forms
+
+See the [upgrade guide](docs/UPGRADE_v1_TO_v2.md) for a deduplication SQL snippet if you are upgrading from alpha.3 with an existing index.
+
+### Config
+
+- `bm25.max_postings_per_term` (default `50000`) — new key controlling the SQL-side per-term posting cutoff
+
+## [2.0.0-alpha.3] — 2026-04-20 — Phase 2: Differentiators
 
 ### Added
 
@@ -177,3 +228,10 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 ---
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
+
+[2.0.0-alpha.4]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0-alpha.3...v2.0.0-alpha.4
+[2.0.0-alpha.3]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0-alpha.2...v2.0.0-alpha.3
+[2.0.0-alpha.2]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0-alpha.1...v2.0.0-alpha.2
+[2.0.0-alpha.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.1...v2.0.0-alpha.1
+[1.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v1.0.0

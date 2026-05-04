@@ -4,6 +4,11 @@ namespace Ashiqfardus\LaravelFuzzySearch\Traits;
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 
+/**
+ * @deprecated since v2.0.0 — use the Searchable trait instead.
+ *   This trait provides the v1 query-scope API (`$query->fuzzy('term')`).
+ *   The v2 fluent API is in Searchable (`Model::search('term')->...`).
+ */
 trait Fuzzy
 {
     /**

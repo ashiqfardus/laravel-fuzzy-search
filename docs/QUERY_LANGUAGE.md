@@ -17,8 +17,8 @@ User::search('=John ^Doe !banned')->extended()->get();
 `searchBoolean()` is an alias for `extended()` — same parser, same operators. Use whichever name reads better in your code.
 
 ```php
-User::search('')->searchBoolean('=John ^Doe !banned')->get();
-User::search('')->searchBoolean('admin (john | jane)')->get();
+User::search('=John ^Doe !banned')->searchBoolean()->get();
+User::search('admin (john | jane)')->searchBoolean()->get();
 ```
 
 ## Score normalization
@@ -45,3 +45,6 @@ $matches = FuzzySearch::on($navigation)
 ```
 
 The `max_items` config caps the collection size to prevent accidental memory bombs (default 10000).
+
+**Supported methods on `FuzzySearch::on()` (InMemorySearch):** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `get`.
+Calling any other method throws `\BadMethodCallException` immediately, so unsupported chains fail loudly instead of silently doing nothing.

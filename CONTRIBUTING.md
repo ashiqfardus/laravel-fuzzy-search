@@ -89,17 +89,25 @@ git checkout -b fix/bug-description
 ```
 src/
 ├── Console/              # Artisan commands
+│   ├── AddShadowColumnCommand.php
 │   ├── BenchmarkCommand.php
 │   ├── ClearCommand.php
 │   ├── ExplainCommand.php
-│   └── IndexCommand.php
-├── Drivers/              # Search algorithm drivers
+│   ├── FlushCommand.php
+│   ├── IndexCommand.php
+│   ├── RebuildCommand.php
+│   └── StatusCommand.php
+├── Drivers/              # Search algorithm drivers (8 total)
 │   ├── BaseDriver.php
 │   ├── FuzzyDriver.php
 │   ├── LevenshteinDriver.php
+│   ├── MetaphoneDriver.php
+│   ├── SimilarTextDriver.php
 │   ├── SimpleDriver.php
 │   ├── SoundexDriver.php
 │   └── TrigramDriver.php
+├── Events/               # Fired after each search execution
+│   └── FuzzySearchExecuted.php
 ├── Exceptions/           # Custom exceptions
 │   ├── EmptySearchTermException.php
 │   ├── InvalidAlgorithmException.php
@@ -107,40 +115,62 @@ src/
 │   └── SearchableColumnsNotFoundException.php
 ├── Facades/              # Laravel facades
 │   └── FuzzySearch.php
+├── Indexing/             # BM25 inverted-index engine
+│   ├── Bm25Scorer.php
+│   ├── IndexManager.php
+│   ├── NullStemmer.php
+│   ├── PorterStemmer.php
+│   ├── StemmerInterface.php
+│   ├── TokenizerInterface.php
+│   └── WhitespaceTokenizer.php
 ├── Jobs/                 # Queue jobs
-│   └── ReindexModelJob.php
+│   ├── IndexModelJob.php
+│   └── RebuildIndexJob.php
+├── Observers/            # Eloquent model observers for auto-indexing
+│   ├── SearchableIndexingObserver.php
+│   └── SearchableObserver.php
+├── Query/                # Extended query parser (Fuse.js-style operators)
+│   ├── AstCompiler.php
+│   ├── AstNodes/
+│   ├── ExtendedQueryParser.php
+│   ├── Lexer.php
+│   └── Token.php
+├── Scout/                # Laravel Scout engine adapter
+│   └── FuzzySearchEngine.php
 ├── Traits/               # Model traits
 │   ├── Fuzzy.php
 │   └── Searchable.php
 ├── FederatedSearch.php   # Multi-model search
-├── FuzzySearch.php       # Core search logic
+├── FuzzySearch.php       # Core driver dispatcher + in-memory facade
 ├── FuzzySearchServiceProvider.php
-└── SearchBuilder.php     # Fluent query builder
+├── InMemorySearch.php    # PHP-side search over static arrays/collections
+└── SearchBuilder.php     # Fluent query builder (all chainable methods)
 ```
 
 ### Key Components
 
 #### SearchBuilder
-The fluent API that users interact with. Handles:
-- Query configuration
-- Column weighting
-- Algorithm selection
-- Text processing (stop words, synonyms, etc.)
-- Result formatting and highlighting
+The fluent API that users interact with (`Model::search('term')->...`). Handles query configuration, column weighting, algorithm selection, text processing (stop words, synonyms), caching, BM25 index routing, and result formatting.
 
-#### Drivers
-Each search algorithm is implemented as a driver:
-- `FuzzyDriver`: General-purpose fuzzy matching
-- `LevenshteinDriver`: Edit distance calculations
-- `SoundexDriver`: Phonetic matching
-- `TrigramDriver`: N-gram similarity
-- `SimpleDriver`: Basic LIKE queries
+#### Drivers (8 algorithms)
+Each search algorithm is implemented as a driver extending `BaseDriver`:
+- `FuzzyDriver`: General-purpose LIKE-pattern fuzzy matching
+- `LevenshteinDriver`: PHP-side edit-distance filtering
+- `SoundexDriver`: Phonetic matching via SOUNDEX()
+- `MetaphoneDriver`: Double-metaphone phonetic matching (requires shadow column)
+- `TrigramDriver`: N-gram similarity (PostgreSQL pg_trgm or PHP fallback)
+- `SimilarTextDriver`: PHP `similar_text()` percentage threshold
+- `SimpleDriver`: Basic LIKE `%term%` query
+- `like`: Alias for SimpleDriver
 
-#### FuzzySearch
-Core class that applies search logic to database queries.
+#### Indexing (BM25)
+`IndexManager` tokenizes, stems, and persists an inverted index to four tables (`fuzzy_index_terms`, `fuzzy_index_documents`, `fuzzy_index_postings`, `fuzzy_index_meta`). `Bm25Scorer` builds the scoring SQL from those tables.
 
-#### Searchable Trait
-Added to Eloquent models to enable search functionality.
+#### Query (Extended Syntax)
+`Lexer` tokenizes the query string, `ExtendedQueryParser` builds an AST, and `AstCompiler` converts it to SQL WHERE clauses. Supports operators: `=`, `^`, `$`, `!`, `'`, `|`, `( )`, `"..."`.
+
+#### Scout Adapter
+`FuzzySearchEngine` integrates with Laravel Scout, delegating to `Bm25Scorer` for BM25 ranking.
 
 ### Adding a New Search Algorithm
 
@@ -163,7 +193,6 @@ class MyAlgorithmDriver extends BaseDriver
 
     public function getRelevanceExpression(string $column, string $value): string
     {
-        // Return SQL for scoring
         return "CASE WHEN {$column} = ? THEN 100 ELSE 0 END";
     }
 
@@ -174,15 +203,16 @@ class MyAlgorithmDriver extends BaseDriver
 }
 ```
 
-2. Register in `SearchBuilder.php`:
+2. Register in `FuzzySearch.php` in the `$registry` array:
 
 ```php
-protected const SUPPORTED_ALGORITHMS = [
-    'fuzzy', 'levenshtein', 'soundex', 'trigram', 'simple', 'myalgorithm'
+protected array $registry = [
+    // ... existing entries ...
+    'myalgorithm' => Drivers\MyAlgorithmDriver::class,
 ];
 ```
 
-3. Add configuration in `config/fuzzy-search.php`
+3. Add configuration defaults in `config/fuzzy-search.php` if needed
 
 4. Write tests in `tests/Unit/` and `tests/Feature/`
 
@@ -445,18 +475,4 @@ Your contribution will be included in the next release. Thank you! 🎉
 All contributors are listed in the [CHANGELOG](CHANGELOG.md) and repository contributors page.
 
 Thank you for contributing! 🙏
-composer test-coverage
-```
-
-## Development Setup
-
-1. Clone the repository
-2. Install dependencies: `composer install`
-3. Run tests: `composer test`
-
-## Questions?
-
-If you have questions, feel free to create an issue or reach out to the maintainer.
-
-Thank you for your contributions! 🎉
 

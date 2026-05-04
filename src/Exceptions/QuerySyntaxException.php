@@ -34,4 +34,12 @@ class QuerySyntaxException extends LaravelFuzzySearchException
     {
         return new self('Query has no searchable terms after parsing.');
     }
+
+    public static function notBeforeGroup(): self
+    {
+        return new self(
+            "The NOT operator (!) cannot precede a parenthesized group. " .
+            "Use individual NOT terms instead: '!term1 !term2'."
+        );
+    }
 }
