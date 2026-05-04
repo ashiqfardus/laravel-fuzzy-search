@@ -55,7 +55,8 @@ class MetaphoneDriver extends BaseDriver
                 "[{$shadowColumn}] to be populated at write time. " .
                 "Generate and run the migration with:\n" .
                 "  php artisan fuzzy-search:add-shadow-column <ModelClass> {$originalColumn} --type=metaphone\n" .
-                "Then run: php artisan fuzzy-search:index <ModelClass> --fresh"
+                "Then trigger model saves to populate the shadow column, or run:\n" .
+                "  php artisan fuzzy-search:rebuild <ModelClass> --fresh"
             );
         }
     }

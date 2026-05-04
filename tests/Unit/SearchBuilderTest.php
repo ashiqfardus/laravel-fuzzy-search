@@ -360,4 +360,27 @@ class SearchBuilderTest extends TestCase
 
         $this->assertInstanceOf(\Illuminate\Support\Collection::class, $results);
     }
+
+    /**
+     * Regression: alpha.4 fix — searchIn() must deduplicate columns.
+     * Before the fix, chaining searchIn(['name']) when 'name' was already in the
+     * trait's default columns produced triple-binding SQL: (name LIKE ? OR email LIKE ? OR name LIKE ?)
+     */
+    public function test_search_in_deduplicates_duplicate_columns(): void
+    {
+        $builder = User::search('john')->searchIn(['name', 'name', 'email', 'name']);
+        $sql = $builder->toSql();
+
+        // With proper dedup, the ORDER BY clause has 3 CASE WHEN blocks for 'name' and
+        // 3 for 'email' (exact + prefix + contains). Without dedup, 'name' would appear
+        // 3× more: 9 blocks for name instead of 3.
+        // Count CASE WHEN name blocks vs CASE WHEN email blocks — should be equal.
+        $nameBlocks  = substr_count($sql, 'CASE WHEN name');
+        $emailBlocks = substr_count($sql, 'CASE WHEN email');
+
+        $this->assertEquals($nameBlocks, $emailBlocks,
+            'After dedup, name and email should have equal CASE WHEN scoring blocks. ' .
+            "Got name={$nameBlocks}, email={$emailBlocks} in: {$sql}");
+        $this->assertGreaterThan(0, $nameBlocks, 'Should have at least one CASE WHEN for name');
+    }
 }

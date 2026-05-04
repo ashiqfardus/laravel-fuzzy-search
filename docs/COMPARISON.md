@@ -71,7 +71,7 @@ There are a few other "fuzzy search" packages for Laravel. Here's how we compare
 
 **3. Production-Ready**: 171+ tests, proper exception handling, and extensive documentation.
 
-**4. Modern PHP**: Built for PHP 8.0+ with type hints, attributes, and modern patterns.
+**4. Modern PHP**: Built for PHP 8.1+ with type hints, enums, fibers-friendly, and modern patterns.
 
 **5. Actively Maintained**: Regular updates, Laravel 13 support, and responsive issue handling.
 

@@ -757,27 +757,25 @@ $results = Article::search('laravel')
     ->get(['id', 'title', 'excerpt', 'created_at']);
 ```
 
-### 3. Use Cursors for Large Results
+### 3. Processing Large Result Sets
+
+`cursor()` and `chunk()` are not available on `SearchBuilder` because PHP-side rescoring requires the full candidate set. Instead, use `take()` with a reasonable limit and process the resulting collection, or paginate through results:
 
 ```php
-// For processing large result sets
+// Use take() to cap the result set
 Article::search('laravel')
-    ->cursor()
+    ->take(500)
+    ->get()
     ->each(function ($article) {
-        // Process one at a time
+        // Process each article
     });
-```
 
-### 4. Batch Processing
-
-```php
-// Process in chunks
-Article::search('laravel')
-    ->chunk(100, function ($articles) {
-        foreach ($articles as $article) {
-            // Process
-        }
-    });
+// Or page through results
+$page = 1;
+do {
+    $results = Article::search('laravel')->paginate(100, page: $page++);
+    foreach ($results as $article) { /* process */ }
+} while ($results->hasMorePages());
 ```
 
 ## Real-time Search Optimization

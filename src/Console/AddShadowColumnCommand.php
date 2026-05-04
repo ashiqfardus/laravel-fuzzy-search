@@ -89,7 +89,8 @@ PHP;
 
         $this->info("Migration created: {$filename}");
         $this->line("Run <comment>php artisan migrate</comment> to apply it.");
-        $this->line("Then run <comment>php artisan fuzzy-search:index {$modelClass} --fresh</comment> to backfill the shadow column.");
+        $this->line("Then trigger model saves to populate the shadow column (e.g. <comment>{$modelClass}::query()->each(fn(\$m) => \$m->touch())</comment>).");
+        $this->line("Or run <comment>php artisan fuzzy-search:rebuild \"{$modelClass}\" --fresh</comment> to rebuild the BM25 index.");
 
         return self::SUCCESS;
     }

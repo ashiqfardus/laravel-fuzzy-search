@@ -103,10 +103,18 @@ $results = Article::search('laravel')->take(10)->get();
 
 ```php
 $results = Article::search('laravel')
-    ->where('status', 'published')
+    ->filter('status', 'published')
+    ->orderByRelevance('desc')
+    ->get();
+```
+
+To combine fuzzy search with Eloquent scopes, apply them on the model query before calling `search()`:
+
+```php
+$results = Article::where('status', 'published')
     ->where('created_at', '>', now()->subDays(30))
     ->orderBy('created_at', 'desc')
-    ->get();
+    ->search('laravel');
 ```
 
 ### Get Relevance Scores
@@ -155,7 +163,7 @@ class Post extends Model
 
 // Usage
 $posts = Post::search('getting started with laravel')
-    ->where('status', 'published')
+    ->filter('status', 'published')
     ->paginate(15);
 ```
 
@@ -187,8 +195,7 @@ class Product extends Model
 
 // Usage - handles typos automatically
 $products = Product::search('iphone 15 pro')  // Finds "iPhone 15 Pro"
-    ->where('stock', '>', 0)
-    ->orderBy('price', 'asc')
+    ->filter('stock', '>', 0)
     ->get();
 ```
 
@@ -265,9 +272,8 @@ public function autocomplete(Request $request)
 With suggestions:
 
 ```php
-$suggestions = Product::search($query)
-    ->suggest()  // Returns suggested completions
-    ->take(10);
+// suggest() returns an array — pass the limit directly
+$suggestions = Product::search($query)->suggest(10);
 ```
 
 ### 6. Multi-word Search

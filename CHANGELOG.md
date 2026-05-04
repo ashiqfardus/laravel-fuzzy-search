@@ -58,7 +58,7 @@ See the [upgrade guide](docs/UPGRADE_v1_TO_v2.md) for a deduplication SQL snippe
 
 - `bm25.max_postings_per_term` (default `50000`) — new key controlling the SQL-side per-term posting cutoff
 
-## [2.0.0-alpha.3] — Phase 2: Differentiators
+## [2.0.0-alpha.3] — 2026-04-20 — Phase 2: Differentiators
 
 ### Added
 
@@ -228,3 +228,10 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 ---
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
+
+[2.0.0-alpha.4]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0-alpha.3...v2.0.0-alpha.4
+[2.0.0-alpha.3]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0-alpha.2...v2.0.0-alpha.3
+[2.0.0-alpha.2]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0-alpha.1...v2.0.0-alpha.2
+[2.0.0-alpha.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.1...v2.0.0-alpha.1
+[1.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v1.0.0

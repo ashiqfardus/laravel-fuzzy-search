@@ -32,8 +32,11 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 ## Installation
 
 ```bash
-composer require ashiqfardus/laravel-fuzzy-search
+# v2 is currently in alpha — pin the alpha constraint
+composer require ashiqfardus/laravel-fuzzy-search:^2.0@alpha
 ```
+
+> **Status: v2 alpha** — API is stable within alpha releases but may change before the stable v2.0.0 tag. See [CHANGELOG](CHANGELOG.md).
 
 **That's it!** Zero configuration required. Start searching immediately.
 
@@ -572,7 +575,7 @@ $users = User::search('john')
     ->get();
 ```
 
-> **Note:** `paginate()`, `simplePaginate()`, and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()`. Combining them throws a `BadMethodCallException`. Use `get()` when extended syntax is active. See [Extended Search](docs/EXTENDED_SEARCH.md#pagination) for details.
+> **Note:** `paginate()` and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()` and will throw a `BadMethodCallException`. `simplePaginate()` works correctly with extended syntax. See [Extended Search](docs/EXTENDED_SEARCH.md#pagination) for details.
 
 ## Reliability & Safety
 
@@ -921,6 +924,9 @@ php artisan fuzzy-search:clear "App\Models\User"
 
 # Clear BM25 index for all models
 php artisan fuzzy-search:clear --all
+
+# Show index status (row counts, avg doc length, term count per model)
+php artisan fuzzy-search:status
 ```
 
 ### Benchmark Tools

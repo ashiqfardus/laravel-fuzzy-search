@@ -114,7 +114,8 @@ return [
     | Scoring Configuration
     |--------------------------------------------------------------------------
     |
-    | Configure how relevance scores are calculated
+    | Reserved for future use — these values are not currently read by the
+    | package. Scoring constants are hard-coded in SearchBuilder.
     |
     */
     'scoring' => [
@@ -236,6 +237,10 @@ return [
     |--------------------------------------------------------------------------
     | Performance Settings
     |--------------------------------------------------------------------------
+    |
+    | Reserved for future use — these values are not currently read by the
+    | package. Use indexing.chunk_size for rebuild chunk size.
+    |
     */
     'performance' => [
         'max_patterns' => 100,      // Maximum LIKE patterns to generate
@@ -277,6 +282,10 @@ return [
     |--------------------------------------------------------------------------
     | Highlighting Settings
     |--------------------------------------------------------------------------
+    |
+    | Reserved for future use — currently the highlight tag is configured
+    | via ->highlight('<em>', '</em>') at the query level.
+    |
     */
     'highlighting' => [
         'enabled' => false,
@@ -314,6 +323,11 @@ return [
     |--------------------------------------------------------------------------
     | Unicode & Accent Handling
     |--------------------------------------------------------------------------
+    |
+    | Note: 'normalize' is reserved for future use. Accent-insensitive search
+    | is opt-in per query via ->accentInsensitive() (PostgreSQL only with
+    | use_native_functions=true).
+    |
     */
     'unicode' => [
         'normalize' => true,

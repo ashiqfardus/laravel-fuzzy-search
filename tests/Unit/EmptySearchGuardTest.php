@@ -28,7 +28,11 @@ class EmptySearchGuardTest extends TestCase
             ->searchIn(['name'])
             ->get();
 
-        $this->assertNotNull($results);
+        $names = $results->pluck('name')->map('strtolower')->toArray();
+        $this->assertTrue(
+            in_array('alice smith', $names) || in_array('bob johnson', $names),
+            'extended() with OR should return at least Alice or Bob when search term is empty'
+        );
     }
 
     /**

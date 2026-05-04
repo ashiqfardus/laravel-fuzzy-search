@@ -210,7 +210,8 @@ trait Searchable
     }
 
     /**
-     * Reindex the model for search
+     * @deprecated since v2.0.0 — writes to the legacy v1 `search_index` table which v2 does not read.
+     *   Use `php artisan fuzzy-search:rebuild "App\Models\ModelName"` or `IndexModelJob::dispatch()` instead.
      */
     public static function reindex(): void
     {
@@ -225,7 +226,8 @@ trait Searchable
     }
 
     /**
-     * Perform the actual reindexing
+     * @deprecated since v2.0.0 — writes to the legacy v1 `search_index` table which v2 does not read.
+     *   Use `php artisan fuzzy-search:rebuild "App\Models\ModelName"` or `IndexModelJob::dispatch()` instead.
      */
     public static function performReindex(): void
     {
@@ -275,11 +277,17 @@ trait Searchable
         $config = $this->getSearchableConfig();
         $columns = $columns ?? array_keys($config['columns'] ?? ['name' => 1]);
 
+        // Use configured weights from $searchable['columns'] when columns aren't overridden.
+        $configColumns = $config['columns'] ?? [];
+        $weightedColumns = $columns !== null
+            ? array_fill_keys($columns, 1)
+            : (empty($configColumns) ? array_fill_keys(['name'], 1) : $configColumns);
+
         $builder = new SearchBuilder($query, $fuzzySearch);
 
         return $builder
             ->search($term)
-            ->searchIn(array_fill_keys($columns, 1))
+            ->searchIn($weightedColumns)
             ->using($algorithm ?? ($config['algorithm'] ?? 'fuzzy'));
     }
 }

@@ -124,4 +124,21 @@ class LexerTest extends TestCase
         $this->expectException(\Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException::class);
         $this->lexer->tokenize('a b c d e f g'); // 7 tokens, max 5
     }
+
+    /**
+     * Regression: alpha.4 fix — '!' must act as a word boundary.
+     * Before the fix, 'john!banned' was a single FUZZY token; it should split into
+     * FUZZY('john') + NOT_FUZZY('banned').
+     */
+    public function test_bang_is_word_boundary_in_embedded_position(): void
+    {
+        $tokens = $this->lexer->tokenize('john!banned');
+
+        $this->assertCount(2, $tokens,
+            "'john!banned' should split into 2 tokens — FUZZY('john') + NOT_FUZZY('banned')");
+        $this->assertEquals(Token::TYPE_FUZZY, $tokens[0]->type);
+        $this->assertEquals('john', $tokens[0]->value);
+        $this->assertEquals(Token::TYPE_NOT_FUZZY, $tokens[1]->type);
+        $this->assertEquals('banned', $tokens[1]->value);
+    }
 }

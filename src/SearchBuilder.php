@@ -402,7 +402,10 @@ class SearchBuilder
         return $this;
     }
 
-    /** Alias for useInvertedIndex() */
+    /**
+     * @deprecated since v2.0.0-alpha.4 — use useInvertedIndex() instead.
+     * @see useInvertedIndex()
+     */
     public function useIndex(string|bool|null $modelClass = true): self
     {
         return $this->useInvertedIndex($modelClass);
@@ -739,24 +742,21 @@ class SearchBuilder
             $models = $modelClass::whereIn((new $modelClass)->getKeyName(), $ids)->get();
         }
 
+        // Compute bm25Max from the FULL unsorted result set so _score is corpus-relative,
+        // not page-relative. Slicing first would make page-2 row 1 always score 1.0.
+        $bm25Max = $scoreMap->max() ?? 0;
+
         $sorted = $models
             ->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
             ->values()
             ->slice($this->offset, $this->limit)
             ->values()
-            ->map(function ($item) use ($scoreMap) {
-                $item->_raw_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
-                $item->_score     = $item->_raw_score;
+            ->map(function ($item) use ($scoreMap, $bm25Max) {
+                $raw = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_raw_score = $raw;
+                $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
                 return $item;
             });
-
-        $bm25Max = $sorted->max(fn($m) => $m->_raw_score ?? 0);
-        if ($bm25Max > 0) {
-            $sorted = $sorted->map(function ($item) use ($bm25Max) {
-                $item->_score = round($item->_raw_score / $bm25Max, 6);
-                return $item;
-            });
-        }
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted);
@@ -1002,21 +1002,17 @@ class SearchBuilder
             $models  = $modelClass::whereIn($keyName, $ids)->get();
         }
 
+        // Use the full-result-set max for corpus-relative normalization.
+        $bm25Max = $pageResults->max('score') ?? 0;
+
         $sorted = $models->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
             ->values()
-            ->map(function ($item) use ($scoreMap) {
-                $item->_raw_score = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
-                $item->_score     = $item->_raw_score;
+            ->map(function ($item) use ($scoreMap, $bm25Max) {
+                $raw = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_raw_score = $raw;
+                $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
                 return $item;
             });
-
-        $bm25Max = $sorted->max(fn($m) => $m->_raw_score ?? 0);
-        if ($bm25Max > 0) {
-            $sorted = $sorted->map(function ($item) use ($bm25Max) {
-                $item->_score = round($item->_raw_score / $bm25Max, 6);
-                return $item;
-            });
-        }
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted);
@@ -1068,20 +1064,17 @@ class SearchBuilder
     }
 
     /**
-     * Cursor pagination is not compatible with in-memory PHP scoring.
+     * Not supported — cursor pagination is incompatible with PHP-side relevance scoring.
      * Use paginate() or simplePaginate() instead.
      *
-     * @throws \BadMethodCallException
+     * @throws \BadMethodCallException always
      */
-    public function cursorPaginate(int $perPage = 15): \Illuminate\Contracts\Pagination\CursorPaginator
+    public function cursorPaginate(int $perPage = 15): never
     {
-        if ($this->extendedQuery !== null || $this->useSearchIndex) {
-            throw new \BadMethodCallException(
-                'cursorPaginate() is not supported with extended() or useInvertedIndex() — use paginate() instead.'
-            );
-        }
-        $this->buildQuery();
-        return $this->query->cursorPaginate($perPage);
+        throw new \BadMethodCallException(
+            'cursorPaginate() is not supported by FuzzySearch — it bypasses PHP-side relevance scoring. ' .
+            'Use paginate() for full pagination or simplePaginate() for forward-only pagination.'
+        );
     }
 
     /**
@@ -1651,18 +1644,40 @@ class SearchBuilder
      */
     protected function generateCacheKey(): string
     {
+        // Closures cannot be serialized — skip caching when a custom score callback is set.
+        if ($this->customScoreCallback !== null) {
+            return 'fuzzy_search_nocache_' . uniqid();
+        }
+
         $data = [
-            'term' => $this->searchTerm,
-            'columns' => $this->searchableColumns,
-            'algorithm' => $this->algorithm,
-            'options' => $this->options,
-            'filters' => $this->filters,
-            'limit' => $this->limit,
-            'offset' => $this->offset,
-            'use_search_index' => $this->useSearchIndex,
-            'extended_query' => $this->extendedQuery,
-            'column_weights' => $this->columnWeights,
-            'stop_words' => $this->stopWords,
+            'term'                   => $this->searchTerm,
+            'columns'                => $this->searchableColumns,
+            'algorithm'              => $this->algorithm,
+            'options'                => $this->options,
+            'filters'                => $this->filters,
+            'limit'                  => $this->limit,
+            'offset'                 => $this->offset,
+            'use_search_index'       => $this->useSearchIndex,
+            'extended_query'         => $this->extendedQuery,
+            'column_weights'         => $this->columnWeights,
+            'stop_words'             => $this->stopWords,
+            'synonyms'               => $this->synonyms,
+            'synonym_groups'         => $this->synonymGroups,
+            'locale'                 => $this->locale,
+            'accent_insensitive'     => $this->accentInsensitiveEnabled,
+            'unicode_normalize'      => $this->unicodeNormalizeEnabled,
+            'tokenize_search'        => $this->tokenizeSearch,
+            'token_match_mode'       => $this->tokenMatchMode,
+            'prefix_boost'           => $this->prefixBoostMultiplier,
+            'partial_match'          => $this->partialMatchEnabled,
+            'min_match_length'       => $this->minMatchLength,
+            'recency_boost'          => $this->recencyBoostEnabled,
+            'recency_multiplier'     => $this->recencyBoostMultiplier,
+            'recency_column'         => $this->recencyColumn,
+            'recency_days'           => $this->recencyDays,
+            'sort_by'                => $this->sortBy,
+            'stable_ranking'         => $this->stableRankingEnabled,
+            'typo_tolerance'         => $this->typoTolerance,
         ];
 
         return 'fuzzy_search_' . md5(serialize($data));

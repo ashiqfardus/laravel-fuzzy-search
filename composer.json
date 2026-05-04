@@ -1,7 +1,7 @@
 {
     "name": "ashiqfardus/laravel-fuzzy-search",
     "description": "A powerful, zero-config fuzzy search package for Laravel with fluent API",
-    "keywords": ["laravel", "fuzzy", "search", "eloquent", "query-builder", "levenshtein", "soundex", "trigram", "typo-tolerance"],
+    "keywords": ["laravel", "fuzzy", "search", "eloquent", "query-builder", "levenshtein", "soundex", "trigram", "typo-tolerance", "bm25", "inverted-index"],
     "license": "MIT",
     "authors": [
         {
@@ -15,7 +15,7 @@
         "illuminate/support": "^9.0|^10.0|^11.0|^12.0|^13.0"
     },
     "require-dev": {
-        "orchestra/testbench": "^7.0|^8.0|^9.0|^10.0",
+        "orchestra/testbench": "^7.0|^8.0|^9.0|^10.0|^11.0",
         "phpunit/phpunit": "^9.0|^10.0|^11.0|^12.0|^13.0",
         "wamania/php-stemmer": "^1.2",
         "laravel/scout": "^11.0|^12.0|^13.0"
