@@ -56,7 +56,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 ## Installation
 
 ```bash
-composer require ashiqfardus/laravel-fuzzy-search:^2.0
+composer require ashiqfardus/laravel-fuzzy-search
 ```
 
 **That's it!** Zero configuration required. Start searching immediately.
@@ -77,7 +77,7 @@ php artisan migrate
 > Run the scanner to find affected code, then follow the full guide.
 >
 > ```bash
-> composer require ashiqfardus/laravel-fuzzy-search:^2.0
+> composer require ashiqfardus/laravel-fuzzy-search
 > php artisan migrate
 > php artisan fuzzy-search:upgrade-v1   # scans your app/ for v1-era API usage
 > ```
