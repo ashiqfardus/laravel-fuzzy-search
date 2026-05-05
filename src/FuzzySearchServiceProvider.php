@@ -13,6 +13,7 @@ use Ashiqfardus\LaravelFuzzySearch\Console\AddShadowColumnCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\StatusCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\RebuildCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\FlushCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\UpgradeV1Command;
 
 class FuzzySearchServiceProvider extends ServiceProvider
 {
@@ -84,6 +85,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
                 StatusCommand::class,
                 RebuildCommand::class,
                 FlushCommand::class,
+                UpgradeV1Command::class,
             ]);
         }
 

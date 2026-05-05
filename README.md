@@ -929,18 +929,25 @@ php artisan fuzzy-search:clear --all
 php artisan fuzzy-search:status
 ```
 
-### Benchmark Tools
+### Performance numbers
+
+Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) (MySQL 8.0, 100k-row dataset, commodity VPS, warm cache). Run `php artisan demo:seed` in the demo project to seed the same dataset on your hardware.
+
+| Search path | Median latency | Notes |
+|---|---|---|
+| LIKE (`using('simple')`) | ~8 ms | Full table scan; SQL `LIKE '%term%'` |
+| Levenshtein (`using('levenshtein')`) | ~45 ms | PHP re-score over 1 000 SQL candidates |
+| BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
+| Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
+
+These are wall-clock times from the Laravel request lifecycle (TTFB minus network), not micro-benchmark times.
+
+**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index returns results in the same ~12–20 ms window as the 100k baseline.
+
+> Numbers vary by hardware, DB engine, term selectivity, and number of search columns. Run `php artisan fuzzy-search:benchmark` to measure on your own stack:
 
 ```bash
-# Benchmark search performance
 php artisan fuzzy-search:benchmark User --term="john" --iterations=100
-
-# Output:
-# Algorithm: fuzzy
-# Average time: 12.5ms
-# Min: 8ms, Max: 25ms
-# Queries/second: 80
-# Memory usage: 2.1MB
 ```
 
 ### Debug Commands

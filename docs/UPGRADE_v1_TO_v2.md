@@ -313,3 +313,85 @@ If you published the config file under v1 or Phase 1, add the following keys to 
 ```
 
 If you did not publish the config, these defaults are already active — no action required.
+
+## Alpha.4 changes (hardening)
+
+These changes apply when upgrading from alpha.3 to alpha.4 or later.
+
+### Database migrations (run automatically on `php artisan migrate`)
+
+Two new migrations are automatically applied:
+
+- **`add_unique_index_to_fuzzy_index_postings`** — adds `UNIQUE (term_id, model_type, model_id)` on the postings table to prevent duplicate rows under concurrent indexing. If you have an alpha.3 index with duplicates, run this SQL first:
+
+```sql
+-- MySQL / MariaDB
+DELETE p1 FROM fuzzy_index_postings p1
+INNER JOIN fuzzy_index_postings p2
+  ON  p1.term_id    = p2.term_id
+  AND p1.model_type = p2.model_type
+  AND p1.model_id   = p2.model_id
+  AND p1.id > p2.id;
+
+-- PostgreSQL
+DELETE FROM fuzzy_index_postings
+WHERE id NOT IN (
+    SELECT MIN(id)
+    FROM   fuzzy_index_postings
+    GROUP  BY term_id, model_type, model_id
+);
+```
+
+Then run `php artisan migrate`.
+
+- **`widen_term_column_to_255`** — widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)`. On MySQL the unique index is recreated as a `term(191)` prefix key to stay under the 767-byte key limit.
+
+### BREAKING: `cursorPaginate()` now throws unconditionally
+
+In alpha.3 `cursorPaginate()` silently dropped relevance scoring when called on a `SearchBuilder`. In alpha.4 it always throws `BadMethodCallException`.
+
+**Migration:** use `simplePaginate()` or `get()` instead.
+
+```php
+// Before (alpha.3 — silently broken):
+User::search('john')->cursorPaginate(20);
+
+// After:
+User::search('john')->simplePaginate(20);
+// or:
+User::search('john')->get();
+```
+
+### Cache key now covers all builder state
+
+In alpha.3 the cache key omitted most builder-state flags (synonyms, locale, recency boost, typo tolerance, etc.), causing result poisoning when two different queries shared the same `(term, columns)` pair. Alpha.4 fixes this automatically — no code changes required.
+
+If your application cached search results from alpha.3 in Redis or Memcached, flush the cache after upgrading:
+
+```bash
+php artisan cache:clear
+```
+
+### `useIndex()` deprecated — use `useInvertedIndex()`
+
+`SearchBuilder::useIndex()` is still callable but emits a `@deprecated` notice. Replace with `useInvertedIndex()`:
+
+```php
+// Before:
+User::search('john')->useIndex()->get();
+
+// After:
+User::search('john')->useInvertedIndex()->get();
+```
+
+### Codebase scanner
+
+The new `fuzzy-search:upgrade-v1` command scans your `app/` directory for known v1-era API usage and prints a migration TODO table with file, line number, and recommended action:
+
+```bash
+php artisan fuzzy-search:upgrade-v1
+# scan a specific directory:
+php artisan fuzzy-search:upgrade-v1 app/Services
+```
+
+Exits with code 1 when v1 patterns are found, 0 when clean — safe to use as a CI gate during a migration.
