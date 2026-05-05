@@ -67,12 +67,22 @@ Optionally publish the config file:
 php artisan vendor:publish --tag=fuzzy-search-config
 ```
 
-If you plan to use the **BM25 inverted index** (recommended for 10k+ rows), run migrations too:
+If you plan to use the **BM25 inverted index** (recommended for 10k+ rows), also run:
 
 ```bash
-php artisan vendor:publish --tag=fuzzy-search-config
 php artisan migrate
 ```
+
+> **Upgrading from v1.x?** There are breaking changes — result rankings and `_score` values may shift.
+> Run the scanner to find affected code, then follow the full guide.
+>
+> ```bash
+> composer require ashiqfardus/laravel-fuzzy-search:^2.0
+> php artisan migrate
+> php artisan fuzzy-search:upgrade-v1   # scans your app/ for v1-era API usage
+> ```
+>
+> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md)
 
 ---
 
