@@ -38,8 +38,13 @@ trait Searchable
      */
     public static function bootSearchable(): void
     {
-        static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
-        static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class);
+        // Defer observer registration until after boot completes.
+        // Laravel 13 throws LogicException if observe() (which calls bootIfNotBooted())
+        // is invoked while the model is still inside its own boot phase.
+        static::booted(static function () {
+            static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
+            static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class);
+        });
     }
 
     /**
