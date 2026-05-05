@@ -276,7 +276,7 @@ This replaces the previous pattern of echoing `$result->_highlighted['name']` di
 
 ### NEW: In-memory search (`FuzzySearch::on()`)
 
-`FuzzySearch::on($collection)` accepts any `Collection` or array and returns an `InMemorySearch` instance that runs the full fuzzy/BM25 pipeline entirely in PHP — no database queries.
+`FuzzySearch::on($collection)` accepts any `Collection` or array and returns an `InMemorySearch` instance that scores records entirely in PHP — no database queries. It uses exact, prefix, contains, and `similar_text()` scoring (not the BM25 inverted-index pipeline).
 
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Facades\FuzzySearch;
@@ -314,9 +314,9 @@ If you published the config file under v1 or Phase 1, add the following keys to 
 
 If you did not publish the config, these defaults are already active — no action required.
 
-## Alpha.4 changes (hardening)
+## v2.0.0 hardening changes
 
-These changes apply when upgrading from alpha.3 to alpha.4 or later.
+These changes were introduced during the alpha.4 hardening phase. If you were on any pre-release alpha, apply the steps below before upgrading to v2.0.0.
 
 ### Database migrations (run automatically on `php artisan migrate`)
 

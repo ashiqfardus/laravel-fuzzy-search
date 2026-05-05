@@ -69,23 +69,24 @@ class UpgradeV1Command extends Command
             }
         }
 
-        $rawPath = $this->argument('path');
-
-        // Resolve relative paths against base_path(), keep absolute paths as-is
+        $rawPath  = $this->argument('path');
         $isAbsolute = str_starts_with($rawPath, '/');
-        $scanPath = $isAbsolute
-            ? $rawPath
-            : base_path($rawPath);
+        $scanPath   = $isAbsolute ? $rawPath : base_path($rawPath);
 
+        // For relative paths, enforce containment within the project root to
+        // prevent directory-traversal via inputs like ../../etc.
         if (!$isAbsolute) {
             $realScanPath = realpath($scanPath);
             $realBasePath = realpath(base_path());
 
-            if ($realScanPath !== false && $realBasePath !== false) {
-                if (!str_starts_with($realScanPath, $realBasePath)) {
-                    $this->error('Path must be within the project root.');
-                    return self::FAILURE;
-                }
+            if ($realScanPath !== false && $realBasePath !== false
+                && !str_starts_with($realScanPath, $realBasePath)
+            ) {
+                $this->error('Path must be within the project root.');
+                return self::FAILURE;
+            }
+
+            if ($realScanPath !== false) {
                 $scanPath = $realScanPath;
             }
         }

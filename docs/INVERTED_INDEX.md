@@ -185,7 +185,7 @@ If you are using **Laravel Horizon** (Redis), add an `indexing` queue to your Ho
 // BM25 search — faster + better relevance on large tables
 $users = User::search('john')->useInvertedIndex()->get();
 
-// useIndex() is an alias
+// useIndex() is a deprecated alias — use useInvertedIndex() instead
 $users = User::search('john')->useIndex()->get();
 
 // didYouMean() reads from the term dictionary — O(1) at any dataset size

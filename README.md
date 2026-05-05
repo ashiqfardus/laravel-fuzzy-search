@@ -32,18 +32,16 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 ## Installation
 
 ```bash
-# v2 is currently in alpha — pin the alpha constraint
-composer require ashiqfardus/laravel-fuzzy-search:^2.0@alpha
+composer require ashiqfardus/laravel-fuzzy-search:^2.0
 ```
-
-> **Status: v2 alpha** — API is stable within alpha releases but may change before the stable v2.0.0 tag. See [CHANGELOG](CHANGELOG.md).
 
 **That's it!** Zero configuration required. Start searching immediately.
 
-Optionally publish the config file:
+Optionally publish the config file and run migrations (required only if you use the BM25 inverted index):
 
 ```bash
 php artisan vendor:publish --tag=fuzzy-search-config
+php artisan migrate
 ```
 
 ## Quick Start
