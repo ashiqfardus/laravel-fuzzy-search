@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **🚀 Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Performance Guide](docs/PERFORMANCE.md) • [Comparisons](docs/COMPARISON.md)
+**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Inverted Index](docs/INVERTED_INDEX.md) • [Scout Driver](docs/SCOUT_DRIVER.md) • [Extended Search](docs/EXTENDED_SEARCH.md) • [Query Language](docs/QUERY_LANGUAGE.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
 
 ## ✨ Features
 
@@ -32,8 +32,11 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 ## Installation
 
 ```bash
-composer require ashiqfardus/laravel-fuzzy-search
+# v2 is currently in alpha — pin the alpha constraint
+composer require ashiqfardus/laravel-fuzzy-search:^2.0@alpha
 ```
+
+> **Status: v2 alpha** — API is stable within alpha releases but may change before the stable v2.0.0 tag. See [CHANGELOG](CHANGELOG.md).
 
 **That's it!** Zero configuration required. Start searching immediately.
 
@@ -91,7 +94,7 @@ class User extends Model
     ];
 }
 
-// Option 2: Specify at query time (overrides $searchable)
+// Option 2: Specify at query time (merges with / adds to $searchable columns)
 $users = User::search('john')
     ->searchIn(['name' => 10, 'email' => 5])
     ->get();
@@ -183,6 +186,48 @@ User::search('john doe developer')
     ->matchAny()        // Any token can match (OR)
     ->get();
 ```
+
+### BM25 Inverted Index (v2+)
+
+For large tables, the inverted index provides BM25-ranked results:
+
+```bash
+php artisan migrate
+php artisan fuzzy-search:rebuild "App\Models\User"
+```
+
+```php
+// BM25 search — faster + more relevant ranking on 10k+ rows
+$users = User::search('john')->useInvertedIndex()->get();
+
+// Scout driver — bundled, no separate package
+// Set SCOUT_DRIVER=fuzzy-search in .env
+$users = User::search('john')->get(); // via Scout
+```
+
+See [Inverted Index](docs/INVERTED_INDEX.md) and [Scout Driver](docs/SCOUT_DRIVER.md) docs.
+
+### Extended Search Syntax (v2+)
+
+Fuse.js-style operators for precise queries:
+
+```php
+$users = User::search('=John ^Doe !banned')->extended()->get();
+$users = User::search('admin (john | jane)')->extended()->get();
+```
+
+See [Extended Search docs](docs/EXTENDED_SEARCH.md) for the operator reference.
+
+### In-Memory Mode (v2+)
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Facades\FuzzySearch;
+
+$matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->get();
+```
+
+> **Supported methods:** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `get`.
+> Any other `SearchBuilder` method (e.g. `extended()`, `using()`, `preset()`, `paginate()`) will throw a `\BadMethodCallException` to prevent silent failures.
 
 ## Field Weighting & Scoring
 
@@ -444,25 +489,25 @@ foreach ($users as $user) {
 
 ## Performance & Indexing
 
-### Search Index Table
+### BM25 Inverted Index
+
+For tables with 10k+ rows, build the BM25 index for ranked, fast results:
 
 ```bash
-# Create search index
-php artisan fuzzy-search:index User
-
-# Rebuild index
-php artisan fuzzy-search:index User --fresh
-
-# Index specific columns
-php artisan fuzzy-search:index User --columns=name,email
+php artisan migrate
+php artisan fuzzy-search:rebuild "App\Models\User"
 ```
 
 ```php
-// Use indexed search (faster for large tables)
+// Use BM25 indexed search (faster + ranked for large tables)
 User::search('john')
-    ->useIndex()
+    ->useInvertedIndex()
     ->get();
 ```
+
+> **Note:** `useIndex()` is an alias for `useInvertedIndex()` — both query the BM25 `fuzzy_index_*` tables. The deprecated legacy `search_index` table from v1 is no longer used.
+
+See [Inverted Index](docs/INVERTED_INDEX.md) for production setup (queue workers, auto-indexing via observer, Horizon config).
 
 ### Async Indexing (Queue Support)
 
@@ -474,8 +519,9 @@ User::search('john')
     'chunk_size' => 500,
 ],
 
-// Dispatch indexing job
-User::reindex();  // Queued automatically
+// Re-index a single model (dispatches IndexModelJob to queue)
+// use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+IndexModelJob::dispatch(User::class, $user->id);
 ```
 
 ### Redis / Cache Support
@@ -528,6 +574,8 @@ $users = User::search('john')
     ->skip(20)
     ->get();
 ```
+
+> **Note:** `paginate()` and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()` and will throw a `BadMethodCallException`. `simplePaginate()` works correctly with extended syntax. See [Extended Search](docs/EXTENDED_SEARCH.md#pagination) for details.
 
 ## Reliability & Safety
 
@@ -613,6 +661,34 @@ try {
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
 
+## Events
+
+### `FuzzySearchExecuted`
+
+Fired after every `->get()` or `->paginate()` call. Useful for monitoring search latency and volume in production.
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
+
+Event::listen(FuzzySearchExecuted::class, function ($event) {
+    Log::info('search', [
+        'term'      => $event->searchTerm,
+        'columns'   => $event->columns,
+        'algorithm' => $event->algorithm,    // 'fuzzy', 'levenshtein', 'bm25', etc.
+        'count'     => $event->candidateCount,
+        'ms'        => $event->latencyMs,
+    ]);
+});
+```
+
+Properties:
+
+- `searchTerm` (string) — the user's query
+- `columns` (array) — columns being searched
+- `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, or `bm25`
+- `candidateCount` (int) — rows fetched from SQL before scoring
+- `latencyMs` (float) — total search time in milliseconds
+
 ## Configuration
 
 ### Config File
@@ -647,7 +723,6 @@ return [
     
     'indexing' => [
         'enabled' => false,
-        'table' => 'search_index',
         'async' => true,
         'queue' => 'default',
     ],
@@ -838,31 +913,41 @@ class Product extends Model
 ### Indexing Commands
 
 ```bash
-# Index a model
-php artisan fuzzy-search:index User
+# Build / rebuild BM25 index for a model
+php artisan fuzzy-search:rebuild "App\Models\User"
 
-# Index with fresh rebuild
-php artisan fuzzy-search:index User --fresh
+# Rebuild with fresh index (flush first)
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 
-# Index all searchable models
-php artisan fuzzy-search:index --all
+# Clear BM25 index for a model
+php artisan fuzzy-search:clear "App\Models\User"
 
-# Clear index
-php artisan fuzzy-search:clear User
+# Clear BM25 index for all models
+php artisan fuzzy-search:clear --all
+
+# Show index status (row counts, avg doc length, term count per model)
+php artisan fuzzy-search:status
 ```
 
-### Benchmark Tools
+### Performance numbers
+
+Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) (MySQL 8.0, 100k-row dataset, commodity VPS, warm cache). Run `php artisan demo:seed` in the demo project to seed the same dataset on your hardware.
+
+| Search path | Median latency | Notes |
+|---|---|---|
+| LIKE (`using('simple')`) | ~8 ms | Full table scan; SQL `LIKE '%term%'` |
+| Levenshtein (`using('levenshtein')`) | ~45 ms | PHP re-score over 1 000 SQL candidates |
+| BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
+| Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
+
+These are wall-clock times from the Laravel request lifecycle (TTFB minus network), not micro-benchmark times.
+
+**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index returns results in the same ~12–20 ms window as the 100k baseline.
+
+> Numbers vary by hardware, DB engine, term selectivity, and number of search columns. Run `php artisan fuzzy-search:benchmark` to measure on your own stack:
 
 ```bash
-# Benchmark search performance
 php artisan fuzzy-search:benchmark User --term="john" --iterations=100
-
-# Output:
-# Algorithm: fuzzy
-# Average time: 12.5ms
-# Min: 8ms, Max: 25ms
-# Queries/second: 80
-# Memory usage: 2.1MB
 ```
 
 ### Debug Commands
@@ -897,7 +982,7 @@ composer benchmark
 
 ```php
 User::search('john')
-    ->useIndex()
+    ->useInvertedIndex()
     ->cache(60)
     ->searchIn(['name', 'email'])  // Not all columns
     ->maxPatterns(50)
@@ -906,7 +991,7 @@ User::search('john')
 
 ## Requirements
 
-- PHP 8.0 or higher
+- PHP 8.1 or higher
 - Laravel 9.x, 10.x, 11.x, 12.x, or 13.x
 - Any supported database
 

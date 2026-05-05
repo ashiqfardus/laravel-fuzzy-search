@@ -15,4 +15,6 @@ Thumbs.db
 *.swo
 composer.lock
 ROADMAP.md
+.claude
 
+.worktrees/

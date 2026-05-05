@@ -1,0 +1,115 @@
+<?php
+
+namespace Ashiqfardus\LaravelFuzzySearch\Query;
+
+use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
+    AstNode, AndNode, OrNode, NotNode,
+    FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm
+};
+use Illuminate\Database\Query\Builder;
+
+/**
+ * @internal This class is not part of the public API and may change without notice.
+ *
+ * Walk the AST and apply WHERE clauses to a query builder.
+ * All term values pass through PDO bindings — no string interpolation.
+ */
+class AstCompiler
+{
+    public function __construct(private readonly string $dbDriver = 'mysql') {}
+
+    /**
+     * @param string[] $columns
+     */
+    public function compile(AstNode $node, Builder $builder, array $columns): void
+    {
+        $builder->where(function (Builder $q) use ($node, $columns) {
+            $this->visit($node, $q, $columns);
+        });
+    }
+
+    private function visit(AstNode $node, Builder $builder, array $columns, string $boolean = 'and'): void
+    {
+        if ($node instanceof AndNode) {
+            $method = $boolean === 'or' ? 'orWhere' : 'where';
+            $builder->$method(function (Builder $q) use ($node, $columns) {
+                foreach ($node->children as $child) {
+                    $this->visit($child, $q, $columns, 'and');
+                }
+            });
+            return;
+        }
+
+        if ($node instanceof OrNode) {
+            $method = $boolean === 'or' ? 'orWhere' : 'where';
+            $builder->$method(function (Builder $q) use ($node, $columns) {
+                foreach ($node->children as $i => $child) {
+                    $this->visit($child, $q, $columns, $i === 0 ? 'and' : 'or');
+                }
+            });
+            return;
+        }
+
+        if ($node instanceof NotNode) {
+            $method = $boolean === 'or' ? 'orWhereNot' : 'whereNot';
+            $builder->$method(function (Builder $q) use ($node, $columns) {
+                $this->visit($node->child, $q, $columns, 'and');
+            });
+            return;
+        }
+
+        // Leaf term — match against any of the given columns (OR'd)
+        $term    = $this->extractTerm($node);
+        $pattern = $this->patternFor($node, $term);
+        $isPgsql = $this->dbDriver === 'pgsql';
+
+        $method = $boolean === 'or' ? 'orWhere' : 'where';
+        $builder->$method(function (Builder $q) use ($columns, $node, $pattern, $term, $isPgsql) {
+            foreach ($columns as $idx => $column) {
+                $rawMethod = $idx === 0 ? 'whereRaw' : 'orWhereRaw';
+                $colMethod = $idx === 0 ? 'where'    : 'orWhere';
+                if ($node instanceof ExactTerm) {
+                    // Case-insensitive exact: LOWER(quoted_col) = LOWER(?) on all drivers
+                    $q->$rawMethod('LOWER(' . $this->quoteColumn($column) . ') = LOWER(?)', [$term]);
+                } elseif ($isPgsql) {
+                    $q->$rawMethod($this->quoteColumn($column) . ' ILIKE ?', [$pattern]);
+                } else {
+                    $q->$colMethod($column, 'LIKE', $pattern);
+                }
+            }
+        });
+    }
+
+    private function quoteColumn(string $column): string
+    {
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($this->dbDriver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
+    }
+
+    private function extractTerm(AstNode $node): string
+    {
+        if (property_exists($node, 'term')) {
+            return $node->term;
+        }
+        throw new \InvalidArgumentException('Non-term node in extractTerm()');
+    }
+
+    private function patternFor(AstNode $node, string $term): string
+    {
+        $safe = addcslashes($term, '%_');
+        return match (true) {
+            $node instanceof FuzzyTerm        => '%' . $safe . '%',
+            $node instanceof IncludeMatchTerm => '%' . $safe . '%',
+            $node instanceof PrefixTerm       => $safe . '%',
+            $node instanceof SuffixTerm       => '%' . $safe,
+            $node instanceof ExactTerm        => $term, // uses = operator, not LIKE
+            default                            => '%' . $safe . '%',
+        };
+    }
+}

@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Closure;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidConfigException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
 
 /**
@@ -51,6 +52,8 @@ class SearchBuilder
     protected bool $unicodeNormalizeEnabled = false;
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
+    protected ?string $invertedIndexModelClass = null;
+    protected ?string $extendedQuery = null;
     protected ?int $cacheMinutes = null;
     protected ?string $cacheKey = null;
     protected bool $stableRankingEnabled = false;
@@ -70,25 +73,26 @@ class SearchBuilder
     {
         $this->query = $query;
         $this->fuzzySearch = $fuzzySearch;
+        $this->accentInsensitiveEnabled = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
     }
 
     /**
      * Set the search term
      *
+     * The empty-search guard is deferred to executeSearch() so that callers
+     * using the extended()/searchBoolean() pattern can override the term
+     * before execution:
+     *
+     *   User::search('')->extended('=John ^Doe')->get();  // safe
+     *   User::search('=John ^Doe')->extended()->get();    // also safe (preferred)
+     *
      * @param string $term
      * @return self
-     * @throws EmptySearchTermException if term is empty and config doesn't allow it
+     * @throws EmptySearchTermException (deferred to get()) if term is empty and config doesn't allow it
      */
     public function search(string $term): self
     {
         $this->searchTerm = trim($term);
-
-        // Check if empty search is allowed in config
-        $allowEmpty = config('fuzzy-search.allow_empty_search', false);
-
-        if (empty($this->searchTerm) && !$allowEmpty) {
-            throw new EmptySearchTermException();
-        }
 
         return $this;
     }
@@ -99,15 +103,58 @@ class SearchBuilder
     public function searchIn(array $columns): self
     {
         foreach ($columns as $key => $value) {
+            $col = is_string($key) ? $key : $value;
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $col)) {
+                throw new \InvalidArgumentException("Invalid column name [{$col}]: only letters, digits, underscores, and dots allowed.");
+            }
             if (is_string($key)) {
-                $this->searchableColumns[] = $key;
+                if (!in_array($key, $this->searchableColumns, true)) {
+                    $this->searchableColumns[] = $key;
+                }
                 $this->columnWeights[$key] = (int) $value;
             } else {
-                $this->searchableColumns[] = $value;
+                if (!in_array($value, $this->searchableColumns, true)) {
+                    $this->searchableColumns[] = $value;
+                }
                 $this->columnWeights[$value] = 1;
             }
         }
         return $this;
+    }
+
+    /**
+     * Use Fuse-style extended search syntax.
+     *
+     *   ' word     — substring include
+     *   = word     — exact equality
+     *   ^ word     — prefix
+     *   word $     — suffix
+     *   ! word     — exclude (NOT)
+     *   |          — OR (default is AND on whitespace)
+     *   ( ... )    — grouping
+     *   "phrase"   — quoted phrase as one token
+     *
+     * Pass the query string here, OR set it via search() and call extended() with no args.
+     */
+    public function extended(?string $query = null): self
+    {
+        if ($query !== null) {
+            $this->searchTerm = $query;
+        }
+        $this->extendedQuery = $this->searchTerm;
+        return $this;
+    }
+
+    /**
+     * Alias for extended() — same parser handles boolean syntax.
+     *
+     * Pass the query string here, OR set it via search() and call searchBoolean() with no args.
+     *
+     * Example: searchBoolean('term1 (term2 | term3) !term4')
+     */
+    public function searchBoolean(?string $query = null): self
+    {
+        return $this->extended($query);
     }
 
     /**
@@ -272,10 +319,13 @@ class SearchBuilder
     public function highlight(string $tagOrOpen = 'em', ?string $close = null): self
     {
         if ($close === null) {
-            $this->highlightTagOpen = "<{$tagOrOpen}>";
+            if (!preg_match('/^[a-zA-Z][a-zA-Z0-9-]*$/', $tagOrOpen)) {
+                throw new \InvalidArgumentException("Invalid HTML tag name for highlight(): [{$tagOrOpen}]");
+            }
+            $this->highlightTagOpen  = "<{$tagOrOpen}>";
             $this->highlightTagClose = "</{$tagOrOpen}>";
         } else {
-            $this->highlightTagOpen = $tagOrOpen;
+            $this->highlightTagOpen  = $tagOrOpen;
             $this->highlightTagClose = $close;
         }
         return $this;
@@ -328,12 +378,37 @@ class SearchBuilder
     }
 
     /**
-     * Use search index table
+     * Use the BM25 inverted index instead of LIKE-pattern search.
+     *
+     * @param  string|bool|null $modelClass
+     *   - true/null  auto-detect from Eloquent builder
+     *   - string     explicit model class (enables BM25 on DB::table() too)
+     *   - false      disable (reset to LIKE path)
      */
-    public function useIndex(): self
+    public function useInvertedIndex(string|bool|null $modelClass = true): self
     {
+        if ($modelClass === false) {
+            $this->useSearchIndex          = false;
+            $this->invertedIndexModelClass = null;
+            return $this;
+        }
+
         $this->useSearchIndex = true;
+
+        if (is_string($modelClass)) {
+            $this->invertedIndexModelClass = $modelClass;
+        }
+
         return $this;
+    }
+
+    /**
+     * @deprecated since v2.0.0-alpha.4 — use useInvertedIndex() instead.
+     * @see useInvertedIndex()
+     */
+    public function useIndex(string|bool|null $modelClass = true): self
+    {
+        return $this->useInvertedIndex($modelClass);
     }
 
     /**
@@ -409,6 +484,11 @@ class SearchBuilder
      */
     public function facet(string $column): self
     {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            throw new \InvalidArgumentException(
+                "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
+            );
+        }
         $this->facets[] = $column;
         return $this;
     }
@@ -556,17 +636,53 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
-        $this->buildQuery();
-
-        $results = $this->query
-            ->limit($this->limit)
-            ->offset($this->offset)
-            ->get();
-
-        // Post-process results
-        if ($this->withRelevance && !empty($this->searchTerm)) {
-            $results = $this->calculateRelevanceScores($results);
+        // Deferred empty-search guard (moved from search() so that extended()/searchBoolean()
+        // can supply their own query after an empty string was passed to search('').
+        if (empty($this->searchTerm) && $this->extendedQuery === null) {
+            $allowEmpty = config('fuzzy-search.allow_empty_search', false);
+            if (!$allowEmpty) {
+                throw new EmptySearchTermException();
+            }
         }
+
+        // min_search_length guard — return empty results for terms that are too short
+        // without throwing, so autocomplete/type-ahead UIs get a clean empty state.
+        if ($this->extendedQuery === null && !empty($this->searchTerm)) {
+            $minLength = (int) config('fuzzy-search.min_search_length', 1);
+            if (strlen($this->searchTerm) < $minLength) {
+                return collect();
+            }
+        }
+
+        // Extended-search path (Fuse-style operators)
+        if ($this->extendedQuery !== null) {
+            return $this->executeExtendedSearch();
+        }
+
+        // BM25 fast path via inverted index
+        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+            if (!empty($this->columnWeights) && config('app.debug')) {
+                trigger_error('SearchBuilder: column weights are ignored on the BM25 path.', E_USER_NOTICE);
+            }
+            return $this->executeIndexedSearch();
+        }
+
+        $this->buildQuery();
+        $startTime = microtime(true);
+
+        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
+
+        // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet
+        $candidates = $this->query->limit($maxCandidates)->get();
+
+        // Rescore ALL candidates before slicing
+        if ($this->withRelevance && !empty($this->searchTerm)) {
+            $candidates = $this->calculateRelevanceScores($candidates);
+            // calculateRelevanceScores already sorts by _score DESC and calls values()
+        }
+
+        // Apply pagination on the fully-ranked collection
+        $results = $candidates->slice($this->offset, $this->limit)->values();
 
         if ($this->highlightTagOpen) {
             $results = $this->applyHighlighting($results);
@@ -576,14 +692,209 @@ class SearchBuilder
             $results = $this->addDebugInfo($results);
         }
 
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
+            candidateCount: $candidates->count(),
+            latencyMs:      round((microtime(true) - $startTime) * 1000, 2),
+        ));
+
         return $results;
     }
 
     /**
+     * Execute search via BM25 inverted index
+     */
+    protected function executeIndexedSearch(): Collection
+    {
+        $startedAt  = microtime(true);
+        $modelClass = $this->resolveIndexModelClass();
+
+        if ($modelClass === null) {
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: useInvertedIndex() skipped — cannot resolve model class. ' .
+                    'Pass the class explicitly: ->useInvertedIndex(App\Models\User::class)'
+                );
+            }
+            $this->useSearchIndex = false;
+            return $this->executeSearch();
+        }
+
+        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
+
+        $terms   = $indexManager->processTerms($this->searchTerm);
+        $results = $scorer->search($terms, $modelClass, ($this->limit + $this->offset) * 2);
+
+        if ($results->isEmpty()) {
+            return collect();
+        }
+
+        $ids      = $results->pluck('model_id')->toArray();
+        $scoreMap = $results->pluck('score', 'model_id');
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $keyName = $this->query->getModel()->getKeyName();
+            $models  = $this->query->whereIn($keyName, $ids)->get();
+        } else {
+            $models = $modelClass::whereIn((new $modelClass)->getKeyName(), $ids)->get();
+        }
+
+        // Compute bm25Max from the FULL unsorted result set so _score is corpus-relative,
+        // not page-relative. Slicing first would make page-2 row 1 always score 1.0.
+        $bm25Max = $scoreMap->max() ?? 0;
+
+        $sorted = $models
+            ->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
+            ->values()
+            ->slice($this->offset, $this->limit)
+            ->values()
+            ->map(function ($item) use ($scoreMap, $bm25Max) {
+                $raw = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_raw_score = $raw;
+                $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
+                return $item;
+            });
+
+        if ($this->highlightTagOpen) {
+            $sorted = $this->applyHighlighting($sorted);
+        }
+
+        if ($this->debugMode) {
+            $sorted = $this->addDebugInfo($sorted);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      'bm25',
+            candidateCount: count($ids),
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+        ));
+
+        return $sorted;
+    }
+
+    /**
+     * Execute search using Fuse-style extended/boolean syntax.
+     * Routes through Lexer → ExtendedQueryParser → AstCompiler.
+     */
+    protected function executeExtendedSearch(): Collection
+    {
+        $startedAt = microtime(true);
+
+        $columns = !empty($this->searchableColumns)
+            ? $this->searchableColumns
+            : $this->autoDetectColumnsForExtended();
+
+        if (empty($columns)) {
+            throw new \Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException();
+        }
+
+        $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
+        $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
+
+        $dbDriver  = $this->query->getConnection()->getDriverName();
+        $compiler  = new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver);
+        $rawQuery  = $this->query instanceof \Illuminate\Database\Eloquent\Builder
+            ? $this->query->getQuery()
+            : $this->query;
+
+        $compiler->compile($ast, $rawQuery, $columns);
+
+        // Apply remaining filters (mirroring buildQuery behavior)
+        foreach ($this->filters as $filter) {
+            if ($filter['operator'] === 'IN') {
+                $this->query->whereIn($filter['column'], $filter['value']);
+            } else {
+                $this->query->where($filter['column'], $filter['operator'], $filter['value']);
+            }
+        }
+
+        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
+        $candidates = $this->query->limit($maxCandidates)->get();
+
+        if ($this->withRelevance) {
+            $candidates = $this->calculateRelevanceScores($candidates);
+        }
+
+        $results = $candidates->slice($this->offset, $this->limit)->values();
+
+        if ($this->highlightTagOpen) {
+            $results = $this->applyHighlighting($results);
+        }
+
+        if ($this->debugMode) {
+            $results = $this->addDebugInfo($results);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->extendedQuery,
+            columns:        $columns,
+            algorithm:      'extended',
+            candidateCount: $candidates->count(),
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+        ));
+
+        return $results;
+    }
+
+    /**
+     * Auto-detect searchable columns for extended search from the model.
+     */
+    private function autoDetectColumnsForExtended(): array
+    {
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $model = $this->query->getModel();
+            if (method_exists($model, 'getSearchableColumns')) {
+                return $model->getSearchableColumns();
+            }
+        }
+        return [];
+    }
+
+    /**
+     * Resolve the model class for the inverted index lookup.
+     */
+    protected function resolveIndexModelClass(): ?string
+    {
+        if ($this->invertedIndexModelClass !== null) {
+            return $this->invertedIndexModelClass;
+        }
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            return $this->query->getModel()::class;
+        }
+
+        return null;
+    }
+
+    /**
      * Get paginated results
+     *
+     * @throws \BadMethodCallException when extended/boolean syntax is active — use simplePaginate() instead,
+     *   which correctly routes through the AST compiler.
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        // Extended/boolean syntax is compiled to an in-memory AST that neither the LIKE
+        // driver path nor paginateIndexed() honours — both would silently discard all
+        // boolean operators.  simplePaginate() delegates to get() which routes through
+        // executeExtendedSearch() correctly.
+        if ($this->extendedQuery !== null) {
+            throw new \BadMethodCallException(
+                'paginate() does not support extended/boolean query syntax. ' .
+                'Use simplePaginate() or get() instead.'
+            );
+        }
+
+        // BM25 fast path via inverted index
+        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+            return $this->paginateIndexed($perPage, $pageName, $page);
+        }
+
         $this->buildQuery();
 
         $page = $page ?: request()->input($pageName, 1);
@@ -595,25 +906,175 @@ class SearchBuilder
             $results->setCollection($items);
         }
 
+        $items = collect($results->items());
+
+        if ($this->highlightTagOpen) {
+            $items = $this->applyHighlighting($items);
+            $results->setCollection($items);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
+            candidateCount: $results->total(),
+            latencyMs:      0.0,
+        ));
+
         return $results;
     }
 
     /**
-     * Simple pagination
+     * Paginate using BM25 inverted index
      */
-    public function simplePaginate(int $perPage = 15): \Illuminate\Contracts\Pagination\Paginator
+    protected function paginateIndexed(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        $this->buildQuery();
-        return $this->query->simplePaginate($perPage);
+        $perPage    = min((int) $perPage, 100);
+        $startedAt  = microtime(true);
+        $modelClass = $this->resolveIndexModelClass();
+
+        if ($modelClass === null) {
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: paginate() with useInvertedIndex() skipped — could not resolve model class. Falling back to LIKE.'
+                );
+            }
+            $this->useSearchIndex = false;
+            return $this->paginate($perPage, $pageName, $page);
+        }
+
+        $page   = $page ?: request()->input($pageName, 1);
+        $offset = ($page - 1) * $perPage;
+
+        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
+
+        $terms = $indexManager->processTerms($this->searchTerm);
+
+        // Resolve term IDs so we can run a COUNT query with the same WHERE conditions.
+        $termIds = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+            ->whereIn('term', $terms)
+            ->pluck('id')
+            ->toArray();
+
+        // Compute the real total via a COUNT(DISTINCT) query — no artificial row cap.
+        if (empty($termIds)) {
+            $total = 0;
+        } else {
+            $total = (int) \Illuminate\Support\Facades\DB::table('fuzzy_index_postings as p')
+                ->join('fuzzy_index_documents as d', function ($join) use ($modelClass) {
+                    $join->on('p.model_id', '=', 'd.model_id')
+                         ->where('d.model_type', '=', $modelClass);
+                })
+                ->where('p.model_type', $modelClass)
+                ->whereIn('p.term_id', $termIds)
+                ->distinct()
+                ->count('p.model_id');
+        }
+
+        // Fetch only the rows needed for this page (naturally bounded by offset + perPage).
+        $allResults  = $scorer->search($terms, $modelClass, $offset + $perPage);
+        $pageResults = $allResults->slice($offset, $perPage)->values();
+
+        if ($pageResults->isEmpty()) {
+            event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+                searchTerm:     $this->searchTerm,
+                columns:        $this->searchableColumns,
+                algorithm:      'bm25',
+                candidateCount: $total,
+                latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+            ));
+
+            return new \Illuminate\Pagination\LengthAwarePaginator(
+                [], $total, $perPage, $page,
+                ['path' => request()->url(), 'pageName' => $pageName]
+            );
+        }
+
+        $ids      = $pageResults->pluck('model_id')->toArray();
+        $scoreMap = $pageResults->pluck('score', 'model_id');
+
+        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
+            $keyName = $this->query->getModel()->getKeyName();
+            $models  = $this->query->whereIn($keyName, $ids)->get();
+        } else {
+            $keyName = (new $modelClass)->getKeyName();
+            $models  = $modelClass::whereIn($keyName, $ids)->get();
+        }
+
+        // Use the full-result-set max for corpus-relative normalization.
+        $bm25Max = $pageResults->max('score') ?? 0;
+
+        $sorted = $models->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
+            ->values()
+            ->map(function ($item) use ($scoreMap, $bm25Max) {
+                $raw = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
+                $item->_raw_score = $raw;
+                $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
+                return $item;
+            });
+
+        if ($this->highlightTagOpen) {
+            $sorted = $this->applyHighlighting($sorted);
+        }
+
+        if ($this->debugMode) {
+            $sorted = $this->addDebugInfo($sorted);
+        }
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      'bm25',
+            candidateCount: $total,
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+        ));
+
+        return new \Illuminate\Pagination\LengthAwarePaginator(
+            $sorted, $total, $perPage, $page,
+            ['path' => request()->url(), 'pageName' => $pageName]
+        );
     }
 
     /**
-     * Cursor pagination
+     * Simple pagination (offset-based, no total count).
+     * Routes through the same search path as get() so extended-syntax and BM25 are honoured.
      */
-    public function cursorPaginate(int $perPage = 15): \Illuminate\Contracts\Pagination\CursorPaginator
+    public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\Paginator
     {
-        $this->buildQuery();
-        return $this->query->cursorPaginate($perPage);
+        $page   = $page ?: (int) request()->input($pageName, 1);
+        $offset = ($page - 1) * $perPage;
+
+        // Fetch one extra item so Paginator::setItems() can detect whether a next
+        // page exists (it sets hasMore = count($items) > $perPage, then trims internally).
+        // Save and restore so that a re-used SearchBuilder instance is not permanently
+        // mutated by the pagination call.
+        $savedLimit   = $this->limit;
+        $savedOffset  = $this->offset;
+        $this->limit  = $perPage + 1;
+        $this->offset = $offset;
+        $all          = $this->get();
+        $this->limit  = $savedLimit;
+        $this->offset = $savedOffset;
+
+        return new \Illuminate\Pagination\Paginator(
+            $all, $perPage, $page,
+            ['path' => request()->url(), 'pageName' => $pageName]
+        );
+    }
+
+    /**
+     * Not supported — cursor pagination is incompatible with PHP-side relevance scoring.
+     * Use paginate() or simplePaginate() instead.
+     *
+     * @throws \BadMethodCallException always
+     */
+    public function cursorPaginate(int $perPage = 15): never
+    {
+        throw new \BadMethodCallException(
+            'cursorPaginate() is not supported by FuzzySearch — it bypasses PHP-side relevance scoring. ' .
+            'Use paginate() for full pagination or simplePaginate() for forward-only pagination.'
+        );
     }
 
     /**
@@ -806,7 +1267,7 @@ class SearchBuilder
                                 $column,
                                 $term,
                                 $this->algorithm,
-                                $this->options,
+                                array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
                                 $boolean
                             );
                         }
@@ -827,7 +1288,7 @@ class SearchBuilder
                             $column,
                             $term,
                             $this->algorithm,
-                            $this->options,
+                            array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
                             $boolean
                         );
                     }
@@ -842,7 +1303,10 @@ class SearchBuilder
     protected function applyRelevanceOrdering(): void
     {
         $driver = $this->query->getConnection()->getDriverName();
-        $term = $this->searchTerm;
+        $term   = $this->searchTerm;
+        // Escape LIKE metacharacters so user input cannot widen the match set (consistent
+        // with all driver LIKE paths). The exact-match binding uses the raw term intentionally.
+        $safeTerm = addcslashes($term, '%_');
 
         $scoreExpressions = [];
         $bindings = [];
@@ -859,8 +1323,8 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
                         $term, $weight * 100,
-                        $term . '%', $weight * 50 * $prefixBoost,
-                        '%' . $term . '%', $weight * 10,
+                        $safeTerm . '%', $weight * 50 * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * 10,
                     ]);
                     break;
 
@@ -870,8 +1334,8 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
                         $term, $weight * 100,
-                        $term . '%', $weight * 50 * $prefixBoost,
-                        '%' . $term . '%', $weight * 10,
+                        $safeTerm . '%', $weight * 50 * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * 10,
                     ]);
                     break;
 
@@ -881,8 +1345,8 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
                         $term, $weight * 100,
-                        $term . '%', $weight * 50 * $prefixBoost,
-                        '%' . $term . '%', $weight * 10,
+                        $safeTerm . '%', $weight * 50 * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * 10,
                     ]);
             }
         }
@@ -897,12 +1361,17 @@ class SearchBuilder
      */
     protected function quoteColumn(string $column, string $driver): string
     {
-        return match ($driver) {
-            'mysql' => "`{$column}`",
-            'pgsql' => "\"{$column}\"",
-            'sqlsrv' => "[{$column}]",
-            default => $column,
-        };
+        // Split on '.' so table-qualified names (e.g. "users.name") quote each part
+        // separately — wrapping the whole string in backticks makes MySQL treat
+        // "users.name" as a single identifier rather than table.column.
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($driver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
     }
 
     /**
@@ -912,7 +1381,7 @@ class SearchBuilder
     {
         $term = strtolower($this->searchTerm);
 
-        return $results->map(function ($item) use ($term) {
+        $results = $results->map(function ($item) use ($term) {
             $score = 0;
             $columnScores = [];
 
@@ -981,6 +1450,29 @@ class SearchBuilder
         })->sortByDesc(function ($item) {
             return is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
         })->values();
+
+        // Score normalization to [0,1] range
+        // Preserve raw score for backwards compatibility under _raw_score
+        $max = $results->max(function ($item) {
+            return is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
+        });
+
+        if ($max > 0) {
+            $results = $results->map(function ($item) use ($max) {
+                $raw = is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
+                $normalized = round($raw / $max, 6);
+                if (is_object($item)) {
+                    $item->_raw_score = $raw;
+                    $item->_score     = $normalized;
+                } elseif (is_array($item)) {
+                    $item['_raw_score'] = $raw;
+                    $item['_score']     = $normalized;
+                }
+                return $item;
+            });
+        }
+
+        return $results;
     }
 
     /**
@@ -989,26 +1481,133 @@ class SearchBuilder
     protected function applyHighlighting(Collection $results): Collection
     {
         $term = $this->searchTerm;
-        $open = $this->highlightTagOpen;
-        $close = $this->highlightTagClose;
+        if (empty($term)) {
+            return $results;
+        }
+
+        $open  = $this->highlightTagOpen ?? '<em>';
+        $close = $this->highlightTagClose ?? '</em>';
 
         return $results->map(function ($item) use ($term, $open, $close) {
+            $matches     = [];
             $highlighted = [];
 
             foreach ($this->searchableColumns as $column) {
                 $value = (string) data_get($item, $column, '');
-                $pattern = '/(' . preg_quote($term, '/') . ')/i';
-                $highlighted[$column] = preg_replace($pattern, "{$open}$1{$close}", $value);
+                if ($value === '') {
+                    continue;
+                }
+
+                $indices = $this->findMatchOffsets($value, $term);
+
+                if (!empty($indices)) {
+                    $matches[] = [
+                        'column'  => $column,
+                        'value'   => $value,
+                        'indices' => $indices,
+                    ];
+                    $highlighted[$column] = $this->wrapWithTags($value, $indices, $open, $close);
+                } else {
+                    $highlighted[$column] = $value;
+                }
             }
 
             if (is_object($item)) {
+                $item->_matches     = $matches;
                 $item->_highlighted = $highlighted;
             } elseif (is_array($item)) {
+                $item['_matches']     = $matches;
                 $item['_highlighted'] = $highlighted;
             }
 
             return $item;
         });
+    }
+
+    /**
+     * Find all case-insensitive occurrences of $term in $value.
+     * Returns array of [startIdx, endIdx] inclusive ranges.
+     */
+    private function findMatchOffsets(string $value, string $term): array
+    {
+        if ($term === '') {
+            return [];
+        }
+        $indices = [];
+        $offset  = 0;
+        $lower   = strtolower($value);
+        $needle  = strtolower($term);
+
+        while (($pos = strpos($lower, $needle, $offset)) !== false) {
+            $indices[] = [$pos, $pos + strlen($term) - 1];
+            $offset    = $pos + strlen($term);
+        }
+        return $indices;
+    }
+
+    private function wrapWithTags(string $value, array $indices, string $open, string $close): string
+    {
+        if (empty($indices)) {
+            return e($value);
+        }
+
+        usort($indices, fn($a, $b) => $a[0] <=> $b[0]);
+
+        $out  = '';
+        $last = 0;
+        foreach ($indices as [$start, $end]) {
+            $out .= e(substr($value, $last, $start - $last));
+            $out .= $open . e(substr($value, $start, $end - $start + 1)) . $close;
+            $last = $end + 1;
+        }
+        $out .= e(substr($value, $last));
+        return $out;
+    }
+
+    /**
+     * Render a column's value with HTML-escaped match offsets wrapped in <mark>.
+     * Used by the @fuzzyHighlight Blade directive.
+     *
+     * @param mixed  $result A model/array/object with _matches populated
+     * @param string $column Column name to render
+     * @param string $tag    Wrapper tag (default 'mark')
+     */
+    public static function renderHighlighted($result, string $column, string $tag = 'mark'): string
+    {
+        if (!preg_match('/^[a-zA-Z][a-zA-Z0-9-]*$/', $tag)) {
+            throw new \InvalidArgumentException("Invalid HTML tag name for fuzzyHighlight: [{$tag}]");
+        }
+
+        $matches = is_object($result) ? ($result->_matches ?? []) : ($result['_matches'] ?? []);
+        $value   = (string) data_get($result, $column, '');
+
+        foreach ($matches as $match) {
+            if (($match['column'] ?? null) === $column) {
+                $indices = $match['indices'] ?? [];
+                return self::escapeAndWrap($value, $indices, $tag);
+            }
+        }
+
+        return e($value);
+    }
+
+    private static function escapeAndWrap(string $value, array $indices, string $tag): string
+    {
+        if (empty($indices)) {
+            return e($value);
+        }
+
+        usort($indices, fn($a, $b) => $a[0] <=> $b[0]);
+
+        $out  = '';
+        $last = 0;
+        foreach ($indices as [$start, $end]) {
+            $out .= e(substr($value, $last, $start - $last));
+            $out .= '<' . $tag . '>' . e(substr($value, $start, $end - $start + 1)) . '</' . $tag . '>';
+            $last = $end + 1;
+        }
+        $out .= e(substr($value, $last));
+        return $out;
     }
 
     /**
@@ -1045,14 +1644,40 @@ class SearchBuilder
      */
     protected function generateCacheKey(): string
     {
+        // Closures cannot be serialized — skip caching when a custom score callback is set.
+        if ($this->customScoreCallback !== null) {
+            return 'fuzzy_search_nocache_' . uniqid();
+        }
+
         $data = [
-            'term' => $this->searchTerm,
-            'columns' => $this->searchableColumns,
-            'algorithm' => $this->algorithm,
-            'options' => $this->options,
-            'filters' => $this->filters,
-            'limit' => $this->limit,
-            'offset' => $this->offset,
+            'term'                   => $this->searchTerm,
+            'columns'                => $this->searchableColumns,
+            'algorithm'              => $this->algorithm,
+            'options'                => $this->options,
+            'filters'                => $this->filters,
+            'limit'                  => $this->limit,
+            'offset'                 => $this->offset,
+            'use_search_index'       => $this->useSearchIndex,
+            'extended_query'         => $this->extendedQuery,
+            'column_weights'         => $this->columnWeights,
+            'stop_words'             => $this->stopWords,
+            'synonyms'               => $this->synonyms,
+            'synonym_groups'         => $this->synonymGroups,
+            'locale'                 => $this->locale,
+            'accent_insensitive'     => $this->accentInsensitiveEnabled,
+            'unicode_normalize'      => $this->unicodeNormalizeEnabled,
+            'tokenize_search'        => $this->tokenizeSearch,
+            'token_match_mode'       => $this->tokenMatchMode,
+            'prefix_boost'           => $this->prefixBoostMultiplier,
+            'partial_match'          => $this->partialMatchEnabled,
+            'min_match_length'       => $this->minMatchLength,
+            'recency_boost'          => $this->recencyBoostEnabled,
+            'recency_multiplier'     => $this->recencyBoostMultiplier,
+            'recency_column'         => $this->recencyColumn,
+            'recency_days'           => $this->recencyDays,
+            'sort_by'                => $this->sortBy,
+            'stable_ranking'         => $this->stableRankingEnabled,
+            'typo_tolerance'         => $this->typoTolerance,
         ];
 
         return 'fuzzy_search_' . md5(serialize($data));
@@ -1116,15 +1741,21 @@ class SearchBuilder
         }
 
         $suggestions = [];
-        $term = strtolower($this->searchTerm);
+        // $rawTerm  → PHP str_starts_with / strcmp comparisons (must be unescaped)
+        // $safeTerm → LIKE bindings only (% and _ escaped so they match literally)
+        // Never swap these: passing $safeTerm to str_starts_with would miss values
+        // containing literal '%' or '_', and passing $rawTerm to LIKE would treat
+        // those characters as wildcards.
+        $rawTerm  = strtolower($this->searchTerm);
+        $safeTerm = addcslashes($rawTerm, '%_');
 
         // Clone query to avoid modifying the original
         $suggestQuery = clone $this->query;
 
         // Build a simple prefix query
-        $suggestQuery->where(function ($q) use ($term) {
+        $suggestQuery->where(function ($q) use ($safeTerm) {
             foreach ($this->searchableColumns as $column) {
-                $q->orWhere($column, 'LIKE', $term . '%');
+                $q->orWhere($column, 'LIKE', $safeTerm . '%');
             }
         });
 
@@ -1139,14 +1770,14 @@ class SearchBuilder
                     $words = preg_split('/\s+/', $value);
                     foreach ($words as $word) {
                         $wordLower = strtolower($word);
-                        if (str_starts_with($wordLower, $term) && strlen($word) > strlen($term)) {
+                        if (str_starts_with($wordLower, $rawTerm) && strlen($word) > strlen($rawTerm)) {
                             $suggestions[$wordLower] = $word;
                         }
                     }
 
-                    // Also add full column value if it starts with term
+                    // Also add full column value if it starts with the raw search term
                     $valueLower = strtolower($value);
-                    if (str_starts_with($valueLower, $term)) {
+                    if (str_starts_with($valueLower, $rawTerm)) {
                         $suggestions[$valueLower] = $value;
                     }
                 }
@@ -1181,65 +1812,71 @@ class SearchBuilder
             return [];
         }
 
-        if (empty($this->searchableColumns)) {
+        $term    = strtolower(trim($this->searchTerm));
+        $termLen = strlen($term);
+
+        try {
+            // Query the term dictionary — fast and accurate at any dataset size
+            $candidates = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+                ->select('term', 'doc_count')
+                ->where('term', '!=', $term)
+                ->whereRaw('LENGTH(term) BETWEEN ? AND ?', [
+                    max(1, $termLen - 3),
+                    $termLen + 3,
+                ])
+                ->orderByDesc('doc_count')
+                ->limit(300)
+                ->get();
+        } catch (\Illuminate\Database\QueryException $e) {
+            // Index tables don't exist — gracefully return empty
+            if (config('app.debug', false)) {
+                \Illuminate\Support\Facades\Log::notice(
+                    'fuzzy-search: didYouMean() returning empty — fuzzy_index_terms table missing. Run migrations.'
+                );
+            }
             return [];
         }
 
-        $term = strtolower($this->searchTerm);
-        $termLen = strlen($term);
-        $alternatives = [];
-        $candidateWords = [];
-
-        // Clone query to get sample values
-        $sampleQuery = clone $this->query;
-        $samples = $sampleQuery->limit(200)->get();
-
-        // Extract unique words from samples efficiently
-        foreach ($samples as $sample) {
-            foreach ($this->searchableColumns as $column) {
-                $value = (string) data_get($sample, $column, '');
-                // Split on non-alphanumeric characters
-                $words = preg_split('/[^a-zA-Z0-9]+/', strtolower($value), -1, PREG_SPLIT_NO_EMPTY);
-                foreach ($words as $word) {
-                    // Only consider words of similar length (+/- 3 characters)
-                    $wordLen = strlen($word);
-                    if ($wordLen >= 2 && abs($wordLen - $termLen) <= 3) {
-                        $candidateWords[$word] = true;
-                    }
-                }
-            }
+        if ($candidates->isEmpty()) {
+            return [];
         }
 
-        // Find words with small edit distance
-        foreach (array_keys($candidateWords) as $word) {
-            // Skip if word is same as search term
-            if ($word === $term) {
-                continue;
-            }
+        $alternatives = [];
+        foreach ($candidates as $candidate) {
+            $distance = levenshtein($term, $candidate->term);
+            $maxLen   = max($termLen, strlen($candidate->term));
 
-            $distance = levenshtein($term, $word);
-            $maxLen = max($termLen, strlen($word));
-
-            // Only suggest if edit distance is reasonable (1-3 edits) and less than half the word length
-            if ($distance > 0 && $distance <= 3 && $distance < $maxLen / 2) {
-                $confidence = round(1 - ($distance / $maxLen), 2);
+            if ($distance > 0 && $distance <= 3) {
                 $alternatives[] = [
-                    'term' => $word,
-                    'distance' => $distance,
-                    'confidence' => $confidence,
+                    'term'        => $candidate->term,
+                    'distance'    => $distance,
+                    'confidence'  => round(1 - ($distance / $maxLen), 2),
+                    '_doc_count'  => $candidate->doc_count,
                 ];
             }
         }
 
-        // Sort by distance (ascending), then by confidence (descending)
         usort($alternatives, function ($a, $b) {
+            // Sort by doc_count first (descending) — most common suggestions first
+            if ($a['_doc_count'] !== $b['_doc_count']) {
+                return $b['_doc_count'] - $a['_doc_count'];
+            }
+            // Then by distance (ascending) as tiebreaker
             if ($a['distance'] !== $b['distance']) {
                 return $a['distance'] - $b['distance'];
             }
+            // Finally by confidence (descending)
             return $b['confidence'] <=> $a['confidence'];
         });
 
-        return array_slice($alternatives, 0, $limit);
+        return array_slice(
+            array_map(
+                fn($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
+                $alternatives
+            ),
+            0,
+            $limit
+        );
     }
 
     /**

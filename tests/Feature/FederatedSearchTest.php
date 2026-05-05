@@ -68,9 +68,11 @@ class FederatedSearchTest extends TestCase
         $this->assertGreaterThan(0, $results->count());
         
         $first = $results->first();
-        // Check if model type is set (may not be if using Searchable trait directly)
-        $hasModelType = isset($first->_model_type) || property_exists($first, '_model_type');
-        $this->assertTrue($hasModelType || true, 'Model type property check skipped for Searchable models');
+        $this->assertTrue(
+            isset($first->_model_type),
+            '_model_type must be set on every FederatedSearch result'
+        );
+        $this->assertNotEmpty($first->_model_type);
     }
 
     /*
@@ -184,5 +186,31 @@ class FederatedSearchTest extends TestCase
             ->get();
 
         $this->assertGreaterThan(0, $results->count());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Normalized Score Tests
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_federated_results_have_normalized_scores(): void
+    {
+        $results = FederatedSearch::across([User::class])
+            ->search('john')
+            ->searchIn(['name', 'email'])
+            ->using('like')
+            ->get();
+
+        if ($results->isEmpty()) {
+            $this->markTestSkipped('No federated results to test normalization on');
+            return;
+        }
+
+        foreach ($results as $row) {
+            $score = $row->_score ?? 0;
+            $this->assertGreaterThanOrEqual(0.0, $score);
+            $this->assertLessThanOrEqual(1.0, $score);
+        }
     }
 }

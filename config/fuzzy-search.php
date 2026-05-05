@@ -6,16 +6,45 @@ return [
     | Default Fuzzy Search Algorithm
     |--------------------------------------------------------------------------
     |
-    | Supported: "simple", "fuzzy", "levenshtein", "soundex", "trigram"
+    | Supported: "simple", "like", "fuzzy", "levenshtein", "soundex", "trigram", "metaphone", "similar_text"
     |
     | - "fuzzy": General purpose with typo tolerance (recommended)
     | - "levenshtein": Edit distance based, configurable tolerance
     | - "soundex": Phonetic matching for similar sounding words
     | - "trigram": N-gram similarity (best with PostgreSQL pg_trgm)
-    | - "simple": Basic LIKE matching (fastest, no typo tolerance)
+    | - "metaphone": Double-metaphone phonetic matching
+    | - "similar_text": PHP similar_text() percentage similarity
+    | - "simple" / "like": Basic LIKE matching (fastest, no typo tolerance)
     |
     */
     'default_algorithm' => 'fuzzy',
+
+    /*
+    |--------------------------------------------------------------------------
+    | Candidate ceiling for PHP-side rescoring
+    |--------------------------------------------------------------------------
+    |
+    | executeSearch() fetches up to this many rows from SQL before PHP rescoring
+    | and slicing to the requested limit/offset. Higher = more accurate top-N
+    | at the cost of fetching more rows. For indexed search (Phase 1), this
+    | ceiling is replaced by BM25 scoring in SQL.
+    |
+    | Recommendation: lower to 200-500 on tables with 100k+ rows.
+    |
+    */
+    'max_candidates' => 1000,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Legacy dispatch fallback
+    |--------------------------------------------------------------------------
+    |
+    | When true, unknown algorithm names silently fall back to LevenshteinDriver
+    | (v1.x behavior). Set to false in production once all callers use valid
+    | algorithm names.
+    |
+    */
+    'legacy_dispatch' => false,
 
     /*
     |--------------------------------------------------------------------------
@@ -85,7 +114,8 @@ return [
     | Scoring Configuration
     |--------------------------------------------------------------------------
     |
-    | Configure how relevance scores are calculated
+    | Reserved for future use — these values are not currently read by the
+    | package. Scoring constants are hard-coded in SearchBuilder.
     |
     */
     'scoring' => [
@@ -131,11 +161,64 @@ return [
     |
     */
     'indexing' => [
-        'enabled' => false,
-        'table' => 'search_index',
-        'async' => true,
-        'queue' => 'default',
-        'chunk_size' => 500,
+        'enabled'            => false,   // Set true to enable observer-based auto-indexing on model save/delete
+        'table'              => 'search_index',
+        'async'              => true,
+        'queue'              => 'default',
+        'chunk_size'         => 500,
+        'tokenizer'          => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
+        'stemmer'            => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
+        'max_tokens_per_doc' => 5000,  // Cap unique tokens per document to prevent index poisoning
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | BM25 Ranking Parameters
+    |--------------------------------------------------------------------------
+    |
+    | k1: term-frequency saturation (1.2–2.0; default 1.5)
+    | b:  length normalisation (0–1; default 0.75)
+    |
+    */
+    'bm25' => [
+        'k1' => 1.5,
+        'b'  => 0.75,
+        /*
+         * max_postings_per_term: SQL-side top-K cutoff per matched term.
+         * Postings are ordered by frequency DESC before the limit is applied,
+         * so the highest-signal rows are always retained.  For typical corpora
+         * this cap is never reached; it exists purely to bound memory usage
+         * when a term matches tens of thousands of documents.
+         */
+        'max_postings_per_term' => 50000,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Extended-search query parser
+    |--------------------------------------------------------------------------
+    |
+    | max_depth: maximum nesting depth of parentheses (DoS guard)
+    | max_tokens: maximum tokens in a single query (DoS guard)
+    |
+    */
+    'query' => [
+        'max_depth'  => 16,
+        'max_tokens' => 32,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | In-memory search
+    |--------------------------------------------------------------------------
+    |
+    | max_items: ceiling for FuzzySearch::on($collection) — prevents
+    | accidentally loading gigabytes into PHP memory.
+    |
+    */
+    'in_memory' => [
+        'max_items'      => 10_000,
+        'min_similarity' => 60,    // 0–100; similarity threshold for FuzzySearch::on() results
     ],
 
     /*
@@ -154,6 +237,10 @@ return [
     |--------------------------------------------------------------------------
     | Performance Settings
     |--------------------------------------------------------------------------
+    |
+    | Reserved for future use — these values are not currently read by the
+    | package. Use indexing.chunk_size for rebuild chunk size.
+    |
     */
     'performance' => [
         'max_patterns' => 100,      // Maximum LIKE patterns to generate
@@ -195,6 +282,10 @@ return [
     |--------------------------------------------------------------------------
     | Highlighting Settings
     |--------------------------------------------------------------------------
+    |
+    | Reserved for future use — currently the highlight tag is configured
+    | via ->highlight('<em>', '</em>') at the query level.
+    |
     */
     'highlighting' => [
         'enabled' => false,
@@ -232,6 +323,11 @@ return [
     |--------------------------------------------------------------------------
     | Unicode & Accent Handling
     |--------------------------------------------------------------------------
+    |
+    | Note: 'normalize' is reserved for future use. Accent-insensitive search
+    | is opt-in per query via ->accentInsensitive() (PostgreSQL only with
+    | use_native_functions=true).
+    |
     */
     'unicode' => [
         'normalize' => true,

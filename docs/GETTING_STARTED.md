@@ -14,7 +14,7 @@ This guide will help you get up and running with Laravel Fuzzy Search in just a 
 
 ### Requirements
 
-- PHP 8.0 or higher
+- PHP 8.1 or higher
 - Laravel 9.x, 10.x, 11.x, 12.x, or 13.x
 - MySQL, PostgreSQL, SQLite, or SQL Server
 
@@ -103,10 +103,18 @@ $results = Article::search('laravel')->take(10)->get();
 
 ```php
 $results = Article::search('laravel')
-    ->where('status', 'published')
+    ->filter('status', 'published')
+    ->orderByRelevance('desc')
+    ->get();
+```
+
+To combine fuzzy search with Eloquent scopes, apply them on the model query before calling `search()`:
+
+```php
+$results = Article::where('status', 'published')
     ->where('created_at', '>', now()->subDays(30))
     ->orderBy('created_at', 'desc')
-    ->get();
+    ->search('laravel');
 ```
 
 ### Get Relevance Scores
@@ -155,7 +163,7 @@ class Post extends Model
 
 // Usage
 $posts = Post::search('getting started with laravel')
-    ->where('status', 'published')
+    ->filter('status', 'published')
     ->paginate(15);
 ```
 
@@ -187,8 +195,7 @@ class Product extends Model
 
 // Usage - handles typos automatically
 $products = Product::search('iphone 15 pro')  // Finds "iPhone 15 Pro"
-    ->where('stock', '>', 0)
-    ->orderBy('price', 'asc')
+    ->filter('stock', '>', 0)
     ->get();
 ```
 
@@ -265,9 +272,8 @@ public function autocomplete(Request $request)
 With suggestions:
 
 ```php
-$suggestions = Product::search($query)
-    ->suggest()  // Returns suggested completions
-    ->take(10);
+// suggest() returns an array — pass the limit directly
+$suggestions = Product::search($query)->suggest(10);
 ```
 
 ### 6. Multi-word Search
@@ -309,7 +315,7 @@ foreach ($results as $result) {
 
 ```php
 $results = Article::search('laravel')
-    ->scoreWith(function($article, $baseScore) {
+    ->customScore(function($article, $baseScore) {
         // Boost recent articles
         $recencyBoost = $article->created_at->gt(now()->subDays(7)) ? 20 : 0;
         
@@ -340,7 +346,7 @@ $results = Article::search('laravel')
     ->get();
 
 foreach ($results as $article) {
-    print_r($article->_score_breakdown);
+    print_r($article->_debug);
 }
 
 // Get debug info about search configuration
@@ -439,7 +445,7 @@ if (!empty($searchTerm)) {
 ],
 
 // Build index
-php artisan fuzzy-search:index Article
+php artisan fuzzy-search:rebuild "App\Models\Article"
 ```
 
 2. **Enable caching:**
@@ -471,7 +477,7 @@ $results = Article::search('laravel')
 **Solution:** Use a valid algorithm:
 
 ```php
-// Valid algorithms: fuzzy, levenshtein, soundex, trigram, simple
+// Valid algorithms: fuzzy, levenshtein, soundex, trigram, metaphone, similar_text, simple, like
 $results = Article::search('test')
     ->using('fuzzy')  // ✓ Valid
     ->get();
@@ -482,8 +488,8 @@ $results = Article::search('test')
 - Read the [full documentation](../README.md)
 - Check out [performance tips](PERFORMANCE.md)
 - Learn about [algorithm comparison](COMPARISON.md)
-- View [API reference](API.md)
-- Browse [example implementations](../examples/)
+- Learn about [inverted index / BM25](INVERTED_INDEX.md)
+- Read the [upgrade guide (v1 → v2)](UPGRADE_v1_TO_v2.md)
 
 ## Need Help?
 

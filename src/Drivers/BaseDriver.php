@@ -24,26 +24,48 @@ abstract class BaseDriver
     abstract public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder;
 
     /**
-     * Get relevance expression for ordering
+     * Get relevance expression for ordering.
+     *
+     * @deprecated Not called by any internal code path — relevance ordering is handled
+     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v3.
      */
-    abstract public function getRelevanceExpression(string $column, string $value): string;
+    public function getRelevanceExpression(string $column, string $value): string
+    {
+        return '0';
+    }
 
     /**
-     * Get relevance bindings
+     * Get relevance bindings.
+     *
+     * @deprecated Not called by any internal code path — relevance ordering is handled
+     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v3.
      */
-    abstract public function getRelevanceBindings(string $value): array;
+    public function getRelevanceBindings(string $value): array
+    {
+        return [];
+    }
+
+    /**
+     * Escape LIKE metacharacters in a user-supplied value so % and _ are treated literally.
+     */
+    protected function escapeLike(string $value): string
+    {
+        return addcslashes($value, '%_');
+    }
 
     /**
      * Quote column name based on driver
      */
     protected function quoteColumn(string $column): string
     {
-        return match ($this->driver) {
-            'mysql' => "`{$column}`",
-            'pgsql' => "\"{$column}\"",
-            'sqlsrv' => "[{$column}]",
-            default => $column,
-        };
+        $parts = explode('.', $column);
+        $quoted = array_map(fn (string $part) => match ($this->driver) {
+            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
+            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
+            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
+            default  => $part,
+        }, $parts);
+        return implode('.', $quoted);
     }
 }
 

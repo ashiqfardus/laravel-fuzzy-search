@@ -14,19 +14,42 @@ class SoundexDriver extends BaseDriver
     {
         $col = $this->quoteColumn($column);
 
-        // MySQL and PostgreSQL support native SOUNDEX
-        if (in_array($this->driver, ['mysql', 'pgsql'])) {
+        // MySQL and PostgreSQL support native SOUNDEX.
+        // IMPORTANT: SOUNDEX() on multi-word strings (e.g. "Jake Jackson") ignores spaces
+        // and encodes the entire string as one token, causing false positives — e.g.
+        // SOUNDEX('Jake Jackson') = SOUNDEX('john') = J500.
+        // Fix: extract only the FIRST word before applying SOUNDEX so the last name
+        // does not corrupt the phonetic code. For "Jake Jackson" this gives SOUNDEX('Jake')
+        // = J200, which correctly does NOT match SOUNDEX('john') = J500.
+        if ($this->driver === 'mysql') {
             $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-
-            if ($this->driver === 'pgsql' && !($this->config['use_native_functions'] ?? false)) {
-                // PostgreSQL without fuzzystrmatch extension
-                return $this->applyFallback($query, $column, $value, $boolean);
-            }
-
-            return $query->$method("SOUNDEX({$col}) = SOUNDEX(?)", [$value]);
+            // Match first word OR last word of a full-name column.
+            // Rationale: SOUNDEX() on the full string (e.g. "Jake Jackson") ignores spaces
+            // and encodes everything as one token — SOUNDEX('Jake Jackson') = J500 = SOUNDEX('john'),
+            // producing false positives. By splitting to first/last word we get accurate per-token
+            // phonetic matching while supporting both first-name and last-name queries.
+            return $query->$method(
+                "SOUNDEX(SUBSTRING_INDEX({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SUBSTRING_INDEX({$col}, ' ', -1)) = SOUNDEX(?)",
+                [$value, $value]
+            );
         }
 
-        // Fallback for SQLite and others
+        if ($this->driver === 'pgsql') {
+            $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
+
+            if (!($this->config['use_native_functions'] ?? false)) {
+                return $this->applyFallback($query, $column, $value, $boolean);
+            }
+            // Match first word OR last word on PostgreSQL.
+            // SPLIT_PART(col, ' ', -1) requires PostgreSQL 14+. Use SUBSTRING with a
+            // POSIX regex to extract the last space-delimited token — works on all versions.
+            return $query->$method(
+                "SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(TRIM(SUBSTRING({$col} FROM '[^ ]+$'))) = SOUNDEX(?)",
+                [$value, $value]
+            );
+        }
+
+        // SQLite and SQL Server: fallback pattern matching
         return $this->applyFallback($query, $column, $value, $boolean);
     }
 
@@ -54,62 +77,40 @@ class SoundexDriver extends BaseDriver
      */
     protected function generatePhoneticPatterns(string $value): array
     {
-        $value = strtolower(trim($value));
+        $value    = strtolower(trim($value));
         $patterns = [];
 
-        // Original
-        $patterns[] = '%' . $value . '%';
+        // Exact substring — always include
+        $patterns[] = '%' . $this->escapeLike($value) . '%';
 
-        // First letter + wildcards (soundex focuses on first letter)
-        if (strlen($value) > 0) {
-            $patterns[] = $value[0] . '%';
+        // First 3+ chars prefix
+        if (strlen($value) >= 4) {
+            $patterns[] = $this->escapeLike(substr($value, 0, 3)) . '%';
         }
 
-        // First 3 letters (soundex uses these heavily)
-        if (strlen($value) >= 3) {
-            $patterns[] = substr($value, 0, 3) . '%';
+        // Vowel-stripped consonant skeleton
+        if (strlen($value) > 2) {
+            $consonants = $value[0] . preg_replace('/[aeiou]/i', '', substr($value, 1));
+            if (strlen($consonants) >= 2 && $consonants !== $value) {
+                $patterns[] = '%' . $this->escapeLike($consonants) . '%';
+            }
         }
 
-        // Phonetic substitutions
+        // Targeted phonetic substitutions
         $substitutions = [
-            'ph' => 'f', 'f' => 'ph',
-            'ck' => 'k', 'k' => 'ck',
-            'c' => 'k', 'k' => 'c',
-            'q' => 'k',
-            'x' => 'ks',
-            'z' => 's', 's' => 'z',
-            'j' => 'g', 'g' => 'j',
-            'v' => 'f',
-            'w' => 'v',
-            'tion' => 'shun',
-            'sion' => 'shun',
-            'ough' => 'off',
-            'ight' => 'ite',
+            'ph' => 'f',  'f'  => 'ph',
+            'ck' => 'k',  'k'  => 'ck',
+            'z'  => 's',  's'  => 'z',
+            'wr' => 'r',  'kn' => 'n',
             'gh' => '',
-            'wr' => 'r',
-            'kn' => 'n',
-            'gn' => 'n',
-            'pn' => 'n',
-            'ae' => 'e',
-            'oe' => 'e',
-            'ie' => 'y',
-            'ei' => 'i',
-            'ai' => 'ay',
-            'ey' => 'i',
         ];
 
         foreach ($substitutions as $from => $to) {
             if (str_contains($value, $from)) {
                 $replaced = str_replace($from, $to, $value);
-                $patterns[] = '%' . $replaced . '%';
-            }
-        }
-
-        // Remove vowels pattern (soundex ignores vowels after first letter)
-        if (strlen($value) > 1) {
-            $consonants = $value[0] . preg_replace('/[aeiou]/i', '', substr($value, 1));
-            if ($consonants !== $value) {
-                $patterns[] = '%' . $consonants . '%';
+                if ($replaced !== $value) {
+                    $patterns[] = '%' . $this->escapeLike($replaced) . '%';
+                }
             }
         }
 

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Illuminate\Database\Query\Builder applyFuzzyOrder(\Illuminate\Database\Query\Builder $query, string $column, string $value, string $direction = 'asc')
  * @method static int levenshteinDistance(string $str1, string $str2, array $options = [])
  * @method static float similarityPercentage(string $str1, string $str2)
+ * @method static \Ashiqfardus\LaravelFuzzySearch\InMemorySearch on(iterable $items)
  *
  * @see \Ashiqfardus\LaravelFuzzySearch\FuzzySearch
  */
