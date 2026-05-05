@@ -38,12 +38,19 @@ trait Searchable
      */
     public static function bootSearchable(): void
     {
-        // Defer observer registration until after boot completes.
-        // Laravel 13 throws LogicException if observe() (which calls bootIfNotBooted())
-        // is invoked while the model is still inside its own boot phase.
-        static::booted(static function () {
-            static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
-            static::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class);
+        // Capture the concrete class name before entering the closure.
+        // Static closures in PHP have no class scope, so `static::` inside one
+        // does not resolve correctly — especially for anonymous model classes
+        // used in tests. Using an explicit string call avoids that pitfall.
+        //
+        // Deferring to booted() is required for Laravel 13 compatibility:
+        // observe() creates `new static` internally, which calls bootIfNotBooted(),
+        // and Laravel 13 throws LogicException if that is called while booting.
+        $class = static::class;
+
+        static::booted(static function () use ($class) {
+            $class::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
+            $class::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class);
         });
     }
 
