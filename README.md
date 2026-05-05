@@ -8,11 +8,11 @@
 
 A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Works with all major databases without external services.
 
-**🚀 Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
+**Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**📚 Documentation:** [Getting Started](docs/GETTING_STARTED.md) • [Capability Matrix](docs/CAPABILITY_MATRIX.md) • [Inverted Index](docs/INVERTED_INDEX.md) • [Scout Driver](docs/SCOUT_DRIVER.md) • [Extended Search](docs/EXTENDED_SEARCH.md) • [Query Language](docs/QUERY_LANGUAGE.md) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
+**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
 
-## ✨ Features
+## Features
 
 | Category | Features |
 |----------|----------|
@@ -22,12 +22,36 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 | **Text Processing** | Stop-word filtering • Synonym support • Language/locale awareness |
 | **Internationalization** | Unicode support • Accent insensitivity • Multi-language |
 | **Results** | Highlighted results • Custom scoring hooks • Debug/explain-score mode |
-| **Performance** | Search index table • Async indexing (queue) • Redis/cache support |
+| **Performance** | BM25 inverted index • Async indexing (queue) • Redis/cache support |
 | **Pagination** | Stable ranking • Cursor pagination • Offset pagination |
 | **Reliability** | Fallback search strategy • DB-agnostic • Rate-limit friendly • SQL-injection safe |
 | **Configuration** | Config file support • Per-model customization |
 | **Developer Tools** | CLI indexing • Benchmark tools • Built-in test suite • Performance utilities |
 | **Smart Search** | Autocomplete suggestions • "Did you mean" spell correction • Multi-model federation • Search analytics |
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Search Algorithms](#search-algorithms)
+- [Field Weighting & Scoring](#field-weighting--scoring)
+- [Text Processing](#text-processing)
+- [Result Presentation](#result-presentation)
+- [Performance & Indexing](#performance--indexing)
+- [BM25 Inverted Index](#bm25-inverted-index)
+- [Extended Search Syntax](#extended-search-syntax)
+- [Scout Driver](#scout-driver)
+- [Pagination](#pagination)
+- [Reliability & Safety](#reliability--safety)
+- [Events](#events)
+- [Configuration](#configuration)
+- [CLI Tools](#cli-tools)
+- [Performance & Scaling](#performance--scaling)
+- [Algorithm × Database Compatibility](#algorithm--database-compatibility)
+- [Testing](#testing)
+- [Requirements](#requirements)
+
+---
 
 ## Installation
 
@@ -37,12 +61,20 @@ composer require ashiqfardus/laravel-fuzzy-search:^2.0
 
 **That's it!** Zero configuration required. Start searching immediately.
 
-Optionally publish the config file and run migrations (required only if you use the BM25 inverted index):
+Optionally publish the config file:
+
+```bash
+php artisan vendor:publish --tag=fuzzy-search-config
+```
+
+If you plan to use the **BM25 inverted index** (recommended for 10k+ rows), run migrations too:
 
 ```bash
 php artisan vendor:publish --tag=fuzzy-search-config
 php artisan migrate
 ```
+
+---
 
 ## Quick Start
 
@@ -131,19 +163,21 @@ DB::table('users')->whereFuzzy('name', 'john')->get();
 DB::table('products')->fuzzySearch(['title', 'description'], 'laptop')->get();
 ```
 
+---
+
 ## Search Algorithms
 
 ### Available Algorithms
 
 | Algorithm | Best For | Typo Tolerance | Speed |
 |-----------|----------|----------------|-------|
-| `fuzzy` | General purpose | ✅ High | Fast |
-| `levenshtein` | Strict typo matching | ✅ Configurable | Medium |
-| `soundex` | Phonetic matching (English names) | ✅ Phonetic | Fast |
-| `metaphone` | Phonetic matching (more accurate) | ✅ Phonetic | Fast |
-| `trigram` | Similarity matching | ✅ High | Medium |
-| `similar_text` | Percentage similarity | ✅ Medium | Medium |
-| `simple` / `like` | Exact substring (LIKE) | ❌ None | Fastest |
+| `fuzzy` | General purpose | High | Fast |
+| `levenshtein` | Strict typo matching | Configurable | Medium |
+| `soundex` | Phonetic matching (English names) | Phonetic | Fast |
+| `metaphone` | Phonetic matching (more accurate) | Phonetic | Fast |
+| `trigram` | Similarity matching | High | Medium |
+| `similar_text` | Percentage similarity | Medium | Medium |
+| `simple` / `like` | Exact substring (LIKE) | None | Fastest |
 
 ```php
 // Use specific algorithm
@@ -185,38 +219,7 @@ User::search('john doe developer')
     ->get();
 ```
 
-### BM25 Inverted Index (v2+)
-
-For large tables, the inverted index provides BM25-ranked results:
-
-```bash
-php artisan migrate
-php artisan fuzzy-search:rebuild "App\Models\User"
-```
-
-```php
-// BM25 search — faster + more relevant ranking on 10k+ rows
-$users = User::search('john')->useInvertedIndex()->get();
-
-// Scout driver — bundled, no separate package
-// Set SCOUT_DRIVER=fuzzy-search in .env
-$users = User::search('john')->get(); // via Scout
-```
-
-See [Inverted Index](docs/INVERTED_INDEX.md) and [Scout Driver](docs/SCOUT_DRIVER.md) docs.
-
-### Extended Search Syntax (v2+)
-
-Fuse.js-style operators for precise queries:
-
-```php
-$users = User::search('=John ^Doe !banned')->extended()->get();
-$users = User::search('admin (john | jane)')->extended()->get();
-```
-
-See [Extended Search docs](docs/EXTENDED_SEARCH.md) for the operator reference.
-
-### In-Memory Mode (v2+)
+### In-Memory Mode
 
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Facades\FuzzySearch;
@@ -226,6 +229,8 @@ $matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->ge
 
 > **Supported methods:** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `get`.
 > Any other `SearchBuilder` method (e.g. `extended()`, `using()`, `preset()`, `paginate()`) will throw a `\BadMethodCallException` to prevent silent failures.
+
+---
 
 ## Field Weighting & Scoring
 
@@ -384,6 +389,8 @@ $analytics = User::search('john')
 // ]
 ```
 
+---
+
 ## Text Processing
 
 ### Stop-Word Filtering
@@ -447,6 +454,8 @@ User::search('naive')
     ->get();
 ```
 
+---
+
 ## Result Presentation
 
 ### Highlighted Results
@@ -485,27 +494,9 @@ foreach ($users as $user) {
 }
 ```
 
+---
+
 ## Performance & Indexing
-
-### BM25 Inverted Index
-
-For tables with 10k+ rows, build the BM25 index for ranked, fast results:
-
-```bash
-php artisan migrate
-php artisan fuzzy-search:rebuild "App\Models\User"
-```
-
-```php
-// Use BM25 indexed search (faster + ranked for large tables)
-User::search('john')
-    ->useInvertedIndex()
-    ->get();
-```
-
-> **Note:** `useIndex()` is an alias for `useInvertedIndex()` — both query the BM25 `fuzzy_index_*` tables. The deprecated legacy `search_index` table from v1 is no longer used.
-
-See [Inverted Index](docs/INVERTED_INDEX.md) for production setup (queue workers, auto-indexing via observer, Horizon config).
 
 ### Async Indexing (Queue Support)
 
@@ -518,7 +509,7 @@ See [Inverted Index](docs/INVERTED_INDEX.md) for production setup (queue workers
 ],
 
 // Re-index a single model (dispatches IndexModelJob to queue)
-// use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 IndexModelJob::dispatch(User::class, $user->id);
 ```
 
@@ -543,6 +534,372 @@ User::search('john')
     'ttl' => 3600,
 ],
 ```
+
+---
+
+## BM25 Inverted Index
+
+For large tables (10k+ rows), the BM25 inverted index provides ranked, fast results without scanning the full table.
+
+### How It Works
+
+The indexing system has two parts:
+
+**Part 1 — One-time initial build.** Run once after install (or after a schema change):
+
+```bash
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
+```
+
+**Part 2 — Automatic incremental updates.** After the initial build, every time a model is saved or deleted, the package dispatches a small queue job that re-indexes just that one row. No cron jobs or manual work needed.
+
+The flow when a record is saved:
+
+```
+User::create(['name' => 'John'])
+  → Eloquent fires 'saved' event
+  → SearchableIndexingObserver dispatches IndexModelJob to queue
+  → queue worker indexes the row (3 SQL queries)
+  → 'john' is now in the index
+```
+
+### Database Tables
+
+| Table | Purpose |
+| --- | --- |
+| `fuzzy_index_terms` | Term dictionary: unique terms + document frequency (used for `didYouMean()`) |
+| `fuzzy_index_postings` | Postings: term → model mapping with term frequency |
+| `fuzzy_index_meta` | BM25 normalization: total docs + avg document length per model |
+| `fuzzy_index_documents` | Per-document length cache for O(1) BM25 scoring |
+
+### Production Setup
+
+**Step 1 — Run migrations:**
+
+```bash
+php artisan migrate
+```
+
+**Step 2 — Enable indexing in config:**
+
+```php
+// config/fuzzy-search.php
+'indexing' => [
+    'enabled'          => true,       // must be true or saves are never indexed
+    'async'            => true,       // true = queued (recommended for production)
+    'queue'            => 'indexing', // dedicated queue keeps indexing isolated
+    'chunk_size'       => 500,
+    'max_tokens_per_doc' => 5000,     // security cap: prevents index poisoning
+],
+```
+
+**Step 3 — Declare searchable columns on your model:**
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+class User extends Model
+{
+    use Searchable;
+
+    protected array $searchable = [
+        'columns' => [
+            'name'  => 10,
+            'email' => 5,
+            'bio'   => 2,
+        ],
+    ];
+}
+```
+
+**Step 4 — Build the initial index:**
+
+```bash
+# For small tables (< 50k rows)
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
+
+# For large tables (50k+ rows), dispatch batch queue jobs
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
+```
+
+**Step 5 — Start a queue worker:**
+
+```bash
+# Development
+php artisan queue:work --queue=indexing,default
+
+# Production (Supervisor)
+```
+
+Supervisor config (`/etc/supervisor/conf.d/fuzzy-search-worker.conf`):
+
+```ini
+[program:fuzzy-search-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=php /var/www/html/artisan queue:work database --queue=indexing,default --sleep=3 --tries=3 --max-time=3600
+autostart=true
+autorestart=true
+user=www-data
+numprocs=2
+redirect_stderr=true
+stdout_logfile=/var/log/fuzzy-search-worker.log
+```
+
+For **Laravel Horizon** (Redis):
+
+```php
+// config/horizon.php
+'environments' => [
+    'production' => [
+        'supervisor-1' => [
+            'connection' => 'redis',
+            'queue'      => ['indexing', 'default'],
+            'balance'    => 'auto',
+            'processes'  => 4,
+        ],
+    ],
+],
+```
+
+### Usage
+
+```php
+// BM25 search — faster + better relevance on large tables
+$users = User::search('john')->useInvertedIndex()->get();
+
+// didYouMean() reads from the term dictionary — O(1) at any dataset size
+$suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
+```
+
+> **Note:** `useIndex()` is an alias for `useInvertedIndex()`. The deprecated legacy `search_index` table from v1 is no longer used.
+
+> **Limitation:** The BM25 inverted index requires integer primary keys. Models with UUID/ULID primary keys are not currently supported — use the standard LIKE or Levenshtein paths for those.
+
+> **Column weights and BM25:** `searchIn()` weights are respected by the LIKE/Levenshtein scoring paths but are ignored by BM25. BM25 scores by term frequency and inverse document frequency only.
+
+### Artisan Commands
+
+```bash
+# Show index statistics (total docs, tokens, avg length per model)
+php artisan fuzzy-search:status
+
+# Rebuild synchronously (good for < 50k rows)
+php artisan fuzzy-search:rebuild "App\Models\User"
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
+
+# Rebuild asynchronously via queue (recommended for large tables)
+php artisan fuzzy-search:rebuild "App\Models\User" --async
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
+
+# Delete all index entries for a model
+php artisan fuzzy-search:flush "App\Models\User"
+```
+
+### BM25 Tuning
+
+```php
+// config/fuzzy-search.php
+'bm25' => [
+    'k1' => 1.5,   // Term-frequency saturation (1.2–2.0). Higher = more weight to repeated terms.
+    'b'  => 0.75,  // Length normalisation (0–1). 0 = ignore doc length. 1 = full normalisation.
+],
+```
+
+### Stemming (Optional)
+
+Default: no stemming (`NullStemmer`). With `NullStemmer`, `running` only matches `running`, not `run` or `ran`.
+
+To enable Porter stemming:
+
+```bash
+composer require wamania/php-stemmer
+```
+
+```php
+// config/fuzzy-search.php
+'indexing' => [
+    'stemmer' => \Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer::class,
+],
+```
+
+Supported languages: English, French, German, Spanish, Italian, Russian, Dutch, Portuguese, Swedish, Danish, Norwegian. You must rebuild the index after changing the stemmer.
+
+### Observer Auto-Attach
+
+Adding the `Searchable` trait automatically registers observers via `bootSearchable()`:
+
+- **`SearchableIndexingObserver`** — listens to `saved` and `deleted` events. Queues an `IndexModelJob` to update the BM25 index. This is a no-op when `indexing.enabled` is `false`.
+- **`SearchableObserver`** — listens to `saved` events and writes metaphone shadow columns if they exist. Safe when no shadow columns are configured — the observer silently exits.
+
+No configuration is required for either observer until you enable those features.
+
+### Sync vs Async
+
+| | `async = true` (default) | `async = false` |
+| --- | --- | --- |
+| **How it works** | Dispatches `IndexModelJob` to queue | Indexes in the same request, no queue |
+| **Request latency** | Unaffected | +~10ms per save |
+| **Requires queue worker** | Yes | No |
+| **Best for** | Production apps | Tests, local dev, low-traffic apps |
+
+For **tests**, set `indexing.async = false` so indexing happens synchronously:
+
+```php
+// In your test setUp
+config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+```
+
+---
+
+## Extended Search Syntax
+
+Use Fuse.js-style operators inside your search string for precise control over matching.
+
+### Operators
+
+| Token | Meaning | Example |
+| --- | --- | --- |
+| `word` | Substring match (default) | `john` |
+| `'word` | Explicit substring include | `'admin` |
+| `=word` | Exact equality | `=John` |
+| `^word` | Prefix match | `^Doe` |
+| `word$` | Suffix match | `Sr$` |
+| `!word` | Exclude (NOT) | `!banned` |
+| `!^word` | Inverse prefix | `!^test` |
+| `!word$` | Inverse suffix | `!@spam.com$` |
+| `\|` | OR | `john \| jane` |
+| ` ` (whitespace) | AND (implicit) | `=John ^Doe` |
+| `( ... )` | Grouping | `admin (john \| jane)` |
+| `"phrase"` | Quoted single token | `"hello world"` |
+
+### Usage
+
+```php
+// Exact first name + prefix last name + exclude banned
+$users = User::search('=John ^Doe !banned')->extended()->get();
+
+// OR semantics with grouping
+$users = User::search('admin (john | jane)')->extended()->get();
+
+// More examples
+'Sr$ | Jr$'              // Names ending in Sr OR Jr
+"'manager !@temp.com$"   // Substring 'manager' but not @temp.com emails
+```
+
+### Limits
+
+| Limit | Default | Config key |
+| --- | --- | --- |
+| Maximum tokens per query | 32 | `query.max_tokens` |
+| Maximum nesting depth | 16 | `query.max_depth` |
+
+### Pagination with Extended Syntax
+
+`paginate()` and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()` and will throw a `BadMethodCallException`. `simplePaginate()` works correctly.
+
+```php
+// ✓ Works
+User::search('=John ^Doe')->extended()->simplePaginate(15);
+User::search('=John ^Doe')->extended()->get();
+
+// ✗ Throws BadMethodCallException
+User::search('=John ^Doe')->extended()->paginate(15);
+```
+
+### Match Offsets & Blade Directive
+
+Results with `->highlight()` enabled include a `_matches` array:
+
+```php
+$first = $results->first();
+$first->_matches;
+// [['column' => 'name', 'value' => 'John Doe', 'indices' => [[0, 3]]]]
+```
+
+For safe HTML rendering, use the `@fuzzyHighlight` Blade directive:
+
+```blade
+@fuzzyHighlight($user, 'name')
+```
+
+The directive automatically escapes user-supplied content and wraps matches in `<mark>` tags.
+
+---
+
+## Scout Driver
+
+The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed. No separate driver package is required.
+
+### Setup
+
+```bash
+composer require laravel/scout
+php artisan vendor:publish --provider="Laravel\Scout\ScoutServiceProvider"
+```
+
+In `.env`:
+
+```
+SCOUT_DRIVER=fuzzy-search
+```
+
+Build the index:
+
+```bash
+php artisan fuzzy-search:rebuild "App\Models\User"
+```
+
+### Usage
+
+Add both traits to your model:
+
+```php
+use Laravel\Scout\Searchable;
+use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable as FuzzySearchable;
+
+class User extends Model
+{
+    use Searchable, FuzzySearchable {
+        // FuzzySearchable::search() takes precedence — returns the fluent SearchBuilder.
+        // Scout's underlying engine (FuzzySearchEngine) is still used when SCOUT_DRIVER=fuzzy-search.
+        FuzzySearchable::search insteadof Searchable;
+        Searchable::search as scoutSearch;
+    }
+
+    public function toSearchableArray(): array
+    {
+        return ['name' => $this->name, 'email' => $this->email];
+    }
+}
+
+$users = User::search('john')->get();
+```
+
+### Relevance Scores
+
+Results include `_score` (BM25 relevance, higher = more relevant):
+
+```php
+foreach (User::search('laravel')->get() as $user) {
+    echo $user->name . ': ' . $user->_score;
+}
+```
+
+### Authorization
+
+Scout's default behavior bypasses Eloquent global scopes. Apply them explicitly:
+
+```php
+User::search('john')
+    ->query(fn($q) => $q->withoutTrashed()->where('tenant_id', auth()->user()->tenant_id))
+    ->get();
+```
+
+### How It Works
+
+The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables.
+
+---
 
 ## Pagination
 
@@ -573,7 +930,9 @@ $users = User::search('john')
     ->get();
 ```
 
-> **Note:** `paginate()` and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()` and will throw a `BadMethodCallException`. `simplePaginate()` works correctly with extended syntax. See [Extended Search](docs/EXTENDED_SEARCH.md#pagination) for details.
+> **Note:** `paginate()` and `cursorPaginate()` are not compatible with `extended()` or `searchBoolean()`. Use `simplePaginate()` or `get()` with those.
+
+---
 
 ## Reliability & Safety
 
@@ -587,16 +946,6 @@ User::search('john')
     ->fallback('simple')     // Second fallback
     ->get();
 ```
-
-### Database Compatibility
-
-| Database | Full Support | Native Functions |
-|----------|--------------|------------------|
-| MySQL 5.7+ | ✅ | SOUNDEX |
-| PostgreSQL 9.6+ | ✅ | pg_trgm, fuzzystrmatch |
-| SQLite 3.x | ✅ | Pattern-based |
-| SQL Server 2016+ | ✅ | Pattern-based |
-| MariaDB 10.2+ | ✅ | SOUNDEX |
 
 ### Rate-Limit Friendliness
 
@@ -623,8 +972,6 @@ User::search("'; DROP TABLE users; --")->get();
 
 ### Exception Handling
 
-The package provides custom exceptions for better error handling:
-
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
@@ -634,13 +981,12 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
 try {
     $results = User::search($term)->get();
 } catch (LaravelFuzzySearchException $e) {
-    // Handle any fuzzy search error
     Log::error('Search failed', $e->toArray());
 }
 
 // Catch specific exceptions
 try {
-    $results = User::search('')->get();  // Empty search
+    $results = User::search('')->get();
 } catch (EmptySearchTermException $e) {
     return response()->json(['error' => 'Please enter a search term']);
 }
@@ -659,6 +1005,8 @@ try {
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
 
+---
+
 ## Events
 
 ### `FuzzySearchExecuted`
@@ -672,7 +1020,7 @@ Event::listen(FuzzySearchExecuted::class, function ($event) {
     Log::info('search', [
         'term'      => $event->searchTerm,
         'columns'   => $event->columns,
-        'algorithm' => $event->algorithm,    // 'fuzzy', 'levenshtein', 'bm25', etc.
+        'algorithm' => $event->algorithm,
         'count'     => $event->candidateCount,
         'ms'        => $event->latencyMs,
     ]);
@@ -686,6 +1034,8 @@ Properties:
 - `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, or `bm25`
 - `candidateCount` (int) — rows fetched from SQL before scoring
 - `latencyMs` (float) — total search time in milliseconds
+
+---
 
 ## Configuration
 
@@ -741,8 +1091,6 @@ return [
 ### Config Presets
 
 Presets are **predefined search configurations** for common use cases. Instead of manually configuring multiple options every time, use a single preset name.
-
-#### Why Use Presets?
 
 **Without preset (verbose):**
 ```php
@@ -815,21 +1163,14 @@ Post::search('laravel')->preset('blog')->get();
 #### Using Presets
 
 ```php
-// Use a preset
 User::search('john')->preset('users')->get();
 Post::search('laravel')->preset('blog')->get();
 Product::search('laptop')->preset('ecommerce')->get();
-
-// Phonetic search for names
 Contact::search('steven')->preset('phonetic')->get();  // Finds "Stephen"
-
-// Exact search for SKUs
 Product::search('SKU-12345')->preset('exact')->get();
 ```
 
 #### Override Preset Settings
-
-Presets can be combined with other methods - later calls override preset values:
 
 ```php
 // Use blog preset but with higher typo tolerance
@@ -837,22 +1178,13 @@ Post::search('laravel')
     ->preset('blog')
     ->typoTolerance(3)  // Override preset's default of 2
     ->get();
-
-// Use ecommerce preset but search different columns
-Product::search('laptop')
-    ->preset('ecommerce')
-    ->searchIn(['name' => 10, 'category' => 5])  // Override columns
-    ->get();
 ```
 
 #### Create Custom Presets
 
-Add your own presets in `config/fuzzy-search.php`:
-
 ```php
+// config/fuzzy-search.php
 'presets' => [
-    // ... existing presets ...
-    
     'documents' => [
         'columns' => ['title' => 10, 'content' => 8, 'tags' => 5],
         'algorithm' => 'trigram',
@@ -860,17 +1192,9 @@ Add your own presets in `config/fuzzy-search.php`:
         'stop_words_enabled' => true,
         'locale' => 'en',
     ],
-    
-    'multilingual' => [
-        'columns' => ['title' => 10, 'body' => 5],
-        'algorithm' => 'fuzzy',
-        'accent_insensitive' => true,
-        'unicode_normalize' => true,
-    ],
 ],
 ```
 
-Then use your custom preset:
 ```php
 Document::search('report')->preset('documents')->get();
 ```
@@ -900,11 +1224,12 @@ class Product extends Model
     // Custom scoring logic
     public function getSearchScore($baseScore): float
     {
-        // Boost featured products
         return $this->is_featured ? $baseScore * 1.5 : $baseScore;
     }
 }
 ```
+
+---
 
 ## CLI Tools
 
@@ -917,6 +1242,12 @@ php artisan fuzzy-search:rebuild "App\Models\User"
 # Rebuild with fresh index (flush first)
 php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 
+# Rebuild asynchronously (for large tables)
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
+
+# Flush index entries for a model
+php artisan fuzzy-search:flush "App\Models\User"
+
 # Clear BM25 index for a model
 php artisan fuzzy-search:clear "App\Models\User"
 
@@ -927,35 +1258,139 @@ php artisan fuzzy-search:clear --all
 php artisan fuzzy-search:status
 ```
 
-### Performance numbers
+### Benchmark & Debug Commands
 
-Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) (MySQL 8.0, 100k-row dataset, commodity VPS, warm cache). Run `php artisan demo:seed` in the demo project to seed the same dataset on your hardware.
+```bash
+# Benchmark search performance
+php artisan fuzzy-search:benchmark "App\Models\User" --term="john" --iterations=100
+
+# Explain a search query
+php artisan fuzzy-search:explain User --term="john"
+```
+
+---
+
+## Performance & Scaling
+
+### Algorithm Comparison
+
+| Algorithm | Speed | Typo Tolerance | Best For | Dataset Size |
+|-----------|-------|----------------|----------|--------------|
+| **simple** | Fastest | None | Exact matches, SKUs | Any size |
+| **fuzzy** | Very Fast | High | General purpose | < 100K rows |
+| **soundex** | Very Fast | Phonetic | Name searches | < 100K rows |
+| **trigram** | Fast | Very High | Similarity matching | < 50K rows |
+| **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
+| **BM25 index** | Fast at scale | Via LIKE fallback | Large tables, ranked results | 10K+ rows |
+
+### Measured Latency (100k-row MySQL 8.0 dataset)
+
+Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) (commodity VPS, warm cache). Run `php artisan demo:seed` in the demo project to seed the same dataset.
 
 | Search path | Median latency | Notes |
 |---|---|---|
-| LIKE (`using('simple')`) | ~8 ms | Full table scan; SQL `LIKE '%term%'` |
-| Levenshtein (`using('levenshtein')`) | ~45 ms | PHP re-score over 1 000 SQL candidates |
+| LIKE (`using('simple')`) | ~8 ms | Full table scan |
+| Levenshtein (`using('levenshtein')`) | ~45 ms | PHP re-score over 1,000 SQL candidates |
 | BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
 | Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
 
-These are wall-clock times from the Laravel request lifecycle (TTFB minus network), not micro-benchmark times.
-
 **At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index returns results in the same ~12–20 ms window as the 100k baseline.
 
-> Numbers vary by hardware, DB engine, term selectivity, and number of search columns. Run `php artisan fuzzy-search:benchmark` to measure on your own stack:
+### When to Use BM25 vs LIKE
 
-```bash
-php artisan fuzzy-search:benchmark User --term="john" --iterations=100
+**Use BM25 (`useInvertedIndex()`) when:**
+- Table has 10k+ rows
+- Result ranking/relevance quality matters
+- You have queue workers running
+- Models use integer primary keys
+
+**Use LIKE / fuzzy when:**
+- Small tables (< 10k rows) — LIKE can be faster due to BM25 scoring overhead
+- UUID/ULID primary keys
+- You need column weights to affect ranking
+
+### `max_candidates` Tuning
+
+For the LIKE/Levenshtein paths, SQL candidates are fetched then re-scored in PHP. The candidate set size is controlled by `max_candidates` (default: 1000). Lower this on large tables to reduce memory usage:
+
+```php
+// config/fuzzy-search.php
+'performance' => [
+    'max_candidates' => 500,  // fetch fewer candidates on large tables
+],
 ```
 
-### Debug Commands
+### Recommended Optimizations
 
-```bash
-# Explain a search query
-php artisan fuzzy-search:explain User --term="john"
-
-# Output query analysis, patterns generated, scoring breakdown
+```php
+// For 100k+ rows: enable BM25 index + cache + limit columns
+User::search('john')
+    ->useInvertedIndex()
+    ->cache(60)
+    ->searchIn(['name', 'email'])
+    ->maxPatterns(50)
+    ->get();
 ```
+
+Key tips:
+1. **Use the BM25 index** for tables with 10k+ rows
+2. **Enable caching** for repeated searches
+3. **Limit columns** — only search relevant fields
+4. **Use `simple` algorithm** when typo tolerance isn't needed
+5. **Set `max_candidates`** to prevent excessive memory usage on large tables
+6. **Use `take()`** to cap result sets
+7. **Eager load relationships** to avoid N+1 queries
+
+### Scaling Recommendations
+
+| Records | Recommended Strategy | Expected Query Time |
+|---------|---------------------|---------------------|
+| < 50K | Default (no optimization) | < 50ms |
+| 50K - 100K | Add DB indexes + cache | < 100ms |
+| 100K - 500K | BM25 index + cache | < 150ms |
+| 500K - 1M | BM25 index + partitioning + cache | < 200ms |
+| 1M - 10M | BM25 + read replicas + tiered cache | < 300ms |
+| > 10M | Consider Meilisearch / Typesense | — |
+
+---
+
+## Algorithm × Database Compatibility
+
+This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns.
+
+| Algorithm | MySQL 8 | MariaDB 10.6 | PostgreSQL 14 | SQLite | SQL Server |
+|---|---|---|---|---|---|
+| **simple** / **like** | `LIKE '%term%'` | `LIKE '%term%'` | `ILIKE '%term%'` | `LIKE '%term%'` | `LOWER() LIKE` |
+| **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
+| **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Pattern set | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
+| **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true` | LIKE pattern set | LIKE pattern set |
+| **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true`, else pattern fallback | Pattern fallback | Pattern fallback |
+| **metaphone** | Shadow column `{col}_metaphone` + exact `=` match | Shadow column | Shadow column | Shadow column | Shadow column |
+| **similar_text** | `LIKE '%term%'` (SQL); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'`; PHP scores | Same | Same |
+
+### Notes
+
+- **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. MySQL `SOUNDEX()` is built-in and always active — no flag needed. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
+- **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager.
+- **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`
+- **fuzzystrmatch (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`
+- **unaccent (PostgreSQL, for `accentInsensitive()`):** `CREATE EXTENSION IF NOT EXISTS unaccent;` + `use_native_functions=true`
+- **MySQL accent insensitive:** Use `utf8mb4_unicode_ci` or `utf8mb4_0900_ai_ci` collation on the column.
+- **Metaphone shadow column:** Run `php artisan fuzzy-search:add-shadow-column {Model} {column} --type=metaphone` then `php artisan migrate`.
+
+### PHP-Side Scoring
+
+Regardless of algorithm, after SQL candidates are fetched:
+
+1. `similar_text()` and `levenshtein()` run in PHP on each candidate.
+2. Results are re-sorted by the combined PHP score (higher = better).
+3. `limit/offset` is applied on the PHP-sorted collection (not in SQL).
+
+Top-N results are always the most relevant N from the candidate set (not just the first N SQL rows). Candidate set size is controlled by `max_candidates` (default: 1000).
+
+> **Pagination note:** `paginate()` and `simplePaginate()` use DB-level pagination and score within the current page only. For globally-ranked pagination across all pages, use the BM25 inverted index.
+
+---
 
 ## Testing
 
@@ -970,28 +1405,15 @@ composer test-coverage
 composer benchmark
 ```
 
-## Performance Tips
-
-1. **Use Indexing** for tables with 10k+ rows
-2. **Enable Caching** for repeated searches
-3. **Limit Columns** - only search relevant fields
-4. **Use Simple Algorithm** when typo tolerance isn't needed
-5. **Set Max Patterns** to prevent query explosion
-
-```php
-User::search('john')
-    ->useInvertedIndex()
-    ->cache(60)
-    ->searchIn(['name', 'email'])  // Not all columns
-    ->maxPatterns(50)
-    ->get();
-```
+---
 
 ## Requirements
 
 - PHP 8.1 or higher
 - Laravel 9.x, 10.x, 11.x, 12.x, or 13.x
 - Any supported database
+
+---
 
 ## License
 
@@ -1004,4 +1426,3 @@ MIT License. See [LICENSE](LICENSE) for more information.
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING](CONTRIBUTING.md) for details.
-

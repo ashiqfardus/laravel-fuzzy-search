@@ -8,12 +8,12 @@
 > | `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` |
 > | `create_fuzzy_index_meta_table` | Creates `fuzzy_index_meta` |
 > | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
-> | `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` | *(alpha.4)* Adds a unique index on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing |
-> | `2026_05_03_000002_widen_term_column_to_255` | *(alpha.4)* Widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` |
+> | `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` | Adds a unique index on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing |
+> | `2026_05_03_000002_widen_term_column_to_255` | Widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` |
 >
 > The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
 >
-> **Upgrading from alpha.3?** Before running the unique-index migration, clean up any duplicate postings created by concurrent indexing:
+> **Upgrading from a pre-release build?** Before running the unique-index migration, clean up any duplicate postings created by concurrent indexing:
 >
 > ```sql
 > -- MySQL / MariaDB
@@ -35,7 +35,7 @@
 >
 > Then run `php artisan migrate`.
 
-## Phase 0 changes
+## Breaking changes
 
 ### BREAKING: `using('fuzzy')`, `using('trigram')`, `using('simple')` now behave differently
 
@@ -99,7 +99,7 @@ These algorithm names behave identically to v1.x (same driver, same SQL).
 
 ---
 
-## Phase 1 changes (inverted index + BM25)
+## BM25 inverted index (new in v2.0.0)
 
 Phase 1 adds an opt-in inverted index with BM25 ranking. All existing search behavior is unchanged if you do nothing — the new features activate only when you follow these steps.
 
@@ -162,7 +162,7 @@ In `.env`:
 SCOUT_DRIVER=fuzzy-search
 ```
 
-The Scout engine adapter is bundled — no separate package. See [Scout Driver docs](SCOUT_DRIVER.md).
+The Scout engine adapter is bundled — no separate package. See the [Scout Driver section](../README.md#scout-driver) in the README.
 
 ### Performance notes
 
@@ -187,7 +187,7 @@ php artisan fuzzy-search:rebuild "App\Models\User" --async --queue=indexing
 
 ---
 
-## Phase 2 changes
+## Extended syntax and in-memory search (new in v2.0.0)
 
 ### BREAKING: `_score` is now normalized to `[0, 1]`
 
@@ -314,15 +314,15 @@ If you published the config file under v1 or Phase 1, add the following keys to 
 
 If you did not publish the config, these defaults are already active — no action required.
 
-## v2.0.0 hardening changes
+## Final hardening changes
 
-These changes were introduced during the alpha.4 hardening phase. If you were on any pre-release alpha, apply the steps below before upgrading to v2.0.0.
+If you were running a pre-release build, apply the steps below before using v2.0.0.
 
 ### Database migrations (run automatically on `php artisan migrate`)
 
 Two new migrations are automatically applied:
 
-- **`add_unique_index_to_fuzzy_index_postings`** — adds `UNIQUE (term_id, model_type, model_id)` on the postings table to prevent duplicate rows under concurrent indexing. If you have an alpha.3 index with duplicates, run this SQL first:
+- **`add_unique_index_to_fuzzy_index_postings`** — adds `UNIQUE (term_id, model_type, model_id)` on the postings table to prevent duplicate rows under concurrent indexing. If you have a pre-release index with duplicate postings, run this SQL first:
 
 ```sql
 -- MySQL / MariaDB
@@ -346,14 +346,14 @@ Then run `php artisan migrate`.
 
 - **`widen_term_column_to_255`** — widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)`. On MySQL the unique index is recreated as a `term(191)` prefix key to stay under the 767-byte key limit.
 
-### BREAKING: `cursorPaginate()` now throws unconditionally
+### BREAKING: `cursorPaginate()` throws unconditionally
 
-In alpha.3 `cursorPaginate()` silently dropped relevance scoring when called on a `SearchBuilder`. In alpha.4 it always throws `BadMethodCallException`.
+`cursorPaginate()` previously silently dropped relevance scoring when called on a `SearchBuilder`. It now always throws `BadMethodCallException`.
 
 **Migration:** use `simplePaginate()` or `get()` instead.
 
 ```php
-// Before (alpha.3 — silently broken):
+// Before (silently broken):
 User::search('john')->cursorPaginate(20);
 
 // After:
@@ -364,9 +364,9 @@ User::search('john')->get();
 
 ### Cache key now covers all builder state
 
-In alpha.3 the cache key omitted most builder-state flags (synonyms, locale, recency boost, typo tolerance, etc.), causing result poisoning when two different queries shared the same `(term, columns)` pair. Alpha.4 fixes this automatically — no code changes required.
+The cache key previously omitted most builder-state flags (synonyms, locale, recency boost, typo tolerance, etc.), causing result poisoning when two different queries shared the same `(term, columns)` pair. This is fixed automatically in v2.0.0 — no code changes required.
 
-If your application cached search results from alpha.3 in Redis or Memcached, flush the cache after upgrading:
+If your application cached search results from a pre-release build in Redis or Memcached, flush the cache after upgrading:
 
 ```bash
 php artisan cache:clear
@@ -374,7 +374,7 @@ php artisan cache:clear
 
 ### `useIndex()` deprecated — use `useInvertedIndex()`
 
-`SearchBuilder::useIndex()` is still callable but emits a `@deprecated` notice. Replace with `useInvertedIndex()`:
+`SearchBuilder::useIndex()` is still callable but emits a deprecation notice. Replace with `useInvertedIndex()`:
 
 ```php
 // Before:

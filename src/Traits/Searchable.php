@@ -215,6 +215,7 @@ trait Searchable
      */
     public static function reindex(): void
     {
+        trigger_error(static::class . '::reindex() is deprecated since v2.0.0. Use php artisan fuzzy-search:rebuild instead.', E_USER_DEPRECATED);
         $config = config('fuzzy-search.indexing', []);
 
         if ($config['async'] ?? false) {
@@ -231,6 +232,7 @@ trait Searchable
      */
     public static function performReindex(): void
     {
+        trigger_error(static::class . '::performReindex() is deprecated since v2.0.0. Use php artisan fuzzy-search:rebuild instead.', E_USER_DEPRECATED);
         $instance = new static;
         $config = $instance->getSearchableConfig();
         $columns = array_keys($config['columns'] ?? []);

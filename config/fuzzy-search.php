@@ -200,11 +200,15 @@ return [
     |
     | max_depth: maximum nesting depth of parentheses (DoS guard)
     | max_tokens: maximum tokens in a single query (DoS guard)
+    | max_term_length: maximum character length of a single search term; longer
+    |   terms are truncated before driver pattern generation to prevent O(n²)
+    |   LIKE-pattern explosion on LevenshteinDriver and FuzzyDriver
     |
     */
     'query' => [
-        'max_depth'  => 16,
-        'max_tokens' => 32,
+        'max_depth'       => 16,
+        'max_tokens'      => 32,
+        'max_term_length' => 128,
     ],
 
     /*

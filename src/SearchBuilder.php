@@ -403,11 +403,12 @@ class SearchBuilder
     }
 
     /**
-     * @deprecated since v2.0.0-alpha.4 — use useInvertedIndex() instead.
+     * @deprecated since v2.0.0 — use useInvertedIndex() instead.
      * @see useInvertedIndex()
      */
     public function useIndex(string|bool|null $modelClass = true): self
     {
+        trigger_error('useIndex() is deprecated since v2.0.0; use useInvertedIndex() instead.', E_USER_DEPRECATED);
         return $this->useInvertedIndex($modelClass);
     }
 
@@ -645,12 +646,15 @@ class SearchBuilder
             }
         }
 
-        // min_search_length guard — return empty results for terms that are too short
-        // without throwing, so autocomplete/type-ahead UIs get a clean empty state.
+        // min_search_length / max_term_length guards
         if ($this->extendedQuery === null && !empty($this->searchTerm)) {
             $minLength = (int) config('fuzzy-search.min_search_length', 1);
             if (strlen($this->searchTerm) < $minLength) {
                 return collect();
+            }
+            $maxLength = (int) config('fuzzy-search.query.max_term_length', 128);
+            if (strlen($this->searchTerm) > $maxLength) {
+                $this->searchTerm = substr($this->searchTerm, 0, $maxLength);
             }
         }
 
