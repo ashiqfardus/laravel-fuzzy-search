@@ -38,20 +38,25 @@ trait Searchable
      */
     public static function bootSearchable(): void
     {
-        // Capture the concrete class name before entering the closure.
-        // Static closures in PHP have no class scope, so `static::` inside one
-        // does not resolve correctly — especially for anonymous model classes
-        // used in tests. Using an explicit string call avoids that pitfall.
+        // Register event listeners directly instead of using static::observe().
         //
-        // Deferring to booted() is required for Laravel 13 compatibility:
-        // observe() creates `new static` internally, which calls bootIfNotBooted(),
-        // and Laravel 13 throws LogicException if that is called while booting.
-        $class = static::class;
+        // observe() internally does `new static`, which invokes the model
+        // constructor → bootIfNotBooted(). Laravel 13's bootIfNotBooted()
+        // throws a LogicException if it is called while the model is still
+        // inside its boot phase (the `$booted[class]` flag is set only
+        // *after* the booted event fires, so deferring with static::booted()
+        // does not help — the flag is still false when the listener runs).
+        //
+        // Both observers expose only `saved` and `deleted`. Registering
+        // those four events with the "Class@method" string callback avoids
+        // `new static` entirely and works on Laravel 10–13.
+        $observer = \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class;
+        $indexing = \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class;
 
-        static::booted(static function () use ($class) {
-            $class::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
-            $class::observe(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class);
-        });
+        static::saved($observer . '@saved');
+        static::deleted($observer . '@deleted');
+        static::saved($indexing . '@saved');
+        static::deleted($indexing . '@deleted');
     }
 
     /**
