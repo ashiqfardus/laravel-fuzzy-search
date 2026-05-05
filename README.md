@@ -193,9 +193,48 @@ DB::table('products')->fuzzySearch(['title', 'description'], 'laptop')->get();
 // Use specific algorithm
 User::search('john')->using('levenshtein')->get();
 User::search('stephen')->using('soundex')->get();  // Finds "Steven"
-User::search('stephen')->using('metaphone')->get(); // More accurate phonetic
+User::search('stephen')->using('metaphone')->get(); // More accurate phonetic — see setup below
 User::search('laptop')->using('similar_text')->get(); // Percentage match
 ```
+
+> ⚠️ **`metaphone` requires one-time setup.** Unlike the other algorithms, it searches against a precomputed `{column}_metaphone` shadow column. Calling `using('metaphone')` without it throws `RuntimeException`. Run the three commands shown in [Shadow Columns](#shadow-columns) once per searchable column.
+
+### Shadow Columns
+
+Most algorithms compute their score on the fly during the SQL query. **Metaphone is the exception** — PHP's `metaphone()` function isn't available in SQL, so the package precomputes the phonetic code on every save and stores it in a sibling column.
+
+For a `users` table with a `name` column, that means adding a `name_metaphone` column right next to it. Each row's `name_metaphone` holds the phonetic code (e.g. `Stephen` → `STFN`, `Steven` → `STFN`, `Stefan` → `STFN`). At search time, the query is a simple equality check against the precomputed code — fast, no per-row PHP calls.
+
+**Setup (one-time per column):**
+
+```bash
+# 1. Generate the migration that adds the shadow column + index
+php artisan fuzzy-search:add-shadow-column "App\Models\User" name --type=metaphone
+
+# 2. Apply it
+php artisan migrate
+
+# 3. Backfill existing rows (the observer only writes on future saves)
+php artisan fuzzy-search:rebuild "App\Models\User" --fresh
+```
+
+After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`.
+
+**What gets generated:**
+
+```php
+// database/migrations/{timestamp}_add_name_metaphone_to_users_table.php
+Schema::table('users', function (Blueprint $table) {
+    $table->string('name_metaphone')->nullable()->after('name');
+    $table->index('name_metaphone');
+});
+```
+
+**Safety guards in the command:**
+
+- The model must exist and be an Eloquent model.
+- The model must live in your app namespace — vendor/framework classes are rejected.
+- The column name is sanitized to `[a-zA-Z0-9_]` only — blocks SQL injection through the argument.
 
 ### Typo Tolerance
 
