@@ -10,30 +10,6 @@
 > | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
 >
 > The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
->
-> **Upgrading from a pre-release build?** You may have two extra migration rows (`add_unique_index_to_fuzzy_index_postings`, `widen_term_column_to_255`) in your `migrations` table. These are now merged into the create migrations. Delete those two rows from the `migrations` table after verifying your schema is up to date — the consolidated schema is identical.
->
-> **Upgrading from a pre-release build?** Before running the unique-index migration, clean up any duplicate postings created by concurrent indexing:
->
-> ```sql
-> -- MySQL / MariaDB
-> DELETE p1 FROM fuzzy_index_postings p1
-> INNER JOIN fuzzy_index_postings p2
->   ON  p1.term_id    = p2.term_id
->   AND p1.model_type = p2.model_type
->   AND p1.model_id   = p2.model_id
->   AND p1.id > p2.id;
->
-> -- PostgreSQL
-> DELETE FROM fuzzy_index_postings
-> WHERE id NOT IN (
->     SELECT MIN(id)
->     FROM   fuzzy_index_postings
->     GROUP  BY term_id, model_type, model_id
-> );
-> ```
->
-> Then run `php artisan migrate`.
 
 ## Breaking changes
 
@@ -314,37 +290,7 @@ If you published the config file under v1 or Phase 1, add the following keys to 
 
 If you did not publish the config, these defaults are already active — no action required.
 
-## Final hardening changes
-
-If you were running a pre-release build, apply the steps below before using v2.0.0.
-
-### Database migrations (run automatically on `php artisan migrate`)
-
-Two new migrations are automatically applied:
-
-- **`add_unique_index_to_fuzzy_index_postings`** — adds `UNIQUE (term_id, model_type, model_id)` on the postings table to prevent duplicate rows under concurrent indexing. If you have a pre-release index with duplicate postings, run this SQL first:
-
-```sql
--- MySQL / MariaDB
-DELETE p1 FROM fuzzy_index_postings p1
-INNER JOIN fuzzy_index_postings p2
-  ON  p1.term_id    = p2.term_id
-  AND p1.model_type = p2.model_type
-  AND p1.model_id   = p2.model_id
-  AND p1.id > p2.id;
-
--- PostgreSQL
-DELETE FROM fuzzy_index_postings
-WHERE id NOT IN (
-    SELECT MIN(id)
-    FROM   fuzzy_index_postings
-    GROUP  BY term_id, model_type, model_id
-);
-```
-
-Then run `php artisan migrate`.
-
-- **`widen_term_column_to_255`** — widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)`. On MySQL the unique index is recreated as a `term(191)` prefix key to stay under the 767-byte key limit.
+## Additional breaking changes
 
 ### BREAKING: `cursorPaginate()` throws unconditionally
 
@@ -366,7 +312,7 @@ User::search('john')->get();
 
 The cache key previously omitted most builder-state flags (synonyms, locale, recency boost, typo tolerance, etc.), causing result poisoning when two different queries shared the same `(term, columns)` pair. This is fixed automatically in v2.0.0 — no code changes required.
 
-If your application cached search results from a pre-release build in Redis or Memcached, flush the cache after upgrading:
+If your application uses `->cache()` for search results, flush the cache after upgrading:
 
 ```bash
 php artisan cache:clear

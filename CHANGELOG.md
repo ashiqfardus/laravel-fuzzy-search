@@ -74,7 +74,7 @@ v2.0.0 is a major release adding a BM25 inverted index, extended search syntax, 
 
 These tables are harmless if unused. If you never use BM25 search, simply ignore them.
 
-See the [upgrade guide](docs/UPGRADE_v1_TO_v2.md) for deduplication SQL if you have a pre-release index with duplicate postings.
+See the [upgrade guide](docs/UPGRADE_v1_TO_v2.md) for migration steps from v1.x.
 
 ### New config keys
 
