@@ -662,7 +662,7 @@ class SearchBuilder
         // BM25 fast path via inverted index
         if ($this->useSearchIndex && !empty($this->searchTerm)) {
             if (!empty($this->columnWeights) && config('app.debug')) {
-                trigger_error('SearchBuilder: column weights are ignored on the BM25 path.', E_USER_NOTICE);
+                logger()->debug('SearchBuilder: column weights are ignored on the BM25 path.');
             }
             return $this->executeIndexedSearch();
         }
