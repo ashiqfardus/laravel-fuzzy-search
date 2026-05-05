@@ -58,7 +58,7 @@ abstract class DatabaseTestCase extends BaseTestCase
                 'database' => env('DB_TEST_DATABASE'),
                 'username' => env('DB_TEST_USERNAME'),
                 'password' => env('DB_TEST_PASSWORD', ''),
-                'charset'  => 'utf8mb4',
+                'charset'  => $driver === 'pgsql' ? 'utf8' : 'utf8mb4',
                 'prefix'   => '',
             ]);
         }
