@@ -67,12 +67,12 @@ v2.0.0 is a major release adding a BM25 inverted index, extended search syntax, 
 
 | Migration | What it does |
 | --- | --- |
-| `create_fuzzy_index_terms_table` | Creates `fuzzy_index_terms` |
-| `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` |
+| `create_fuzzy_index_terms_table` | Creates `fuzzy_index_terms` with `term varchar(255)` and a unique index |
+| `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` with `UNIQUE (term_id, model_type, model_id)` |
 | `create_fuzzy_index_meta_table` | Creates `fuzzy_index_meta` |
 | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
-| `add_unique_index_to_fuzzy_index_postings` | Adds `UNIQUE (term_id, model_type, model_id)` to prevent duplicate postings |
-| `widen_term_column_to_255` | Widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` |
+
+These tables are harmless if unused. If you never use BM25 search, simply ignore them.
 
 See the [upgrade guide](docs/UPGRADE_v1_TO_v2.md) for deduplication SQL if you have a pre-release index with duplicate postings.
 

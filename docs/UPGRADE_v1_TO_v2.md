@@ -4,14 +4,14 @@
 >
 > | Migration | What it does |
 > | --- | --- |
-> | `create_fuzzy_index_terms_table` | Creates `fuzzy_index_terms` |
-> | `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` |
+> | `create_fuzzy_index_terms_table` | Creates `fuzzy_index_terms` with `term varchar(255)` and a unique index |
+> | `create_fuzzy_index_postings_table` | Creates `fuzzy_index_postings` with `UNIQUE (term_id, model_type, model_id)` |
 > | `create_fuzzy_index_meta_table` | Creates `fuzzy_index_meta` |
 > | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
-> | `2026_05_03_000001_add_unique_index_to_fuzzy_index_postings` | Adds a unique index on `(term_id, model_type, model_id)` to prevent duplicate postings under concurrent indexing |
-> | `2026_05_03_000002_widen_term_column_to_255` | Widens `fuzzy_index_terms.term` from `varchar(191)` to `varchar(255)` |
 >
 > The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
+>
+> **Upgrading from a pre-release build?** You may have two extra migration rows (`add_unique_index_to_fuzzy_index_postings`, `widen_term_column_to_255`) in your `migrations` table. These are now merged into the create migrations. Delete those two rows from the `migrations` table after verifying your schema is up to date — the consolidated schema is identical.
 >
 > **Upgrading from a pre-release build?** Before running the unique-index migration, clean up any duplicate postings created by concurrent indexing:
 >
