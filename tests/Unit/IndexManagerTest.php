@@ -396,6 +396,47 @@ class IndexManagerTest extends TestCase
         $this->assertSame(1, (int) $this->app['db']->table('fuzzy_index_terms')->where('term', 'world')->value('doc_count'));
     }
 
+    public function test_meta_row_creation_does_not_use_insert_or_ignore(): void
+    {
+        // Laravel's SqlServerGrammar throws for insertOrIgnore(); the meta row must be
+        // created with a portable statement (upsert) so SQL Server can index at all.
+        //
+        // DB::pretend() can't drive this to completion (same root cause as the comment on
+        // test_term_upsert_increment_is_table_qualified_for_postgres below): pretend() has to
+        // escape bound values into a human-readable SQL string, and get_class() on these
+        // anonymous test models embeds a NUL byte, which the escaper rejects. We capture the
+        // compiled SQL via DB::listen() instead and let the call execute for real.
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'meta probe']);
+
+        $queries = [];
+        $this->app['db']->listen(function ($query) use (&$queries) {
+            $queries[] = $query->sql;
+        });
+
+        $manager->indexModel($model);
+
+        $sql = strtolower(implode("\n", $queries));
+
+        $this->assertStringNotContainsString('insert or ignore', $sql);
+        $this->assertStringNotContainsString('insert ignore', $sql);
+        $this->assertStringContainsString('fuzzy_index_meta', $sql);
+    }
+
+    public function test_meta_row_is_created_once_and_counters_survive_reindex(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'stable counters']);
+
+        $manager->indexModel($model);
+        $manager->indexModel($model);
+
+        $rows = $this->app['db']->table('fuzzy_index_meta')->where('model_type', get_class($model))->get();
+        $this->assertCount(1, $rows);
+        $this->assertSame(1, (int) $rows->first()->total_docs);
+        $this->assertSame(2, (int) $rows->first()->total_tokens);
+    }
+
     /** Anonymous model bound to an existing users row (mirrors IndexingPipelineTest). */
     private function makeIndexableModel(int $id): \Illuminate\Database\Eloquent\Model
     {

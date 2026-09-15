@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - MariaDB connections (driver name "mariadb" on Laravel 11+) now use native SOUNDEX(), the Levenshtein UDF path, quoted identifiers and the MySQL flush branch — previously every MySQL-only branch silently fell back to generic SQL.
 - **PostgreSQL and SQL Server:** BM25 indexing failed on every write with an "ambiguous doc_count" error inside the upsert. The inverted index now works on both.
+- **SQL Server:** BM25 indexing threw "This database engine does not support inserting while ignoring errors"; meta rows are now created with a portable upsert.
 
 ### Deprecated
 

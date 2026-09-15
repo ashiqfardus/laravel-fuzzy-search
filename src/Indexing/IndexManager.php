@@ -446,12 +446,7 @@ class IndexManager
     private function upsertMeta(string $modelType, int $docLength, bool $isNewDoc, int $oldDocLength = 0): void
     {
         // Ensure the row exists before updating (safe against concurrent first-insert race — C10)
-        DB::table('fuzzy_index_meta')->insertOrIgnore([
-            'model_type'     => $modelType,
-            'total_docs'     => 0,
-            'total_tokens'   => 0,
-            'avg_doc_length' => 0,
-        ]);
+        $this->ensureMetaRow($modelType);
 
         if ($isNewDoc) {
             DB::table('fuzzy_index_meta')
@@ -494,12 +489,7 @@ class IndexManager
     private function upsertMetaBulk(string $modelType, int $newDocs, int $newTokens, int $reindexTokenDelta = 0): void
     {
         // Ensure the row exists (race-safe — C10)
-        DB::table('fuzzy_index_meta')->insertOrIgnore([
-            'model_type'     => $modelType,
-            'total_docs'     => 0,
-            'total_tokens'   => 0,
-            'avg_doc_length' => 0,
-        ]);
+        $this->ensureMetaRow($modelType);
 
         $tokenAdjustment = $newTokens + $reindexTokenDelta;
 
@@ -529,5 +519,26 @@ class IndexManager
                     'CASE WHEN total_docs > 0 THEN 1.0 * total_tokens / total_docs ELSE 0 END'
                 ),
             ]);
+    }
+
+    /**
+     * Guarantee the meta row exists without clobbering its counters.
+     *
+     * upsert() is implemented on every supported driver (MySQL/MariaDB ON DUPLICATE KEY,
+     * PostgreSQL/SQLite ON CONFLICT, SQL Server MERGE). insertOrIgnore() is not: Laravel's
+     * SqlServerGrammar throws. Updating model_type to itself makes the conflict branch a no-op.
+     */
+    private function ensureMetaRow(string $modelType): void
+    {
+        DB::table('fuzzy_index_meta')->upsert(
+            [[
+                'model_type'     => $modelType,
+                'total_docs'     => 0,
+                'total_tokens'   => 0,
+                'avg_doc_length' => 0,
+            ]],
+            ['model_type'],
+            ['model_type']
+        );
     }
 }
