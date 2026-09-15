@@ -100,12 +100,12 @@ class FuzzySearch
         $driver = $this->getDriver($query);
         $col = $this->quoteColumnForDriver($column, $driver);
 
-        $expression = match ($driver) {
-            self::DRIVER_MYSQL  => "LOCATE(?, {$col})",
-            self::DRIVER_PGSQL  => "POSITION(? IN {$col})",
-            self::DRIVER_SQLITE => "INSTR({$col}, ?)",
-            self::DRIVER_SQLSRV => "CHARINDEX(?, {$col})",
-            default             => "CASE WHEN {$col} LIKE ? THEN 0 ELSE 1 END",
+        $expression = match (true) {
+            \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver) => "LOCATE(?, {$col})",
+            $driver === self::DRIVER_PGSQL  => "POSITION(? IN {$col})",
+            $driver === self::DRIVER_SQLITE => "INSTR({$col}, ?)",
+            $driver === self::DRIVER_SQLSRV => "CHARINDEX(?, {$col})",
+            default                         => "CASE WHEN {$col} LIKE ? THEN 0 ELSE 1 END",
         };
 
         return $query->orderByRaw("{$expression} {$direction}", [$value]);
@@ -163,14 +163,7 @@ class FuzzySearch
 
     protected function quoteColumnForDriver(string $column, string $driver): string
     {
-        $parts = explode('.', $column);
-        $quoted = array_map(fn (string $part) => match ($driver) {
-            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
-            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
-            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
-            default  => $part,
-        }, $parts);
-        return implode('.', $quoted);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $driver);
     }
 
     protected function applyWithUnaccent(Builder $query, string $column, string $value, string $boolean): Builder

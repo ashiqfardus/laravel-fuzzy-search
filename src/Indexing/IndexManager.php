@@ -177,7 +177,7 @@ class IndexManager
             // — avoids loading million-row term_id arrays into PHP memory.
             $driver = DB::connection()->getDriverName();
 
-            if ($driver === 'mysql') {
+            if (\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver)) {
                 DB::statement(
                     'DELETE t FROM fuzzy_index_terms t ' .
                     'LEFT JOIN fuzzy_index_postings p ON t.id = p.term_id ' .

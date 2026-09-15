@@ -21,7 +21,7 @@ class LevenshteinDriver extends BaseDriver
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
         // Check for native Levenshtein support
-        if ($this->driver === 'mysql' && ($this->config['use_native_functions'] ?? false)) {
+        if ($this->isMySqlFamily() && ($this->config['use_native_functions'] ?? false)) {
             return $this->applyNativeMySQL($query, $column, $value, $boolean);
         }
 

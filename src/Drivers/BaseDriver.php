@@ -58,14 +58,13 @@ abstract class BaseDriver
      */
     protected function quoteColumn(string $column): string
     {
-        $parts = explode('.', $column);
-        $quoted = array_map(fn (string $part) => match ($this->driver) {
-            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
-            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
-            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
-            default  => $part,
-        }, $parts);
-        return implode('.', $quoted);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $this->driver);
+    }
+
+    /** True for MySQL and MariaDB (Laravel 11+ reports MariaDB as "mariadb"). */
+    protected function isMySqlFamily(): bool
+    {
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($this->driver);
     }
 }
 

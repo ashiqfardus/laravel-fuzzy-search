@@ -1322,6 +1322,7 @@ class SearchBuilder
 
             switch ($driver) {
                 case 'mysql':
+                case 'mariadb':
                     $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
@@ -1365,17 +1366,7 @@ class SearchBuilder
      */
     protected function quoteColumn(string $column, string $driver): string
     {
-        // Split on '.' so table-qualified names (e.g. "users.name") quote each part
-        // separately — wrapping the whole string in backticks makes MySQL treat
-        // "users.name" as a single identifier rather than table.column.
-        $parts = explode('.', $column);
-        $quoted = array_map(fn (string $part) => match ($driver) {
-            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
-            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
-            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
-            default  => $part,
-        }, $parts);
-        return implode('.', $quoted);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $driver);
     }
 
     /**

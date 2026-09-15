@@ -21,7 +21,7 @@ class SoundexDriver extends BaseDriver
         // Fix: extract only the FIRST word before applying SOUNDEX so the last name
         // does not corrupt the phonetic code. For "Jake Jackson" this gives SOUNDEX('Jake')
         // = J200, which correctly does NOT match SOUNDEX('john') = J500.
-        if ($this->driver === 'mysql') {
+        if ($this->isMySqlFamily()) {
             $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
             // Match first word OR last word of a full-name column.
             // Rationale: SOUNDEX() on the full string (e.g. "Jake Jackson") ignores spaces

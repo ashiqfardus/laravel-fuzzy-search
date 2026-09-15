@@ -82,14 +82,7 @@ class AstCompiler
 
     private function quoteColumn(string $column): string
     {
-        $parts = explode('.', $column);
-        $quoted = array_map(fn (string $part) => match ($this->dbDriver) {
-            'mysql'  => '`' . str_replace('`', '``', $part) . '`',
-            'pgsql'  => '"' . str_replace('"', '""', $part) . '"',
-            'sqlsrv' => '[' . str_replace(']', ']]', $part) . ']',
-            default  => $part,
-        }, $parts);
-        return implode('.', $quoted);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $this->dbDriver);
     }
 
     private function extractTerm(AstNode $node): string
