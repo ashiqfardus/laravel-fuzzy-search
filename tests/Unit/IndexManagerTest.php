@@ -437,6 +437,54 @@ class IndexManagerTest extends TestCase
         $this->assertSame(2, (int) $rows->first()->total_tokens);
     }
 
+    public function test_numeric_tokens_are_bound_as_strings(): void
+    {
+        // PHP normalises numeric-string array keys (e.g. '10') to int keys. Since the token
+        // map is keyed by term, array_keys($tokens) yields int(10) for a purely numeric token,
+        // and that int is then bound straight into the query. SQL Server's MERGE ... USING
+        // (VALUES (...)) infers one type per column from the first batch of bindings, so a
+        // mixed int/string 'term' column blows up with "Conversion failed when converting the
+        // nvarchar value 'paginate' to data type int". Every binding for this term must be a
+        // string.
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'paginate user 10']);
+
+        $queries = [];
+        $this->app['db']->listen(function ($query) use (&$queries) {
+            $queries[] = $query;
+        });
+
+        $manager->indexModel($model);
+
+        $termQueries = array_filter($queries, fn ($q) => str_contains($q->sql, 'fuzzy_index_terms'));
+
+        $bindings = [];
+        foreach ($termQueries as $q) {
+            foreach ($q->bindings as $binding) {
+                $bindings[] = $binding;
+            }
+        }
+
+        $intTens = array_filter($bindings, fn ($b) => $b === 10);
+        $this->assertEmpty($intTens, 'no binding against fuzzy_index_terms should be the PHP integer 10');
+        $this->assertContains('10', $bindings, 'the numeric token must be bound as the string "10"');
+    }
+
+    public function test_numeric_token_is_indexed_and_searchable(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'order 10 confirmed']);
+
+        $manager->indexModel($model);
+
+        $this->assertDatabaseHas('fuzzy_index_terms', ['term' => '10']);
+
+        $scorer  = new \Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer();
+        $results = $scorer->search(['10'], get_class($model), 5);
+
+        $this->assertContains($model->getKey(), $results->pluck('model_id')->toArray());
+    }
+
     /** Anonymous model bound to an existing users row (mirrors IndexingPipelineTest). */
     private function makeIndexableModel(int $id): \Illuminate\Database\Eloquent\Model
     {

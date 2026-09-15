@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQL Server:** BM25 indexing threw "This database engine does not support inserting while ignoring errors"; meta rows are now created with a portable upsert.
 - **SQL Server:** didYouMean() used LENGTH(), which SQL Server does not have; MySQL/MariaDB now use CHAR_LENGTH() so multibyte terms are measured in characters.
 - **PostgreSQL:** using('soundex') without fuzzystrmatch returned no rows for capitalised names (case-sensitive LIKE).
+- **SQL Server:** indexing a document containing a purely numeric token (e.g. "10") failed with "Conversion failed when converting the nvarchar value"; term bindings are now always strings.
 
 ### Deprecated
 

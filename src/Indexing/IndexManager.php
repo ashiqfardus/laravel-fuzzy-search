@@ -53,9 +53,18 @@ class IndexManager
 
             $this->removeFromIndex($modelType, $modelId, updateMeta: false);
 
+            // PHP normalises numeric-string array keys (e.g. '10') to int keys, so
+            // array_keys($tokens) can yield an int for a purely numeric token. Cast back to
+            // string wherever a key becomes a query binding: SQL Server's MERGE ... USING
+            // (VALUES (...)) infers one type per column from the batch of bindings, so a
+            // mixed int/string 'term' column fails with "Conversion failed when converting
+            // the nvarchar value 'paginate' to data type int". $termIds[$term] lookups below
+            // still work because PHP normalises numeric-string keys the same way on read.
+            $termKeys = array_map('strval', array_keys($tokens));
+
             // Batch upsert all terms
             DB::table('fuzzy_index_terms')->upsert(
-                array_map(fn($term) => ['term' => $term, 'doc_count' => 1], array_keys($tokens)),
+                array_map(fn($term) => ['term' => (string) $term, 'doc_count' => 1], $termKeys),
                 ['term'],
                 // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
                 // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
@@ -65,7 +74,7 @@ class IndexManager
 
             // Fetch all term IDs in one query
             $termIds = DB::table('fuzzy_index_terms')
-                ->whereIn('term', array_keys($tokens))
+                ->whereIn('term', $termKeys)
                 ->pluck('id', 'term');
 
             // Build posting rows
@@ -256,7 +265,10 @@ class IndexManager
             return 0;
         }
 
-        $allTerms = array_keys($allTerms);
+        // See the comment in indexModel(): numeric-string keys like '10' are normalised to
+        // int by PHP, and SQL Server's MERGE ... USING (VALUES (...)) fails when the 'term'
+        // column mixes int and string bindings. Cast back to string.
+        $allTerms = array_map('strval', array_keys($allTerms));
         $modelIds = array_keys($tokensByModel);
 
         return DB::transaction(function () use ($modelType, $tokensByModel, $allTerms, $modelIds) {
