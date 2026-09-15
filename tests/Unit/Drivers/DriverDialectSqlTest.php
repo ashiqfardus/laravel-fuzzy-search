@@ -49,6 +49,16 @@ class DriverDialectSqlTest extends TestCase
         }
     }
 
+    public function test_soundex_fallback_uses_ilike_on_postgres(): void
+    {
+        $sql = strtolower((new SoundexDriver($this->config(), 'pgsql'))
+            ->apply($this->app['db']->table('users'), 'name', 'john')
+            ->toSql());
+
+        $this->assertStringContainsString('"name" ilike ?', $sql);
+        $this->assertStringNotContainsString(' like ?', $sql);
+    }
+
     public function test_levenshtein_native_udf_is_used_on_mariadb_when_enabled(): void
     {
         $config = $this->config(['use_native_functions' => true]);

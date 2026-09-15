@@ -59,14 +59,21 @@ class SoundexDriver extends BaseDriver
     protected function applyFallback(Builder $query, string $column, string $value, string $boolean): Builder
     {
         $patterns = $this->generatePhoneticPatterns($value);
-        $method = $boolean === 'or' ? 'orWhere' : 'where';
+        $method   = $boolean === 'or' ? 'orWhere' : 'where';
+        $col      = $this->quoteColumn($column);
+        $isPgsql  = $this->driver === 'pgsql';
 
-        return $query->$method(function ($q) use ($column, $patterns) {
+        return $query->$method(function ($q) use ($col, $column, $patterns, $isPgsql) {
             foreach ($patterns as $index => $pattern) {
-                if ($index === 0) {
-                    $q->where($column, 'LIKE', $pattern);
+                if ($isPgsql) {
+                    // LIKE is case-sensitive on PostgreSQL; patterns are lower-cased.
+                    $index === 0
+                        ? $q->whereRaw("{$col} ILIKE ?", [$pattern])
+                        : $q->orWhereRaw("{$col} ILIKE ?", [$pattern]);
                 } else {
-                    $q->orWhere($column, 'LIKE', $pattern);
+                    $index === 0
+                        ? $q->where($column, 'LIKE', $pattern)
+                        : $q->orWhere($column, 'LIKE', $pattern);
                 }
             }
         });
