@@ -22,13 +22,22 @@ trait ConfiguresDatabaseConnection
     /** Resolved driver name for the current run (sqlite, mysql, mariadb, pgsql, sqlsrv). */
     protected string $dbDriver = 'sqlite';
 
-    /** Package index tables in FK-safe drop order (children first). */
-    protected const FUZZY_INDEX_TABLES = [
-        'fuzzy_index_postings',
-        'fuzzy_index_documents',
-        'fuzzy_index_meta',
-        'fuzzy_index_terms',
-    ];
+    /**
+     * Package index tables in FK-safe drop order (children first).
+     * A method rather than a constant: traits cannot declare constants before PHP 8.2,
+     * and the suite still runs on PHP 8.1 for Laravel 10.
+     *
+     * @return string[]
+     */
+    protected static function fuzzyIndexTables(): array
+    {
+        return [
+            'fuzzy_index_postings',
+            'fuzzy_index_documents',
+            'fuzzy_index_meta',
+            'fuzzy_index_terms',
+        ];
+    }
 
     protected function resolveTestDbDriver(): string
     {
@@ -135,7 +144,7 @@ trait ConfiguresDatabaseConnection
         // FUZZY_INDEX_TABLES lists children before parents, so plain drops are FK-safe on
         // every driver. (disable/enableForeignKeyConstraints is deliberately not used: on
         // PostgreSQL it emits "SET CONSTRAINTS can only be used in transaction blocks".)
-        foreach (self::FUZZY_INDEX_TABLES as $table) {
+        foreach (static::fuzzyIndexTables() as $table) {
             $schema->dropIfExists($table);
         }
 
