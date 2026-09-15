@@ -1812,16 +1812,7 @@ class SearchBuilder
 
         try {
             // Query the term dictionary — fast and accurate at any dataset size
-            $candidates = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
-                ->select('term', 'doc_count')
-                ->where('term', '!=', $term)
-                ->whereRaw('LENGTH(term) BETWEEN ? AND ?', [
-                    max(1, $termLen - 3),
-                    $termLen + 3,
-                ])
-                ->orderByDesc('doc_count')
-                ->limit(300)
-                ->get();
+            $candidates = $this->didYouMeanCandidateQuery($term)->get();
         } catch (\Illuminate\Database\QueryException $e) {
             // Index tables don't exist — gracefully return empty
             if (config('app.debug', false)) {
@@ -1872,6 +1863,32 @@ class SearchBuilder
             0,
             $limit
         );
+    }
+
+    /**
+     * Build (but do not execute) the fuzzy_index_terms dictionary query used by
+     * didYouMean(). Kept separate so its SQL can be pinned per driver via toSql()
+     * without needing a live connection for every driver — see
+     * tests/Unit/DidYouMeanTest.php.
+     */
+    protected function didYouMeanCandidateQuery(string $term): \Illuminate\Database\Query\Builder
+    {
+        $termLen = strlen($term);
+
+        return \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
+            ->select('term', 'doc_count')
+            ->where('term', '!=', $term)
+            ->whereRaw(
+                \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::lengthFunction(
+                    $this->query->getConnection()->getDriverName()
+                ) . '(term) BETWEEN ? AND ?',
+                [
+                    max(1, $termLen - 3),
+                    $termLen + 3,
+                ]
+            )
+            ->orderByDesc('doc_count')
+            ->limit(300);
     }
 
     /**
