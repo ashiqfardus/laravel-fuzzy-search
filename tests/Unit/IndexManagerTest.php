@@ -342,4 +342,73 @@ class IndexManagerTest extends TestCase
         $this->assertStringContainsString('class_exists(StemmerFactory::class)', $body);
         $this->assertStringContainsString('composer require wamania/php-stemmer', $body);
     }
+
+    public function test_term_upsert_increment_is_table_qualified_for_postgres(): void
+    {
+        // PostgreSQL rejects an unqualified "doc_count + 1" inside ON CONFLICT DO UPDATE
+        // (SQLSTATE 42702, ambiguous between the target row and EXCLUDED).
+        //
+        // DB::pretend() can't drive this to completion: indexModel() upserts terms and then
+        // immediately reads their generated ids back within the same call, but pretend() makes
+        // every read a no-op (Connection::select() returns [] while pretending), so it always
+        // crashes before the query log could be inspected. We instead let the call execute for
+        // real and capture the compiled SQL via DB::listen(). The qualified/unqualified
+        // increment expression is embedded directly in the compiled SQL text (it's a DB::raw()
+        // fragment, not a bound parameter), so inspecting the raw SQL is sufficient.
+        $id = $this->app['db']->table('users')->insertGetId([
+            'name' => 'alpha beta', 'email' => 'q@test.com',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $model   = $this->makeIndexableModel($id);
+        $manager = $this->makeIndexManager();
+
+        $queries = [];
+        $this->app['db']->listen(function ($query) use (&$queries) {
+            $queries[] = ['query' => $query->sql];
+        });
+
+        $manager->indexModel($model);
+
+        $termUpserts = array_values(array_filter($queries, fn ($q) =>
+            str_contains($q['query'], 'fuzzy_index_terms') && str_contains(strtolower($q['query']), 'doc_count')
+        ));
+
+        $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
+        foreach ($termUpserts as $q) {
+            $this->assertStringContainsString('fuzzy_index_terms.doc_count + 1', $q['query']);
+            $this->assertStringNotContainsString('= doc_count + 1', $q['query']);
+        }
+    }
+
+    public function test_shared_term_doc_count_reaches_two_when_indexed_by_two_models(): void
+    {
+        $manager = $this->makeIndexManager();
+
+        foreach (['hello world', 'hello there'] as $name) {
+            $id = $this->app['db']->table('users')->insertGetId([
+                'name' => $name, 'email' => 'u' . uniqid() . '@test.com',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $manager->indexModel($this->makeIndexableModel($id));
+        }
+
+        $this->assertSame(2, (int) $this->app['db']->table('fuzzy_index_terms')->where('term', 'hello')->value('doc_count'));
+        $this->assertSame(1, (int) $this->app['db']->table('fuzzy_index_terms')->where('term', 'world')->value('doc_count'));
+    }
+
+    /** Anonymous model bound to an existing users row (mirrors IndexingPipelineTest). */
+    private function makeIndexableModel(int $id): \Illuminate\Database\Eloquent\Model
+    {
+        return new class($id) extends \Illuminate\Database\Eloquent\Model {
+            public $incrementing = false;
+            protected $table    = 'users';
+            public $timestamps  = false;
+            private int $pk;
+            public function __construct(int $pk = 0) { parent::__construct(); $this->pk = $pk; }
+            public function getKey()               { return $this->pk; }
+            public function getKeyName()           { return 'id'; }
+            public function getAttribute($key)     { return \Illuminate\Support\Facades\DB::table('users')->where('id', $this->pk)->value($key); }
+            public function getSearchableColumns() { return ['name']; }
+        };
+    }
 }

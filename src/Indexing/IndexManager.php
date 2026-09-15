@@ -57,7 +57,10 @@ class IndexManager
             DB::table('fuzzy_index_terms')->upsert(
                 array_map(fn($term) => ['term' => $term, 'doc_count' => 1], array_keys($tokens)),
                 ['term'],
-                ['doc_count' => DB::raw('doc_count + 1')]
+                // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
+                // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
+                // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
+                ['doc_count' => DB::raw('fuzzy_index_terms.doc_count + 1')]
             );
 
             // Fetch all term IDs in one query
@@ -330,7 +333,7 @@ class IndexManager
                 DB::table('fuzzy_index_terms')->upsert(
                     [['term' => $term, 'doc_count' => $increment]],
                     ['term'],
-                    ['doc_count' => DB::raw("doc_count + {$increment}")]
+                    ['doc_count' => DB::raw("fuzzy_index_terms.doc_count + {$increment}")]
                 );
             }
 
