@@ -4,9 +4,12 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit\Drivers;
 
 use Ashiqfardus\LaravelFuzzySearch\Drivers\LevenshteinDriver;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\SoundexDriver;
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler;
 use Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser;
 use Ashiqfardus\LaravelFuzzySearch\Query\Lexer;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 
 /**
@@ -15,6 +18,8 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
  */
 class DriverDialectSqlTest extends TestCase
 {
+    use FakesDriverConnections;
+
     private function config(array $extra = []): array
     {
         return array_merge(config('fuzzy-search'), $extra);
@@ -74,6 +79,50 @@ class DriverDialectSqlTest extends TestCase
             (new AstCompiler($driver))->compile($ast, $builder, ['name']);
 
             $this->assertStringContainsString($fragment, strtolower($builder->toSql()), $driver);
+        }
+    }
+
+    public function test_relevance_ordering_quotes_identifiers_per_driver(): void
+    {
+        $expected = [
+            'mysql'   => 'case when `name` = ?',
+            'mariadb' => 'case when `name` = ?',
+            'pgsql'   => 'case when "name" = ?',
+            'sqlsrv'  => 'case when [name] = ?',
+            'sqlite'  => 'case when name = ?',
+        ];
+
+        foreach ($expected as $driver => $fragment) {
+            $sql = strtolower((new SearchBuilder($this->fakeConnectionTable($driver, 'users'), app(FuzzySearch::class)))
+                ->search('john')
+                ->searchIn(['name'])
+                ->using('like')
+                ->toSql());
+
+            $this->assertStringContainsString($fragment, $sql, $driver);
+
+            if ($driver === 'pgsql') {
+                $this->assertStringContainsString('ilike', $sql, $driver);
+            }
+        }
+    }
+
+    public function test_order_by_fuzzy_uses_the_drivers_position_function(): void
+    {
+        $expected = [
+            'mysql'   => 'locate(?, `name`)',
+            'mariadb' => 'locate(?, `name`)',
+            'pgsql'   => 'position(? in "name")',
+            'sqlite'  => 'instr(name, ?)',
+            'sqlsrv'  => 'charindex(?, [name])',
+        ];
+
+        foreach ($expected as $driver => $fragment) {
+            $sql = strtolower(app(FuzzySearch::class)
+                ->applyFuzzyOrder($this->fakeConnectionTable($driver, 'users'), 'name', 'john')
+                ->toSql());
+
+            $this->assertStringContainsString($fragment, $sql, $driver);
         }
     }
 }

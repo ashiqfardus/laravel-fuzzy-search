@@ -11,7 +11,6 @@ class FuzzySearch
 {
     protected array $config;
 
-    protected const DRIVER_MYSQL  = 'mysql';
     protected const DRIVER_PGSQL  = 'pgsql';
     protected const DRIVER_SQLITE = 'sqlite';
     protected const DRIVER_SQLSRV = 'sqlsrv';
