@@ -10,7 +10,16 @@ use Illuminate\Database\Query\Builder;
  */
 class FuzzyDriver extends BaseDriver
 {
-    protected int $maxDistance = 2;
+    protected int $maxDistance;
+    protected int $minWordLength;
+
+    public function __construct(array $config, string $driver)
+    {
+        parent::__construct($config, $driver);
+        $this->maxDistance   = (int) ($config['fuzzy']['max_distance']
+            ?? $config['typo_tolerance']['max_distance'] ?? 2);
+        $this->minWordLength = (int) ($config['typo_tolerance']['min_word_length'] ?? 4);
+    }
 
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
@@ -46,44 +55,11 @@ class FuzzyDriver extends BaseDriver
         $patterns = [];
         $len      = strlen($value);
 
-        // Exact with wildcards
+        // Distance 0 — always
         $patterns[] = '%' . $this->escapeLike($value) . '%';
-
-        // Starts with
         $patterns[] = $this->escapeLike($value) . '%';
 
-        // Single character omissions (typos)
-        for ($i = 0; $i < $len; $i++) {
-            $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '%' . $this->escapeLike(substr($value, $i + 1)) . '%';
-        }
-
-        // Single character substitutions (using _ wildcard)
-        for ($i = 0; $i < $len; $i++) {
-            $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i + 1)) . '%';
-        }
-
-        // Character transpositions (swapped adjacent characters)
-        for ($i = 0; $i < $len - 1; $i++) {
-            $transposed = substr($value, 0, $i) . $value[$i + 1] . $value[$i] . substr($value, $i + 2);
-            $patterns[] = '%' . $this->escapeLike($transposed) . '%';
-        }
-
-        // Double character removal (common typo)
-        if ($len > 4) {
-            for ($i = 0; $i < $len - 1; $i++) {
-                if ($value[$i] === $value[$i + 1]) {
-                    $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i) . substr($value, $i + 1)) . '%';
-                }
-            }
-        }
-
-        // Word boundaries (first and last chars)
-        if ($len > 3) {
-            $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -2));
-            $patterns[] = $this->escapeLike(substr($value, 0, 2)) . '%' . $this->escapeLike(substr($value, -1));
-        }
-
-        // Split on spaces for multi-word search
+        // Split on spaces for multi-word search (distance 0 signal)
         $words = explode(' ', $value);
         if (count($words) > 1) {
             foreach ($words as $word) {
@@ -93,7 +69,36 @@ class FuzzyDriver extends BaseDriver
             }
         }
 
-        return array_unique($patterns);
+        $distance = $len < $this->minWordLength ? 0 : $this->maxDistance;
+
+        if ($distance >= 1) {
+            for ($i = 0; $i < $len; $i++) { // omissions
+                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '%' . $this->escapeLike(substr($value, $i + 1)) . '%';
+            }
+            for ($i = 0; $i < $len; $i++) { // substitutions
+                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i + 1)) . '%';
+            }
+            for ($i = 0; $i < $len - 1; $i++) { // transpositions
+                $transposed = substr($value, 0, $i) . $value[$i + 1] . $value[$i] . substr($value, $i + 2);
+                $patterns[] = '%' . $this->escapeLike($transposed) . '%';
+            }
+        }
+
+        if ($distance >= 2) {
+            if ($len > 4) { // double-character removal
+                for ($i = 0; $i < $len - 1; $i++) {
+                    if ($value[$i] === $value[$i + 1]) {
+                        $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i) . substr($value, $i + 1)) . '%';
+                    }
+                }
+            }
+            if ($len > 3) { // word boundaries
+                $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -2));
+                $patterns[] = $this->escapeLike(substr($value, 0, 2)) . '%' . $this->escapeLike(substr($value, -1));
+            }
+        }
+
+        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

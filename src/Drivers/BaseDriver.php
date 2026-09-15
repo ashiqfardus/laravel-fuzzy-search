@@ -66,5 +66,18 @@ abstract class BaseDriver
     {
         return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($this->driver);
     }
+
+    /**
+     * Cap the LIKE-pattern list. Order matters: callers append the highest-signal
+     * patterns (exact contains, prefix) first, so slicing keeps the best ones.
+     */
+    protected function capPatterns(array $patterns): array
+    {
+        $max = (int) ($this->config['max_patterns']
+            ?? $this->config['performance']['max_patterns']
+            ?? 100);
+
+        return array_slice(array_values(array_unique($patterns)), 0, max(1, $max));
+    }
 }
 

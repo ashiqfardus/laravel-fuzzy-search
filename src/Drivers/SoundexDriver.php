@@ -121,7 +121,7 @@ class SoundexDriver extends BaseDriver
             }
         }
 
-        return array_unique($patterns);
+        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

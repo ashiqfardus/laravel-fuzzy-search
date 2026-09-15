@@ -106,7 +106,7 @@ class TrigramDriver extends BaseDriver
             array_unshift($patterns, '%' . $this->escapeLike($combined) . '%');
         }
 
-        return array_slice(array_unique($patterns), 0, 10);
+        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

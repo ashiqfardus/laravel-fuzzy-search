@@ -152,6 +152,9 @@ class FuzzySearch
     {
         $base = $this->config;
         $base[$algorithm] = array_merge($base[$algorithm] ?? [], $options);
+        if (isset($options['max_patterns'])) {
+            $base['max_patterns'] = (int) $options['max_patterns'];
+        }
         return $base;
     }
 

@@ -140,7 +140,7 @@ class LevenshteinDriver extends BaseDriver
             $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -1));
         }
 
-        return array_unique($patterns);
+        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

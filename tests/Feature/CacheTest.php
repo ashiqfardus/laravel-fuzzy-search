@@ -191,7 +191,7 @@ class CacheTest extends TestCase
 
     public function test_cache_with_typo_tolerance(): void
     {
-        $results = User::search('jhn')  // Typo
+        $results = User::search('jonh')  // Typo (4+ chars: min_word_length gates typo patterns below this)
             ->cache(60)
             ->typoTolerance(2)
             ->get();

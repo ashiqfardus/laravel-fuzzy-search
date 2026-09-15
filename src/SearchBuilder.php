@@ -455,6 +455,7 @@ class SearchBuilder
     public function maxPatterns(int $max): self
     {
         $this->maxPatterns = max(10, $max);
+        $this->options['max_patterns'] = $this->maxPatterns; // read by BaseDriver::capPatterns()
         return $this;
     }
 

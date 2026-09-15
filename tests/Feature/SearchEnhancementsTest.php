@@ -239,4 +239,13 @@ class SearchEnhancementsTest extends TestCase
 
         $this->assertGreaterThan(0, $results->count());
     }
+
+    public function test_typo_tolerance_zero_disables_typo_matches_for_fuzzy_algorithm(): void
+    {
+        $strict = User::search('jonh')->using('fuzzy')->typoTolerance(0)->get();
+        $loose  = User::search('jonh')->using('fuzzy')->typoTolerance(2)->get();
+
+        $this->assertCount(0, $strict, 'typoTolerance(0) must not match "John" for "jonh"');
+        $this->assertContains('John Doe', $loose->pluck('name')->all());
+    }
 }
