@@ -4,9 +4,12 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests;
 
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearchServiceProvider;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ConfiguresDatabaseConnection;
 
 abstract class TestCase extends BaseTestCase
 {
+    use ConfiguresDatabaseConnection;
+
     protected function getPackageProviders($app): array
     {
         return [
@@ -16,13 +19,9 @@ abstract class TestCase extends BaseTestCase
 
     protected function defineEnvironment($app): void
     {
-        // Setup default database to use sqlite :memory:
-        $app['config']->set('database.default', 'testing');
-        $app['config']->set('database.connections.testing', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-        ]);
+        // sqlite :memory: by default; DB_TEST_DRIVER=mysql|mariadb|pgsql|sqlsrv switches
+        // the whole suite to a real server (see tests/Concerns/ConfiguresDatabaseConnection).
+        $this->configureTestDatabaseConnection($app);
 
         // Fuzzy search config — mirrors config/fuzzy-search.php defaults so tests exercise
         // the published values rather than silently falling back to config() null returns.
@@ -71,6 +70,9 @@ abstract class TestCase extends BaseTestCase
 
     protected function defineDatabaseMigrations(): void
     {
+        // A crashed run on a real database can leave the index tables behind.
+        $this->dropLeftoverFuzzyIndexTables();
+
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
     }
 
@@ -83,6 +85,10 @@ abstract class TestCase extends BaseTestCase
 
     protected function setUpDatabase(): void
     {
+        // Idempotent on real databases where a previous run may have aborted mid-test.
+        $this->app['db']->connection()->getSchemaBuilder()->dropIfExists('products');
+        $this->app['db']->connection()->getSchemaBuilder()->dropIfExists('users');
+
         // Create test table
         $this->app['db']->connection()->getSchemaBuilder()->create('users', function ($table) {
             $table->id();

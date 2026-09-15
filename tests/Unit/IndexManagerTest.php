@@ -308,8 +308,15 @@ class IndexManagerTest extends TestCase
 
     public function test_did_you_mean_returns_empty_when_index_tables_missing(): void
     {
-        // Drop the term dictionary table to simulate "index not yet built"
-        \Illuminate\Support\Facades\Schema::dropIfExists('fuzzy_index_terms');
+        // Drop the term dictionary to simulate "index not yet built". Postings hold a
+        // foreign key to terms, so run the real migrations' down() in child-first order —
+        // this is FK-safe on MySQL, PostgreSQL and SQL Server (a bare drop of the parent
+        // table fails there), and it restores the exact production schema afterwards.
+        $migrationsDir     = __DIR__ . '/../../database/migrations/';
+        $termsMigration    = require $migrationsDir . '2026_05_02_205327_create_fuzzy_index_terms_table.php';
+        $postingsMigration = require $migrationsDir . '2026_05_02_205328_create_fuzzy_index_postings_table.php';
+        $postingsMigration->down();
+        $termsMigration->down();
 
         $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
         $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
@@ -322,12 +329,9 @@ class IndexManagerTest extends TestCase
         $result = $builder->didYouMean(3);
         $this->assertEquals([], $result);
 
-        // Recreate the table for subsequent tests
-        \Illuminate\Support\Facades\Schema::create('fuzzy_index_terms', function ($table) {
-            $table->id();
-            $table->string('term', 191)->unique();
-            $table->unsignedBigInteger('doc_count')->default(0);
-        });
+        // Recreate both tables so the migrator's rollback in tearDown finds them.
+        $termsMigration->up();
+        $postingsMigration->up();
     }
 
     public function test_porter_stemmer_throws_clear_error_when_wamania_missing(): void

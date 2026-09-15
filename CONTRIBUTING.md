@@ -369,21 +369,44 @@ class SearchTest extends TestCase
 
 ### Testing Different Databases
 
-Test against multiple databases when adding database-specific features:
+The whole suite runs on in-memory SQLite by default. Set `DB_TEST_DRIVER` plus the
+connection vars to run the *same* suite against a real server. Every test class inherits
+this through `tests/Concerns/ConfiguresDatabaseConnection.php`, so BM25 indexing, flush,
+Scout and driver tests all execute on the selected database:
 
-```php
-public function test_works_on_mysql()
-{
-    $this->app['config']->set('database.default', 'mysql');
-    // Test code
-}
+```bash
+# MySQL / MariaDB
+DB_TEST_DRIVER=mysql DB_TEST_HOST=127.0.0.1 DB_TEST_PORT=3306 \
+DB_TEST_DATABASE=fuzzy_test DB_TEST_USERNAME=root DB_TEST_PASSWORD=secret \
+vendor/bin/phpunit
 
-public function test_works_on_postgresql()
-{
-    $this->app['config']->set('database.default', 'pgsql');
-    // Test code
-}
+# PostgreSQL
+DB_TEST_DRIVER=pgsql DB_TEST_HOST=127.0.0.1 DB_TEST_PORT=5432 \
+DB_TEST_DATABASE=fuzzy_test DB_TEST_USERNAME=postgres DB_TEST_PASSWORD=secret \
+vendor/bin/phpunit
+
+# SQL Server
+DB_TEST_DRIVER=sqlsrv DB_TEST_HOST=127.0.0.1 DB_TEST_PORT=1433 \
+DB_TEST_DATABASE=fuzzy_test DB_TEST_USERNAME=sa DB_TEST_PASSWORD='Secret!123' \
+vendor/bin/phpunit
 ```
+
+Supported values: `sqlite` (default), `mysql`, `mariadb`, `pgsql`, `sqlsrv`. The database
+must already exist; tables are created and dropped per test.
+`tests/Integration/DatabaseDriverSanityTest.php` fails loudly if the requested driver was
+not actually used.
+
+Write assertions that hold on every driver:
+
+- Column quoting differs: `` `name` `` on MySQL, `"name"` on PostgreSQL, `[name]` on
+  SQL Server, bare on SQLite. Match SQL with a quote-agnostic regex.
+- `LIKE` is case-sensitive on PostgreSQL; the package emits `ILIKE` there.
+- MySQL/MariaDB use native `SOUNDEX()`; the other drivers fall back to `LIKE` patterns.
+- Dropping a parent table (`fuzzy_index_terms`) fails under foreign keys on real servers.
+  Run the migration's `down()` in child-first order instead.
+
+Read `$this->dbDriver` inside a test when the expectation legitimately differs per
+database. CI runs the suite on every supported database (see `.github/workflows/ci.yml`).
 
 ### Running Tests
 

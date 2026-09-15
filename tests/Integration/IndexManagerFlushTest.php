@@ -11,13 +11,11 @@ use Illuminate\Support\Facades\DB;
 /**
  * Tests IndexManager::flush() — the three-branch orphan-term cleanup.
  *
- * The test suite runs on SQLite (both locally and in CI), so this directly
- * exercises the SQLite / "else" branch of flush(). The MySQL and PostgreSQL
- * branches are structurally equivalent (same query intent, different SQL
- * dialect); they run when CI executes this same suite against MySQL 8 and
- * PostgreSQL 14 (see .github/workflows/ci.yml — Integration is included in
- * all three DB jobs). A regression in any vendor branch will therefore break
- * the corresponding CI job.
+ * flush() has a MySQL branch (DELETE ... JOIN), a PostgreSQL branch (NOT EXISTS)
+ * and a portable "else" branch (SQLite, SQL Server). Which one runs depends on the
+ * driver selected by DB_TEST_DRIVER (see tests/Concerns/ConfiguresDatabaseConnection):
+ * sqlite locally by default, and each real database in its own CI job. A regression
+ * in any vendor branch therefore fails the matching CI job rather than going unnoticed.
  */
 class IndexManagerFlushTest extends TestCase
 {

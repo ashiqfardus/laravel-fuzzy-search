@@ -375,8 +375,10 @@ class SearchBuilderTest extends TestCase
         // 3 for 'email' (exact + prefix + contains). Without dedup, 'name' would appear
         // 3× more: 9 blocks for name instead of 3.
         // Count CASE WHEN name blocks vs CASE WHEN email blocks — should be equal.
-        $nameBlocks  = substr_count($sql, 'CASE WHEN name');
-        $emailBlocks = substr_count($sql, 'CASE WHEN email');
+        // Column quoting differs per driver (`name` on MySQL, "name" on PostgreSQL,
+        // [name] on SQL Server, bare on SQLite), so match any quote style.
+        $nameBlocks  = preg_match_all('/CASE WHEN [`"\[]?name[`"\]]?\s/', $sql);
+        $emailBlocks = preg_match_all('/CASE WHEN [`"\[]?email[`"\]]?\s/', $sql);
 
         $this->assertEquals($nameBlocks, $emailBlocks,
             'After dedup, name and email should have equal CASE WHEN scoring blocks. ' .

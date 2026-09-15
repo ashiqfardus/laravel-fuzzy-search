@@ -3,15 +3,19 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Integration;
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearchServiceProvider;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ConfiguresDatabaseConnection;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
 /**
- * Base for integration tests. Reads DB config from env vars set by CI.
- * Skips automatically when the target DB env vars are not set (safe for local dev).
+ * Base for driver-level integration tests that use the published config file verbatim
+ * and a dedicated `integration_users` fixture table.
+ *
+ * Database selection is shared with the main TestCase via ConfiguresDatabaseConnection:
+ * DB_TEST_DRIVER + DB_TEST_* env vars pick the server; missing vars skip the test.
  */
 abstract class DatabaseTestCase extends BaseTestCase
 {
-    protected string $dbDriver = 'sqlite';
+    use ConfiguresDatabaseConnection;
 
     protected function getPackageProviders($app): array
     {
@@ -20,9 +24,6 @@ abstract class DatabaseTestCase extends BaseTestCase
 
     protected function setUp(): void
     {
-        $driver = env('DB_TEST_DRIVER', 'sqlite');
-        $this->dbDriver = $driver;
-
         parent::setUp();
         $this->setUpSchema();
         $this->seedFixtures();
@@ -30,38 +31,7 @@ abstract class DatabaseTestCase extends BaseTestCase
 
     protected function defineEnvironment($app): void
     {
-        $driver = env('DB_TEST_DRIVER', 'sqlite');
-
-        if ($driver === 'sqlite') {
-            $app['config']->set('database.default', 'testing');
-            $app['config']->set('database.connections.testing', [
-                'driver'   => 'sqlite',
-                'database' => ':memory:',
-                'prefix'   => '',
-            ]);
-        } else {
-            $required = ['DB_TEST_HOST', 'DB_TEST_DATABASE', 'DB_TEST_USERNAME'];
-            foreach ($required as $var) {
-                if (empty(env($var))) {
-                    $this->markTestSkipped(
-                        "Integration test requires {$var} env var. " .
-                        "Set DB_TEST_DRIVER + DB_TEST_* vars to run against a real database."
-                    );
-                }
-            }
-
-            $app['config']->set('database.default', 'integration');
-            $app['config']->set('database.connections.integration', [
-                'driver'   => $driver,
-                'host'     => env('DB_TEST_HOST', '127.0.0.1'),
-                'port'     => (int) env('DB_TEST_PORT', $driver === 'pgsql' ? 5432 : 3306),
-                'database' => env('DB_TEST_DATABASE'),
-                'username' => env('DB_TEST_USERNAME'),
-                'password' => env('DB_TEST_PASSWORD', ''),
-                'charset'  => $driver === 'pgsql' ? 'utf8' : 'utf8mb4',
-                'prefix'   => '',
-            ]);
-        }
+        $this->configureTestDatabaseConnection($app);
 
         $app['config']->set('fuzzy-search', array_merge(
             require __DIR__ . '/../../config/fuzzy-search.php',

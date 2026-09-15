@@ -274,11 +274,13 @@ class FuzzySearchTest extends TestCase
     |--------------------------------------------------------------------------
     */
 
-    public function test_sqlite_driver_support(): void
+    public function test_active_driver_supports_all_algorithms(): void
     {
-        // Current test is running on SQLite
-        $driver = DB::connection()->getDriverName();
-        $this->assertEquals('sqlite', $driver);
+        // The suite runs on whichever driver DB_TEST_DRIVER selects (sqlite by default).
+        // Laravel may report MariaDB as "mysql" depending on the framework version.
+        $driver   = DB::connection()->getDriverName();
+        $expected = $this->dbDriver === 'mariadb' ? ['mariadb', 'mysql'] : [$this->dbDriver];
+        $this->assertContains($driver, $expected);
 
         // All algorithms should work
         $results = DB::table('users')->whereFuzzy('name', 'john', 'like')->get();

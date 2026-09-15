@@ -43,16 +43,23 @@ class DatabaseDriverTest extends TestCase
         $this->assertStringContainsString('like', strtolower($sql));
     }
 
-    public function test_soundex_fallback_for_sqlite(): void
+    public function test_soundex_uses_native_function_or_like_fallback_per_driver(): void
     {
-        // SQLite doesn't have native SOUNDEX, should fall back to LIKE patterns
         $query = DB::table('users')
             ->whereFuzzy('name', 'john', 'soundex');
 
-        $sql = $query->toSql();
+        $sql = strtolower($query->toSql());
 
-        // Should use LIKE patterns as fallback
-        $this->assertStringContainsString('like', strtolower($sql));
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            // MySQL / MariaDB have a built-in SOUNDEX() — always used, no LIKE fallback.
+            $this->assertStringContainsString('soundex(', $sql);
+            $this->assertStringNotContainsString('like', $sql);
+        } else {
+            // SQLite and SQL Server have no SOUNDEX(); PostgreSQL only via fuzzystrmatch,
+            // which is gated behind use_native_functions=false in the test config.
+            $this->assertStringContainsString('like', $sql);
+            $this->assertStringNotContainsString('soundex(', $sql);
+        }
     }
 
     public function test_multiple_columns_generates_or_conditions(): void
