@@ -92,7 +92,13 @@ class DriverDialectSqlTest extends TestCase
             'sqlite'  => 'case when name = ?',
         ];
 
+        $checked = 0;
+
         foreach ($expected as $driver => $fragment) {
+            if (!$this->fakeDriverAvailable($driver)) {
+                continue;
+            }
+
             $sql = strtolower((new SearchBuilder($this->fakeConnectionTable($driver, 'users'), app(FuzzySearch::class)))
                 ->search('john')
                 ->searchIn(['name'])
@@ -104,7 +110,11 @@ class DriverDialectSqlTest extends TestCase
             if ($driver === 'pgsql') {
                 $this->assertStringContainsString('ilike', $sql, $driver);
             }
+
+            $checked++;
         }
+
+        $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlsrv and sqlite must be asserted');
     }
 
     public function test_order_by_fuzzy_uses_the_drivers_position_function(): void
@@ -117,12 +127,22 @@ class DriverDialectSqlTest extends TestCase
             'sqlsrv'  => 'charindex(?, [name])',
         ];
 
+        $checked = 0;
+
         foreach ($expected as $driver => $fragment) {
+            if (!$this->fakeDriverAvailable($driver)) {
+                continue;
+            }
+
             $sql = strtolower(app(FuzzySearch::class)
                 ->applyFuzzyOrder($this->fakeConnectionTable($driver, 'users'), 'name', 'john')
                 ->toSql());
 
             $this->assertStringContainsString($fragment, $sql, $driver);
+
+            $checked++;
         }
+
+        $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlsrv and sqlite must be asserted');
     }
 }
