@@ -22,11 +22,11 @@ class Bm25ScorerTest extends TestCase
         $this->modelType = 'TestBm25Model';
     }
 
-    private function seedDoc(int $id, string $name): void
+    private function seedDoc(string $name): int
     {
-        $this->app['db']->table('users')->insert([
-            'id' => $id, 'name' => $name,
-            'email' => "bm25doc{$id}@test.com",
+        $id = $this->app['db']->table('users')->insertGetId([
+            'name' => $name,
+            'email' => 'bm25doc' . uniqid() . '@test.com',
             'created_at' => now(), 'updated_at' => now()
         ]);
 
@@ -57,6 +57,8 @@ class Bm25ScorerTest extends TestCase
             'total_tokens'   => \DB::raw("total_tokens + {$termCount}"),
             'avg_doc_length' => \DB::raw('total_tokens / total_docs'),
         ]);
+
+        return $id;
     }
 
     public function test_bm25_returns_empty_for_unknown_terms(): void
@@ -73,7 +75,7 @@ class Bm25ScorerTest extends TestCase
 
     public function test_bm25_result_has_model_id_and_score(): void
     {
-        $this->seedDoc(1001, 'laravel framework');
+        $this->seedDoc('laravel framework');
 
         $results = $this->scorer->search(['laravel'], $this->modelType, 5);
 
@@ -86,16 +88,16 @@ class Bm25ScorerTest extends TestCase
 
     public function test_bm25_returns_results_in_descending_score_order(): void
     {
-        $this->seedDoc(1002, 'john smith');
-        $this->seedDoc(1003, 'john john john');
+        $this->seedDoc('john smith');
+        $id3 = $this->seedDoc('john john john');
 
         $results = $this->scorer->search(['john'], $this->modelType, 5);
 
         $this->assertGreaterThanOrEqual(1, $results->count());
         $ids = $results->pluck('model_id')->toArray();
-        $this->assertContains(1003, $ids);
-        // 1003 has 'john' 3 times, should rank first (or at least be present)
-        $this->assertEquals(1003, $results->first()->model_id);
+        $this->assertContains($id3, $ids);
+        // $id3 has 'john' 3 times, should rank first (or at least be present)
+        $this->assertEquals($id3, $results->first()->model_id);
     }
 
     public function test_search_builder_use_inverted_index_returns_bm25_ordered_results(): void

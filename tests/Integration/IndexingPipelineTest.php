@@ -17,11 +17,11 @@ class IndexingPipelineTest extends TestCase
         $this->manager = new IndexManager(new WhitespaceTokenizer(), new NullStemmer());
     }
 
-    private function makeAndIndexModel(int $id, string $name): \Illuminate\Database\Eloquent\Model
+    private function makeAndIndexModel(string $name): \Illuminate\Database\Eloquent\Model
     {
-        $this->app['db']->table('users')->insert([
-            'id' => $id, 'name' => $name,
-            'email' => "pipe{$id}@test.com",
+        $id = $this->app['db']->table('users')->insertGetId([
+            'name' => $name,
+            'email' => 'pipe' . uniqid() . '@test.com',
             'created_at' => now(), 'updated_at' => now()
         ]);
 
@@ -48,8 +48,8 @@ class IndexingPipelineTest extends TestCase
 
     public function test_full_pipeline_index_then_bm25_search(): void
     {
-        $this->makeAndIndexModel(9001, 'php developer');
-        $this->makeAndIndexModel(9002, 'laravel php developer framework');
+        $model1 = $this->makeAndIndexModel('php developer');
+        $model2 = $this->makeAndIndexModel('laravel php developer framework');
 
         $scorer  = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
@@ -63,10 +63,10 @@ class IndexingPipelineTest extends TestCase
         $terms   = $this->manager->processTerms('laravel');
         $results = $scorer->search($terms, $modelType, 10);
 
-        // doc 9002 contains 'laravel'; 9001 doesn't
+        // model2 contains 'laravel'; model1 doesn't
         $ids = $results->pluck('model_id')->toArray();
-        $this->assertContains(9002, $ids);
-        $this->assertNotContains(9001, $ids);
+        $this->assertContains($model2->getKey(), $ids);
+        $this->assertNotContains($model1->getKey(), $ids);
     }
 
     public function test_remove_then_reindex_updates_scores(): void
@@ -74,9 +74,9 @@ class IndexingPipelineTest extends TestCase
         $modelType = 'PipelineTestModel2';
 
         // Manually insert index entries for a model
-        $this->app['db']->table('users')->insert([
-            'id' => 9010, 'name' => 'laravel testing',
-            'email' => 'p9010@test.com',
+        $id = $this->app['db']->table('users')->insertGetId([
+            'name' => 'laravel testing',
+            'email' => 'p' . uniqid() . '@test.com',
             'created_at' => now(), 'updated_at' => now()
         ]);
 
@@ -84,10 +84,10 @@ class IndexingPipelineTest extends TestCase
             ->upsert(['term' => 'laravel', 'doc_count' => 1], ['term'], ['doc_count' => \Illuminate\Support\Facades\DB::raw('doc_count + 1')]);
         $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', 'laravel')->value('id');
         $this->app['db']->table('fuzzy_index_postings')->insert([
-            'term_id' => $termId, 'model_type' => $modelType, 'model_id' => 9010, 'frequency' => 1
+            'term_id' => $termId, 'model_type' => $modelType, 'model_id' => $id, 'frequency' => 1
         ]);
         $this->app['db']->table('fuzzy_index_documents')->insert([
-            'model_type' => $modelType, 'model_id' => 9010, 'doc_length' => 1
+            'model_type' => $modelType, 'model_id' => $id, 'doc_length' => 1
         ]);
         $this->app['db']->table('fuzzy_index_meta')->insert([
             'model_type' => $modelType, 'total_docs' => 1, 'total_tokens' => 1, 'avg_doc_length' => 1
@@ -97,14 +97,14 @@ class IndexingPipelineTest extends TestCase
 
         // Before remove: should find it
         $before = $scorer->search(['laravel'], $modelType, 5);
-        $this->assertContains(9010, $before->pluck('model_id')->toArray());
+        $this->assertContains($id, $before->pluck('model_id')->toArray());
 
         // Remove
-        $this->manager->removeFromIndex($modelType, 9010);
+        $this->manager->removeFromIndex($modelType, $id);
 
         // After remove: should not find it
         $after = $scorer->search(['laravel'], $modelType, 5);
-        $this->assertNotContains(9010, $after->pluck('model_id')->toArray());
+        $this->assertNotContains($id, $after->pluck('model_id')->toArray());
     }
 
     public function test_did_you_mean_returns_suggestion_from_indexed_terms(): void
