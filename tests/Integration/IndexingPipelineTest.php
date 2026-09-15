@@ -81,7 +81,7 @@ class IndexingPipelineTest extends TestCase
         ]);
 
         $this->app['db']->table('fuzzy_index_terms')
-            ->upsert(['term' => 'laravel', 'doc_count' => 1], ['term'], ['doc_count' => \Illuminate\Support\Facades\DB::raw('doc_count + 1')]);
+            ->upsert(['term' => 'laravel', 'doc_count' => 1], ['term'], ['doc_count' => \Illuminate\Support\Facades\DB::raw('fuzzy_index_terms.doc_count + 1')]);
         $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', 'laravel')->value('id');
         $this->app['db']->table('fuzzy_index_postings')->insert([
             'term_id' => $termId, 'model_type' => $modelType, 'model_id' => $id, 'frequency' => 1

@@ -33,7 +33,7 @@ class Bm25ScorerTest extends TestCase
         $terms = $this->manager->processTerms($name);
         foreach ($terms as $term) {
             $this->app['db']->table('fuzzy_index_terms')
-                ->upsert(['term' => $term, 'doc_count' => 1], ['term'], ['doc_count' => \DB::raw('doc_count + 1')]);
+                ->upsert(['term' => $term, 'doc_count' => 1], ['term'], ['doc_count' => \DB::raw('fuzzy_index_terms.doc_count + 1')]);
             $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', $term)->value('id');
             $freq   = substr_count(strtolower($name), $term);
             $this->app['db']->table('fuzzy_index_postings')->insert([
@@ -53,9 +53,9 @@ class Bm25ScorerTest extends TestCase
             'model_type' => $this->modelType, 'total_docs' => 1,
             'total_tokens' => $termCount, 'avg_doc_length' => $termCount,
         ], ['model_type'], [
-            'total_docs'     => \DB::raw('total_docs + 1'),
-            'total_tokens'   => \DB::raw("total_tokens + {$termCount}"),
-            'avg_doc_length' => \DB::raw('total_tokens / total_docs'),
+            'total_docs'     => \DB::raw('fuzzy_index_meta.total_docs + 1'),
+            'total_tokens'   => \DB::raw("fuzzy_index_meta.total_tokens + {$termCount}"),
+            'avg_doc_length' => \DB::raw('fuzzy_index_meta.total_tokens / fuzzy_index_meta.total_docs'),
         ]);
 
         return $id;
