@@ -77,8 +77,15 @@ trait ConfiguresDatabaseConnection
             default  => 3306, // mysql, mariadb
         };
 
+        // Laravel 10 has no dedicated "mariadb" driver; it talks to MariaDB through the
+        // mysql driver. Keep $this->dbDriver = 'mariadb' so tests can still branch on it.
+        $connectionDriver = $driver;
+        if ($driver === 'mariadb' && !class_exists(\Illuminate\Database\MariaDbConnection::class)) {
+            $connectionDriver = 'mysql';
+        }
+
         $connection = [
-            'driver'   => $driver,
+            'driver'   => $connectionDriver,
             'host'     => env('DB_TEST_HOST', '127.0.0.1'),
             'port'     => (int) env('DB_TEST_PORT', $defaultPort),
             'database' => env('DB_TEST_DATABASE'),

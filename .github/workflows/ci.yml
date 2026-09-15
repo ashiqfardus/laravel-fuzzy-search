@@ -153,3 +153,120 @@ jobs:
           composer install --no-interaction --prefer-dist
       - name: Run tests (PostgreSQL)
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+
+  # ── MariaDB 11.4 LTS ──────────────────────────────────────────────────────
+  # Laravel 10 has no "mariadb" driver; the test harness falls back to "mysql" there.
+  test-mariadb:
+    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / MariaDB 11.4"
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: fuzzy_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.3", "8.4"]
+        laravel: ["10.*", "12.*", "13.*"]
+    env:
+      DB_TEST_DRIVER: mariadb
+      DB_TEST_HOST: 127.0.0.1
+      DB_TEST_PORT: 3306
+      DB_TEST_DATABASE: fuzzy_test
+      DB_TEST_USERNAME: root
+      DB_TEST_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_mysql, pdo_sqlite
+          coverage: none
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
+      - name: Allow dev stability for Laravel 13.x
+        if: matrix.laravel == '13.*'
+        run: composer config minimum-stability dev && composer config prefer-stable true
+      - name: Install deps
+        run: |
+          composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Run tests (MariaDB)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+
+  # ── SQL Server 2022 ───────────────────────────────────────────────────────
+  # Developer edition container; the database is created from PHP before the run.
+  test-sqlsrv:
+    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / SQL Server 2022"
+    runs-on: ubuntu-latest
+    services:
+      sqlsrv:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: FuzzyTest2026
+          MSSQL_PID: Developer
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd="/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P FuzzyTest2026 -Q 'SELECT 1' || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.3", "8.4"]
+        laravel: ["10.*", "12.*", "13.*"]
+    env:
+      DB_TEST_DRIVER: sqlsrv
+      DB_TEST_HOST: 127.0.0.1
+      DB_TEST_PORT: 1433
+      DB_TEST_DATABASE: fuzzy_test
+      DB_TEST_USERNAME: sa
+      DB_TEST_PASSWORD: FuzzyTest2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: sqlsrv, pdo_sqlsrv, pdo_sqlite
+          coverage: none
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
+      - name: Allow dev stability for Laravel 13.x
+        if: matrix.laravel == '13.*'
+        run: composer config minimum-stability dev && composer config prefer-stable true
+      - name: Install deps
+        run: |
+          composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Create test database
+        run: |
+          php <<'PHP'
+          <?php
+          $pdo = new PDO(
+              'sqlsrv:Server=127.0.0.1,1433;Database=master;TrustServerCertificate=1',
+              'sa',
+              getenv('DB_TEST_PASSWORD')
+          );
+          $pdo->exec("IF DB_ID('fuzzy_test') IS NULL CREATE DATABASE fuzzy_test");
+          echo "fuzzy_test ready\n";
+          PHP
+      - name: Run tests (SQL Server)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
