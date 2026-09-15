@@ -13,7 +13,7 @@ class AstCompilerTest extends TestCase
     {
         $tokens   = (new Lexer())->tokenize($query);
         $ast      = (new ExtendedQueryParser())->parse($tokens);
-        $compiler = new AstCompiler();
+        $compiler = new AstCompiler($this->app['db']->connection()->getDriverName());
 
         $builder = $this->app['db']->table('users');
         $compiler->compile($ast, $builder, $columns);

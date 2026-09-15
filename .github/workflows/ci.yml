@@ -40,6 +40,10 @@ jobs:
         run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
+          # Composer >= 2.9 refuses to resolve framework versions that carry security
+          # advisories. Laravel 10/11 are EOL upstream but still supported by this package,
+          # so the advisory gate is disabled for CI installs only.
+          composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run tests (SQLite)
@@ -94,6 +98,7 @@ jobs:
         run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
+          composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run tests (MySQL)
@@ -149,6 +154,7 @@ jobs:
         run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
+          composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run tests (PostgreSQL)
@@ -201,6 +207,7 @@ jobs:
         run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
+          composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run tests (MariaDB)
@@ -252,8 +259,15 @@ jobs:
       - name: Allow dev stability for Laravel 13.x
         if: matrix.laravel == '13.*'
         run: composer config minimum-stability dev && composer config prefer-stable true
+      - name: Install Microsoft ODBC Driver 18 (required by pdo_sqlsrv)
+        run: |
+          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -sSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update -qq
+          sudo ACCEPT_EULA=Y apt-get install -y -qq msodbcsql18 unixodbc-dev
       - name: Install deps
         run: |
+          composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Create test database

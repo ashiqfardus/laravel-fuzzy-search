@@ -132,11 +132,12 @@ trait ConfiguresDatabaseConnection
 
         $schema = $this->app['db']->connection()->getSchemaBuilder();
 
-        $schema->disableForeignKeyConstraints();
+        // FUZZY_INDEX_TABLES lists children before parents, so plain drops are FK-safe on
+        // every driver. (disable/enableForeignKeyConstraints is deliberately not used: on
+        // PostgreSQL it emits "SET CONSTRAINTS can only be used in transaction blocks".)
         foreach (self::FUZZY_INDEX_TABLES as $table) {
             $schema->dropIfExists($table);
         }
-        $schema->enableForeignKeyConstraints();
 
         if ($schema->hasTable('migrations')) {
             $this->app['db']->table('migrations')
