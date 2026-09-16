@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bm25.candidate_chunk` config (default 200): chunk size used when checking the BM25 ranking against a constrained query.
 - SearchBuilder forwards Eloquent/Query Builder calls (where*, whereHas, with*, join*, when, local scopes, …) and adds query(Closure) — no more filter()-only workarounds. Cache keys now include forwarded constraints.
 - FederatedSearch: paginate(), simplePaginate(), limitPerModel(), orderByModel().
+- Relationship search: searchIn(['title', 'author.name', 'tags.name', 'comments.author.name']) filters through the relation (whereHas / EXISTS) on the LIKE path; nested paths and to-many relations supported. A dotted name is a relation only when its head is a relation method on the model, so table-qualified columns keep working.
 
 ### Changed
 

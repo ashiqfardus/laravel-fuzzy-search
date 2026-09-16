@@ -1494,6 +1494,12 @@ class SearchBuilder
             $this->applySearchConditions($searchTerm);
         }
 
+        // Eager-load every relation a searchIn() column points at, so PHP rescoring and
+        // highlighting read loaded relations instead of issuing one query per row.
+        if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
+            $this->query->with($this->relationPaths());
+        }
+
         // Apply filters
         foreach ($this->filters as $filter) {
             if ($filter['operator'] === 'IN') {
@@ -1600,10 +1606,6 @@ class SearchBuilder
      */
     protected function applySearchConditions(string $searchTerm): void
     {
-        $queryBuilder = $this->query instanceof EloquentBuilder
-            ? $this->query->getQuery()
-            : $this->query;
-
         // Tokenize if enabled
         if ($this->tokenizeSearch) {
             $tokens = preg_split('/\s+/', $searchTerm);
@@ -1619,49 +1621,59 @@ class SearchBuilder
         }
         $allTerms = array_unique($allTerms);
 
-        // Build query based on match mode
+        $targets = $this->resolveColumnTargets();
+
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
-            // All tokens must match
+            // Every token must match at least one column
             foreach ($tokens as $token) {
                 $tokenTerms = $this->expandWithSynonyms($token);
-                $this->query->where(function ($q) use ($queryBuilder, $tokenTerms) {
-                    foreach ($tokenTerms as $idx => $term) {
-                        foreach ($this->searchableColumns as $colIdx => $column) {
-                            $boolean = ($idx === 0 && $colIdx === 0) ? 'and' : 'or';
-                            $subQuery = $q instanceof EloquentBuilder ? $q->getQuery() : $q;
-                            $this->fuzzySearch->applyFuzzyWhere(
-                                $subQuery,
-                                $column,
-                                $term,
-                                $this->algorithm,
-                                array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
-                                $boolean
-                            );
+                $this->query->where(function ($q) use ($tokenTerms, $targets) {
+                    $first = true;
+                    foreach ($tokenTerms as $term) {
+                        foreach ($targets as $column => $target) {
+                            $this->applyColumnCondition($q, $column, $target, $term, $first ? 'and' : 'or');
+                            $first = false;
                         }
                     }
                 });
             }
-        } else {
-            // Any token can match
-            $this->query->where(function ($q) use ($queryBuilder, $allTerms) {
-                $first = true;
-                foreach ($allTerms as $term) {
-                    foreach ($this->searchableColumns as $column) {
-                        $boolean = $first ? 'and' : 'or';
-                        $first = false;
-                        $subQuery = $q instanceof EloquentBuilder ? $q->getQuery() : $q;
-                        $this->fuzzySearch->applyFuzzyWhere(
-                            $subQuery,
-                            $column,
-                            $term,
-                            $this->algorithm,
-                            array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]),
-                            $boolean
-                        );
-                    }
-                }
-            });
+            return;
         }
+
+        // Any token can match any column
+        $this->query->where(function ($q) use ($allTerms, $targets) {
+            $first = true;
+            foreach ($allTerms as $term) {
+                foreach ($targets as $column => $target) {
+                    $this->applyColumnCondition($q, $column, $target, $term, $first ? 'and' : 'or');
+                    $first = false;
+                }
+            }
+        });
+    }
+
+    /**
+     * Apply one searchIn() column's fuzzy condition to $query (an Eloquent or Query
+     * builder inside a where-group). Direct columns go straight to the driver; relation
+     * columns wrap the driver condition in whereHas()/orWhereHas() on the relation path,
+     * which Eloquent compiles to a portable EXISTS subquery.
+     *
+     * @param array{relation: ?string, column: string} $target
+     */
+    protected function applyColumnCondition($query, string $column, array $target, string $term, string $boolean): void
+    {
+        $options = array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]);
+
+        if ($target['relation'] === null) {
+            $subQuery = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
+            $this->fuzzySearch->applyFuzzyWhere($subQuery, $target['column'], $term, $this->algorithm, $options, $boolean);
+            return;
+        }
+
+        $method = $boolean === 'or' ? 'orWhereHas' : 'whereHas';
+        $query->{$method}($target['relation'], function (EloquentBuilder $related) use ($target, $term, $options) {
+            $this->fuzzySearch->applyFuzzyWhere($related->getQuery(), $target['column'], $term, $this->algorithm, $options, 'and');
+        });
     }
 
     /**
@@ -1678,10 +1690,10 @@ class SearchBuilder
         $scoreExpressions = [];
         $bindings = [];
 
-        foreach ($this->searchableColumns as $column) {
+        foreach ($this->directTargets() as $column => $directColumn) {
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
-            $col = $this->quoteColumn($column, $driver);
+            $col = $this->quoteColumn($directColumn, $driver);
 
             switch ($driver) {
                 case 'mysql':

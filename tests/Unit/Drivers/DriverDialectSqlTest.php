@@ -155,4 +155,29 @@ class DriverDialectSqlTest extends TestCase
 
         $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlsrv and sqlite must be asserted');
     }
+
+    public function test_relation_search_compiles_to_an_exists_subquery_on_every_driver(): void
+    {
+        require_once __DIR__ . '/../../RelationModels.php';
+
+        $checked = 0;
+        foreach (['mysql', 'mariadb', 'pgsql', 'sqlsrv', 'sqlite'] as $driver) {
+            if (!$this->fakeDriverAvailable($driver)) {
+                continue;
+            }
+
+            // fakeConnectionTable() registers the lazily-connected "fake_{driver}" connection;
+            // Post::on() then gives an Eloquent builder (needed for whereHas) on that connection.
+            $this->fakeConnectionTable($driver, 'posts');
+            $sql = (new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
+                \Ashiqfardus\LaravelFuzzySearch\Tests\Post::on('fake_' . $driver),
+                app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)
+            ))->search('tolkien')->searchIn(['title', 'author.name'])->using('like')->toSql();
+
+            $this->assertMatchesRegularExpression('/exists \(select \* from .*authors/i', $sql, "driver {$driver}");
+            $this->assertStringNotContainsString('author.name', $sql, "driver {$driver}");
+            $checked++;
+        }
+        $this->assertGreaterThanOrEqual(4, $checked);
+    }
 }
