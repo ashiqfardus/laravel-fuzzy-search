@@ -11,11 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `fallback()` now runs: when the primary algorithm (LIKE-pattern or BM25) returns no rows, the search is retried with each fallback in order. Applies to `get()`, `first()`, `paginate()`, `simplePaginate()` and `count()`; filters and prior `where()` constraints carry over, and one `FuzzySearchExecuted` event fires per attempt.
+- `$searchable['reindex_on' => [...]]` declares the real columns that trigger a reindex for accessor-backed searchable fields (e.g. `brand_id` behind a `brand_name` accessor). Exposed as `Searchable::getReindexTriggers()`.
+- `searchIndexQuery(Builder $query): Builder` model hook: `fuzzy-search:rebuild` (sync and `--async`) and `RebuildIndexJob` load rows through it, so relation-backed columns can be eager-loaded instead of queried per row.
+- `indexing.job` config (`tries` 3, `backoff` [10, 60, 300], `timeout` 120) bounds retries of `IndexModelJob` and `RebuildIndexJob`.
+- `bm25.candidate_chunk` config (default 200): chunk size used when checking the BM25 ranking against a constrained query.
+
 ### Changed
 
 - `maxPatterns()` and `performance.max_patterns` now actually cap the LIKE-pattern list for all pattern-based algorithms.
+- **BM25 honours your constraints.** `filter()`/`filterIn()`, `where()` constraints applied before the search, and global scopes are applied *before* the ranking is cut to the page, so selective filters no longer return short or empty pages, and `paginate()` totals count only matching rows. The Scout engine applies the builder's `where()`/`whereIn()`/`whereNotIn()`/`query()` the same way.
+- `_score` on paginated BM25 results is normalised against the corpus-wide maximum (as `get()` already did) instead of the page maximum, so page 2's first row is no longer always 1.0.
+- `WhitespaceTokenizer` keeps combining marks (`\p{M}`) inside tokens. Indexes built from Bengali, Hindi, Thai or decomposed-accent text need one `fuzzy-search:rebuild --fresh`.
+- The trigram fallback's whole-term pattern is the term itself; previously it was a concatenation of the trigrams and never matched.
+- A model whose searchable columns include an accessor is reindexed on every save unless it declares `reindex_on` (previously such models never reindexed after an update).
+- Synchronous indexing (`indexing.async = false`) reloads the model from the database before indexing, exactly like the queued job, so relations loaded before the change are not written to the index.
+
+### Removed
+
+- `indexing.table` config key — the v1 `search_index` table name, unread by v2 outside the deprecated `performReindex()` path (which keeps its own default).
 
 ### Fixed
+
+- **Multibyte terms:** `FuzzyDriver`, `LevenshteinDriver`, `TrigramDriver` and `SoundexDriver` sliced the search term by byte, producing invalid UTF-8 LIKE patterns for Bengali, Hindi, Thai and accented Latin (PostgreSQL rejected them; other databases never matched). `min_search_length` and `query.max_term_length` also counted bytes. All now work per character.
+- Accessor-backed searchable fields never reindexed on update (`wasChanged()` cannot see them), so a product moved to another brand stayed findable under the old brand.
+- `fallback()` stored its algorithms and never ran them.
 
 - `typoTolerance(0)` and `(1)` were ignored by the default fuzzy algorithm — every typo pattern was always generated. Pattern families are now gated by the tolerance level and `typo_tolerance.min_word_length`.
 - MariaDB connections (driver name "mariadb" on Laravel 11+) now use native SOUNDEX(), the Levenshtein UDF path, quoted identifiers and the MySQL flush branch — previously every MySQL-only branch silently fell back to generic SQL.
@@ -26,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQL Server:** indexing a document containing a purely numeric token (e.g. "10") failed with "Conversion failed when converting the nvarchar value"; term bindings are now always strings.
 
 ### Deprecated
+
+- `debounce()` — a server-side debounce cannot exist; it now raises `E_USER_DEPRECATED` and will be removed in v3.0.0. Debounce on the client (`wire:model.live.debounce.300ms`, a JS timer).
 
 ## [2.0.1] — 2026-09-16
 

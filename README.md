@@ -503,6 +503,8 @@ User::search('naive')
     ->get();
 ```
 
+Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm, and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 2.1.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
+
 ---
 
 ## Result Presentation
@@ -555,6 +557,11 @@ foreach ($users as $user) {
     'async' => true,
     'queue' => 'search-indexing',
     'chunk_size' => 500,
+    'job' => [
+        'tries'   => 3,             // attempts before the index job is marked failed
+        'backoff' => [10, 60, 300], // seconds before the 2nd, 3rd, ... attempt
+        'timeout' => 120,           // seconds a single job may run
+    ],
 ],
 
 // Re-index a single model (dispatches IndexModelJob to queue)
@@ -610,6 +617,15 @@ User::create(['name' => 'John'])
   → SearchableIndexingObserver dispatches IndexModelJob to queue
   → queue worker indexes the row (3 SQL queries)
   → 'john' is now in the index
+```
+
+**Constraints are honoured on the index path.** Filters, `where()` constraints applied before the search, and global scopes are checked against the ranking in chunks (`bm25.candidate_chunk`, default 200) until the page is full, and `paginate()` totals reflect them:
+
+```php
+Product::search('watch')
+    ->useInvertedIndex()
+    ->filter('published', true)
+    ->paginate(20);   // total = published matches only, pages never come back short
 ```
 
 ### Database Tables
@@ -744,6 +760,8 @@ php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=index
 php artisan fuzzy-search:flush "App\Models\User"
 ```
 
+Rebuilds load rows through the model's optional `searchIndexQuery()` hook (see *Searchable fields backed by accessors*), so relation-backed columns can be eager-loaded instead of queried once per row.
+
 ### BM25 Tuning
 
 ```php
@@ -781,6 +799,39 @@ Adding the `Searchable` trait automatically registers observers via `bootSearcha
 - **`SearchableObserver`** — listens to `saved` events and writes metaphone shadow columns if they exist. Safe when no shadow columns are configured — the observer silently exits.
 
 No configuration is required for either observer until you enable those features.
+
+#### Searchable fields backed by accessors
+
+A searchable column does not have to be a real column. An accessor that reads a relation works too, but the observer cannot see it change, so declare the real columns that should trigger a reindex:
+
+```php
+use Illuminate\Database\Eloquent\Builder;
+
+class Product extends Model
+{
+    use Searchable;
+
+    protected array $searchable = [
+        'columns'    => ['name' => 10, 'brand_name' => 5],
+        'reindex_on' => ['brand_id'],   // real columns that invalidate brand_name
+    ];
+
+    public function getBrandNameAttribute(): ?string
+    {
+        return $this->brand?->name;
+    }
+
+    // Optional: the query fuzzy-search:rebuild loads rows through — eager-load here
+    public function searchIndexQuery(Builder $query): Builder
+    {
+        return $query->with('brand');
+    }
+}
+```
+
+Without `reindex_on`, a model with an accessor-backed column is reindexed on **every** save (correct, but wasteful on hot paths such as stock updates). With it, only changes to the searchable columns or the listed triggers reindex. Indexing always reloads the row from the database first, so a relation that was already loaded on the instance before the change is never written to the index.
+
+Changing the *related* row (renaming the brand) does not reindex the products that reference it — handle that with an observer on the related model or a `fuzzy-search:rebuild`.
 
 ### Sync vs Async
 
@@ -987,28 +1038,33 @@ $users = User::search('john')
 
 ### Fallback Search Strategy
 
+When the primary algorithm returns no rows, the same search is re-run with each fallback in order until one returns results. Works with `get()`, `first()`, `paginate()`, `simplePaginate()` and `count()`; filters and `where()` constraints carry over to each attempt.
+
 ```php
-// Automatically falls back to simpler algorithm if primary fails
-User::search('john')
-    ->using('trigram')
-    ->fallback('fuzzy')      // First fallback
-    ->fallback('simple')     // Second fallback
+User::search('jonh')
+    ->using('simple')        // plain LIKE — no match for the typo
+    ->fallback('fuzzy')      // transposition pattern finds "John"
+    ->fallback('soundex')    // tried only if fuzzy also finds nothing
+    ->get();
+
+// BM25 has no typo tolerance yet — give it a safety net:
+Product::search('smartwach')
+    ->useInvertedIndex()
+    ->fallback('fuzzy')
     ->get();
 ```
 
-### Rate-Limit Friendliness
+One `FuzzySearchExecuted` event fires per attempt, so analytics can tell which algorithm answered.
+
+### Query Complexity Limits
 
 ```php
-// Built-in debouncing for real-time search
 User::search($query)
-    ->debounce(300)  // 300ms debounce
-    ->get();
-
-// Query complexity limits
-User::search($query)
-    ->maxPatterns(50)  // Limit pattern generation
+    ->maxPatterns(50)  // Cap the LIKE patterns generated per column (default: performance.max_patterns = 100)
     ->get();
 ```
+
+> `debounce()` is deprecated and does nothing: a request that has already reached the server cannot be debounced. Debounce on the client instead (`wire:model.live.debounce.300ms` in Livewire, or a timer in JavaScript). It will be removed in v3.0.0.
 
 ### SQL Injection Safety
 
