@@ -647,15 +647,16 @@ class SearchBuilder
             }
         }
 
-        // min_search_length / max_term_length guards
+        // min_search_length / max_term_length guards — measured in characters, not bytes,
+        // so multibyte terms are neither waved through nor cut mid-character.
         if ($this->extendedQuery === null && !empty($this->searchTerm)) {
             $minLength = (int) config('fuzzy-search.min_search_length', 1);
-            if (strlen($this->searchTerm) < $minLength) {
+            if (mb_strlen($this->searchTerm, 'UTF-8') < $minLength) {
                 return collect();
             }
             $maxLength = (int) config('fuzzy-search.query.max_term_length', 128);
-            if (strlen($this->searchTerm) > $maxLength) {
-                $this->searchTerm = substr($this->searchTerm, 0, $maxLength);
+            if (mb_strlen($this->searchTerm, 'UTF-8') > $maxLength) {
+                $this->searchTerm = mb_substr($this->searchTerm, 0, $maxLength, 'UTF-8');
             }
         }
 

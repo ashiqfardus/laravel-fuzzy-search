@@ -46,6 +46,38 @@ class FuzzyDriverPatternsTest extends TestCase
         $this->assertSame(['%jon%', 'jon%'], $bindings);
     }
 
+    public function test_multibyte_terms_are_sliced_by_character_not_by_byte(): void
+    {
+        // 'মোবাইল' is 6 code points (18 bytes). Byte-wise slicing produced 18 omission
+        // patterns full of truncated UTF-8 sequences instead of 6 clean ones.
+        $bindings = $this->bindingsFor(
+            ['max_distance' => 1],
+            'মোবাইল',
+            ['typo_tolerance' => ['max_distance' => 1, 'min_word_length' => 4]]
+        );
+
+        foreach ($bindings as $pattern) {
+            $this->assertTrue(mb_check_encoding($pattern, 'UTF-8'), 'Invalid UTF-8 pattern: ' . bin2hex($pattern));
+        }
+
+        // contains + prefix + 6 omissions + 6 substitutions + 5 transpositions
+        $this->assertCount(19, $bindings);
+        $this->assertSame('%মোবাইল%', $bindings[0]);
+        $this->assertContains('%%োবাইল%', $bindings);  // first *character* omitted (gap keeps its %)
+        $this->assertContains('%মোবাই%%', $bindings);  // last character omitted
+        $this->assertContains('%_োবাইল%', $bindings);  // first character substituted
+        $this->assertContains('%োমবাইল%', $bindings);  // first two characters transposed
+    }
+
+    public function test_multibyte_terms_are_lowercased_and_boundary_patterns_use_characters(): void
+    {
+        $bindings = $this->bindingsFor(['max_distance' => 2], 'ÉLÉGANT');
+
+        $this->assertSame('%élégant%', $bindings[0]);
+        $this->assertContains('é%nt', $bindings);  // first char + last two chars
+        $this->assertContains('él%t', $bindings);  // first two chars + last char
+    }
+
     public function test_max_patterns_caps_the_pattern_list(): void
     {
         $bindings = $this->bindingsFor(['max_distance' => 2], 'johnathan', ['max_patterns' => 10]);

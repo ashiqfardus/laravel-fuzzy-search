@@ -84,21 +84,22 @@ class SoundexDriver extends BaseDriver
      */
     protected function generatePhoneticPatterns(string $value): array
     {
-        $value    = strtolower(trim($value));
+        $value    = $this->normalizeTerm($value);
+        $len      = mb_strlen($value, 'UTF-8');
         $patterns = [];
 
         // Exact substring — always include
         $patterns[] = '%' . $this->escapeLike($value) . '%';
 
         // First 3+ chars prefix
-        if (strlen($value) >= 4) {
-            $patterns[] = $this->escapeLike(substr($value, 0, 3)) . '%';
+        if ($len >= 4) {
+            $patterns[] = $this->escapeLike(mb_substr($value, 0, 3, 'UTF-8')) . '%';
         }
 
         // Vowel-stripped consonant skeleton
-        if (strlen($value) > 2) {
-            $consonants = $value[0] . preg_replace('/[aeiou]/i', '', substr($value, 1));
-            if (strlen($consonants) >= 2 && $consonants !== $value) {
+        if ($len > 2) {
+            $consonants = mb_substr($value, 0, 1, 'UTF-8') . preg_replace('/[aeiou]/i', '', mb_substr($value, 1, null, 'UTF-8'));
+            if (mb_strlen($consonants, 'UTF-8') >= 2 && $consonants !== $value) {
                 $patterns[] = '%' . $this->escapeLike($consonants) . '%';
             }
         }

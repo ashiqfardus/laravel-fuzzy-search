@@ -51,7 +51,7 @@ class LevenshteinDriver extends BaseDriver
     {
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
         $col = $this->quoteColumn($column);
-        $minSimilarity = 1 - ($this->maxDistance / max(strlen($value), 1));
+        $minSimilarity = 1 - ($this->maxDistance / max(mb_strlen($value, 'UTF-8'), 1));
 
         return $query->$method("similarity({$col}, ?) > ?", [$value, max(0.3, $minSimilarity)]);
     }
@@ -89,9 +89,10 @@ class LevenshteinDriver extends BaseDriver
      */
     protected function generateLevenshteinPatterns(string $value): array
     {
-        $value    = strtolower(trim($value));
+        $value    = $this->normalizeTerm($value);
+        $chars    = $this->chars($value);
+        $len      = count($chars);
         $patterns = [];
-        $len      = strlen($value);
 
         // Distance 0: Exact match
         $patterns[] = '%' . $this->escapeLike($value) . '%';
@@ -99,17 +100,17 @@ class LevenshteinDriver extends BaseDriver
         if ($this->maxDistance >= 1) {
             // Distance 1: Single deletion
             for ($i = 0; $i < $len; $i++) {
-                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i) . substr($value, $i + 1)) . '%';
+                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
             }
 
             // Distance 1: Single insertion (wildcard)
             for ($i = 0; $i <= $len; $i++) {
-                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i)) . '%';
+                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i)) . '%';
             }
 
             // Distance 1: Single substitution (wildcard)
             for ($i = 0; $i < $len; $i++) {
-                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i + 1)) . '%';
+                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
             }
         }
 
@@ -117,8 +118,8 @@ class LevenshteinDriver extends BaseDriver
             // Distance 2: Double deletion
             for ($i = 0; $i < $len - 1; $i++) {
                 for ($j = $i + 1; $j < $len; $j++) {
-                    $str = substr($value, 0, $i) . substr($value, $i + 1, $j - $i - 1) . substr($value, $j + 1);
-                    if (strlen($str) >= 2) {
+                    $str = $this->slice($chars, 0, $i) . $this->slice($chars, $i + 1, $j - $i - 1) . $this->slice($chars, $j + 1);
+                    if (mb_strlen($str, 'UTF-8') >= 2) {
                         $patterns[] = '%' . $this->escapeLike($str) . '%';
                     }
                 }
@@ -126,18 +127,18 @@ class LevenshteinDriver extends BaseDriver
 
             // Distance 2: Transposition + deletion
             for ($i = 0; $i < $len - 1; $i++) {
-                $transposed = substr($value, 0, $i) . $value[$i + 1] . $value[$i] . substr($value, $i + 2);
+                $transposed = $this->slice($chars, 0, $i) . $chars[$i + 1] . $chars[$i] . $this->slice($chars, $i + 2);
                 $patterns[] = '%' . $this->escapeLike($transposed) . '%';
             }
         }
 
         if ($this->maxDistance >= 3 && $len > 3) {
             // Distance 3: Prefix matching with wildcards
-            $patterns[] = $this->escapeLike(substr($value, 0, 2)) . '%';
-            $patterns[] = '%' . $this->escapeLike(substr($value, -2));
+            $patterns[] = $this->escapeLike($this->slice($chars, 0, 2)) . '%';
+            $patterns[] = '%' . $this->escapeLike($this->slice($chars, -2));
 
             // Keep first and last char with wildcard in between
-            $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -1));
+            $patterns[] = $this->escapeLike($chars[0]) . '%' . $this->escapeLike($this->slice($chars, -1));
         }
 
         return $this->capPatterns($patterns);

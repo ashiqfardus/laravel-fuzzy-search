@@ -51,9 +51,10 @@ class FuzzyDriver extends BaseDriver
      */
     protected function generatePatterns(string $value): array
     {
-        $value    = strtolower(trim($value));
+        $value    = $this->normalizeTerm($value);
+        $chars    = $this->chars($value);
+        $len      = count($chars);
         $patterns = [];
-        $len      = strlen($value);
 
         // Distance 0 — always
         $patterns[] = '%' . $this->escapeLike($value) . '%';
@@ -63,7 +64,7 @@ class FuzzyDriver extends BaseDriver
         $words = explode(' ', $value);
         if (count($words) > 1) {
             foreach ($words as $word) {
-                if (strlen($word) > 2) {
+                if (mb_strlen($word, 'UTF-8') > 2) {
                     $patterns[] = '%' . $this->escapeLike($word) . '%';
                 }
             }
@@ -73,13 +74,13 @@ class FuzzyDriver extends BaseDriver
 
         if ($distance >= 1) {
             for ($i = 0; $i < $len; $i++) { // omissions
-                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '%' . $this->escapeLike(substr($value, $i + 1)) . '%';
+                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '%' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
             }
             for ($i = 0; $i < $len; $i++) { // substitutions
-                $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i)) . '_' . $this->escapeLike(substr($value, $i + 1)) . '%';
+                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
             }
             for ($i = 0; $i < $len - 1; $i++) { // transpositions
-                $transposed = substr($value, 0, $i) . $value[$i + 1] . $value[$i] . substr($value, $i + 2);
+                $transposed = $this->slice($chars, 0, $i) . $chars[$i + 1] . $chars[$i] . $this->slice($chars, $i + 2);
                 $patterns[] = '%' . $this->escapeLike($transposed) . '%';
             }
         }
@@ -87,14 +88,14 @@ class FuzzyDriver extends BaseDriver
         if ($distance >= 2) {
             if ($len > 4) { // double-character removal
                 for ($i = 0; $i < $len - 1; $i++) {
-                    if ($value[$i] === $value[$i + 1]) {
-                        $patterns[] = '%' . $this->escapeLike(substr($value, 0, $i) . substr($value, $i + 1)) . '%';
+                    if ($chars[$i] === $chars[$i + 1]) {
+                        $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
                     }
                 }
             }
             if ($len > 3) { // word boundaries
-                $patterns[] = $this->escapeLike($value[0]) . '%' . $this->escapeLike(substr($value, -2));
-                $patterns[] = $this->escapeLike(substr($value, 0, 2)) . '%' . $this->escapeLike(substr($value, -1));
+                $patterns[] = $this->escapeLike($chars[0]) . '%' . $this->escapeLike($this->slice($chars, -2));
+                $patterns[] = $this->escapeLike($this->slice($chars, 0, 2)) . '%' . $this->escapeLike($this->slice($chars, -1));
             }
         }
 

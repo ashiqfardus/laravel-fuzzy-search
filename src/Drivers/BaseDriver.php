@@ -54,6 +54,36 @@ abstract class BaseDriver
     }
 
     /**
+     * Lower-case and trim a search term without corrupting multibyte characters.
+     */
+    protected function normalizeTerm(string $value): string
+    {
+        return mb_strtolower(trim($value), 'UTF-8');
+    }
+
+    /**
+     * Split a term into an array of characters (not bytes). Pattern generators must slice
+     * this array rather than the string: substr()/strlen()/$value[$i] cut multibyte
+     * sequences (Bengali, Hindi, Thai, accented Latin) in half and emit invalid UTF-8.
+     *
+     * @return string[]
+     */
+    protected function chars(string $value): array
+    {
+        return $value === '' ? [] : mb_str_split($value, 1, 'UTF-8');
+    }
+
+    /**
+     * Join a slice of a character array back into a string (array_slice semantics).
+     *
+     * @param string[] $chars
+     */
+    protected function slice(array $chars, int $offset, ?int $length = null): string
+    {
+        return implode('', array_slice($chars, $offset, $length));
+    }
+
+    /**
      * Quote column name based on driver
      */
     protected function quoteColumn(string $column): string

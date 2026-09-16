@@ -47,7 +47,7 @@ class TrigramDriver extends BaseDriver
     protected function applyPatternBased(Builder $query, string $column, string $value, string $boolean): Builder
     {
         $trigrams = $this->generateTrigrams($value);
-        $patterns = $this->trigramsToPatterns($trigrams);
+        $patterns = $this->trigramsToPatterns($trigrams, $this->normalizeTerm($value));
         $method = $boolean === 'or' ? 'orWhere' : 'where';
         $col = $this->quoteColumn($column);
 
@@ -75,12 +75,12 @@ class TrigramDriver extends BaseDriver
      */
     protected function generateTrigrams(string $value): array
     {
-        $value = strtolower(trim($value));
-        $value = '  ' . $value . ' '; // Pad with spaces (PostgreSQL style)
+        $value    = '  ' . $this->normalizeTerm($value) . ' '; // Pad with spaces (PostgreSQL style)
+        $chars    = $this->chars($value);
         $trigrams = [];
 
-        for ($i = 0; $i < strlen($value) - 2; $i++) {
-            $trigrams[] = substr($value, $i, 3);
+        for ($i = 0; $i < count($chars) - 2; $i++) {
+            $trigrams[] = $this->slice($chars, $i, 3);
         }
 
         return array_unique($trigrams);
@@ -89,7 +89,7 @@ class TrigramDriver extends BaseDriver
     /**
      * Convert trigrams to LIKE patterns
      */
-    protected function trigramsToPatterns(array $trigrams): array
+    protected function trigramsToPatterns(array $trigrams, string $value = ''): array
     {
         $patterns = [];
 
@@ -100,10 +100,10 @@ class TrigramDriver extends BaseDriver
             }
         }
 
-        // Also add the original value
-        $combined = trim(str_replace('  ', '', implode('', array_map('trim', $trigrams))));
-        if (!empty($combined)) {
-            array_unshift($patterns, '%' . $this->escapeLike($combined) . '%');
+        // The whole term goes first so capPatterns() keeps it. (Previously this was rebuilt by
+        // concatenating the trigrams — "jjojohohnhn" for "john" — and never matched anything.)
+        if ($value !== '') {
+            array_unshift($patterns, '%' . $this->escapeLike($value) . '%');
         }
 
         return $this->capPatterns($patterns);
