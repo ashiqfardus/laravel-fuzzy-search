@@ -57,6 +57,7 @@ abstract class TestCase extends BaseTestCase
                 'k1'                  => 1.5,
                 'b'                   => 0.75,
                 'max_postings_per_term' => 50000,
+                'candidate_chunk'       => 200,
             ],
             'query' => [
                 'max_depth'  => 16,

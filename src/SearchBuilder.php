@@ -793,38 +793,27 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $terms   = $indexManager->processTerms($this->searchTerm);
-        $results = $scorer->search($terms, $modelClass, ($this->limit + $this->offset) * 2);
+        $terms  = $indexManager->processTerms($this->searchTerm);
+        $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
 
-        if ($results->isEmpty()) {
+        if (empty($ranked)) {
             return collect();
         }
 
-        $ids      = $results->pluck('model_id')->toArray();
-        $scoreMap = $results->pluck('score', 'model_id');
+        // Walk the ranking against the constrained query until the requested window is
+        // full. Constraints (filters, wheres, scopes) are applied before the cut, so a
+        // selective filter fills its page from lower-ranked matches instead of coming
+        // back short or empty.
+        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
+            $this->indexedBaseQuery($modelClass),
+            array_keys($ranked),
+            $this->offset + $this->limit
+        );
 
-        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
-            $keyName = $this->query->getModel()->getKeyName();
-            $models  = $this->query->whereIn($keyName, $ids)->get();
-        } else {
-            $models = $modelClass::whereIn((new $modelClass)->getKeyName(), $ids)->get();
-        }
-
-        // Compute bm25Max from the FULL unsorted result set so _score is corpus-relative,
-        // not page-relative. Slicing first would make page-2 row 1 always score 1.0.
-        $bm25Max = $scoreMap->max() ?? 0;
-
-        $sorted = $models
-            ->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
-            ->values()
-            ->slice($this->offset, $this->limit)
-            ->values()
-            ->map(function ($item) use ($scoreMap, $bm25Max) {
-                $raw = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
-                $item->_raw_score = $raw;
-                $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
-                return $item;
-            });
+        $sorted = $this->attachBm25Scores(
+            $models->slice($this->offset, $this->limit)->values(),
+            $ranked
+        );
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted);
@@ -838,11 +827,60 @@ class SearchBuilder
             searchTerm:     $this->searchTerm,
             columns:        $this->searchableColumns,
             algorithm:      'bm25',
-            candidateCount: count($ids),
+            candidateCount: count($ranked),
             latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
         ));
 
         return $sorted;
+    }
+
+    /**
+     * The Eloquent query BM25 candidates are checked against: the builder's own query
+     * (including wheres the caller applied before wrapping it) or the model's default
+     * query, plus any filter()/filterIn() constraints. Always a fresh clone.
+     */
+    protected function indexedBaseQuery(string $modelClass): EloquentBuilder
+    {
+        $base = $this->query instanceof EloquentBuilder
+            ? clone $this->query
+            : $modelClass::query();
+
+        foreach ($this->filters as $filter) {
+            if ($filter['operator'] === 'IN') {
+                $base->whereIn($filter['column'], $filter['value']);
+            } else {
+                $base->where($filter['column'], $filter['operator'], $filter['value']);
+            }
+        }
+
+        return $base;
+    }
+
+    /**
+     * True when the base query carries any WHERE (filters, caller wheres, global scopes),
+     * i.e. the BM25 ranking cannot be used as-is.
+     */
+    protected function hasIndexedConstraints(EloquentBuilder $base): bool
+    {
+        return !empty($base->toBase()->wheres);
+    }
+
+    /**
+     * Set _raw_score / _score on a page of models. Normalised against the corpus-wide
+     * maximum (the first entry of $ranked), so scores stay comparable across pages.
+     *
+     * @param array<int|string, float> $ranked model_id => score, best first
+     */
+    protected function attachBm25Scores(Collection $models, array $ranked): Collection
+    {
+        $bm25Max = (float) (reset($ranked) ?: 0);
+
+        return $models->map(function ($item) use ($ranked, $bm25Max) {
+            $raw = round((float) ($ranked[$item->getKey()] ?? 0), 6);
+            $item->_raw_score = $raw;
+            $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
+            return $item;
+        });
     }
 
     /**
@@ -1019,7 +1057,7 @@ class SearchBuilder
                 );
             }
             $this->useSearchIndex = false;
-            return $this->paginate($perPage, $pageName, $page);
+            return $this->paginateOnce($perPage, $pageName, $page);
         }
 
         $page   = $page ?: request()->input($pageName, 1);
@@ -1028,70 +1066,30 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $terms = $indexManager->processTerms($this->searchTerm);
+        $terms  = $indexManager->processTerms($this->searchTerm);
+        $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
+        $base   = $this->indexedBaseQuery($modelClass);
 
-        // Resolve term IDs so we can run a COUNT query with the same WHERE conditions.
-        $termIds = \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
-            ->whereIn('term', $terms)
-            ->pluck('id')
-            ->toArray();
-
-        // Compute the real total via a COUNT(DISTINCT) query — no artificial row cap.
-        if (empty($termIds)) {
-            $total = 0;
+        if (empty($ranked)) {
+            $total  = 0;
+            $sorted = collect();
         } else {
-            $total = (int) \Illuminate\Support\Facades\DB::table('fuzzy_index_postings as p')
-                ->join('fuzzy_index_documents as d', function ($join) use ($modelClass) {
-                    $join->on('p.model_id', '=', 'd.model_id')
-                         ->where('d.model_type', '=', $modelClass);
-                })
-                ->where('p.model_type', $modelClass)
-                ->whereIn('p.term_id', $termIds)
-                ->distinct()
-                ->count('p.model_id');
-        }
+            $ids = array_keys($ranked);
 
-        // Fetch only the rows needed for this page (naturally bounded by offset + perPage).
-        $allResults  = $scorer->search($terms, $modelClass, $offset + $perPage);
-        $pageResults = $allResults->slice($offset, $perPage)->values();
+            // Total: under constraints, count the ranked ids the constrained query accepts
+            // (chunked); otherwise a single COUNT(DISTINCT) over the postings is exact.
+            $total = $this->hasIndexedConstraints($base)
+                ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::count($base, $ids)
+                : $scorer->count($terms, $modelClass);
 
-        if ($pageResults->isEmpty()) {
-            event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-                searchTerm:     $this->searchTerm,
-                columns:        $this->searchableColumns,
-                algorithm:      'bm25',
-                candidateCount: $total,
-                latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
-            ));
-
-            return new \Illuminate\Pagination\LengthAwarePaginator(
-                [], $total, $perPage, $page,
-                ['path' => request()->url(), 'pageName' => $pageName]
+            // Page: walk the ranking against the constrained query until offset + perPage
+            // rows are collected, then slice.
+            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
+                $base, $ids, $offset + $perPage
             );
+
+            $sorted = $this->attachBm25Scores($models->slice($offset, $perPage)->values(), $ranked);
         }
-
-        $ids      = $pageResults->pluck('model_id')->toArray();
-        $scoreMap = $pageResults->pluck('score', 'model_id');
-
-        if ($this->query instanceof \Illuminate\Database\Eloquent\Builder) {
-            $keyName = $this->query->getModel()->getKeyName();
-            $models  = $this->query->whereIn($keyName, $ids)->get();
-        } else {
-            $keyName = (new $modelClass)->getKeyName();
-            $models  = $modelClass::whereIn($keyName, $ids)->get();
-        }
-
-        // Use the full-result-set max for corpus-relative normalization.
-        $bm25Max = $pageResults->max('score') ?? 0;
-
-        $sorted = $models->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
-            ->values()
-            ->map(function ($item) use ($scoreMap, $bm25Max) {
-                $raw = round((float) ($scoreMap[$item->getKey()] ?? 0), 6);
-                $item->_raw_score = $raw;
-                $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
-                return $item;
-            });
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted);

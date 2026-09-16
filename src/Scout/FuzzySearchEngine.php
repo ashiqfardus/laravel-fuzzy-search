@@ -4,7 +4,10 @@ namespace Ashiqfardus\LaravelFuzzySearch\Scout;
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Laravel\Scout\Builder;
 use Laravel\Scout\Engines\Engine;
@@ -42,7 +45,17 @@ class FuzzySearchEngine extends Engine
         $modelType = $builder->model::class;
         $limit     = $builder->limit ?? 15;
 
-        $results = $this->scorer->search($terms, $modelType, $limit);
+        $ranked = $this->scorer->rank($terms, $modelType);
+        $query  = $this->constrainedQuery($builder);
+
+        if ($query === null || empty($ranked)) {
+            $results = $this->hydrate(array_slice($ranked, 0, $limit, true));
+        } else {
+            // Constraints first, then the cut — otherwise a selective where() returns a
+            // short or empty page while matches exist further down the ranking.
+            $keys    = RankedCandidates::keys($query, array_keys($ranked), $limit);
+            $results = $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit)));
+        }
 
         return [
             'results' => $results,
@@ -56,14 +69,104 @@ class FuzzySearchEngine extends Engine
         $modelType = $builder->model::class;
         $offset    = ($page - 1) * $perPage;
 
-        // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
-        $total   = $this->scorer->count($terms, $modelType);
-        $results = $this->scorer->search($terms, $modelType, $offset + $perPage);
+        $ranked = $this->scorer->rank($terms, $modelType);
+        $query  = $this->constrainedQuery($builder);
+
+        if ($query === null || empty($ranked)) {
+            // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
+            $total   = $this->scorer->count($terms, $modelType);
+            $results = $this->hydrate(array_slice($ranked, $offset, $perPage, true));
+        } else {
+            $ids     = array_keys($ranked);
+            $total   = RankedCandidates::count($query, $ids);
+            $keys    = RankedCandidates::keys($query, $ids, $offset + $perPage);
+            $results = $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage)));
+        }
 
         return [
-            'results' => $results->slice($offset, $perPage)->values(),
+            'results' => $results,
             'total'   => $total,
         ];
+    }
+
+    /**
+     * The Eloquent query the ranking must be checked against, or null when the Scout
+     * builder carries no constraints (the ranking is then used as-is).
+     */
+    private function constrainedQuery(Builder $builder): ?EloquentBuilder
+    {
+        $whereIns    = $builder->whereIns ?? [];
+        $whereNotIns = $builder->whereNotIns ?? [];
+        $softDeleted = null;
+        $wheres      = [];
+
+        // Scout 10 stores wheres as [field => value]; Scout 11+ as a list of
+        // ['field', 'operator', 'value']. Soft-delete state travels as a pseudo where on
+        // __soft_deleted: 0 = live rows (default when scout.soft_delete is on),
+        // 1 = onlyTrashed(); withTrashed() removes it.
+        foreach ($builder->wheres as $key => $where) {
+            [$field, $operator, $value] = is_array($where) && array_key_exists('field', $where)
+                ? [$where['field'], $where['operator'] ?? '=', $where['value'] ?? null]
+                : [$key, '=', $where];
+
+            if ($field === '__soft_deleted') {
+                $softDeleted = (int) $value;
+                continue;
+            }
+
+            $wheres[] = [$field, $operator, $value];
+        }
+
+        if (empty($wheres) && empty($whereIns) && empty($whereNotIns)
+            && $builder->queryCallback === null && $softDeleted === null) {
+            return null;
+        }
+
+        $model = $builder->model;
+        $query = $model->newQuery();
+
+        if (in_array(SoftDeletes::class, class_uses_recursive($model), true)) {
+            if ($softDeleted === 1) {
+                $query->onlyTrashed();
+            } elseif ($softDeleted === null) {
+                $query->withTrashed();
+            }
+            // 0: the SoftDeletes global scope already excludes trashed rows.
+        }
+
+        foreach ($wheres as [$field, $operator, $value]) {
+            $query->where($field, $operator, $value);
+        }
+        foreach ($whereIns as $field => $values) {
+            $query->whereIn($field, $values);
+        }
+        foreach ($whereNotIns as $field => $values) {
+            $query->whereNotIn($field, $values);
+        }
+
+        if ($builder->queryCallback !== null) {
+            call_user_func($builder->queryCallback, $query);
+        }
+
+        return $query;
+    }
+
+    /** @param array<int|string, float> $ranked */
+    private function pick(array $ranked, array $keys): array
+    {
+        $picked = [];
+        foreach ($keys as $key) {
+            $picked[$key] = $ranked[$key];
+        }
+        return $picked;
+    }
+
+    /** @param array<int|string, float> $scores model_id => score, in rank order */
+    private function hydrate(array $scores): Collection
+    {
+        return collect($scores)
+            ->map(fn($score, $modelId) => (object) ['model_id' => $modelId, 'score' => round($score, 6)])
+            ->values();
     }
 
     public function mapIds($results): Collection

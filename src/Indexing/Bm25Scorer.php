@@ -43,7 +43,7 @@ class Bm25Scorer
     }
 
     /**
-     * Run BM25 over the inverted index and return scored model IDs.
+     * Run BM25 over the inverted index and return the top scored model IDs.
      *
      * @param  string[] $terms     Already tokenized + stemmed query terms
      * @param  string   $modelType Fully-qualified model class name
@@ -52,8 +52,22 @@ class Bm25Scorer
      */
     public function search(array $terms, string $modelType, int $limit = 15): Collection
     {
+        return collect(array_slice($this->rank($terms, $modelType), 0, $limit, true))
+            ->map(fn($score, $modelId) => (object) ['model_id' => $modelId, 'score' => $score]);
+    }
+
+    /**
+     * Run BM25 over the inverted index and return the complete ranking as
+     * [model_id => score], best first. Callers that must apply Eloquent constraints
+     * (filters, scopes) walk this list so the cut happens after constraining, not before.
+     *
+     * @param  string[] $terms
+     * @return array<int|string, float>
+     */
+    public function rank(array $terms, string $modelType): array
+    {
         if (empty($terms)) {
-            return collect();
+            return [];
         }
 
         $meta = DB::table('fuzzy_index_meta')
@@ -61,7 +75,7 @@ class Bm25Scorer
             ->first();
 
         if (!$meta || $meta->total_docs == 0) {
-            return collect();
+            return [];
         }
 
         $N     = (float) $meta->total_docs;
@@ -74,7 +88,7 @@ class Bm25Scorer
             ->keyBy('id');
 
         if ($termData->isEmpty()) {
-            return collect();
+            return [];
         }
 
         $termIds = $termData->keys()->toArray();
@@ -111,7 +125,6 @@ class Bm25Scorer
 
         arsort($scores);
 
-        return collect(array_slice($scores, 0, $limit, true))
-            ->map(fn($score, $modelId) => (object) ['model_id' => $modelId, 'score' => round($score, 6)]);
+        return array_map(fn($score) => round($score, 6), $scores);
     }
 }

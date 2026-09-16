@@ -204,6 +204,13 @@ return [
          * when a term matches tens of thousands of documents.
          */
         'max_postings_per_term' => 50000,
+        /*
+         * candidate_chunk: when a BM25 search runs under Eloquent constraints (filters,
+         * wheres, global scopes), ranked ids are checked against the database in chunks
+         * of this size until the requested page is full. Smaller = less over-fetching
+         * on selective filters; larger = fewer round trips.
+         */
+        'candidate_chunk' => 200,
     ],
 
     /*

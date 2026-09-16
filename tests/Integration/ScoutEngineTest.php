@@ -268,6 +268,73 @@ class ScoutEngineTest extends TestCase
         $this->assertGreaterThanOrEqual(1, $total,
             'getTotalCount() must return the total number of matching documents.');
     }
+
+    // -------------------------------------------------------------------------
+    // Constraints (where / whereIn / query()) must be applied before the ranking
+    // is cut to the requested page, not after — otherwise a selective constraint
+    // returns a short or empty page while matches exist further down the ranking.
+    // -------------------------------------------------------------------------
+
+    /** Three users ranked widget×3 > widget×2 > widget×1; returns [[id, model], ...] lowest rank first. */
+    private function seedRankedWidgets(FuzzySearchEngine $engine): array
+    {
+        $rows = [
+            $this->insertUser('widget'),
+            $this->insertUser('widget widget'),
+            $this->insertUser('widget widget widget'),
+        ];
+        $engine->update(collect(array_column($rows, 1)));
+
+        return $rows;
+    }
+
+    public function test_scout_search_applies_builder_wheres_before_cutting_the_ranking(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $engine = $this->makeEngine();
+        [[$lowestId, $lowest]] = $this->seedRankedWidgets($engine);
+
+        $builder = (new \Laravel\Scout\Builder($lowest, 'widget'))->where('email', $lowest->email)->take(1);
+
+        $this->assertSame([$lowestId], $engine->mapIds($engine->search($builder))->all());
+    }
+
+    public function test_scout_search_applies_where_in_and_query_callback_constraints(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $engine = $this->makeEngine();
+        [[$lowestId, $lowest], [$middleId]] = $this->seedRankedWidgets($engine);
+
+        $whereIn = (new \Laravel\Scout\Builder($lowest, 'widget'))->whereIn('id', [$lowestId, $middleId])->take(1);
+        $this->assertSame([$middleId], $engine->mapIds($engine->search($whereIn))->all());
+
+        $callback = (new \Laravel\Scout\Builder($lowest, 'widget'))
+            ->query(fn ($query) => $query->where('email', $lowest->email))
+            ->take(1);
+        $this->assertSame([$lowestId], $engine->mapIds($engine->search($callback))->all());
+    }
+
+    public function test_scout_paginate_total_and_page_reflect_builder_wheres(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $engine = $this->makeEngine();
+        [[$lowestId, $lowest]] = $this->seedRankedWidgets($engine);
+
+        $builder = (new \Laravel\Scout\Builder($lowest, 'widget'))->where('email', $lowest->email);
+        $page    = $engine->paginate($builder, 2, 1);
+
+        $this->assertSame(1, $engine->getTotalCount($page));
+        $this->assertSame([$lowestId], collect($page['results'])->pluck('model_id')->all());
+    }
 }
 
 // ---------------------------------------------------------------------------
