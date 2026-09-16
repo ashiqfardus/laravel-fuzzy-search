@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQL Server:** didYouMean() used LENGTH(), which SQL Server does not have; MySQL/MariaDB now use CHAR_LENGTH() so multibyte terms are measured in characters.
 - **PostgreSQL:** using('soundex') without fuzzystrmatch returned no rows for capitalised names (case-sensitive LIKE).
 - **SQL Server:** indexing a document containing a purely numeric token (e.g. "10") failed with "Conversion failed when converting the nvarchar value"; term bindings are now always strings.
+- stableRanking() ordered by a hard-coded "id" column and broke on UUID / custom-key models.
+- suggest() missed capitalised values on PostgreSQL (case-sensitive LIKE).
+- A searchable column holding the string "0" was skipped by the indexer.
 
 ### Deprecated
 

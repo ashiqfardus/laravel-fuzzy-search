@@ -4,16 +4,20 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Illuminate\Support\Facades\DB;
 
 /**
  * SearchBuilder Unit Tests
- * 
+ *
  * Unit tests for the SearchBuilder fluent API methods.
  */
 class SearchBuilderTest extends TestCase
 {
+    use FakesDriverConnections;
+
     protected SearchBuilder $builder;
 
     protected function setUp(): void
@@ -396,5 +400,85 @@ class SearchBuilderTest extends TestCase
             'After dedup, name and email should have equal CASE WHEN scoring blocks. ' .
             "Got name={$nameBlocks}, email={$emailBlocks} in: {$sql}");
         $this->assertGreaterThan(0, $nameBlocks, 'Should have at least one CASE WHEN for name');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Stable Ranking / suggest() SQL Tests (Task 7: B2, B3)
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_stable_ranking_orders_by_the_models_primary_key_name(): void
+    {
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+            protected $table = 'users';
+            protected $primaryKey = 'email'; // pretend key to prove we do not hard-code "id"
+            public $incrementing = false;
+            protected $keyType = 'string';
+            protected array $searchable = ['columns' => ['name' => 1]];
+        };
+
+        $sql = strtolower($model::search('john')->stableRanking()->toSql());
+
+        $this->assertMatchesRegularExpression('/order by .*[`"\[]?users[`"\]]?\.[`"\[]?email[`"\]]? asc/', $sql);
+        $this->assertDoesNotMatchRegularExpression('/[`"\[\s]id[`"\]\s] asc/', $sql);
+    }
+
+    public function test_stable_ranking_orders_by_bare_id_for_query_builder(): void
+    {
+        $sql = strtolower(
+            (new SearchBuilder(DB::table('users'), app(FuzzySearch::class)))
+                ->search('john')
+                ->searchIn(['name'])
+                ->stableRanking()
+                ->toSql()
+        );
+
+        $this->assertMatchesRegularExpression('/order by .*[`"\[]?id[`"\]]? asc/', $sql);
+        $this->assertDoesNotMatchRegularExpression('/users[`"\]]?\.[`"\[]?id/', $sql,
+            'Query-Builder stableRanking() must order by a bare "id", not a table-qualified column.');
+    }
+
+    public function test_suggest_candidate_query_uses_ilike_only_on_postgresql(): void
+    {
+        $expected = [
+            'mysql'   => false,
+            'mariadb' => false,
+            'pgsql'   => true,
+            'sqlsrv'  => false,
+            'sqlite'  => false,
+        ];
+
+        $checked = 0;
+
+        foreach ($expected as $driver => $expectsIlike) {
+            if (!$this->fakeDriverAvailable($driver)) {
+                continue;
+            }
+
+            $builder = new SearchBuilder(
+                $this->fakeConnectionTable($driver, 'users'),
+                app(FuzzySearch::class)
+            );
+            $builder->search('joh')->searchIn(['name']);
+
+            $sql = strtolower(\Closure::bind(
+                fn () => $this->suggestCandidateQuery('joh')->toSql(),
+                $builder,
+                SearchBuilder::class
+            )());
+
+            if ($expectsIlike) {
+                $this->assertStringContainsString('ilike', $sql, $driver);
+            } else {
+                $this->assertStringContainsString('like', $sql, $driver);
+                $this->assertStringNotContainsString('ilike', $sql, $driver);
+            }
+
+            $checked++;
+        }
+
+        $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlite and sqlsrv must be asserted');
     }
 }

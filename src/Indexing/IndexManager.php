@@ -423,7 +423,7 @@ class IndexManager
 
         foreach ($columns as $column) {
             $value = $model->getAttribute($column);
-            if (empty($value)) {
+            if ($value === null || $value === '') { // empty() would also skip the legitimate string "0"
                 continue;
             }
             foreach ($this->tokenizer->tokenize((string) $value) as $word) {

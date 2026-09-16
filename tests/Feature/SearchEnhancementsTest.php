@@ -65,6 +65,14 @@ class SearchEnhancementsTest extends TestCase
         $this->assertEmpty($suggestions);
     }
 
+    public function test_suggest_is_case_insensitive_on_every_driver(): void
+    {
+        $suggestions = User::search('joh')->searchIn(['name'])->suggest(5);
+
+        $this->assertNotEmpty($suggestions);
+        $this->assertContains('John', $suggestions);
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Did You Mean Tests

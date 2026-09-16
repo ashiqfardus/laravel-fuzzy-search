@@ -1232,7 +1232,10 @@ class SearchBuilder
 
         // Stable ranking
         if ($this->stableRankingEnabled) {
-            $this->query->orderBy('id', 'asc');
+            $keyColumn = $this->query instanceof EloquentBuilder
+                ? $this->query->getModel()->getQualifiedKeyName()
+                : 'id';
+            $this->query->orderBy($keyColumn, 'asc');
         }
     }
 
@@ -1823,17 +1826,7 @@ class SearchBuilder
         $rawTerm  = strtolower($this->searchTerm);
         $safeTerm = addcslashes($rawTerm, '%_');
 
-        // Clone query to avoid modifying the original
-        $suggestQuery = clone $this->query;
-
-        // Build a simple prefix query
-        $suggestQuery->where(function ($q) use ($safeTerm) {
-            foreach ($this->searchableColumns as $column) {
-                $q->orWhere($column, 'LIKE', $safeTerm . '%');
-            }
-        });
-
-        $results = $suggestQuery->limit($limit * 3)->get();
+        $results = $this->suggestCandidateQuery($safeTerm)->limit($limit * 3)->get();
 
         // Extract unique suggestions from results
         foreach ($results as $result) {
@@ -1870,6 +1863,32 @@ class SearchBuilder
         });
 
         return array_slice($sortedSuggestions, 0, $limit);
+    }
+
+    /**
+     * Build (but do not execute) the prefix-match query used by suggest(). Kept separate
+     * so its SQL can be pinned per driver via toSql() without needing a live connection for
+     * every driver — see tests/Unit/SearchBuilderTest.php.
+     */
+    protected function suggestCandidateQuery(string $safeTerm): Builder|EloquentBuilder
+    {
+        $driver = $this->query->getConnection()->getDriverName();
+
+        // Clone query to avoid modifying the original
+        $suggestQuery = clone $this->query;
+
+        $suggestQuery->where(function ($q) use ($safeTerm, $driver) {
+            foreach ($this->searchableColumns as $column) {
+                if ($driver === 'pgsql') {
+                    // PostgreSQL's LIKE is case-sensitive; ILIKE matches capitalised values too.
+                    $q->orWhereRaw($this->quoteColumn($column, $driver) . ' ILIKE ?', [$safeTerm . '%']);
+                } else {
+                    $q->orWhere($column, 'LIKE', $safeTerm . '%');
+                }
+            }
+        });
+
+        return $suggestQuery;
     }
 
     /**

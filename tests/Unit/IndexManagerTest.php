@@ -507,6 +507,40 @@ class IndexManagerTest extends TestCase
         $this->assertContains($model->getKey(), $results->pluck('model_id')->toArray());
     }
 
+    /**
+     * Regression (B6): empty($value) treats the legitimate string "0" as empty and
+     * skips indexing it. The default WhitespaceTokenizer also drops 1-char tokens, so
+     * we swap in a stub tokenizer that returns the text unchanged to observe the guard
+     * in isolation.
+     */
+    public function test_index_model_indexes_a_searchable_column_holding_the_string_zero(): void
+    {
+        $tokenizer = new class implements \Ashiqfardus\LaravelFuzzySearch\Indexing\TokenizerInterface {
+            public function tokenize(string $text): array
+            {
+                return [$text];
+            }
+        };
+
+        $manager = new \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager(
+            $tokenizer,
+            new \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer()
+        );
+
+        $model = $this->makeModel(['name' => '0']);
+
+        $manager->indexModel($model);
+
+        $this->assertDatabaseHas('fuzzy_index_terms', ['term' => '0']);
+
+        $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', '0')->value('id');
+        $this->assertNotNull($termId, 'term "0" should have been written to fuzzy_index_terms');
+
+        $posting = $this->app['db']->table('fuzzy_index_postings')
+            ->where('term_id', $termId)->where('model_id', $model->id)->first();
+        $this->assertNotNull($posting, 'a posting for term "0" should exist for the indexed model');
+    }
+
     /** Anonymous model bound to an existing users row (mirrors IndexingPipelineTest). */
     private function makeIndexableModel(int $id): \Illuminate\Database\Eloquent\Model
     {
