@@ -73,6 +73,19 @@ trait Searchable
     }
 
     /**
+     * Real columns whose change should reindex the model even though they are not
+     * searchable themselves — typically the foreign key behind a computed searchable
+     * field (`brand_id` for a `brand_name` accessor). Declared as
+     * `$searchable['reindex_on' => ['brand_id']]`. Read by SearchableIndexingObserver.
+     *
+     * @return string[]
+     */
+    public function getReindexTriggers(): array
+    {
+        return array_values((array) ($this->searchable['reindex_on'] ?? []));
+    }
+
+    /**
      * Start a new search query
      */
     public static function search(string $term): SearchBuilder
