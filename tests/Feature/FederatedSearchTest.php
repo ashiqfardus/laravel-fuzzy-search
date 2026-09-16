@@ -213,4 +213,44 @@ class FederatedSearchTest extends TestCase
             $this->assertLessThanOrEqual(1.0, $score);
         }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | searchIn() Honoured On Searchable Models (B4)
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_search_in_columns_are_applied_to_searchable_models(): void
+    {
+        // Product uses the Searchable trait with columns title/description. Restrict the
+        // federated search to "description" only: "smartphone" appears only in a description.
+        $results = FederatedSearch::across([Product::class])
+            ->search('smartphone')
+            ->searchIn(['description' => 5])
+            ->using('like')
+            ->get();
+
+        $this->assertGreaterThan(0, $results->count());
+
+        // Same term restricted to "title" must find nothing — proving searchIn() is honoured.
+        $none = FederatedSearch::across([Product::class])
+            ->search('smartphone')
+            ->searchIn(['title' => 5])
+            ->using('like')
+            ->get();
+
+        $this->assertCount(0, $none);
+    }
+
+    public function test_search_in_ignores_columns_a_model_does_not_have(): void
+    {
+        // users has no "title", products has no "name": no SQL error, both still searchable.
+        $results = FederatedSearch::across([User::class, Product::class])
+            ->search('john')
+            ->searchIn(['name' => 10, 'title' => 10])
+            ->using('like')
+            ->get();
+
+        $this->assertContains('User', $results->pluck('_model_type')->unique()->all());
+    }
 }

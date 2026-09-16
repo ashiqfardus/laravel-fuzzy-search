@@ -140,17 +140,12 @@ class FederatedSearch
             $hasSearchable = in_array(Traits\Searchable::class, $modelTraits);
 
             if ($hasSearchable) {
-                // Use the model's search method
-                $results = $modelClass::search($this->searchTerm)
-                    ->using($this->algorithm ?? 'fuzzy')
-                    ->typoTolerance($this->typoTolerance)
-                    ->withRelevance($this->withRelevance)
-                    ->limit($this->limit)
-                    ->get();
+                $results = $this->searchModel($modelClass);
             } else {
                 // Fall back to query builder approach
                 $instance = new $modelClass();
-                $columns = $this->getColumnsForModel($instance);
+                $columns = array_keys($this->weightedColumnsExistingOn($instance))
+                    ?: $this->getColumnsForModel($instance);
 
                 if (empty($columns)) {
                     continue;
@@ -181,6 +176,69 @@ class FederatedSearch
 
         // Apply limit to combined results
         return $allResults->take($this->limit);
+    }
+
+    /**
+     * Search a model using the Searchable trait, honouring searchIn() columns.
+     *
+     * searchIn() appends to a builder rather than replacing its defaults, so
+     * $modelClass::search()->searchIn() cannot narrow the columns the model's own
+     * `$searchable['columns']` already applied. When the caller restricted the columns
+     * (and at least one of them exists on this table), build from a bare query instead
+     * so only the requested columns are searched. Otherwise fall back to the model's
+     * own defaults exactly as before.
+     */
+    protected function searchModel(string $modelClass): Collection
+    {
+        $instance = new $modelClass();
+        $weighted = $this->weightedColumnsExistingOn($instance);
+
+        if (!empty($weighted)) {
+            return (new SearchBuilder($modelClass::query(), app(FuzzySearch::class)))
+                ->search($this->searchTerm)
+                ->searchIn($weighted)
+                ->using($this->algorithm ?? 'fuzzy')
+                ->typoTolerance($this->typoTolerance)
+                ->withRelevance($this->withRelevance)
+                ->limit($this->limit)
+                ->get();
+        }
+
+        return $modelClass::search($this->searchTerm)
+            ->using($this->algorithm ?? 'fuzzy')
+            ->typoTolerance($this->typoTolerance)
+            ->withRelevance($this->withRelevance)
+            ->limit($this->limit)
+            ->get();
+    }
+
+    /**
+     * searchIn() columns that actually exist on the model's table, with their weights.
+     * Callers pass one column list for many models (e.g. ['name', 'title']); a column a
+     * table lacks would otherwise raise a SQL error. Schema listing is cached per table.
+     */
+    protected function weightedColumnsExistingOn(Model $instance): array
+    {
+        if (empty($this->columnWeights)) {
+            return [];
+        }
+
+        static $listings = [];
+        $table = $instance->getTable();
+
+        if (!isset($listings[$table])) {
+            try {
+                $listings[$table] = $instance->getConnection()->getSchemaBuilder()->getColumnListing($table);
+            } catch (\Throwable) {
+                $listings[$table] = [];
+            }
+        }
+
+        return array_filter(
+            $this->columnWeights,
+            fn ($weight, $column) => in_array($column, $listings[$table], true),
+            ARRAY_FILTER_USE_BOTH
+        );
     }
 
     /**

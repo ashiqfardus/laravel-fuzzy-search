@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - stableRanking() ordered by a hard-coded "id" column and broke on UUID / custom-key models.
 - suggest() missed capitalised values on PostgreSQL (case-sensitive LIKE).
 - A searchable column holding the string "0" was skipped by the indexer.
+- FederatedSearch::searchIn() was ignored for models using the Searchable trait; columns a table does not have are now skipped instead of raising SQL errors.
 
 ### Deprecated
 
