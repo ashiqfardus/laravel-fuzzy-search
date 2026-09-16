@@ -161,6 +161,22 @@ $users = User::search('john doe')
     ->paginate(15);
 ```
 
+### Chaining Eloquent
+
+`search()` returns a builder that forwards ordinary Eloquent calls, local scopes and eager loads, so it reads like any other query:
+
+```php
+$users = User::search('john')
+    ->where('is_active', true)
+    ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
+    ->with('profile')
+    ->verified()                 // local scope
+    ->query(fn ($q) => $q->where('tenant_id', auth()->user()->tenant_id))
+    ->paginate(15);
+```
+
+Executing methods that would bypass the search conditions (`delete()`, `exists()`, `pluck()`, `update()`, …) are not forwarded and throw a `BadMethodCallException` — call `get()`, `first()`, `count()` or `paginate()` instead.
+
 ### Eloquent & Query Builder Support
 
 ```php

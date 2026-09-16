@@ -200,6 +200,15 @@ class CacheTest extends TestCase
         $this->assertGreaterThan(0, $results->count());
     }
 
+    public function test_forwarded_where_is_part_of_the_cache_key(): void
+    {
+        $a = User::search('jo')->using('like')->where('name', 'Jon Snow')->cache(60)->get();
+        $b = User::search('jo')->using('like')->where('name', 'John Doe')->cache(60)->get();
+
+        $this->assertSame(['Jon Snow'], $a->pluck('name')->all());
+        $this->assertSame(['John Doe'], $b->pluck('name')->all(), 'second query must not be served from the first query\'s cache entry');
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Cleanup

@@ -628,6 +628,70 @@ class SearchBuilder
     }
 
     /**
+     * Apply arbitrary constraints to the underlying Eloquent / Query builder.
+     *
+     *   User::search('john')->query(fn ($q) => $q->where('tenant_id', 1)->with('roles'))->get();
+     */
+    public function query(Closure $callback): self
+    {
+        $callback($this->query);
+        return $this;
+    }
+
+    /** Methods that execute or mutate and must never bypass the search WHERE clauses. */
+    private const TERMINAL_METHODS = [
+        'get', 'first', 'firstOrFail', 'find', 'findOrFail', 'count', 'exists', 'doesntExist',
+        'pluck', 'value', 'sum', 'avg', 'min', 'max', 'aggregate', 'paginate', 'simplePaginate',
+        'cursorPaginate', 'cursor', 'lazy', 'chunk', 'chunkById', 'each', 'delete', 'forceDelete',
+        'update', 'increment', 'decrement', 'insert', 'insertGetId', 'upsert', 'truncate', 'toBase',
+        'toRawSql', 'dd', 'dump', 'sole',
+    ];
+
+    /** Fluent builder methods safe to forward (prefix match: "where" covers whereIn, whereHas, ...). */
+    private const FORWARDABLE_PREFIXES = [
+        'where', 'orWhere', 'with', 'without', 'join', 'leftJoin', 'rightJoin', 'crossJoin',
+        'select', 'addSelect', 'distinct', 'groupBy', 'having', 'orHaving', 'latest', 'oldest',
+        'inRandomOrder', 'reorder', 'when', 'unless', 'tap', 'from', 'lock', 'sharedLock',
+        'lockForUpdate', 'useWritePdo', 'onlyTrashed', 'withTrashed', 'withoutTrashed',
+        'withCount', 'withSum', 'withMin', 'withMax', 'withAvg', 'withExists', 'has', 'orHas',
+        'doesntHave', 'orDoesntHave', 'whereBelongsTo', 'scopes',
+    ];
+
+    /**
+     * Forward fluent Eloquent / Query Builder calls and local scopes to the underlying query,
+     * so `User::search('x')->where(...)->with(...)->activeScope()->get()` reads like Eloquent.
+     */
+    public function __call(string $method, array $parameters): mixed
+    {
+        if (in_array($method, self::TERMINAL_METHODS, true)) {
+            throw new \BadMethodCallException(
+                "SearchBuilder::{$method}() is not forwarded because it would run without the search " .
+                "conditions. Add constraints with where()/query(), then call get(), first(), count() or paginate()."
+            );
+        }
+
+        if ($this->query instanceof EloquentBuilder && $this->query->hasNamedScope($method)) {
+            // callNamedScope() is protected on this Laravel version; scopes() is the public
+            // entry point and delegates to it, mutating the same underlying query builder.
+            $this->query->scopes([$method => $parameters]);
+            return $this;
+        }
+
+        foreach (self::FORWARDABLE_PREFIXES as $prefix) {
+            if (str_starts_with($method, $prefix)) {
+                $result = $this->query->{$method}(...$parameters);
+                // Fluent calls return the builder; keep the SearchBuilder chain going.
+                if ($result instanceof Builder || $result instanceof EloquentBuilder) {
+                    return $this;
+                }
+                return $result;
+            }
+        }
+
+        throw new \BadMethodCallException(sprintf('Call to undefined method %s::%s()', static::class, $method));
+    }
+
+    /**
      * Execute search and get results
      */
     public function get(): Collection
@@ -1755,6 +1819,8 @@ class SearchBuilder
             'stable_ranking'         => $this->stableRankingEnabled,
             'typo_tolerance'         => $this->typoTolerance,
             'fallback_algorithms'    => $this->fallbackAlgorithms,
+            'base_sql'               => $this->query->toSql(),
+            'base_bindings'          => $this->query->getBindings(),
         ];
 
         return 'fuzzy_search_' . md5(serialize($data));

@@ -27,6 +27,12 @@ class User extends Model
         ],
         'algorithm' => 'fuzzy',
     ];
+
+    /** Local scope used by BuilderPassthroughTest. */
+    public function scopeEmailDomain($query, string $domain)
+    {
+        return $query->where('email', 'like', '%@' . $domain);
+    }
 }
 
 /**
