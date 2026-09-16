@@ -192,11 +192,23 @@ class SearchBuilderTest extends TestCase
         $this->assertInstanceOf(SearchBuilder::class, $result);
     }
 
-    public function test_debounce_method_is_chainable(): void
+    public function test_debounce_is_deprecated_but_still_chainable(): void
     {
-        $result = $this->builder->debounce(300);
-        
+        $deprecations = [];
+        set_error_handler(function (int $errno, string $message) use (&$deprecations): bool {
+            $deprecations[] = $message;
+            return true;
+        }, E_USER_DEPRECATED);
+
+        try {
+            $result = $this->builder->debounce(300);
+        } finally {
+            restore_error_handler();
+        }
+
         $this->assertInstanceOf(SearchBuilder::class, $result);
+        $this->assertCount(1, $deprecations);
+        $this->assertStringContainsString('debounce() is deprecated', $deprecations[0]);
     }
 
     public function test_max_patterns_method_is_chainable(): void

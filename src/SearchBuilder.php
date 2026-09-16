@@ -432,7 +432,9 @@ class SearchBuilder
     }
 
     /**
-     * Add fallback algorithm
+     * Add a fallback algorithm. When the primary search (LIKE-pattern or BM25) returns no
+     * rows, the same search is re-run with each fallback in the order given, until one
+     * returns results. Applies to get(), first(), paginate(), simplePaginate() and count().
      */
     public function fallback(string $algorithm): self
     {
@@ -441,10 +443,18 @@ class SearchBuilder
     }
 
     /**
-     * Set debounce for real-time search
+     * @deprecated since 2.1.0 — a server-side "debounce" cannot exist: by the time this
+     *             builder runs, the request has already arrived. Debounce on the client
+     *             (`wire:model.live.debounce.300ms`, a JS timer). This method is a no-op
+     *             and will be removed in v3.0.0.
      */
     public function debounce(int $ms): self
     {
+        trigger_error(
+            'SearchBuilder::debounce() is deprecated since 2.1.0 and does nothing — debounce on the client instead. It will be removed in v3.0.0.',
+            E_USER_DEPRECATED
+        );
+
         $this->debounceMs = $ms;
         return $this;
     }
@@ -626,11 +636,63 @@ class SearchBuilder
         if ($this->cacheMinutes !== null) {
             $cacheKey = $this->cacheKey ?? $this->generateCacheKey();
             return Cache::remember($cacheKey, $this->cacheMinutes * 60, function () {
-                return $this->executeSearch();
+                return $this->executeWithFallback();
             });
         }
 
-        return $this->executeSearch();
+        return $this->executeWithFallback();
+    }
+
+    /**
+     * Run executeSearch(), retrying with each fallback() algorithm while the result is empty.
+     */
+    protected function executeWithFallback(): Collection
+    {
+        return $this->withFallback(
+            fn () => $this->executeSearch(),
+            fn (Collection $results) => $results->isEmpty()
+        );
+    }
+
+    /**
+     * Run $attempt once with the primary algorithm; while $isEmpty($result) is true and
+     * fallback algorithms remain, restore the untouched base query and run again with the
+     * next fallback. Fallbacks always use the LIKE-pattern path (useInvertedIndex() is
+     * switched off for them), so a BM25 miss can fall back to a typo-tolerant driver.
+     *
+     * @template T
+     * @param  Closure(): T        $attempt
+     * @param  Closure(T): bool    $isEmpty
+     * @return T
+     */
+    protected function withFallback(Closure $attempt, Closure $isEmpty): mixed
+    {
+        if (empty($this->fallbackAlgorithms)) {
+            return $attempt();
+        }
+
+        $baseQuery = clone $this->query;
+        $algorithm = $this->algorithm;
+        $useIndex  = $this->useSearchIndex;
+
+        $result = $attempt();
+
+        foreach ($this->fallbackAlgorithms as $fallback) {
+            if (!$isEmpty($result)) {
+                break;
+            }
+
+            $this->query          = clone $baseQuery;
+            $this->algorithm      = $fallback;
+            $this->useSearchIndex = false;
+
+            $result = $attempt();
+        }
+
+        $this->algorithm      = $algorithm;
+        $this->useSearchIndex = $useIndex;
+
+        return $result;
     }
 
     /**
@@ -896,6 +958,17 @@ class SearchBuilder
             );
         }
 
+        return $this->withFallback(
+            fn () => $this->paginateOnce($perPage, $pageName, $page),
+            fn (\Illuminate\Contracts\Pagination\LengthAwarePaginator $paginator) => $paginator->total() === 0
+        );
+    }
+
+    /**
+     * One pagination attempt with the current algorithm (see withFallback()).
+     */
+    protected function paginateOnce(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    {
         // BM25 fast path via inverted index
         if ($this->useSearchIndex && !empty($this->searchTerm)) {
             return $this->paginateIndexed($perPage, $pageName, $page);
@@ -1096,8 +1169,13 @@ class SearchBuilder
      */
     public function count(): int
     {
-        $this->buildQuery();
-        return $this->query->count();
+        return $this->withFallback(
+            function (): int {
+                $this->buildQuery();
+                return $this->query->count();
+            },
+            fn (int $count) => $count === 0
+        );
     }
 
     /**
@@ -1675,6 +1753,7 @@ class SearchBuilder
             'sort_by'                => $this->sortBy,
             'stable_ranking'         => $this->stableRankingEnabled,
             'typo_tolerance'         => $this->typoTolerance,
+            'fallback_algorithms'    => $this->fallbackAlgorithms,
         ];
 
         return 'fuzzy_search_' . md5(serialize($data));
