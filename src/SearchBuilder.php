@@ -24,6 +24,13 @@ class SearchBuilder
     protected string $searchTerm = '';
     protected array $searchableColumns = [];
     protected array $columnWeights = [];
+
+    /**
+     * Cache of resolveColumnTargets(); emptied whenever searchIn() changes the column list.
+     *
+     * @var array<string, array{relation: ?string, column: string}>
+     */
+    protected array $columnTargets = [];
     protected ?string $algorithm = null;
     protected array $options = [];
     protected bool $withRelevance = true;
@@ -133,7 +140,114 @@ class SearchBuilder
                 $this->columnWeights[$value] = 1;
             }
         }
+        $this->columnTargets = [];
         return $this;
+    }
+
+    /**
+     * Resolve every searchIn() column into either a direct column or a relation path.
+     *
+     * Decision D2: `a.b[.c]` is a relation path only when `a` (and each further segment)
+     * is a relation method on the model; otherwise a two-segment name is the v2.0
+     * table-qualified column `table.column` and is passed through untouched.
+     *
+     * @return array<string, array{relation: ?string, column: string}> keyed by the searchIn() column
+     */
+    protected function resolveColumnTargets(): array
+    {
+        if (!empty($this->columnTargets)) {
+            return $this->columnTargets;
+        }
+
+        $model   = $this->query instanceof EloquentBuilder ? $this->query->getModel() : null;
+        $targets = [];
+
+        foreach ($this->searchableColumns as $column) {
+            $targets[$column] = $this->resolveColumnTarget($column, $model);
+        }
+
+        return $this->columnTargets = $targets;
+    }
+
+    /** @return array{relation: ?string, column: string} */
+    protected function resolveColumnTarget(string $column, ?Model $model): array
+    {
+        if (!str_contains($column, '.')) {
+            return ['relation' => null, 'column' => $column];
+        }
+
+        $segments = explode('.', $column);
+        $leaf     = array_pop($segments);
+
+        foreach ([...$segments, $leaf] as $segment) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $segment)) {
+                throw new \InvalidArgumentException("Invalid column name [{$column}]: each dotted segment must be an identifier.");
+            }
+        }
+
+        if ($model !== null && $this->isRelationPath($model, $segments)) {
+            return ['relation' => implode('.', $segments), 'column' => $leaf];
+        }
+
+        if (count($segments) === 1) {
+            return ['relation' => null, 'column' => $column]; // table.column (v2.0 behaviour)
+        }
+
+        throw new \InvalidArgumentException(
+            $model === null
+                ? "Relation search [{$column}] needs an Eloquent model: use Model::search() instead of a Query Builder."
+                : "[{$column}]: [{$segments[0]}] is not a relation on " . get_class($model) . '.'
+        );
+    }
+
+    /** True when every segment is a relation method, following the chain model by model. */
+    protected function isRelationPath(Model $model, array $segments): bool
+    {
+        $current = $model;
+
+        foreach ($segments as $segment) {
+            if (!method_exists($current, $segment)) {
+                return false;
+            }
+
+            try {
+                $relation = $current->{$segment}();
+            } catch (\Throwable) {
+                return false;
+            }
+
+            if (!$relation instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
+                return false;
+            }
+
+            $current = $relation->getRelated();
+        }
+
+        return true;
+    }
+
+    /** @return array<string, string> searchIn() column => column for direct (non-relation) targets */
+    protected function directTargets(): array
+    {
+        $direct = [];
+        foreach ($this->resolveColumnTargets() as $column => $target) {
+            if ($target['relation'] === null) {
+                $direct[$column] = $target['column'];
+            }
+        }
+        return $direct;
+    }
+
+    /** @return array<string, array{relation: string, column: string}> searchIn() column => target for relation targets */
+    protected function relationTargets(): array
+    {
+        return array_filter($this->resolveColumnTargets(), fn ($t) => $t['relation'] !== null);
+    }
+
+    /** @return string[] unique relation paths, for eager loading */
+    protected function relationPaths(): array
+    {
+        return array_values(array_unique(array_column($this->relationTargets(), 'relation')));
     }
 
     /**
@@ -379,6 +493,7 @@ class SearchBuilder
             'algorithm' => $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
             'searchable_columns' => $this->searchableColumns,
             'column_weights' => $this->columnWeights,
+            'column_targets' => $this->resolveColumnTargets(),
             'typo_tolerance' => $this->typoTolerance,
             'tokenize' => $this->tokenizeSearch,
             'token_match_mode' => $this->tokenMatchMode,
