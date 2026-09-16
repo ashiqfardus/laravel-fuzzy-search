@@ -102,6 +102,7 @@ abstract class TestCase extends BaseTestCase
             $table->string('name');
             $table->string('email');
             $table->timestamps();
+            $table->timestamp('deleted_at')->nullable();
         });
 
         // Create products table for additional testing

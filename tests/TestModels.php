@@ -36,6 +36,24 @@ class User extends Model
 }
 
 /**
+ * User model with a SoftDeletes global scope, used to pin that paginate()/count() totals
+ * honour Eloquent global scopes (Ruling P30 / C1, I4) — same "users" table/data as User,
+ * just with the SoftDeletes trait added.
+ */
+class SoftDeletedUser extends Model
+{
+    use Searchable, \Illuminate\Database\Eloquent\SoftDeletes;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = [
+        'columns' => ['name' => 10],
+        'algorithm' => 'fuzzy',
+    ];
+}
+
+/**
  * Test Product Model with Fuzzy and Searchable traits
  */
 class Product extends Model

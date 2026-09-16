@@ -250,11 +250,34 @@ class FederatedSearch
             $weighted = $this->weightedColumnsExistingOn($instance);
 
             if (!empty($weighted)) {
-                return (new SearchBuilder($modelClass::query(), app(FuzzySearch::class)))
+                $builder = (new SearchBuilder($modelClass::query(), app(FuzzySearch::class)))
                     ->search($this->searchTerm)
                     ->searchIn($weighted)
                     ->using($this->algorithm ?? 'fuzzy')
                     ->typoTolerance($this->typoTolerance);
+
+                // A bare SearchBuilder skips the extras Searchable::search() applies from
+                // $searchable — apply them here too, so narrowing with searchIn() doesn't
+                // silently drop the model's configured stop words/synonyms/accent handling.
+                $extras = $instance->getSearchableExtras();
+
+                if (!empty($extras['stop_words'])) {
+                    $builder->ignoreStopWords($extras['stop_words']);
+                }
+
+                if (!empty($extras['synonyms'])) {
+                    $builder->withSynonyms($extras['synonyms']);
+                }
+
+                if (!empty($extras['accent_insensitive'])) {
+                    $builder->accentInsensitive();
+                }
+
+                if (!empty($extras['options'])) {
+                    $builder->options($extras['options']);
+                }
+
+                return $builder;
             }
 
             return $modelClass::search($this->searchTerm)

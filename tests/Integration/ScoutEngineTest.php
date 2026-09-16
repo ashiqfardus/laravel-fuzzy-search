@@ -302,6 +302,27 @@ class ScoutEngineTest extends TestCase
         $this->assertSame([$lowestId], $engine->mapIds($engine->search($builder))->all());
     }
 
+    /**
+     * Scout 10 stored $builder->wheres as a flat [field => value] map; Scout 11+ stores a
+     * list of ['field', 'operator', 'value']. composer.json allows laravel/scout ^10|^11|^12,
+     * so constrainedQuery() must still handle the old shape even though every installed CI
+     * job resolves Scout 11 and never exercises this branch otherwise.
+     */
+    public function test_scout_search_applies_scout10_shaped_wheres_before_cutting_the_ranking(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $engine = $this->makeEngine();
+        [[$lowestId, $lowest]] = $this->seedRankedWidgets($engine);
+
+        $builder = (new \Laravel\Scout\Builder($lowest, 'widget'))->take(1);
+        $builder->wheres = ['email' => $lowest->email];
+
+        $this->assertSame([$lowestId], $engine->mapIds($engine->search($builder))->all());
+    }
+
     public function test_scout_search_applies_where_in_and_query_callback_constraints(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

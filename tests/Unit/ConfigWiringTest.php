@@ -34,7 +34,7 @@ class ConfigWiringTest extends TestCase
         $bindings = User::search('john')->searchIn(['name' => 1])->getBindings();
 
         $this->assertContains(123, $bindings);
-        $this->assertContains(45.0, $bindings); // prefix × prefixBoost(1.0) is a float
+        $this->assertContains(45, $bindings); // prefix × prefixBoost(1.0), rounded to an int (PostgreSQL rejects a fractional bind here)
         $this->assertContains(6, $bindings);
     }
 

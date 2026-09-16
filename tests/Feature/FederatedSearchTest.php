@@ -419,6 +419,27 @@ class FederatedSearchTest extends TestCase
 
         $this->assertSame('User', $first->_model_type);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | searchIn() Keeps the Model's $searchable Extras (I3)
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_search_in_on_a_searchable_model_keeps_its_configured_synonyms(): void
+    {
+        // SynonymUserFixture configures 'jon' => ['john'] as a synonym. Restricting the
+        // federated search to searchIn(['name' => 1]) takes the bare-SearchBuilder path in
+        // queryFor(); before the fix that path dropped the model's synonyms entirely, so
+        // searching 'jon' would never expand to 'john' and "John Doe" would be missing.
+        $results = FederatedSearch::across([SynonymUserFixture::class])
+            ->search('jon')
+            ->searchIn(['name' => 1])
+            ->using('like')
+            ->get();
+
+        $this->assertContains('John Doe', $results->pluck('name')->all());
+    }
 }
 
 /**
@@ -429,4 +450,22 @@ class PlainProduct extends Model
 {
     protected $table = 'products';
     protected $guarded = [];
+}
+
+/**
+ * Named Searchable model over "users" configuring a synonym, used to prove
+ * FederatedSearch::queryFor()'s searchIn()-narrowed path still applies the model's own
+ * $searchable extras (stop words, synonyms, accent handling) instead of dropping them (I3).
+ */
+class SynonymUserFixture extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = [
+        'columns'  => ['name' => 1],
+        'synonyms' => ['jon' => ['john']],
+    ];
 }

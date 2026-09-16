@@ -341,13 +341,18 @@ class SearchBuilderTest extends TestCase
         $this->assertSame(1, $prop->getValue($this->builder));
     }
 
-    public function test_max_patterns_has_minimum_of_ten(): void
+    public function test_max_patterns_floor_matches_cap_patterns_floor(): void
     {
+        // maxPatterns() used to floor at 10 while BaseDriver::capPatterns() floors at 1 —
+        // an undocumented, inconsistent minimum (M8). Both now floor at 1.
         $this->builder->maxPatterns(5);
 
         $prop = new \ReflectionProperty($this->builder, 'maxPatterns');
         $prop->setAccessible(true);
-        $this->assertSame(10, $prop->getValue($this->builder));
+        $this->assertSame(5, $prop->getValue($this->builder));
+
+        $this->builder->maxPatterns(0);
+        $this->assertSame(1, $prop->getValue($this->builder));
     }
 
     /*

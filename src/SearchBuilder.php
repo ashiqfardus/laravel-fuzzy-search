@@ -484,7 +484,7 @@ class SearchBuilder
      */
     public function maxPatterns(int $max): self
     {
-        $this->maxPatterns = max(10, $max);
+        $this->maxPatterns = max(1, $max);
         $this->options['max_patterns'] = $this->maxPatterns; // read by BaseDriver::capPatterns()
         return $this;
     }
@@ -1119,7 +1119,11 @@ class SearchBuilder
             $term      = $this->searchTerm;
         }
 
-        $base  = $this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query;
+        // toBase() applies global scopes (SoftDeletes, tenant scopes, ...); getQuery() does
+        // not. The page items come from $this->query->clone()->get(), which does apply
+        // scopes, so using getQuery() here overcounted total()/lastPage() for any scoped
+        // model (mirrors the fix already applied in count()).
+        $base  = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
         $total = $base->getCountForPagination();
 
         $maxCandidates = (int) config('fuzzy-search.max_candidates', 1000);
@@ -1182,24 +1186,12 @@ class SearchBuilder
         $page   = $page ?: request()->input($pageName, 1);
         $offset = ($page - 1) * $perPage;
 
-        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
-        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
-
-        $terms  = $indexManager->processTerms($this->searchTerm);
-        $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
-        $base   = $this->indexedBaseQuery($modelClass);
+        ['total' => $total, 'ranked' => $ranked, 'base' => $base] = $this->indexedRankingAndTotal($modelClass);
 
         if (empty($ranked)) {
-            $total  = 0;
             $sorted = collect();
         } else {
             $ids = array_keys($ranked);
-
-            // Total: under constraints, count the ranked ids the constrained query accepts
-            // (chunked); otherwise a single COUNT(DISTINCT) over the postings is exact.
-            $total = $this->hasIndexedConstraints($base)
-                ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::count($base, $ids)
-                : $scorer->count($terms, $modelClass);
 
             // Page: walk the ranking against the constrained query until offset + perPage
             // rows are collected, then slice.
@@ -1230,6 +1222,36 @@ class SearchBuilder
             $sorted, $total, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
+    }
+
+    /**
+     * Rank the current search term against $modelClass's BM25 index and total the matches
+     * against the constrained base query. Shared by paginateIndexed() (which also builds the
+     * page from the returned ranking/base) and count() (which only needs the total), so the
+     * two can never disagree.
+     *
+     * @return array{total: int, ranked: array<int|string, float>, base: EloquentBuilder}
+     */
+    protected function indexedRankingAndTotal(string $modelClass): array
+    {
+        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
+
+        $terms  = $indexManager->processTerms($this->searchTerm);
+        $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
+        $base   = $this->indexedBaseQuery($modelClass);
+
+        if (empty($ranked)) {
+            return ['total' => 0, 'ranked' => $ranked, 'base' => $base];
+        }
+
+        // Total: under constraints, count the ranked ids the constrained query accepts
+        // (chunked); otherwise a single COUNT(DISTINCT) over the postings is exact.
+        $total = $this->hasIndexedConstraints($base)
+            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::count($base, array_keys($ranked))
+            : $scorer->count($terms, $modelClass);
+
+        return ['total' => $total, 'ranked' => $ranked, 'base' => $base];
     }
 
     /**
@@ -1288,7 +1310,29 @@ class SearchBuilder
     {
         return $this->withFallback(
             function (): int {
-                $this->buildQuery();
+                // Mirror paginateOnce()/paginateRanked() so count() never disagrees with
+                // paginate()->total() on the same builder.
+                if ($this->useSearchIndex && !empty($this->searchTerm)) {
+                    $modelClass = $this->resolveIndexModelClass();
+
+                    if ($modelClass !== null) {
+                        return $this->indexedRankingAndTotal($modelClass)['total'];
+                    }
+
+                    if (config('app.debug', false)) {
+                        \Illuminate\Support\Facades\Log::notice(
+                            'fuzzy-search: count() with useInvertedIndex() skipped — could not resolve model class. Falling back to LIKE.'
+                        );
+                    }
+                    $this->useSearchIndex = false;
+                }
+
+                if ($this->extendedQuery !== null) {
+                    $this->compileExtendedQuery();
+                } else {
+                    $this->buildQuery();
+                }
+
                 // Query\Builder::count() keeps columns/orders/limit/offset, and the relevance
                 // ORDER BY buildQuery() adds makes PostgreSQL reject the aggregate ("column
                 // must appear in the GROUP BY clause..."). getCountForPagination() drops them.
@@ -1531,9 +1575,9 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
-                        $term, $weight * $this->scoring['exact_match'],
-                        $safeTerm . '%', $weight * $this->scoring['prefix_match'] * $prefixBoost,
-                        '%' . $safeTerm . '%', $weight * $this->scoring['contains'],
+                        $term, (int) round($weight * $this->scoring['exact_match']),
+                        $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
+                        '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
                     ]);
                     break;
 
@@ -1542,9 +1586,9 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
-                        $term, $weight * $this->scoring['exact_match'],
-                        $safeTerm . '%', $weight * $this->scoring['prefix_match'] * $prefixBoost,
-                        '%' . $safeTerm . '%', $weight * $this->scoring['contains'],
+                        $term, (int) round($weight * $this->scoring['exact_match']),
+                        $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
+                        '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
                     ]);
                     break;
 
@@ -1553,9 +1597,9 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
-                        $term, $weight * $this->scoring['exact_match'],
-                        $safeTerm . '%', $weight * $this->scoring['prefix_match'] * $prefixBoost,
-                        '%' . $safeTerm . '%', $weight * $this->scoring['contains'],
+                        $term, (int) round($weight * $this->scoring['exact_match']),
+                        $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
+                        '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
                     ]);
             }
         }
