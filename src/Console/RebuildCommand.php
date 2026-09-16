@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RebuildIndexJob;
+use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Illuminate\Bus\Batch;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Bus;
@@ -34,7 +35,7 @@ class RebuildCommand extends Command
 
         $chunkSize = (int) config('fuzzy-search.indexing.chunk_size', 500);
         $queue     = $this->option('queue') ?? config('fuzzy-search.indexing.queue', 'default');
-        $total     = $modelClass::count();
+        $total     = IndexQuery::for($modelClass)->count();
 
         if ($this->option('async')) {
             return $this->rebuildAsync($modelClass, $chunkSize, $queue, $total);
@@ -49,7 +50,7 @@ class RebuildCommand extends Command
         $bar = $this->output->createProgressBar($total);
 
         $keyName = (new $modelClass)->getKeyName();
-        $modelClass::orderBy($keyName)->chunk($chunkSize, function ($models) use ($indexManager, $bar) {
+        IndexQuery::for($modelClass)->orderBy($keyName)->chunk($chunkSize, function ($models) use ($indexManager, $bar) {
             $indexManager->indexBatch($models);
             $bar->advance($models->count());
         });
@@ -66,7 +67,7 @@ class RebuildCommand extends Command
 
         $jobs    = [];
         $keyName = (new $modelClass)->getKeyName();
-        $modelClass::orderBy($keyName)->pluck($keyName)->chunk($chunkSize)->each(function ($ids) use ($modelClass, &$jobs) {
+        IndexQuery::for($modelClass)->orderBy($keyName)->pluck($keyName)->chunk($chunkSize)->each(function ($ids) use ($modelClass, &$jobs) {
             $jobs[] = new RebuildIndexJob($modelClass, $ids->toArray());
         });
 

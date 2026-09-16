@@ -28,7 +28,9 @@ class RebuildIndexJob implements ShouldQueue
     public function handle(IndexManager $indexManager): void
     {
         $keyName = (new $this->modelClass)->getKeyName();
-        $models  = $this->modelClass::whereIn($keyName, $this->modelIds)->get();
+        $models  = \Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery::for($this->modelClass)
+            ->whereIn($keyName, $this->modelIds)
+            ->get();
         $indexManager->indexBatch($models);
     }
 }

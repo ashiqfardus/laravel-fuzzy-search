@@ -73,6 +73,56 @@ class RebuildIndexJobTest extends TestCase
      * A RebuildIndexJob with an empty ID list must silently do nothing —
      * no exception and no postings inserted.
      */
+    /**
+     * A model may customise the query the rebuild uses to load its rows (typically to
+     * eager-load the relations its searchable accessors read, so a 100k-row rebuild does
+     * not run 100k relation queries). The job must pass its query through that hook.
+     */
+    public function test_rebuild_job_applies_the_models_search_index_query_hook(): void
+    {
+        $hooked = RebuildHookTestUser::create(['name' => 'hooked alpha', 'email' => 'h1@test.com']);
+        $plain  = RebuildHookTestUser::create(['name' => 'plain beta',   'email' => 'h2@test.com']);
+        RebuildHookTestUser::$hookCalls = 0;
+
+        (new RebuildIndexJob(RebuildHookTestUser::class, [$hooked->id, $plain->id]))
+            ->handle($this->makeManager());
+
+        $this->assertSame(1, RebuildHookTestUser::$hookCalls, 'searchIndexQuery() must be called once per job.');
+
+        // The hook constrained the query to names starting with "hooked", proving it was applied.
+        $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id]);
+        $this->assertDatabaseMissing('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id]);
+    }
+
+    public function test_rebuild_command_applies_the_hook_on_the_sync_path(): void
+    {
+        $hooked = RebuildHookTestUser::create(['name' => 'hooked gamma', 'email' => 'h3@test.com']);
+        $plain  = RebuildHookTestUser::create(['name' => 'plain delta',  'email' => 'h4@test.com']);
+        RebuildHookTestUser::$hookCalls = 0;
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => RebuildHookTestUser::class])->assertExitCode(0);
+
+        $this->assertGreaterThanOrEqual(1, RebuildHookTestUser::$hookCalls);
+        $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id]);
+        $this->assertDatabaseMissing('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id]);
+    }
+
+    public function test_rebuild_command_applies_the_hook_when_dispatching_async_batches(): void
+    {
+        \Illuminate\Support\Facades\Bus::fake();
+
+        $hooked = RebuildHookTestUser::create(['name' => 'hooked epsilon', 'email' => 'h5@test.com']);
+        RebuildHookTestUser::create(['name' => 'plain zeta', 'email' => 'h6@test.com']);
+        RebuildHookTestUser::$hookCalls = 0;
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => RebuildHookTestUser::class, '--async' => true])->assertExitCode(0);
+
+        \Illuminate\Support\Facades\Bus::assertBatched(function (\Illuminate\Bus\PendingBatch $batch) use ($hooked) {
+            $ids = collect($batch->jobs)->flatMap(fn (RebuildIndexJob $job) => $job->modelIds)->all();
+            return $ids === [$hooked->id]; // only the hooked row was chunked into jobs
+        });
+    }
+
     public function test_rebuild_job_with_empty_ids_is_noop(): void
     {
         $countBefore = $this->app['db']->table('fuzzy_index_postings')->count();
@@ -105,4 +155,18 @@ class RebuildTestUser extends Model
     protected array $searchable = [
         'columns' => ['name' => 1],
     ];
+}
+
+class RebuildHookTestUser extends RebuildTestUser
+{
+    public static int $hookCalls = 0;
+
+    public function searchIndexQuery(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        static::$hookCalls++;
+
+        // Real models use this to eager-load relations; a where is used here because it is
+        // observable through the index without needing a relation on the users table.
+        return $query->where('name', 'like', 'hooked%');
+    }
 }
