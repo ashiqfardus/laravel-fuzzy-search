@@ -114,15 +114,16 @@ return [
     | Scoring Configuration
     |--------------------------------------------------------------------------
     |
-    | Reserved for future use — these values are not currently read by the
-    | package. Scoring constants are hard-coded in SearchBuilder.
+    | Base points for the relevance scorer (SQL ordering and PHP rescoring
+    | share these). A column's score is the matching tier × its searchIn()
+    | weight; prefix is further multiplied by prefixBoost().
     |
     */
     'scoring' => [
         'exact_match' => 100,
-        'prefix_match' => 50,
-        'contains' => 25,
-        'fuzzy_match' => 10,
+        'prefix_match' => 80,
+        'contains' => 60,
+        'fuzzy_match' => 50,
     ],
 
     /*
@@ -262,14 +263,12 @@ return [
     | Performance Settings
     |--------------------------------------------------------------------------
     |
-    | Reserved for future use — these values are not currently read by the
-    | package. Use indexing.chunk_size for rebuild chunk size.
+    | Default cap for LIKE-pattern generation; override per query with
+    | ->maxPatterns().
     |
     */
     'performance' => [
-        'max_patterns' => 100,      // Maximum LIKE patterns to generate
-        'chunk_size' => 1000,       // Chunk size for large operations
-        'debounce_ms' => 300,       // Default debounce for real-time search
+        'max_patterns' => 100,
     ],
 
     /*
@@ -307,8 +306,8 @@ return [
     | Highlighting Settings
     |--------------------------------------------------------------------------
     |
-    | Reserved for future use — currently the highlight tag is configured
-    | via ->highlight('<em>', '</em>') at the query level.
+    | Defaults for ->highlight(); set enabled=true to highlight every search
+    | without calling highlight().
     |
     */
     'highlighting' => [
@@ -348,9 +347,8 @@ return [
     | Unicode & Accent Handling
     |--------------------------------------------------------------------------
     |
-    | Note: 'normalize' is reserved for future use. Accent-insensitive search
-    | is opt-in per query via ->accentInsensitive() (PostgreSQL only with
-    | use_native_functions=true).
+    | normalize: NFC-normalise search terms by default (requires ext-intl);
+    | accent_insensitive: fold accents in search terms by default.
     |
     */
     'unicode' => [

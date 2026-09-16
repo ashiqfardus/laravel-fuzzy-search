@@ -60,6 +60,7 @@ class SearchBuilder
     protected array $fallbackAlgorithms = [];
     protected ?int $debounceMs = null;
     protected int $maxPatterns = 100;
+    protected array $scoring = ['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50];
 
     // Default stop words by locale
     protected array $defaultStopWords = [
@@ -74,6 +75,19 @@ class SearchBuilder
         $this->query = $query;
         $this->fuzzySearch = $fuzzySearch;
         $this->accentInsensitiveEnabled = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
+        $this->unicodeNormalizeEnabled  = (bool) config('fuzzy-search.unicode.normalize', false);
+        $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
+        $this->maxPatterns = (int) config('fuzzy-search.performance.max_patterns', 100);
+        // Forwarded through $options (merged into every applyFuzzyWhere() call) rather than
+        // left to BaseDriver::capPatterns()'s own config fallback: the FuzzySearch singleton
+        // is resolved eagerly at service-provider boot, so its config snapshot predates any
+        // config() override made later inside a test or request.
+        $this->options['max_patterns'] = $this->maxPatterns;
+
+        if (config('fuzzy-search.highlighting.enabled', false)) {
+            $this->highlightTagOpen  = (string) config('fuzzy-search.highlighting.tag_open', '<em>');
+            $this->highlightTagClose = (string) config('fuzzy-search.highlighting.tag_close', '</em>');
+        }
     }
 
     /**
@@ -316,8 +330,14 @@ class SearchBuilder
     /**
      * Enable highlighting
      */
-    public function highlight(string $tagOrOpen = 'em', ?string $close = null): self
+    public function highlight(?string $tagOrOpen = null, ?string $close = null): self
     {
+        if ($tagOrOpen === null) {
+            $this->highlightTagOpen  = (string) config('fuzzy-search.highlighting.tag_open', '<em>');
+            $this->highlightTagClose = (string) config('fuzzy-search.highlighting.tag_close', '</em>');
+            return $this;
+        }
+
         if ($close === null) {
             if (!preg_match('/^[a-zA-Z][a-zA-Z0-9-]*$/', $tagOrOpen)) {
                 throw new \InvalidArgumentException("Invalid HTML tag name for highlight(): [{$tagOrOpen}]");
@@ -1511,9 +1531,9 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
-                        $term, $weight * 100,
-                        $safeTerm . '%', $weight * 50 * $prefixBoost,
-                        '%' . $safeTerm . '%', $weight * 10,
+                        $term, $weight * $this->scoring['exact_match'],
+                        $safeTerm . '%', $weight * $this->scoring['prefix_match'] * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * $this->scoring['contains'],
                     ]);
                     break;
 
@@ -1522,9 +1542,9 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
-                        $term, $weight * 100,
-                        $safeTerm . '%', $weight * 50 * $prefixBoost,
-                        '%' . $safeTerm . '%', $weight * 10,
+                        $term, $weight * $this->scoring['exact_match'],
+                        $safeTerm . '%', $weight * $this->scoring['prefix_match'] * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * $this->scoring['contains'],
                     ]);
                     break;
 
@@ -1533,9 +1553,9 @@ class SearchBuilder
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
                     $bindings = array_merge($bindings, [
-                        $term, $weight * 100,
-                        $safeTerm . '%', $weight * 50 * $prefixBoost,
-                        '%' . $safeTerm . '%', $weight * 10,
+                        $term, $weight * $this->scoring['exact_match'],
+                        $safeTerm . '%', $weight * $this->scoring['prefix_match'] * $prefixBoost,
+                        '%' . $safeTerm . '%', $weight * $this->scoring['contains'],
                     ]);
             }
         }
@@ -1571,15 +1591,15 @@ class SearchBuilder
 
                 // Exact match - highest score
                 if ($value === $term) {
-                    $colScore = 100 * $weight;
+                    $colScore = $this->scoring['exact_match'] * $weight;
                 }
                 // Prefix match - very high score
                 elseif (str_starts_with($value, $term)) {
-                    $colScore = 80 * $weight * $this->prefixBoostMultiplier;
+                    $colScore = $this->scoring['prefix_match'] * $weight * $this->prefixBoostMultiplier;
                 }
                 // Contains - high score
                 elseif (str_contains($value, $term)) {
-                    $colScore = 60 * $weight;
+                    $colScore = $this->scoring['contains'] * $weight;
                 }
                 // Similarity-based scoring for fuzzy matches
                 else {
@@ -1591,7 +1611,7 @@ class SearchBuilder
                     $distance = FuzzySearch::levenshteinDistance($value, $term);
 
                     // Use the better of the two scores
-                    $similarityScore = ($similarity / 100) * 50 * $weight;
+                    $similarityScore = ($similarity / 100) * $this->scoring['fuzzy_match'] * $weight;
                     $levenshteinScore = ($distance <= $this->typoTolerance)
                         ? max(0, (20 - $distance * 4)) * $weight
                         : 0;

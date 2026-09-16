@@ -542,6 +542,8 @@ $users = User::search('john')
     ->get();
 ```
 
+Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`.
+
 ### Debug / Explain-Score Mode
 
 ```php
@@ -1175,9 +1177,9 @@ return [
     
     'scoring' => [
         'exact_match' => 100,
-        'prefix_match' => 50,
-        'contains' => 25,
-        'fuzzy_match' => 10,
+        'prefix_match' => 80,
+        'contains' => 60,
+        'fuzzy_match' => 50,
     ],
     
     'stop_words' => [
@@ -1203,7 +1205,6 @@ return [
     
     'performance' => [
         'max_patterns' => 100,
-        'chunk_size' => 1000,
     ],
 ];
 ```

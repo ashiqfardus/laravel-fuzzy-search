@@ -67,6 +67,11 @@ abstract class TestCase extends BaseTestCase
                 'max_items'      => 10000,
                 'min_similarity' => 60,
             ],
+            'scoring' => ['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50],
+            'performance' => ['max_patterns' => 100],
+            'highlighting' => ['enabled' => false, 'tag_open' => '<em>', 'tag_close' => '</em>'],
+            'unicode' => ['normalize' => false, 'accent_insensitive' => false],
+            'typo_tolerance' => ['enabled' => true, 'max_distance' => 2, 'min_word_length' => 4],
         ]);
     }
 
