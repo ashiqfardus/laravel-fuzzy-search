@@ -51,6 +51,7 @@ abstract class TestCase extends BaseTestCase
                 'tokenizer'          => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
                 'stemmer'            => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
                 'max_tokens_per_doc' => 5000,
+                'job'                => ['tries' => 3, 'backoff' => [10, 60, 300], 'timeout' => 120],
             ],
             'bm25' => [
                 'k1'                  => 1.5,

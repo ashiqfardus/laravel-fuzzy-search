@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Jobs;
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Jobs\Concerns\ConfiguresRetryLimits;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -15,12 +16,14 @@ use Illuminate\Queue\SerializesModels;
  */
 class RebuildIndexJob implements ShouldQueue
 {
-    use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Batchable, ConfiguresRetryLimits, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public function __construct(
         public readonly string $modelClass,
         public readonly array  $modelIds,
-    ) {}
+    ) {
+        $this->configureRetryLimits();
+    }
 
     public function handle(IndexManager $indexManager): void
     {

@@ -169,6 +169,16 @@ return [
         'tokenizer'          => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
         'stemmer'            => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
         'max_tokens_per_doc' => 5000,  // Cap unique tokens per document to prevent index poisoning
+
+        /*
+         * Retry limits for IndexModelJob and RebuildIndexJob. Without these a failing
+         * index write retries on the queue worker's defaults with no delay between attempts.
+         */
+        'job' => [
+            'tries'   => 3,
+            'backoff' => [10, 60, 300], // seconds before the 2nd, 3rd, ... attempt
+            'timeout' => 120,           // seconds a single job may run
+        ],
     ],
 
     /*
