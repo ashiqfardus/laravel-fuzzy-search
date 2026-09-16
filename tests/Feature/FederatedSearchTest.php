@@ -283,6 +283,68 @@ class FederatedSearchTest extends TestCase
 
         $this->assertGreaterThan(0, $results->count());
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination, Per-Model Limits, Model Ordering
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_limit_per_model_caps_each_model_before_merging(): void
+    {
+        $results = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like')
+            ->limitPerModel(1)
+            ->limit(10)
+            ->get();
+
+        $this->assertLessThanOrEqual(1, $results->where('_model_type', 'User')->count());
+        $this->assertLessThanOrEqual(1, $results->where('_model_type', 'Product')->count());
+    }
+
+    public function test_paginate_returns_length_aware_paginator_with_real_total(): void
+    {
+        $federated = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like');
+
+        $all   = $federated->limit(100)->get();
+        $page1 = $federated->paginate(2, 'page', 1);
+        $page2 = $federated->paginate(2, 'page', 2);
+
+        $this->assertInstanceOf(\Illuminate\Contracts\Pagination\LengthAwarePaginator::class, $page1);
+        $this->assertSame($all->count(), $page1->total());
+        $this->assertCount(2, $page1->items());
+        $this->assertNotEquals(
+            collect($page1->items())->map(fn ($r) => $r->_model_type . ':' . $r->getKey())->all(),
+            collect($page2->items())->map(fn ($r) => $r->_model_type . ':' . $r->getKey())->all()
+        );
+    }
+
+    public function test_simple_paginate_detects_next_page(): void
+    {
+        $page = FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like')
+            ->simplePaginate(2, 'page', 1);
+
+        $this->assertInstanceOf(\Illuminate\Contracts\Pagination\Paginator::class, $page);
+        $this->assertTrue($page->hasMorePages());
+        $this->assertCount(2, $page->items());
+    }
+
+    public function test_order_by_model_breaks_score_ties(): void
+    {
+        $productsFirst = FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like')
+            ->withRelevance(false)
+            ->orderByModel([Product::class, User::class])
+            ->get();
+
+        $this->assertSame('Product', $productsFirst->first()->_model_type);
+    }
 }
 
 /**

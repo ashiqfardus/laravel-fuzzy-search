@@ -430,6 +430,24 @@ $grouped = FederatedSearch::across([User::class, Product::class])
 $counts = FederatedSearch::across([User::class, Product::class])
     ->search('test')
     ->getCounts();  // ['User' => 5, 'Product' => 3]
+
+// Cap how many rows each model may contribute before merging (default: limit())
+$results = FederatedSearch::across([User::class, Product::class])
+    ->search('laptop')
+    ->limitPerModel(5)
+    ->limit(20)
+    ->get();
+
+// Tie-break order for equal scores (and the whole order when withRelevance(false))
+$results = FederatedSearch::across([User::class, Product::class])
+    ->search('laptop')
+    ->orderByModel([Product::class, User::class])
+    ->get();
+
+// Page across all models with a real, globally ranked total
+$page = FederatedSearch::across([User::class, Product::class])
+    ->search('laptop')
+    ->paginate(15);
 ```
 
 ### Search Analytics

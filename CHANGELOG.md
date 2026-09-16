@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `indexing.job` config (`tries` 3, `backoff` [10, 60, 300], `timeout` 120) bounds retries of `IndexModelJob` and `RebuildIndexJob`.
 - `bm25.candidate_chunk` config (default 200): chunk size used when checking the BM25 ranking against a constrained query.
 - SearchBuilder forwards Eloquent/Query Builder calls (where*, whereHas, with*, join*, when, local scopes, …) and adds query(Closure) — no more filter()-only workarounds. Cache keys now include forwarded constraints.
+- FederatedSearch: paginate(), simplePaginate(), limitPerModel(), orderByModel().
 
 ### Changed
 
