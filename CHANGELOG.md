@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The trigram fallback's whole-term pattern is the term itself; previously it was a concatenation of the trigrams and never matched.
 - A model whose searchable columns include an accessor is reindexed on every save unless it declares `reindex_on` (previously such models never reindexed after an update).
 - Synchronous indexing (`indexing.async = false`) reloads the model from the database before indexing, exactly like the queued job, so relations loaded before the change are not written to the index.
+- `paginate()` now ranks across up to max_candidates rows before slicing (previously scored within the current page only) and works with extended()/searchBoolean().
 
 ### Removed
 
@@ -49,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - suggest() missed capitalised values on PostgreSQL (case-sensitive LIKE).
 - A searchable column holding the string "0" was skipped by the indexer.
 - FederatedSearch::searchIn() was ignored for models using the Searchable trait; columns a table does not have are now skipped instead of raising SQL errors.
+- count() no longer carries the relevance ORDER BY into the aggregate (PostgreSQL rejected it).
 
 ### Deprecated
 

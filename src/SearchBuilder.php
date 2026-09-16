@@ -948,13 +948,11 @@ class SearchBuilder
     }
 
     /**
-     * Execute search using Fuse-style extended/boolean syntax.
-     * Routes through Lexer → ExtendedQueryParser → AstCompiler.
+     * Compile the extended/boolean AST plus filter() constraints onto $this->query.
+     * Shared by executeExtendedSearch() and paginateRanked(). Returns the columns used.
      */
-    protected function executeExtendedSearch(): Collection
+    protected function compileExtendedQuery(): array
     {
-        $startedAt = microtime(true);
-
         $columns = !empty($this->searchableColumns)
             ? $this->searchableColumns
             : $this->autoDetectColumnsForExtended();
@@ -966,15 +964,11 @@ class SearchBuilder
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
         $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
 
-        $dbDriver  = $this->query->getConnection()->getDriverName();
-        $compiler  = new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver);
-        $rawQuery  = $this->query instanceof \Illuminate\Database\Eloquent\Builder
-            ? $this->query->getQuery()
-            : $this->query;
+        $dbDriver = $this->query->getConnection()->getDriverName();
+        $rawQuery = $this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query;
 
-        $compiler->compile($ast, $rawQuery, $columns);
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver))->compile($ast, $rawQuery, $columns);
 
-        // Apply remaining filters (mirroring buildQuery behavior)
         foreach ($this->filters as $filter) {
             if ($filter['operator'] === 'IN') {
                 $this->query->whereIn($filter['column'], $filter['value']);
@@ -982,6 +976,19 @@ class SearchBuilder
                 $this->query->where($filter['column'], $filter['operator'], $filter['value']);
             }
         }
+
+        return $columns;
+    }
+
+    /**
+     * Execute search using Fuse-style extended/boolean syntax.
+     * Routes through Lexer → ExtendedQueryParser → AstCompiler.
+     */
+    protected function executeExtendedSearch(): Collection
+    {
+        $startedAt = microtime(true);
+
+        $columns = $this->compileExtendedQuery();
 
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
         $candidates = $this->query->limit($maxCandidates)->get();
@@ -1042,24 +1049,15 @@ class SearchBuilder
     }
 
     /**
-     * Get paginated results
+     * Get paginated results.
      *
-     * @throws \BadMethodCallException when extended/boolean syntax is active — use simplePaginate() instead,
-     *   which correctly routes through the AST compiler.
+     * Ranks globally: fetches up to max_candidates rows, rescores in PHP, and slices the
+     * page from that ranked set. Pages whose offset falls beyond max_candidates fall back
+     * to database-level ordering for that page (see paginateRanked()). Works with
+     * extended()/searchBoolean() as well as the plain LIKE-driver path.
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        // Extended/boolean syntax is compiled to an in-memory AST that neither the LIKE
-        // driver path nor paginateIndexed() honours — both would silently discard all
-        // boolean operators.  simplePaginate() delegates to get() which routes through
-        // executeExtendedSearch() correctly.
-        if ($this->extendedQuery !== null) {
-            throw new \BadMethodCallException(
-                'paginate() does not support extended/boolean query syntax. ' .
-                'Use simplePaginate() or get() instead.'
-            );
-        }
-
         return $this->withFallback(
             fn () => $this->paginateOnce($perPage, $pageName, $page),
             fn (\Illuminate\Contracts\Pagination\LengthAwarePaginator $paginator) => $paginator->total() === 0
@@ -1076,33 +1074,70 @@ class SearchBuilder
             return $this->paginateIndexed($perPage, $pageName, $page);
         }
 
-        $this->buildQuery();
+        return $this->paginateRanked($perPage, $pageName, $page);
+    }
 
-        $page = $page ?: request()->input($pageName, 1);
+    /**
+     * Length-aware pagination that ranks globally: fetch up to max_candidates rows, rescore in
+     * PHP, slice the page. total() is the real DB count. For pages whose offset is beyond the
+     * candidate ceiling, fall back to DB-level ordering for that page (documented limitation).
+     */
+    protected function paginateRanked(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    {
+        $startedAt = microtime(true);
+        $page      = (int) ($page ?: request()->input($pageName, 1));
+        $page      = max(1, $page);
+        $offset    = ($page - 1) * $perPage;
 
-        $results = $this->query->paginate($perPage, ['*'], $pageName, $page);
-
-        if ($this->withRelevance && !empty($this->searchTerm)) {
-            $items = $this->calculateRelevanceScores(collect($results->items()));
-            $results->setCollection($items);
+        if ($this->extendedQuery !== null) {
+            $this->compileExtendedQuery();
+            $algorithm = 'extended';
+            $term      = $this->extendedQuery;
+        } else {
+            $this->buildQuery();
+            $algorithm = $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy');
+            $term      = $this->searchTerm;
         }
 
-        $items = collect($results->items());
+        $base  = $this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query;
+        $total = $base->getCountForPagination();
+
+        $maxCandidates = (int) config('fuzzy-search.max_candidates', 1000);
+
+        if ($offset >= $maxCandidates) {
+            // Deep page beyond the rescoring window: DB order for this page, score within it.
+            $items = collect($this->query->clone()->offset($offset)->limit($perPage)->get());
+        } else {
+            $candidates = $this->query->clone()->limit($maxCandidates)->get();
+            if ($this->withRelevance && $term !== '') {
+                $candidates = $this->calculateRelevanceScores($candidates);
+            }
+            $items = $candidates->slice($offset, $perPage)->values();
+        }
+
+        if ($this->withRelevance && $offset >= $maxCandidates && $term !== '') {
+            $items = $this->calculateRelevanceScores($items);
+        }
 
         if ($this->highlightTagOpen) {
             $items = $this->applyHighlighting($items);
-            $results->setCollection($items);
+        }
+        if ($this->debugMode) {
+            $items = $this->addDebugInfo($items);
         }
 
         event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->searchTerm,
+            searchTerm:     $term,
             columns:        $this->searchableColumns,
-            algorithm:      $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
-            candidateCount: $results->total(),
-            latencyMs:      0.0,
+            algorithm:      $algorithm,
+            candidateCount: $total,
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
         ));
 
-        return $results;
+        return new \Illuminate\Pagination\LengthAwarePaginator(
+            $items, $total, $perPage, $page,
+            ['path' => request()->url(), 'pageName' => $pageName]
+        );
     }
 
     /**
@@ -1234,7 +1269,11 @@ class SearchBuilder
         return $this->withFallback(
             function (): int {
                 $this->buildQuery();
-                return $this->query->count();
+                // Query\Builder::count() keeps columns/orders/limit/offset, and the relevance
+                // ORDER BY buildQuery() adds makes PostgreSQL reject the aggregate ("column
+                // must appear in the GROUP BY clause..."). getCountForPagination() drops them.
+                $base = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
+                return (int) $base->getCountForPagination();
             },
             fn (int $count) => $count === 0
         );

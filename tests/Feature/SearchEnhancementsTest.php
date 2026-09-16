@@ -256,4 +256,13 @@ class SearchEnhancementsTest extends TestCase
         $this->assertCount(0, $strict, 'typoTolerance(0) must not match "John" for "jonh"');
         $this->assertContains('John Doe', $loose->pluck('name')->all());
     }
+
+    public function test_extended_syntax_supports_length_aware_paginate(): void
+    {
+        $page = User::search("'jo")->extended()->paginate(2, 'page', 1);
+
+        $this->assertInstanceOf(\Illuminate\Contracts\Pagination\LengthAwarePaginator::class, $page);
+        $this->assertGreaterThanOrEqual(3, $page->total()); // John Doe, Jon Snow, Johnny Bravo, Bob Johnson
+        $this->assertCount(2, $page->items());
+    }
 }

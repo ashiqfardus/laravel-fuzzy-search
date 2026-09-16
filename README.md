@@ -911,15 +911,16 @@ $users = User::search('admin (john | jane)')->extended()->get();
 
 ### Pagination with Extended Syntax
 
-`paginate()` and `cursorPaginate()` are **not compatible** with `extended()` or `searchBoolean()` and will throw a `BadMethodCallException`. `simplePaginate()` works correctly.
+`paginate()`, `simplePaginate()` and `get()` all work with `extended()` / `searchBoolean()`. `cursorPaginate()` is still unsupported.
 
 ```php
 // ✓ Works
+User::search('=John ^Doe')->extended()->paginate(15);
 User::search('=John ^Doe')->extended()->simplePaginate(15);
 User::search('=John ^Doe')->extended()->get();
 
 // ✗ Throws BadMethodCallException
-User::search('=John ^Doe')->extended()->paginate(15);
+User::search('=John ^Doe')->extended()->cursorPaginate(15);
 ```
 
 ### Match Offsets & Blade Directive
@@ -1045,8 +1046,6 @@ $users = User::search('john')
     ->skip(20)
     ->get();
 ```
-
-> **Note:** `paginate()` and `cursorPaginate()` are not compatible with `extended()` or `searchBoolean()`. Use `simplePaginate()` or `get()` with those.
 
 ---
 
@@ -1509,7 +1508,7 @@ Regardless of algorithm, after SQL candidates are fetched:
 
 Top-N results are always the most relevant N from the candidate set (not just the first N SQL rows). Candidate set size is controlled by `max_candidates` (default: 1000).
 
-> **Pagination note:** `paginate()` and `simplePaginate()` use DB-level pagination and score within the current page only. For globally-ranked pagination across all pages, use the BM25 inverted index.
+> **Pagination note:** `paginate()` ranks globally across up to `max_candidates` rows before slicing; pages beyond that window use database ordering.
 
 ---
 
