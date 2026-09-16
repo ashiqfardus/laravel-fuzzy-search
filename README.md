@@ -448,6 +448,11 @@ $results = FederatedSearch::across([User::class, Product::class])
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->paginate(15);
+
+// Cursor-less "load more" pagination — cheaper than paginate() when you only need hasMorePages()
+$page = FederatedSearch::across([User::class, Product::class])
+    ->search('laptop')
+    ->simplePaginate(15);
 ```
 
 ### Search Analytics

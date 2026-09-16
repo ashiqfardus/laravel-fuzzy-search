@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synchronous indexing (`indexing.async = false`) reloads the model from the database before indexing, exactly like the queued job, so relations loaded before the change are not written to the index.
 - `paginate()` now ranks across up to max_candidates rows before slicing (previously scored within the current page only) and works with extended()/searchBoolean().
 - `scoring.*`, `highlighting.*`, `performance.max_patterns` and `unicode.normalize` config keys are now read (they were documented as reserved). Defaults preserve v2.0 ranking.
+- FederatedSearch results are now deterministically ordered: score, then orderByModel() (or the across() order), then primary key — previously ties and withRelevance(false) results came back in database order.
 
 ### Removed
 

@@ -3,7 +3,10 @@
 namespace Ashiqfardus\LaravelFuzzySearch;
 
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Collection;
 
 /**
@@ -148,7 +151,7 @@ class FederatedSearch
         return $this->fetchRanked($this->limit)->take($this->limit)->values();
     }
 
-    public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
+    public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): LengthAwarePaginator
     {
         $page   = max(1, (int) ($page ?: request()->input($pageName, 1)));
         $offset = ($page - 1) * $perPage;
@@ -157,13 +160,13 @@ class FederatedSearch
         $ranked = $this->fetchRanked($offset + $perPage);
         $items  = $ranked->slice($offset, $perPage)->values();
 
-        return new \Illuminate\Pagination\LengthAwarePaginator(
+        return new LengthAwarePaginator(
             $items, $total, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
     }
 
-    public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\Paginator
+    public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): Paginator
     {
         $page   = max(1, (int) ($page ?: request()->input($pageName, 1)));
         $offset = ($page - 1) * $perPage;
@@ -171,7 +174,7 @@ class FederatedSearch
         $ranked = $this->fetchRanked($offset + $perPage + 1); // +1 lets Paginator detect a next page
         $items  = $ranked->slice($offset, $perPage + 1)->values();
 
-        return new \Illuminate\Pagination\Paginator(
+        return new Paginator(
             $items, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
@@ -206,7 +209,11 @@ class FederatedSearch
             $allResults = $allResults->merge($results);
         }
 
-        $rank = fn ($item) => ($i = array_search($item->_model_class, $this->modelOrder, true)) === false ? PHP_INT_MAX : $i;
+        // Tie-break order: orderByModel() when set, otherwise the across() order — so
+        // withRelevance(false) callers still get a deterministic, across()-ordered result
+        // instead of whatever order the merge happened to produce.
+        $modelOrder = $this->modelOrder ?: $this->models;
+        $rank = fn ($item) => ($i = array_search($item->_model_class, $modelOrder, true)) === false ? PHP_INT_MAX : $i;
 
         return $allResults->sort(function ($a, $b) use ($rank) {
             if ($this->withRelevance) {
@@ -221,17 +228,19 @@ class FederatedSearch
     }
 
     /**
-     * Run one model's search (Searchable / non-Searchable fallback) capped at $limit rows,
-     * honouring searchIn() columns.
+     * Build (but do not finish) one model's search query, honouring searchIn() columns.
+     * searchModel() and countAll() each finish it their own way (get() vs count()), so
+     * ordering/relevance/limit are intentionally left to the caller.
      *
      * searchIn() appends to a builder rather than replacing its defaults, so
      * $modelClass::search()->searchIn() cannot narrow the columns the model's own
      * `$searchable['columns']` already applied. When the caller restricted the columns
      * (and at least one of them exists on this table), build from a bare query instead
      * so only the requested columns are searched. Otherwise fall back to the model's
-     * own defaults exactly as before.
+     * own defaults exactly as before. Returns null when a non-Searchable model has no
+     * matching columns — the caller should skip it, not query a nonexistent column.
      */
-    protected function searchModel(string $modelClass, int $limit): Collection
+    private function queryFor(string $modelClass): SearchBuilder|EloquentBuilder|null
     {
         $modelTraits = class_uses_recursive($modelClass);
         $hasSearchable = in_array(Traits\Searchable::class, $modelTraits);
@@ -245,18 +254,12 @@ class FederatedSearch
                     ->search($this->searchTerm)
                     ->searchIn($weighted)
                     ->using($this->algorithm ?? 'fuzzy')
-                    ->typoTolerance($this->typoTolerance)
-                    ->withRelevance($this->withRelevance)
-                    ->limit($limit)
-                    ->get();
+                    ->typoTolerance($this->typoTolerance);
             }
 
             return $modelClass::search($this->searchTerm)
                 ->using($this->algorithm ?? 'fuzzy')
-                ->typoTolerance($this->typoTolerance)
-                ->withRelevance($this->withRelevance)
-                ->limit($limit)
-                ->get();
+                ->typoTolerance($this->typoTolerance);
         }
 
         // Fall back to query builder approach
@@ -267,18 +270,49 @@ class FederatedSearch
             : (empty($this->columnWeights) ? $this->getColumnsForModel($instance) : []);
 
         if (empty($columns)) {
-            return collect();
+            return null;
         }
 
         return $modelClass::query()
-            ->whereFuzzyMultiple($columns, $this->searchTerm, $this->algorithm ?? 'like')
+            ->whereFuzzyMultiple($columns, $this->searchTerm, $this->algorithm ?? 'like');
+    }
+
+    /**
+     * Run one model's search capped at $limit rows. stableRanking()/orderBy(key) gives
+     * equal-score rows a consistent order across the growing LIMIT that paginate()
+     * re-fetches on each page, so no row is duplicated or skipped between pages.
+     */
+    protected function searchModel(string $modelClass, int $limit): Collection
+    {
+        $query = $this->queryFor($modelClass);
+
+        if ($query === null) {
+            return collect();
+        }
+
+        if ($query instanceof SearchBuilder) {
+            return $query->withRelevance($this->withRelevance)
+                ->stableRanking()
+                ->limit($limit)
+                ->get();
+        }
+
+        return $query->orderBy($query->getModel()->getKeyName())
             ->limit($limit)
             ->get();
     }
 
-    /** Sum of per-model match counts — the true total for paginate(). Mirrors searchModel(). */
+    /**
+     * Sum of per-model match counts, each capped at limitPerModel() when set — the true
+     * reachable total for paginate(), since fetchRanked() never returns more than
+     * limitPerModel() rows from any one model.
+     */
     protected function countAll(): int
     {
+        if (empty($this->searchTerm) && !config('fuzzy-search.allow_empty_search', false)) {
+            throw new EmptySearchTermException();
+        }
+
         $total = 0;
 
         foreach ($this->models as $modelClass) {
@@ -286,43 +320,14 @@ class FederatedSearch
                 continue;
             }
 
-            $modelTraits = class_uses_recursive($modelClass);
-            $hasSearchable = in_array(Traits\Searchable::class, $modelTraits);
+            $query = $this->queryFor($modelClass);
 
-            if ($hasSearchable) {
-                $instance = new $modelClass();
-                $weighted = $this->weightedColumnsExistingOn($instance);
-
-                if (!empty($weighted)) {
-                    $total += (new SearchBuilder($modelClass::query(), app(FuzzySearch::class)))
-                        ->search($this->searchTerm)
-                        ->searchIn($weighted)
-                        ->using($this->algorithm ?? 'fuzzy')
-                        ->typoTolerance($this->typoTolerance)
-                        ->count();
-                    continue;
-                }
-
-                $total += $modelClass::search($this->searchTerm)
-                    ->using($this->algorithm ?? 'fuzzy')
-                    ->typoTolerance($this->typoTolerance)
-                    ->count();
+            if ($query === null) {
                 continue;
             }
 
-            $instance = new $modelClass();
-            $weighted = $this->weightedColumnsExistingOn($instance);
-            $columns = !empty($weighted)
-                ? array_keys($weighted)
-                : (empty($this->columnWeights) ? $this->getColumnsForModel($instance) : []);
-
-            if (empty($columns)) {
-                continue;
-            }
-
-            $total += $modelClass::query()
-                ->whereFuzzyMultiple($columns, $this->searchTerm, $this->algorithm ?? 'like')
-                ->count();
+            $count = $query->count();
+            $total += $this->limitPerModel !== null ? min($count, $this->limitPerModel) : $count;
         }
 
         return $total;

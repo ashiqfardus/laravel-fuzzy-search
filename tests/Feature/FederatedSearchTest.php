@@ -345,6 +345,80 @@ class FederatedSearchTest extends TestCase
 
         $this->assertSame('Product', $productsFirst->first()->_model_type);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reachable Totals, Stable Cross-Page Ordering, across() Order (Ruling P27)
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_limit_per_model_caps_the_reachable_total_for_paginate(): void
+    {
+        // Two User matches ("Jon Snow", "Bob Johnson") and one Product match ("iPhone 15
+        // Pro"). limitPerModel(1) means only 1 row per model is ever reachable, so total()
+        // must reflect 2 (not the uncapped 3), lastPage() must be 2, and page 3 must be empty.
+        $federated = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like')
+            ->limitPerModel(1);
+
+        $page1 = $federated->paginate(1, 'page', 1);
+
+        $this->assertSame(2, $page1->total());
+        $this->assertSame(2, $page1->lastPage());
+
+        $page3 = $federated->paginate(1, 'page', 3);
+
+        $this->assertCount(0, $page3->items());
+    }
+
+    public function test_paginate_is_stable_and_gapless_across_pages(): void
+    {
+        // Walking every paginate() page must reproduce exactly the same order as a single
+        // ->limit(100)->get() call: no row skipped, none duplicated, regardless of ties.
+        $federated = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like');
+
+        $expected = $federated->limit(100)->get()
+            ->map(fn ($r) => $r->_model_type . ':' . $r->getKey())
+            ->all();
+
+        $walked = [];
+        $page = 1;
+        $lastPage = 1;
+
+        do {
+            $paginator = $federated->paginate(2, 'page', $page);
+            $lastPage = $paginator->lastPage();
+
+            foreach ($paginator->items() as $item) {
+                $walked[] = $item->_model_type . ':' . $item->getKey();
+            }
+
+            $page++;
+        } while ($page <= $lastPage);
+
+        $this->assertSame($expected, $walked);
+    }
+
+    public function test_get_defaults_tie_break_to_across_order_without_order_by_model(): void
+    {
+        // withRelevance(false) with no orderByModel(): the tie-break must default to the
+        // across() order (User first, since User is listed first here) — not alphabetical
+        // by _model_type ("Product" < "User"), which is what the pre-fix PHP_INT_MAX-for-both
+        // fallback produced regardless of across() order. Deliberately listing User before
+        // Product (the opposite of alphabetical) makes the two behaviours disagree.
+        $first = FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like')
+            ->withRelevance(false)
+            ->get()
+            ->first();
+
+        $this->assertSame('User', $first->_model_type);
+    }
 }
 
 /**
