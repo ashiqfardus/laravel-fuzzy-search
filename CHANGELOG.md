@@ -42,7 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Multibyte terms:** `FuzzyDriver`, `LevenshteinDriver`, `TrigramDriver` and `SoundexDriver` sliced the search term by byte, producing invalid UTF-8 LIKE patterns for Bengali, Hindi, Thai and accented Latin (PostgreSQL rejected them; other databases never matched). `min_search_length` and `query.max_term_length` also counted bytes. All now work per character.
 - Accessor-backed searchable fields never reindexed on update (`wasChanged()` cannot see them), so a product moved to another brand stayed findable under the old brand.
 - `fallback()` stored its algorithms and never ran them.
-
 - `typoTolerance(0)` and `(1)` were ignored by the default fuzzy algorithm — every typo pattern was always generated. Pattern families are now gated by the tolerance level and `typo_tolerance.min_word_length`.
 - MariaDB connections (driver name "mariadb" on Laravel 11+) now use native SOUNDEX(), the Levenshtein UDF path, quoted identifiers and the MySQL flush branch — previously every MySQL-only branch silently fell back to generic SQL.
 - **PostgreSQL and SQL Server:** BM25 indexing failed on every write with an "ambiguous doc_count" error inside the upsert. The inverted index now works on both.
@@ -54,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - suggest() missed capitalised values on PostgreSQL (case-sensitive LIKE).
 - A searchable column holding the string "0" was skipped by the indexer.
 - FederatedSearch::searchIn() was ignored for models using the Searchable trait; columns a table does not have are now skipped instead of raising SQL errors.
+- FederatedSearch: a model without the Searchable trait whose table has none of the requested searchIn() columns is now skipped instead of raising a SQL error.
 - count() no longer carries the relevance ORDER BY into the aggregate (PostgreSQL rejected it).
 - `config/fuzzy-search.php` shipped `unicode.normalize => true` — the inert v2.0 default for a key that is now live in v2.1.0. A published config would have silently started NFC-normalising every search term. The shipped default is now `false`, matching v2.0 behaviour; the published `scoring`, `performance.max_patterns` and `highlighting.enabled` defaults are also pinned to match what the code actually uses.
 - FederatedSearch `paginate()`/`simplePaginate()` totals now count only reachable rows: when `limitPerModel()` caps a model's contribution, that model's share of the total is capped too — previously the total (and page count) could promise more rows than the search would ever return.
