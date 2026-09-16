@@ -347,12 +347,14 @@ return [
     | Unicode & Accent Handling
     |--------------------------------------------------------------------------
     |
-    | normalize: NFC-normalise search terms by default (requires ext-intl);
+    | normalize: NFC-normalise search terms (requires ext-intl); opt-in — off
+    | by default so an untouched config keeps v2.0 behaviour. Enable per query
+    | with ->unicodeNormalize(), or flip this to true to enable it globally.
     | accent_insensitive: fold accents in search terms by default.
     |
     */
     'unicode' => [
-        'normalize' => true,
+        'normalize' => false,
         'accent_insensitive' => true,
     ],
 ];

@@ -80,6 +80,21 @@ class ConfigWiringTest extends TestCase
         $this->assertFalse(User::search('cafe')->getDebugInfo()['unicode_normalize']);
     }
 
+    /**
+     * Pins the shipped config/fuzzy-search.php defaults independently of TestCase's mirror,
+     * so a regression like shipping 'normalize' => true (the inert v2.0 value, now live) is
+     * caught even though tests/TestCase.php hardcodes its own defaults.
+     */
+    public function test_published_config_declares_the_wired_defaults(): void
+    {
+        $config = require __DIR__ . '/../../config/fuzzy-search.php';
+
+        $this->assertSame(false, $config['unicode']['normalize']);
+        $this->assertSame(['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50], $config['scoring']);
+        $this->assertSame(['max_patterns' => 100], $config['performance']);
+        $this->assertSame(false, $config['highlighting']['enabled']);
+    }
+
     public function test_debounce_is_deprecated(): void
     {
         $deprecations = [];

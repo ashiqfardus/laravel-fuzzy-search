@@ -29,6 +29,13 @@ Recommended action: either delete the `scoring` block from your published config
 the new package defaults), or update it to match the values you actually want, now that it's
 live.
 
+**If you published the config, it contains `'normalize' => true`.** That was the v2.0 shipped
+value from when the key was inert — harmless at the time, because nothing read it. As of v2.1.0
+`unicode.normalize` is live, so a published config will start NFC-normalising every search term
+(requires `ext-intl`; it's a silent no-op without the extension). Set it to `false` to keep v2.0
+behaviour (also the new package default for a fresh install), or leave it as `true` if you want
+normalization.
+
 ## Removed config keys
 
 - `performance.chunk_size` — never read; chunk sizing for rebuilds uses `indexing.chunk_size`.
