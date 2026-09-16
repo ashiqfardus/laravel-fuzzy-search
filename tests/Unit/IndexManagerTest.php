@@ -54,6 +54,28 @@ class IndexManagerTest extends TestCase
         $this->assertEquals(['laravel', 'php'], $tokens);
     }
 
+    public function test_whitespace_tokenizer_keeps_combining_marks_attached_to_their_base_letters(): void
+    {
+        $tokenizer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer();
+
+        // Bengali vowel signs (U+09CB, U+09BE, U+09C7 ...) are \p{M}, not \p{L}. Splitting on
+        // them shredded "মোবাইল ফোন" (mobile phone) into single consonants, which the
+        // min-length filter then dropped — nothing reached the index.
+        $this->assertSame(['মোবাইল', 'ফোন'], $tokenizer->tokenize('মোবাইল ফোন'));
+
+        // Devanagari: matras and virama (हिन्दी) must stay inside the word too.
+        $this->assertSame(['हिन्दी', 'भाषा'], $tokenizer->tokenize('हिन्दी भाषा'));
+
+        // Thai vowel marks above/below the line.
+        $this->assertSame(['ภาษาไทย'], $tokenizer->tokenize('ภาษาไทย'));
+
+        // Latin with a decomposed accent (e + U+0301) keeps the mark and still lowercases.
+        $this->assertSame(["cafe\u{0301}"], $tokenizer->tokenize("CAFE\u{0301}"));
+
+        // Punctuation and whitespace remain separators.
+        $this->assertSame(['মোবাইল', 'ফোন'], $tokenizer->tokenize('মোবাইল, ফোন!'));
+    }
+
     public function test_null_stemmer_returns_word_unchanged(): void
     {
         $stemmer = new \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer();
