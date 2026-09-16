@@ -136,6 +136,7 @@ abstract class TestCase extends BaseTestCase
         // Reset the observer's schema column cache so static state does not
         // leak between test cases that use different in-memory databases.
         \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::resetColumnCache();
+        \Ashiqfardus\LaravelFuzzySearch\FederatedSearch::resetColumnCache();
 
         parent::tearDown();
     }

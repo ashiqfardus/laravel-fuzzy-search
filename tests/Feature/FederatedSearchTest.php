@@ -9,6 +9,7 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
 use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * Federated Search Tests
@@ -253,4 +254,43 @@ class FederatedSearchTest extends TestCase
 
         $this->assertContains('User', $results->pluck('_model_type')->unique()->all());
     }
+
+    public function test_non_searchable_model_with_no_matching_columns_is_skipped_not_sql_errored(): void
+    {
+        // PlainProduct is not Searchable/Fuzzy; its table (products) has no "name" column.
+        // Requesting only "name" must skip PlainProduct entirely rather than run
+        // whereFuzzyMultiple() against a column that does not exist (a real SQL error on
+        // MySQL/PostgreSQL; SQLite silently treats an unresolved quoted identifier as a
+        // string literal instead of raising an error, so this only fails pre-fix on
+        // MySQL/PostgreSQL — verified manually against both during Task 8 review).
+        $results = FederatedSearch::across([PlainProduct::class, User::class])
+            ->search('john')
+            ->searchIn(['name' => 10])
+            ->using('like')
+            ->get();
+
+        $this->assertEquals(['User'], $results->pluck('_model_type')->unique()->all());
+    }
+
+    public function test_non_searchable_model_with_matching_column_is_still_searched(): void
+    {
+        // "description" exists on products: the non-Searchable path still works normally.
+        $results = FederatedSearch::across([PlainProduct::class])
+            ->search('smartphone')
+            ->searchIn(['description' => 5])
+            ->using('like')
+            ->get();
+
+        $this->assertGreaterThan(0, $results->count());
+    }
+}
+
+/**
+ * Plain model over the "products" table with no Searchable/Fuzzy trait, used to exercise
+ * FederatedSearch's non-Searchable fallback branch.
+ */
+class PlainProduct extends Model
+{
+    protected $table = 'products';
+    protected $guarded = [];
 }

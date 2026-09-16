@@ -18,6 +18,9 @@ use Illuminate\Support\Collection;
  */
 class FederatedSearch
 {
+    /** @var array<string, array<int, string>> Schema column listings cached per "connection.table". */
+    protected static array $columnListings = [];
+
     protected array $models = [];
     protected string $searchTerm = '';
     protected array $searchableColumns = [];
@@ -144,8 +147,10 @@ class FederatedSearch
             } else {
                 // Fall back to query builder approach
                 $instance = new $modelClass();
-                $columns = array_keys($this->weightedColumnsExistingOn($instance))
-                    ?: $this->getColumnsForModel($instance);
+                $weighted = $this->weightedColumnsExistingOn($instance);
+                $columns = !empty($weighted)
+                    ? array_keys($weighted)
+                    : (empty($this->columnWeights) ? $this->getColumnsForModel($instance) : []);
 
                 if (empty($columns)) {
                     continue;
@@ -215,7 +220,9 @@ class FederatedSearch
     /**
      * searchIn() columns that actually exist on the model's table, with their weights.
      * Callers pass one column list for many models (e.g. ['name', 'title']); a column a
-     * table lacks would otherwise raise a SQL error. Schema listing is cached per table.
+     * table lacks would otherwise raise a SQL error. Schema listing is cached per
+     * connection+table; call resetColumnCache() between tests to avoid stale listings
+     * leaking across databases/schemas.
      */
     protected function weightedColumnsExistingOn(Model $instance): array
     {
@@ -223,22 +230,28 @@ class FederatedSearch
             return [];
         }
 
-        static $listings = [];
         $table = $instance->getTable();
+        $cacheKey = ($instance->getConnectionName() ?? $instance->getConnection()->getName()) . '.' . $table;
 
-        if (!isset($listings[$table])) {
+        if (!isset(static::$columnListings[$cacheKey])) {
             try {
-                $listings[$table] = $instance->getConnection()->getSchemaBuilder()->getColumnListing($table);
+                static::$columnListings[$cacheKey] = $instance->getConnection()->getSchemaBuilder()->getColumnListing($table);
             } catch (\Throwable) {
-                $listings[$table] = [];
+                static::$columnListings[$cacheKey] = [];
             }
         }
 
         return array_filter(
             $this->columnWeights,
-            fn ($weight, $column) => in_array($column, $listings[$table], true),
+            fn ($weight, $column) => in_array($column, static::$columnListings[$cacheKey], true),
             ARRAY_FILTER_USE_BOTH
         );
+    }
+
+    /** Reset the schema-column cache (call between test cases to prevent cross-test contamination). */
+    public static function resetColumnCache(): void
+    {
+        static::$columnListings = [];
     }
 
     /**
