@@ -4,7 +4,7 @@
 [![Total Downloads](https://img.shields.io/packagist/dt/ashiqfardus/laravel-fuzzy-search.svg?style=flat-square)](https://packagist.org/packages/ashiqfardus/laravel-fuzzy-search)
 [![License](https://img.shields.io/packagist/l/ashiqfardus/laravel-fuzzy-search.svg?style=flat-square)](https://packagist.org/packages/ashiqfardus/laravel-fuzzy-search)
 [![PHP Version](https://img.shields.io/packagist/php-v/ashiqfardus/laravel-fuzzy-search.svg?style=flat-square)](https://packagist.org/packages/ashiqfardus/laravel-fuzzy-search)
-[![Laravel Version](https://img.shields.io/badge/Laravel-9%2B%20|%2010%20|%2011%20|%2012%20|%2013-FF2D20?logo=laravel)](https://laravel.com)
+[![Laravel Version](https://img.shields.io/badge/Laravel-10%20|%2011%20|%2012%20|%2013-FF2D20?logo=laravel)](https://laravel.com)
 
 A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Works with all major databases without external services.
 
@@ -449,6 +449,14 @@ $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->paginate(15);
 
+// paginate()'s total() counts only reachable rows: when limitPerModel() caps a model's
+// contribution, that model's share of the total is capped the same way, so the page
+// count never promises more rows than the search can actually return.
+$page = FederatedSearch::across([User::class, Product::class])
+    ->search('laptop')
+    ->limitPerModel(5)
+    ->paginate(15);
+
 // Cursor-less "load more" pagination — cheaper than paginate() when you only need hasMorePages()
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
@@ -667,6 +675,13 @@ Product::search('watch')
     ->useInvertedIndex()
     ->filter('published', true)
     ->paginate(20);   // total = published matches only, pages never come back short
+
+// Equivalent — filter()/filterIn() still work, but constraints can also be chained
+// straight onto the builder (see "Chaining Eloquent" above):
+Product::search('watch')
+    ->useInvertedIndex()
+    ->where('published', true)
+    ->paginate(20);
 ```
 
 ### Database Tables
@@ -1059,11 +1074,11 @@ $page2 = User::search('john')->stableRanking()->paginate(10, page: 2);
 // Offset pagination
 $users = User::search('john')->paginate(15);
 
-// Simple pagination (no total count - faster)
+// Simple pagination (no total count - faster; best for infinite scroll)
 $users = User::search('john')->simplePaginate(15);
 
-// Cursor pagination (best for infinite scroll)
-$users = User::search('john')->cursorPaginate(15);
+// cursorPaginate() always throws BadMethodCallException — it bypasses PHP-side
+// relevance scoring. Use simplePaginate() above instead.
 
 // Manual pagination
 $users = User::search('john')
@@ -1502,7 +1517,7 @@ Key tips:
 
 This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns.
 
-| Algorithm | MySQL 8 | MariaDB 10.6 | PostgreSQL 14 | SQLite | SQL Server |
+| Algorithm | MySQL 8 | MariaDB 10.6 / 11.4 | PostgreSQL 14 | SQLite | SQL Server |
 |---|---|---|---|---|---|
 | **simple** / **like** | `LIKE '%term%'` | `LIKE '%term%'` | `ILIKE '%term%'` | `LIKE '%term%'` | `LOWER() LIKE` |
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
@@ -1511,6 +1526,8 @@ This table shows what each algorithm does at the SQL level on each supported dat
 | **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true`, else pattern fallback | Pattern fallback | Pattern fallback |
 | **metaphone** | Shadow column `{col}_metaphone` + exact `=` match | Shadow column | Shadow column | Shadow column | Shadow column |
 | **similar_text** | `LIKE '%term%'` (SQL); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'`; PHP scores | Same | Same |
+
+MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths included).
 
 ### Notes
 
@@ -1555,7 +1572,7 @@ composer benchmark
 
 - PHP 8.1 or higher
 - Laravel 10.x, 11.x, 12.x, or 13.x
-- Any supported database
+- Any supported database — MySQL 8+, MariaDB 10.6+ / 11.x, PostgreSQL 14+, SQLite, or SQL Server 2022
 
 ---
 

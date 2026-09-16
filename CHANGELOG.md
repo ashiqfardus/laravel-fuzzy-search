@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A searchable column holding the string "0" was skipped by the indexer.
 - FederatedSearch::searchIn() was ignored for models using the Searchable trait; columns a table does not have are now skipped instead of raising SQL errors.
 - count() no longer carries the relevance ORDER BY into the aggregate (PostgreSQL rejected it).
+- `config/fuzzy-search.php` shipped `unicode.normalize => true` — the inert v2.0 default for a key that is now live in v2.1.0. A published config would have silently started NFC-normalising every search term. The shipped default is now `false`, matching v2.0 behaviour; the published `scoring`, `performance.max_patterns` and `highlighting.enabled` defaults are also pinned to match what the code actually uses.
+- FederatedSearch `paginate()`/`simplePaginate()` totals now count only reachable rows: when `limitPerModel()` caps a model's contribution, that model's share of the total is capped too — previously the total (and page count) could promise more rows than the search would ever return.
+- FederatedSearch `paginate()` could duplicate or skip a row across a page boundary when scores tied; each model's results are now ordered by `stableRanking()` (Searchable models) or the primary key (query-builder fallback) before the per-page limit is applied.
+
+### Database compatibility
+
+First release where the full test suite runs against SQLite, MySQL 8, MariaDB 11.4, PostgreSQL 14 and SQL Server 2022 in CI.
 
 ### Deprecated
 
