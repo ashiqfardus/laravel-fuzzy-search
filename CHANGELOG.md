@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `maxPatterns()` and `performance.max_patterns` now actually cap the LIKE-pattern list for all pattern-based algorithms.
+- TrigramDriver's LIKE fallback now caps its pattern list at `performance.max_patterns` (default 100) instead of a hard-coded 10, so long terms match more widely; lower the key or call `maxPatterns()` to restore the old cap.
 - **BM25 honours your constraints.** `filter()`/`filterIn()`, `where()` constraints applied before the search, and global scopes are applied *before* the ranking is cut to the page, so selective filters no longer return short or empty pages, and `paginate()` totals count only matching rows. The Scout engine applies the builder's `where()`/`whereIn()`/`whereNotIn()`/`query()` the same way.
 - `_score` on paginated BM25 results is normalised against the corpus-wide maximum (as `get()` already did) instead of the page maximum, so page 2's first row is no longer always 1.0.
 - `WhitespaceTokenizer` keeps combining marks (`\p{M}`) inside tokens. Indexes built from Bengali, Hindi, Thai or decomposed-accent text need one `fuzzy-search:rebuild --fresh`.
@@ -31,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `paginate()` now ranks across up to max_candidates rows before slicing (previously scored within the current page only) and works with extended()/searchBoolean().
 - `scoring.*`, `highlighting.*`, `performance.max_patterns` and `unicode.normalize` config keys are now read (they were documented as reserved). Defaults preserve v2.0 ranking.
 - FederatedSearch results are now deterministically ordered: score, then orderByModel() (or the across() order), then primary key — previously ties and withRelevance(false) results came back in database order.
+- Federated `searchIn()` narrowing keeps each model's configured stop words, synonyms and accent settings.
 
 ### Removed
 
@@ -39,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `paginate()` totals on the LIKE and extended paths now apply Eloquent global scopes (SoftDeletes, tenant scopes) — they overcounted since the Phase 1 pagination rewrite.
+- `count()` now agrees with `paginate()->total()` on the extended and BM25 paths.
 - **Multibyte terms:** `FuzzyDriver`, `LevenshteinDriver`, `TrigramDriver` and `SoundexDriver` sliced the search term by byte, producing invalid UTF-8 LIKE patterns for Bengali, Hindi, Thai and accented Latin (PostgreSQL rejected them; other databases never matched). `min_search_length` and `query.max_term_length` also counted bytes. All now work per character.
 - Accessor-backed searchable fields never reindexed on update (`wasChanged()` cannot see them), so a product moved to another brand stayed findable under the old brand.
 - `fallback()` stored its algorithms and never ran them.

@@ -177,6 +177,8 @@ $users = User::search('john')
 
 Executing methods that would bypass the search conditions (`delete()`, `exists()`, `pluck()`, `update()`, …) are not forwarded and throw a `BadMethodCallException` — call `get()`, `first()`, `count()` or `paginate()` instead.
 
+`latest()`, `oldest()`, `inRandomOrder()` and `reorder()` are forwarded the same way as `orderBy()`: they only shape which rows make it into the candidate window, since the relevance `ORDER BY` is appended after them and PHP-side rescoring re-sorts by `_score` whenever `withRelevance` is on (the default) — call `withRelevance(false)` if you want the forwarded order to stick. The closure passed to `when()`, `unless()` or `tap()` receives the underlying Eloquent builder, not the `SearchBuilder`.
+
 ### Eloquent & Query Builder Support
 
 ```php
@@ -451,7 +453,9 @@ $page = FederatedSearch::across([User::class, Product::class])
 
 // paginate()'s total() counts only reachable rows: when limitPerModel() caps a model's
 // contribution, that model's share of the total is capped the same way, so the page
-// count never promises more rows than the search can actually return.
+// count never promises more rows than the search can actually return. Each model's share
+// is also bounded by max_candidates (default 1000, see "max_candidates Tuning" below) —
+// a model with more matches than that never contributes more than max_candidates rows.
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->limitPerModel(5)
@@ -462,6 +466,8 @@ $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->simplePaginate(15);
 ```
+
+Narrowing the columns per search with `searchIn()` still keeps each model's own configured stop words, synonyms and accent-insensitivity settings — only the column list is overridden.
 
 ### Search Analytics
 

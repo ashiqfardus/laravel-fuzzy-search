@@ -19,6 +19,14 @@ were parsed into the config array but never read by the package. As of 2.1.0 the
 changes: the new defaults reproduce the same values the PHP scorer already used internally, so
 ranking is identical.
 
+That "identical" claim is about the PHP-side rescoring. The SQL `ORDER BY` used while fetching
+the initial candidate set is a separate story: it previously used hard-coded weights
+(`100`/`50`/`10` for exact/prefix/contains) and now uses the same `100`/`80`/`60` values as
+`scoring.*`. On a search that matches more rows than `max_candidates`, that `ORDER BY` decides
+which rows make it into the candidate window in the first place — so on tables where matches
+exceed `max_candidates`, the candidate window itself (not just its final order) can differ from
+v2.0, even with an untouched config.
+
 **If you published the config and edited `scoring.*`** — because the block looked like it did
 something — those values now apply for the first time and **will change result ordering**.
 Before v2.1.0, the `scoring` block defaulted to `exact_match: 100, prefix_match: 50, contains: 25,
@@ -78,7 +86,10 @@ few affect what you get back from a search:
   run `fuzzy-search:rebuild "App\Models\YourModel" --fresh` once.
 - **Paginated BM25 `_score` is now corpus-wide.** `_score` on a paginated BM25 page is normalised
   against the corpus-wide maximum (as `get()` already did), not the page's own maximum — so page
-  2's top row is no longer always `1.0`.
+  2's top row is no longer always `1.0`. The LIKE and extended paths changed too: `paginate()`
+  now normalises `_score` across the whole `max_candidates` candidate window instead of within
+  the current page (v2.0 behaviour); pages whose offset falls beyond that window still normalise
+  within the page, same as before.
 - **BM25 now honours your constraints before cutting the page.** `filter()`/`filterIn()`,
   `where()` constraints, and global scopes are applied *before* the ranking is cut to the
   requested page, instead of after. Selective filters no longer return short or empty pages, and
