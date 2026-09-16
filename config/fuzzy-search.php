@@ -157,12 +157,15 @@ return [
     | Indexing Configuration
     |--------------------------------------------------------------------------
     |
-    | Settings for the search index table
+    | Settings for the BM25 inverted index (fuzzy_index_* tables).
+    |
+    | Laravel merges package config one top-level key at a time, so if you override
+    | 'indexing' in your own config file, copy the whole block — a partial override
+    | drops the keys you leave out (the code falls back to these defaults).
     |
     */
     'indexing' => [
         'enabled'            => false,   // Set true to enable observer-based auto-indexing on model save/delete
-        'table'              => 'search_index',
         'async'              => true,
         'queue'              => 'default',
         'chunk_size'         => 500,

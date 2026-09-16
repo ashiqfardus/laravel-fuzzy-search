@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
+## [2.0.1] — 2026-09-16
+
+### Fixed
+
+- Allow `symfony/finder` ^8 so the package installs alongside Laravel 13.
+
 ## [2.0.0] — 2026-05-05
 
 v2.0.0 is a major release adding a BM25 inverted index, extended search syntax, in-memory search, Scout integration, and significant scoring improvements. All v1.x behavior is preserved unless noted in the breaking changes below.
@@ -218,14 +224,15 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 - `docs/COMPARISON.md` - Comparison with Laravel Scout, Meilisearch, Algolia, Elasticsearch
 
 ### 📋 Requirements
-- PHP 8.0, 8.1, 8.2, 8.3, or 8.4
-- Laravel 9.x, 10.x, 11.x, or 12.x
+- PHP 8.1, 8.2, 8.3, or 8.4
+- Laravel 10.x, 11.x, 12.x, or 13.x
 - MySQL, PostgreSQL, SQLite, SQL Server, or MariaDB
 
 ---
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
 
+[2.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v2.0.0
 [1.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v1.0.0

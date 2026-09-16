@@ -1459,7 +1459,7 @@ composer benchmark
 ## Requirements
 
 - PHP 8.1 or higher
-- Laravel 9.x, 10.x, 11.x, 12.x, or 13.x
+- Laravel 10.x, 11.x, 12.x, or 13.x
 - Any supported database
 
 ---
