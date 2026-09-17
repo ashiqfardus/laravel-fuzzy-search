@@ -47,4 +47,71 @@ class SearchAnalytics
     {
         DB::table(static::table())->insert($row);
     }
+
+    private static function since(int $days): \Illuminate\Support\Carbon
+    {
+        return now()->subDays(max(0, $days))->startOfDay();
+    }
+
+    /** @return array<int, array{term: string, searches: int, avg_results: float}> */
+    public static function popular(int $days = 30, int $limit = 10): array
+    {
+        return DB::table(static::table())
+            ->where('created_at', '>=', static::since($days))
+            ->groupBy('normalized_term')
+            ->selectRaw('normalized_term, COUNT(*) as searches, AVG(result_count) as avg_results')
+            ->orderByDesc('searches')->orderBy('normalized_term')
+            ->limit($limit)
+            ->get()
+            ->map(fn ($r) => ['term' => (string) $r->normalized_term, 'searches' => (int) $r->searches, 'avg_results' => (float) $r->avg_results])
+            ->all();
+    }
+
+    /** Terms whose every search in the window returned nothing. @return array<int, array{term: string, searches: int}> */
+    public static function zeroResults(int $days = 30, int $limit = 10): array
+    {
+        return DB::table(static::table())
+            ->where('created_at', '>=', static::since($days))
+            ->groupBy('normalized_term')
+            ->selectRaw('normalized_term, COUNT(*) as searches, MAX(result_count) as best')
+            ->havingRaw('MAX(result_count) = 0')
+            ->orderByDesc('searches')->orderBy('normalized_term')
+            ->limit($limit)
+            ->get()
+            ->map(fn ($r) => ['term' => (string) $r->normalized_term, 'searches' => (int) $r->searches])
+            ->all();
+    }
+
+    /** @return array<string, float> path => average latency in ms */
+    public static function averageLatency(int $days = 30): array
+    {
+        return DB::table(static::table())
+            ->where('created_at', '>=', static::since($days))
+            ->groupBy('path')
+            ->selectRaw('path, AVG(latency_ms) as avg_ms')
+            ->orderBy('path')
+            ->get()
+            ->mapWithKeys(fn ($r) => [(string) $r->path => round((float) $r->avg_ms, 2)])
+            ->all();
+    }
+
+    /** @return array<string, int> 'YYYY-MM-DD' => searches, ascending */
+    public static function volume(int $days = 30): array
+    {
+        return DB::table(static::table())
+            ->where('created_at', '>=', static::since($days))
+            ->groupBy('day')
+            ->selectRaw('day, COUNT(*) as searches')
+            ->orderBy('day')
+            ->get()
+            ->mapWithKeys(fn ($r) => [substr((string) $r->day, 0, 10) => (int) $r->searches])
+            ->all();
+    }
+
+    public static function prune(?int $days = null): int
+    {
+        $days ??= (int) config('fuzzy-search.analytics.retention_days', 30);
+
+        return DB::table(static::table())->where('created_at', '<', now()->subDays($days))->delete();
+    }
 }
