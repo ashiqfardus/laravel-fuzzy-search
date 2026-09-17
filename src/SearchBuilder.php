@@ -2468,17 +2468,24 @@ class SearchBuilder
             return [];
         }
 
-        // No dictionary yet (migrations not run) → nothing to suggest. Checked explicitly
-        // instead of swallowing every QueryException, so real SQL errors surface.
-        if (!\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
-            return [];
-        }
-
         $term    = mb_strtolower(trim($this->searchTerm));
         $termLen = mb_strlen($term);
 
+        // The schema is only inspected when the dictionary query actually fails, so the happy
+        // path costs one query instead of two. A missing table (migrations not run) means
+        // "nothing to suggest"; anything else is a real SQL error and must surface.
+        try {
+            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, 3, 300);
+        } catch (\Illuminate\Database\QueryException $e) {
+            if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
+                throw $e; // a real database error — surface it
+            }
+
+            return []; // dictionary not migrated yet
+        }
+
         $alternatives = [];
-        foreach (app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, 3, 300) as $candidate) {
+        foreach ($candidates as $candidate) {
             if ($candidate['distance'] === 0) {
                 continue;
             }
