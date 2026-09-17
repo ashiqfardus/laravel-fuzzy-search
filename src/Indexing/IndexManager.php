@@ -273,7 +273,18 @@ class IndexManager
             throw new \InvalidArgumentException("{$modelClass}::\$searchable['{$key}'] must name a class implementing {$interface}, got '{$class}'.");
         }
 
-        return $language === null ? new $class() : new $class($language);
+        if ($language === null) {
+            return new $class();
+        }
+
+        // A language only means something to a stemmer that takes one (PorterStemmer). Constructing
+        // NullStemmer('French') would silently ignore it — say so instead of stemming nothing.
+        $ctor = (new \ReflectionClass($class))->getConstructor();
+        if ($ctor === null || $ctor->getNumberOfParameters() === 0) {
+            throw new \InvalidArgumentException("{$modelClass}::\$searchable['stemmer_language'] needs a stemmer that accepts a language (for example PorterStemmer); {$class} takes none.");
+        }
+
+        return new $class($language);
     }
 
     /**

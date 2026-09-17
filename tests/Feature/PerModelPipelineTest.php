@@ -112,4 +112,14 @@ class PerModelPipelineTest extends TestCase
         $bad = new class extends CjkDoc { protected array $searchable = ['columns' => ['title' => 1], 'tokenizer' => 'Nope\\Tokenizer']; };
         app(IndexManager::class)->pipelineFor($bad::class);
     }
+
+    public function test_stemmer_language_without_a_language_aware_stemmer_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("stemmer_language");
+
+        // Default stemmer is NullStemmer: a language would be silently ignored, so it is refused.
+        $bad = new class extends CjkDoc { protected array $searchable = ['columns' => ['title' => 1], 'stemmer_language' => 'French']; };
+        app(IndexManager::class)->pipelineFor($bad::class);
+    }
 }
