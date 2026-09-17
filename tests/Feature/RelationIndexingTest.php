@@ -27,6 +27,10 @@ class RelationIndexingTest extends TestCase
         $this->createRelationTables();
         $this->seedRelationFixtures();
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        // Static toggles on the fixture model below leak across tests (the class isn't
+        // reloaded between them) — reset to the default hook behaviour every time.
+        IndexedPost::$blank    = false;
+        IndexedPost::$textMode = null;
     }
 
     protected function tearDown(): void
@@ -72,6 +76,10 @@ class RelationIndexingTest extends TestCase
     {
         app(IndexManager::class)->indexBatch(IndexedPost::with('author', 'tags')->get());
         $tolkien = Author::whereName('Tolkien')->first();
+        $harry   = IndexedPost::whereTitle('Harry')->first();
+        $winter  = IndexedPost::whereTitle('Winter')->first();
+        $harryTermsBefore  = $this->termsFor($harry);
+        $winterTermsBefore = $this->termsFor($winter);
 
         $tolkien->update(['name' => 'Professor']);
         $count = IndexedPost::reindexRelated('author_id', $tolkien->id);
@@ -80,11 +88,14 @@ class RelationIndexingTest extends TestCase
         $ring = IndexedPost::whereTitle('The Ring')->first();
         $this->assertContains('professor', $this->termsFor($ring));
         $this->assertNotContains('tolkien', $this->termsFor($ring));
+        // reindexRelated() must only touch rows pointing at the changed author.
+        $this->assertSame($harryTermsBefore, $this->termsFor($harry));
+        $this->assertSame($winterTermsBefore, $this->termsFor($winter));
     }
 
     public function test_reindex_related_dispatches_jobs_when_async(): void
     {
-        config(['fuzzy-search.indexing.async' => true]);
+        config(['fuzzy-search.indexing.async' => true, 'fuzzy-search.indexing.queue' => 'indexing']);
         Queue::fake();
         $tolkien = Author::whereName('Tolkien')->first();
 
@@ -92,6 +103,7 @@ class RelationIndexingTest extends TestCase
 
         $this->assertSame(1, $count);
         Queue::assertPushed(IndexModelJob::class, 1);
+        Queue::assertPushed(IndexModelJob::class, fn ($job) => $job->queue === 'indexing');
     }
 
     public function test_index_model_job_reloads_through_search_index_query(): void
@@ -104,6 +116,39 @@ class RelationIndexingTest extends TestCase
         $this->assertSame(1, IndexedPost::$hookCalls, 'single-row reindex must eager-load through searchIndexQuery()');
         $this->assertSame(['epic', 'martin', 'winter'], $this->termsFor($post));
     }
+
+    public function test_indexing_an_empty_hook_result_clears_stale_postings(): void
+    {
+        $post = IndexedPost::whereTitle('The Ring')->first();
+        app(IndexManager::class)->indexModel($post);
+        $this->assertNotEmpty($this->termsFor($post));
+
+        IndexedPost::$blank = true;
+        app(IndexManager::class)->indexModel($post);
+
+        $this->assertSame([], $this->termsFor($post));
+    }
+
+    public function test_searchable_text_collection_value_indexes_its_scalar_items(): void
+    {
+        IndexedPost::$textMode = 'collection';
+        $post = IndexedPost::with('tags')->whereTitle('The Ring')->first();
+
+        app(IndexManager::class)->indexModel($post);
+
+        $this->assertSame(['epic', 'fantasy'], $this->termsFor($post));
+    }
+
+    public function test_searchable_text_non_scalar_value_throws(): void
+    {
+        IndexedPost::$textMode = 'invalid';
+        $post = IndexedPost::whereTitle('The Ring')->first();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/"bad"/');
+
+        app(IndexManager::class)->indexModel($post);
+    }
 }
 
 class IndexedPost extends Model
@@ -111,6 +156,12 @@ class IndexedPost extends Model
     use Searchable;
 
     public static int $hookCalls = 0;
+
+    /** When true, searchableText() returns [] — simulates all indexable text disappearing. */
+    public static bool $blank = false;
+
+    /** null = default hook body; 'collection' / 'invalid' switch to the variants below. */
+    public static ?string $textMode = null;
 
     protected $table   = 'posts';
     protected $guarded = [];
@@ -139,6 +190,19 @@ class IndexedPost extends Model
     /** Everything the BM25 index should contain for this row. */
     public function searchableText(): array
     {
+        if (static::$blank) {
+            return [];
+        }
+
+        if (static::$textMode === 'collection') {
+            // A Collection of scalars, left un-imploded — IndexManager must normalise it.
+            return ['tags' => $this->tags->pluck('name')];
+        }
+
+        if (static::$textMode === 'invalid') {
+            return ['bad' => new \stdClass()];
+        }
+
         return [
             'title'  => $this->title,
             'author' => $this->author?->name,

@@ -37,6 +37,10 @@ class IndexManager
         $tokens = $this->buildTokenFrequencyMap($model, $columns);
 
         if (empty($tokens)) {
+            // The model's indexable text became empty (tags/relations cleared, hook now
+            // returns nothing) — clear any stale postings from a previous index instead of
+            // silently leaving them searchable.
+            $this->removeFromIndex($modelType, $modelId);
             return;
         }
 
@@ -252,6 +256,9 @@ class IndexManager
 
             $tokens = $this->buildTokenFrequencyMap($model, $columns);
             if (empty($tokens)) {
+                // Same as indexModel(): a model whose text emptied out must lose its stale
+                // postings, not just be skipped from the batch's re-index.
+                $this->removeFromIndex($modelType, $model->getKey());
                 continue;
             }
 
@@ -420,7 +427,13 @@ class IndexManager
      * The texts to index for a model: the searchableText() hook when the model defines one
      * (any keys, related data allowed), otherwise the searchable columns' attributes.
      *
+     * A hook value may be a Collection or array (e.g. `$this->tags->pluck('name')`) — its
+     * scalar items are joined with a space so callers don't have to implode() themselves.
+     * Any other non-scalar (an object without __toString) is a hook bug, not silently
+     * indexable text, so it throws rather than being coerced into a warning-laden string.
+     *
      * @return array<string, string> name => non-empty text
+     * @throws \InvalidArgumentException if a hook value is a non-scalar, non-stringable object
      */
     private function searchableTexts(Model $model, array $columns): array
     {
@@ -430,6 +443,20 @@ class IndexManager
 
         $clean = [];
         foreach ($texts as $name => $value) {
+            if ($value instanceof \Illuminate\Support\Collection) {
+                $value = $value->all();
+            }
+
+            if (is_array($value)) {
+                $value = implode(' ', array_map('strval', array_filter($value, 'is_scalar')));
+            } elseif (is_object($value) && !method_exists($value, '__toString')) {
+                throw new \InvalidArgumentException(
+                    'fuzzy-search: searchableText() value for "' . $name . '" on ' . get_class($model) .
+                    ' is a ' . get_class($value) . ', which cannot be indexed as text. ' .
+                    'Return a string, scalar, array, or Collection of scalars instead.'
+                );
+            }
+
             if ($value === null || $value === '') { // empty() would also skip the legitimate string "0"
                 continue;
             }

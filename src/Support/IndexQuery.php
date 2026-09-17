@@ -9,8 +9,9 @@ use Illuminate\Database\Eloquent\Builder;
  *
  * A model may define `searchIndexQuery(Builder $query): Builder` to customise it — most
  * often to eager-load the relations its searchable accessors read, so that rebuilding
- * 100k products does not run 100k brand queries. Used by RebuildCommand and
- * RebuildIndexJob; single-row reindexing (IndexModelJob) loads the model directly.
+ * 100k products does not run 100k brand queries. Used by RebuildCommand, RebuildIndexJob,
+ * and IndexModelJob — single-row reindexes load through it too, so a searchableText() hook
+ * that reads a relation is eager-loaded there as well, not just on bulk rebuilds.
  */
 final class IndexQuery
 {

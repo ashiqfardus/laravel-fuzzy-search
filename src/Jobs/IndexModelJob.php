@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Jobs;
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\Concerns\ConfiguresRetryLimits;
+use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -28,7 +29,7 @@ class IndexModelJob implements ShouldQueue
         // just bulk rebuilds. Use withTrashed() when available so SoftDeletes models are not
         // silently excluded by the global scope. A soft-deleted model must be removed from
         // the index, not re-indexed. A restored model (trashed=false) is re-indexed.
-        $query = \Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery::for($this->modelClass);
+        $query = IndexQuery::for($this->modelClass);
         if (method_exists($this->modelClass, 'withTrashed')) {
             $query->withTrashed();
         }

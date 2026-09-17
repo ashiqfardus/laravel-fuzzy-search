@@ -4,6 +4,8 @@ namespace Ashiqfardus\LaravelFuzzySearch\Traits;
 
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\ReindexModelJob;
 use Illuminate\Support\Facades\Schema;
 
@@ -104,10 +106,10 @@ trait Searchable
             ->chunkById(500, function ($rows) use ($async, $queue, &$count) {
                 foreach ($rows as $row) {
                     if ($async) {
-                        \Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob::dispatch(static::class, $row->getKey())->onQueue($queue);
+                        IndexModelJob::dispatch(static::class, $row->getKey())->onQueue($queue);
                     } else {
-                        (new \Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob(static::class, $row->getKey()))
-                            ->handle(app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class));
+                        (new IndexModelJob(static::class, $row->getKey()))
+                            ->handle(app(IndexManager::class));
                     }
                     $count++;
                 }
