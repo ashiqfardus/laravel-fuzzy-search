@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extended syntax (`'include`, `^prefix`, `word$`, `=exact`, `!not`, `|`, grouping) works on relation columns; NOT of a relation term excludes rows with any matching related row.
 - searchableText() model hook: return name => text (related data allowed) and the BM25 index stores exactly that; searchIndexQuery() is honoured by single-row reindexes too.
 - Searchable::reindexRelated($foreignKey, $id) reindexes every row pointing at a related record (queued or in-process).
+- BM25 results eager-load the relation paths named in `searchIn()`, so `@fuzzyHighlight` on a relation column works on the index path too.
 
 ### Changed
 
@@ -39,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scoring.*`, `highlighting.*`, `performance.max_patterns` and `unicode.normalize` config keys are now read (they were documented as reserved). Defaults preserve v2.0 ranking.
 - FederatedSearch results are now deterministically ordered: score, then orderByModel() (or the across() order), then primary key — previously ties and withRelevance(false) results came back in database order.
 - Federated `searchIn()` narrowing keeps each model's configured stop words, synonyms and accent settings.
-- searchIn() rejects dotted names whose first segment is neither a relation on the model nor a plain table prefix (three or more segments), with a message naming the column.
+- A search whose `searchIn()` contains a dotted name whose first segment is neither a relation on the model nor a plain table prefix (three or more segments) throws `InvalidArgumentException` naming the column when the query is built.
 
 ### Removed
 
