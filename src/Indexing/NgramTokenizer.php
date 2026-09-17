@@ -7,6 +7,10 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
  * Each run of letters/marks/digits is lower-cased and cut into every n-character window;
  * a run shorter than n is emitted whole. Duplicates are kept so term frequencies are right.
  *
+ * Windows are cut per code point, not per grapheme: on scripts that write accents or vowels as
+ * combining marks (decomposed Latin, Vietnamese, Indic, Thai) a window can separate a base
+ * letter from its mark. Use ScriptAwareTokenizer for mixed text — it n-grams only CJK runs.
+ *
  * Opt-in: config('fuzzy-search.indexing.tokenizer') or $searchable['tokenizer'].
  */
 class NgramTokenizer implements TokenizerInterface
