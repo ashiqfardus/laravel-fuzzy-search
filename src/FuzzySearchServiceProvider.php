@@ -14,6 +14,8 @@ use Ashiqfardus\LaravelFuzzySearch\Console\StatusCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\RebuildCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\FlushCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\UpgradeV1Command;
+use Ashiqfardus\LaravelFuzzySearch\Console\AnalyticsCommand;
+use Ashiqfardus\LaravelFuzzySearch\Console\AnalyticsPruneCommand;
 
 class FuzzySearchServiceProvider extends ServiceProvider
 {
@@ -95,6 +97,8 @@ class FuzzySearchServiceProvider extends ServiceProvider
                 RebuildCommand::class,
                 FlushCommand::class,
                 UpgradeV1Command::class,
+                AnalyticsCommand::class,
+                AnalyticsPruneCommand::class,
             ]);
         }
 

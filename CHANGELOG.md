@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FuzzySearchExecuted carries resultCount, path (like|bm25|extended|in_memory) and modelClass; in-memory searches now fire it too. Existing five-argument listeners keep working.
 - Persisted search analytics (opt-in): config analytics.* and the fuzzy_search_logs table record term, normalized term, model, algorithm, path, result count and latency per search — inline or on a queue, sampled, with an optional SHA-256 term hash.
 - SearchAnalytics facade: popular(), zeroResults(), averageLatency() by path, volume() per day, prune().
+- Commands fuzzy-search:analytics [--days=30] [--limit=20] [--zero-results] and fuzzy-search:analytics:prune [--days=].
 
 ### Changed
 
