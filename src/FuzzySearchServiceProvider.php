@@ -22,7 +22,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__ . '/../config/fuzzy-search.php', 'fuzzy-search');
 
         $this->app->singleton(FuzzySearch::class, function ($app) {
-            return new FuzzySearch(config('fuzzy-search'));
+            return new FuzzySearch(); // live config — see FuzzySearch::currentConfig()
         });
 
         // Register SearchBuilder for dependency injection

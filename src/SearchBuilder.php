@@ -2418,55 +2418,41 @@ class SearchBuilder
      */
     public function didYouMean(int $limit = 3): array
     {
-        if (empty($this->searchTerm) || strlen($this->searchTerm) < 2) {
+        if (empty($this->searchTerm) || mb_strlen($this->searchTerm) < 2) {
             return [];
         }
 
-        $term    = strtolower(trim($this->searchTerm));
-        $termLen = strlen($term);
-
-        try {
-            // Query the term dictionary — fast and accurate at any dataset size
-            $candidates = $this->didYouMeanCandidateQuery($term)->get();
-        } catch (\Illuminate\Database\QueryException $e) {
-            // Index tables don't exist — gracefully return empty
-            if (config('app.debug', false)) {
-                \Illuminate\Support\Facades\Log::notice(
-                    'fuzzy-search: didYouMean() returning empty — fuzzy_index_terms table missing. Run migrations.'
-                );
-            }
+        // No dictionary yet (migrations not run) → nothing to suggest. Checked explicitly
+        // instead of swallowing every QueryException, so real SQL errors surface.
+        if (!\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
             return [];
         }
 
-        if ($candidates->isEmpty()) {
-            return [];
-        }
+        $term    = mb_strtolower(trim($this->searchTerm));
+        $termLen = mb_strlen($term);
 
         $alternatives = [];
-        foreach ($candidates as $candidate) {
-            $distance = levenshtein($term, $candidate->term);
-            $maxLen   = max($termLen, strlen($candidate->term));
-
-            if ($distance > 0 && $distance <= 3) {
-                $alternatives[] = [
-                    'term'        => $candidate->term,
-                    'distance'    => $distance,
-                    'confidence'  => round(1 - ($distance / $maxLen), 2),
-                    '_doc_count'  => $candidate->doc_count,
-                ];
+        foreach (app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, 3, 300) as $candidate) {
+            if ($candidate['distance'] === 0) {
+                continue;
             }
+            $maxLen = max($termLen, mb_strlen($candidate['term']));
+
+            $alternatives[] = [
+                'term'       => $candidate['term'],
+                'distance'   => $candidate['distance'],
+                'confidence' => round(1 - ($candidate['distance'] / $maxLen), 2),
+                '_doc_count' => $candidate['doc_count'],
+            ];
         }
 
         usort($alternatives, function ($a, $b) {
-            // Sort by doc_count first (descending) — most common suggestions first
             if ($a['_doc_count'] !== $b['_doc_count']) {
                 return $b['_doc_count'] - $a['_doc_count'];
             }
-            // Then by distance (ascending) as tiebreaker
             if ($a['distance'] !== $b['distance']) {
                 return $a['distance'] - $b['distance'];
             }
-            // Finally by confidence (descending)
             return $b['confidence'] <=> $a['confidence'];
         });
 
@@ -2478,32 +2464,6 @@ class SearchBuilder
             0,
             $limit
         );
-    }
-
-    /**
-     * Build (but do not execute) the fuzzy_index_terms dictionary query used by
-     * didYouMean(). Kept separate so its SQL can be pinned per driver via toSql()
-     * without needing a live connection for every driver — see
-     * tests/Unit/DidYouMeanTest.php.
-     */
-    protected function didYouMeanCandidateQuery(string $term): \Illuminate\Database\Query\Builder
-    {
-        $termLen = strlen($term);
-
-        return \Illuminate\Support\Facades\DB::table('fuzzy_index_terms')
-            ->select('term', 'doc_count')
-            ->where('term', '!=', $term)
-            ->whereRaw(
-                \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::lengthFunction(
-                    $this->query->getConnection()->getDriverName()
-                ) . '(term) BETWEEN ? AND ?',
-                [
-                    max(1, $termLen - 3),
-                    $termLen + 3,
-                ]
-            )
-            ->orderByDesc('doc_count')
-            ->limit(300);
     }
 
     /**

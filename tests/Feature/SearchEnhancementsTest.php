@@ -92,9 +92,9 @@ class SearchEnhancementsTest extends TestCase
     {
         // Seed term dictionary so didYouMean has something to find
         $this->app['db']->table('fuzzy_index_terms')->insert([
-            ['term' => 'john',  'doc_count' => 50],
-            ['term' => 'jones', 'doc_count' => 20],
-            ['term' => 'jane',  'doc_count' => 30],
+            ['term' => 'john',  'doc_count' => 50, 'term_length' => mb_strlen('john')],
+            ['term' => 'jones', 'doc_count' => 20, 'term_length' => mb_strlen('jones')],
+            ['term' => 'jane',  'doc_count' => 30, 'term_length' => mb_strlen('jane')],
         ]);
 
         // 'jonh' has Levenshtein distance 1 from 'john'

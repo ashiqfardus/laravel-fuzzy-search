@@ -9,7 +9,7 @@ use Ashiqfardus\LaravelFuzzySearch\InMemorySearch;
 
 class FuzzySearch
 {
-    protected array $config;
+    protected ?array $config;
 
     protected const DRIVER_PGSQL  = 'pgsql';
     protected const DRIVER_SQLITE = 'sqlite';
@@ -39,9 +39,20 @@ class FuzzySearch
         return new InMemorySearch($items);
     }
 
-    public function __construct(array $config)
+    /** null = built by the container: read config('fuzzy-search') live on every call. */
+    public function __construct(?array $config = null)
     {
         $this->config = $config;
+    }
+
+    /**
+     * The configuration this instance works from. The container-built singleton is resolved
+     * once at boot, so it reads the live config on each call and sees runtime overrides
+     * (tests, per-tenant config); an explicit constructor array stays a frozen snapshot.
+     */
+    protected function currentConfig(): array
+    {
+        return $this->config ?? (array) config('fuzzy-search', []);
     }
 
     public function applyFuzzyWhere(
@@ -56,7 +67,7 @@ class FuzzySearch
             throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
         }
 
-        $algorithm = $algorithm ?? $this->config['default_algorithm'] ?? 'fuzzy';
+        $algorithm = $algorithm ?? $this->currentConfig()['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
 
         // accent_insensitive is a per-call flag, not a global config key.
@@ -65,7 +76,7 @@ class FuzzySearch
         // explicit opt-in via ->accentInsensitive() at the query level.
         if (($options['accent_insensitive'] ?? false)
             && $this->getDriver($query) === self::DRIVER_PGSQL
-            && ($this->config['use_native_functions'] ?? false)
+            && ($this->currentConfig()['use_native_functions'] ?? false)
         ) {
             return $this->applyWithUnaccent($query, $column, $value, $boolean);
         }
@@ -150,7 +161,7 @@ class FuzzySearch
 
     protected function mergeOptions(string $algorithm, array $options): array
     {
-        $base = $this->config;
+        $base = $this->currentConfig();
         $base[$algorithm] = array_merge($base[$algorithm] ?? [], $options);
         if (isset($options['max_patterns'])) {
             $base['max_patterns'] = (int) $options['max_patterns'];

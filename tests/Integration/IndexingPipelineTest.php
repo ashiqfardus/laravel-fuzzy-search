@@ -110,7 +110,7 @@ class IndexingPipelineTest extends TestCase
     public function test_did_you_mean_returns_suggestion_from_indexed_terms(): void
     {
         $this->app['db']->table('fuzzy_index_terms')
-            ->upsert(['term' => 'laravel', 'doc_count' => 200], ['term'], ['doc_count' => 200]);
+            ->upsert(['term' => 'laravel', 'doc_count' => 200, 'term_length' => mb_strlen('laravel')], ['term'], ['doc_count' => 200]);
 
         $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
         $builder     = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(

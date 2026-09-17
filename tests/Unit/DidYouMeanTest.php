@@ -13,8 +13,11 @@ class DidYouMeanTest extends TestCase
 
     private function seedTerm(string $term, int $docCount = 10): void
     {
-        $this->app['db']->table('fuzzy_index_terms')
-            ->upsert(['term' => $term, 'doc_count' => $docCount], ['term'], ['doc_count' => $docCount]);
+        $this->app['db']->table('fuzzy_index_terms')->upsert(
+            ['term' => $term, 'doc_count' => $docCount, 'term_length' => mb_strlen($term)],
+            ['term'],
+            ['doc_count' => $docCount]
+        );
     }
 
     private function makeBuilder(string $term): SearchBuilder
@@ -76,63 +79,40 @@ class DidYouMeanTest extends TestCase
         }
     }
 
-    public function test_did_you_mean_uses_the_drivers_character_length_function(): void
+    public function test_did_you_mean_filters_the_dictionary_by_term_length(): void
     {
         $this->seedTerm('john', 50);
+        $this->seedTerm('johnathanson', 90); // 12 chars: outside the ±3 window of "jonh"
 
         $this->app['db']->enableQueryLog();
-        $this->makeBuilder('jonh')->didYouMean(3);
+        $terms = array_column($this->makeBuilder('jonh')->didYouMean(3), 'term');
         $log = $this->app['db']->getQueryLog();
         $this->app['db']->disableQueryLog();
 
-        $termQuery = collect($log)->first(fn ($q) => str_contains($q['query'], 'fuzzy_index_terms'));
-        $this->assertNotNull($termQuery);
-
-        $expected = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::lengthFunction(
-            $this->app['db']->connection()->getDriverName()
-        );
-
-        $this->assertStringContainsString($expected . '(term)', $termQuery['query']);
-        if ($expected !== 'LENGTH') {
-            // A bare LENGTH( must not appear; CHAR_LENGTH( legitimately contains the substring.
-            $this->assertDoesNotMatchRegularExpression('/(?<![A-Za-z_])LENGTH\(term\)/', $termQuery['query']);
-        }
+        $this->assertSame(['john'], $terms);
+        $termQuery = collect($log)->last(fn ($q) => str_contains($q['query'], 'fuzzy_index_terms'));
+        $this->assertStringContainsString('term_length', $termQuery['query']);
+        $this->assertStringNotContainsString('LENGTH(', strtoupper($termQuery['query']));
     }
 
-    public function test_did_you_mean_candidate_query_uses_the_drivers_length_function_per_dialect(): void
+    public function test_did_you_mean_returns_empty_when_the_dictionary_table_is_missing(): void
     {
-        $expected = [
-            'mysql'   => 'CHAR_LENGTH(term)',
-            'mariadb' => 'CHAR_LENGTH(term)',
-            'pgsql'   => 'LENGTH(term)',
-            'sqlite'  => 'LENGTH(term)',
-            'sqlsrv'  => 'LEN(term)',
-        ];
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_postings');
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_terms');
 
-        $checked = 0;
+        $this->assertSame([], $this->makeBuilder('jonh')->didYouMean(3));
+    }
 
-        foreach ($expected as $driver => $fragment) {
-            if (!$this->fakeDriverAvailable($driver)) {
-                continue;
-            }
+    public function test_did_you_mean_is_character_based(): void
+    {
+        // Cyrillic: a transposition is 2 character edits but 4 byte edits. (Not an accent pair —
+        // MySQL's *_ci collations would consider café/cafe equal and hide the candidate.)
+        $this->seedTerm('пример', 5);
 
-            $builder = new SearchBuilder(
-                $this->fakeConnectionTable($driver, 'users'),
-                app(FuzzySearch::class)
-            );
-            $builder->search('jonh')->searchIn(['name']);
+        $suggestion = $this->makeBuilder('приемр')->didYouMean(1)[0];
 
-            $sql = \Closure::bind(
-                fn () => $this->didYouMeanCandidateQuery('jonh')->toSql(),
-                $builder,
-                SearchBuilder::class
-            )();
-
-            $this->assertStringContainsString($fragment, $sql, $driver);
-
-            $checked++;
-        }
-
-        $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlite and sqlsrv must be asserted');
+        $this->assertSame('пример', $suggestion['term']);
+        $this->assertSame(2, $suggestion['distance']);
+        $this->assertSame(0.67, $suggestion['confidence']); // round(1 - 2/6, 2)
     }
 }
