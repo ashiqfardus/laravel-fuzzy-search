@@ -115,6 +115,35 @@ few affect what you get back from a search:
 - `_highlighted`/`_matches` gain dotted keys only when you search relation columns.
 - `AstCompiler::compile()` (internal, `@internal`) gained an optional fourth argument.
 
+## Extended syntax: ~ and field: are operators now
+
+`extended()` / `searchBoolean()` gained two operators:
+
+- **`~word`** — a typo-tolerant term, run through the same driver as the rest of the package. It
+  follows `typoTolerance()` (default 2; `0`, or `config('fuzzy-search.typo_tolerance.enabled') ===
+  false`, makes it a plain substring match). `~` can't combine with `'`, `=`, `^` or a trailing
+  `$` — `~word` stands on its own (a field scope in front is fine: `name:~jonh`) — and `~` alone
+  throws.
+- **`field:term`** — scopes one term to one searchable column: a direct column, a table-qualified
+  column matched by its bare name (`users.name` answers to `name:`), or a relation column declared
+  in `searchIn()` / `$searchable['columns']` (`author.name:smith`). Any operator can follow the
+  colon (`email:^admin`, `name:~jonh`, `!name:bob`, `name:"john doe"`). `field:` with nothing after
+  it, or a field that isn't searchable, now throws `QuerySyntaxException` (the second lists the
+  searchable fields).
+
+**If an existing v2.0 query started a token with `~` or `identifier:`, it now parses differently.**
+Both operators are recognised only at the start of a token (after an optional `!`), so `12:30` and
+`jo~hn` are unaffected — but a v2.0 query such as `extended('~5 rating')` or `extended('ratio:1')`
+now tries to parse `~5` as a typo term or `ratio:` as a field scope instead of matching the token
+literally. Quote the token to keep the old, literal behaviour: `"~5" rating` / `"ratio:1"`.
+
+`useInvertedIndex()` combined with `extended()` still runs the query on the LIKE path — that was
+already true in v2.0, it's just visible now: `getDebugInfo()` reports `'algorithm' => 'extended'`
+and `'index_ignored' => true` whenever both are set. `count()` and `paginate()` used to disagree
+with `get()` here — they took the BM25 index path on the plain search term while `get()` correctly
+ran the extended query. All three (plus `simplePaginate()`, which was always correct — it runs
+through `get()`) now agree.
+
 ## Inverted index (BM25)
 
 - **New migration to run.** `fuzzy_index_terms` gained a `term_length` column — run `php artisan migrate`. Existing rows are backfilled automatically; no index rebuild is required.

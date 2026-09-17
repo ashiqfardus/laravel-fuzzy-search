@@ -196,7 +196,7 @@ $post->_highlighted['author.name'];            // "<mark>Tolk</mark>ien"
 - **Filtering** compiles to `whereHas()` (a portable `EXISTS` subquery); nested paths use the same `whereHas('comments.author', …)` Eloquent supports.
 - **Scoring** uses the column's `searchIn()` weight; a to-many relation counts its best related row.
 - **Highlighting**, `_matches` and `suggest()` include relation columns under the dotted key.
-- **Extended syntax** (`'include`, `^prefix`, `=exact`, `!not`, `|`) works on relation columns; `!tolkien` excludes rows with any matching related row.
+- **Extended syntax** (`'include`, `^prefix`, `=exact`, `!not`, `|`, `~word`, `field:word`) works on relation columns; `!tolkien` excludes rows with any matching related row, and `author.name:tolkien` scopes a term to that one relation column.
 - A dotted name is treated as a relation only when its first segment is a relation method on the model. `posts.title` on a model whose table is `posts` stays a table-qualified column, exactly as in v2.0. Relation paths need `Model::search()`; a Query Builder source throws.
 - Touched relations are eager-loaded on the results.
 - `searchIn()` on a `Model::search()` builder *adds* the listed columns to the model's configured `$searchable['columns']` (it has never replaced them); to search only the listed columns, list them all in `searchIn()` or build the query from `new SearchBuilder(Model::query(), app(FuzzySearch::class))`.
@@ -1039,6 +1039,18 @@ Use Fuse.js-style operators inside your search string for precise control over m
 | ` ` (whitespace) | AND (implicit) | `=John ^Doe` |
 | `( ... )` | Grouping | `admin (john \| jane)` |
 | `"phrase"` | Quoted single token | `"hello world"` |
+| `~word` | Typo-tolerant match (uses typoTolerance()) | `~jonh` |
+| `field:word` | Limit a term to one column (any operator after the colon) | `email:^admin`, `author.name:smith`, `!name:bob` |
+
+### Typo-tolerant and field-scoped terms
+
+`~word` runs the term through the same typo-tolerant matching as the rest of the package — the level set by `->typoTolerance()` (default 2), or a plain substring when the level is `0` or `config('fuzzy-search.typo_tolerance.enabled')` is `false`. `~` can't combine with `'`, `=`, `^`, or a trailing `$`; `~word` stands on its own (a field scope in front is fine — `name:~jonh`).
+
+`field:word` limits a term to one searchable column: a direct column, a table-qualified column matched by its bare name (`users.name` answers to `name:`), or a relation column declared in `searchIn()` / `$searchable['columns']` (`author.name:smith`). Any operator can follow the colon — `email:^admin`, `name:~jonh`, `!name:bob`, `name:"john doe"`. An unknown field throws `QuerySyntaxException` listing the searchable fields; `field:` with nothing after the colon throws too.
+
+Both operators are only recognised at the start of a token (after an optional `!`), so `12:30` and `jo~hn` stay literal — and so does a quoted phrase. Quote a term that should start with a literal `:` or `~` (`"name:john"`, `"~x"`).
+
+The extended syntax always runs on the LIKE path; `->useInvertedIndex()` is ignored for it — `getDebugInfo()` reports `index_ignored => true` when both are set.
 
 ### Usage
 
