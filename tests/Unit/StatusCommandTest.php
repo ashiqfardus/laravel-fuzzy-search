@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
@@ -23,6 +24,17 @@ class StatusCommandTest extends TestCase
         $this->artisan('fuzzy-search:status')
             ->assertSuccessful()
             ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '" --fresh')
+            ->run();
+    }
+
+    public function test_status_prints_no_warning_when_every_posting_has_a_column(): void
+    {
+        // indexModel() writes the meta row too, so the command reaches the legacy check.
+        app(IndexManager::class)->indexModel(User::first());
+
+        $this->artisan('fuzzy-search:status')
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('predate column weighting')
             ->run();
     }
 }

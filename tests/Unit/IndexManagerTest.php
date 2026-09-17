@@ -311,14 +311,21 @@ class IndexManagerTest extends TestCase
 
     public function test_index_batch_reindex_keeps_doc_count_correct_across_columns(): void
     {
-        $user = User::create(['name' => 'John Doe', 'email' => 'john@example.com']);
+        // Two documents so the decrement is visible: each carries "john" in BOTH name and email,
+        // i.e. two posting rows per document. Re-indexing only the first must take 1 off
+        // doc_count (COUNT(DISTINCT model_id)), not 2 (COUNT(*)) — with one document the `>= cnt`
+        // clamp in the UPDATE would hide the difference.
         $manager = app(IndexManager::class);
-        $manager->indexBatch(collect([$user]));
-        $manager->indexBatch(collect([$user]));
+        $first   = User::create(['name' => 'John Doe', 'email' => 'john@example.com']);
+        $second  = User::create(['name' => 'John Roe', 'email' => 'john.roe@example.com']);
+        $manager->indexBatch(collect([$first, $second]));
 
-        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
+        $manager->indexBatch(collect([$first]));
+
+        // COUNT(*) would decrement by 2, clamp 2 - 2 to 0 and re-add 1 for $first: doc_count 1.
+        $this->assertSame(2, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
         $this->assertSame(2, DB::table('fuzzy_index_postings')
-            ->where('model_id', (string) $user->getKey())
+            ->where('model_id', (string) $first->getKey())
             ->where('term_id', DB::table('fuzzy_index_terms')->where('term', 'john')->value('id'))
             ->count());
     }

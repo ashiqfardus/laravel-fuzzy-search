@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 require_once __DIR__ . '/../RelationModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
@@ -161,6 +162,20 @@ class RelationIndexingTest extends TestCase
         // untagged — but @fuzzyHighlight still needs the key present to render it at all.
         $this->assertArrayHasKey('author.name', $first->_highlighted);
         $this->assertSame('Tolkien', $first->_highlighted['author.name']);
+    }
+
+    public function test_column_weights_key_off_the_hook_key_not_the_configured_column(): void
+    {
+        // $searchable['columns'] configures 'author_name' 5, but searchableText() returns the
+        // author under the key 'author' — postings carry the hook key, so that is the only name
+        // a column weight can match. Documented rule, pinned here.
+        app(IndexManager::class)->indexBatch(IndexedPost::with('author', 'tags')->get());
+        $scorer     = app(Bm25Scorer::class);
+        $unweighted = $scorer->rank(['tolkien'], IndexedPost::class); // 'tolkien' lives only in the author text
+
+        $this->assertNotEmpty($unweighted);
+        $this->assertSame($unweighted, $scorer->rank(['tolkien'], IndexedPost::class, ['author_name' => 5]));
+        $this->assertNotSame($unweighted, $scorer->rank(['tolkien'], IndexedPost::class, ['author' => 5]));
     }
 
     public function test_searchable_text_non_scalar_value_throws(): void
