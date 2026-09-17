@@ -81,6 +81,10 @@ abstract class TestCase extends BaseTestCase
                 'de' => ['der', 'die', 'das', 'und', 'oder', 'aber', 'in', 'auf', 'an', 'zu', 'für', 'von'],
                 'fr' => ['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'mais', 'dans', 'sur', 'à'],
                 'es' => ['el', 'la', 'los', 'las', 'un', 'una', 'y', 'o', 'pero', 'en', 'sobre', 'a'],
+                'it' => ['il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'una', 'e', 'o', 'ma', 'in', 'su', 'per', 'di', 'a', 'da', 'che', 'non', 'con'],
+                'pt' => ['o', 'a', 'os', 'as', 'um', 'uma', 'e', 'ou', 'mas', 'em', 'no', 'na', 'de', 'do', 'da', 'para', 'com', 'que', 'não', 'por'],
+                'nl' => ['de', 'het', 'een', 'en', 'of', 'maar', 'in', 'op', 'aan', 'te', 'voor', 'van', 'is', 'dat', 'die', 'met', 'niet', 'zijn', 'er'],
+                'ru' => ['и', 'в', 'не', 'на', 'я', 'что', 'он', 'с', 'а', 'как', 'это', 'по', 'но', 'из', 'у', 'за', 'от', 'то', 'же', 'к'],
             ],
             'analytics' => [
                 'enabled'        => false,

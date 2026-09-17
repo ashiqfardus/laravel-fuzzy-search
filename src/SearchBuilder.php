@@ -405,7 +405,9 @@ class SearchBuilder
         if (is_string($stopWords)) {
             // Locale code
             $this->stopWordLocale = $stopWords;
-            $this->stopWords = $this->defaultStopWords[$stopWords] ?? [];
+            $this->stopWords = config()->has("fuzzy-search.stop_words.{$stopWords}")
+                ? \Ashiqfardus\LaravelFuzzySearch\Support\StopWords::forLocale($stopWords)
+                : ($this->defaultStopWords[$stopWords] ?? []);
         } elseif (is_array($stopWords)) {
             $this->stopWords = $stopWords;
         } else {
@@ -741,7 +743,7 @@ class SearchBuilder
         // Apply stop words
         if (isset($preset['stop_words_enabled']) && $preset['stop_words_enabled']) {
             $locale = $preset['locale'] ?? config('fuzzy-search.locale', 'en');
-            $this->ignoreStopWords(config("fuzzy-search.stop_words.{$locale}", []));
+            $this->ignoreStopWords(\Ashiqfardus\LaravelFuzzySearch\Support\StopWords::forLocale($locale));
         }
 
         return $this;

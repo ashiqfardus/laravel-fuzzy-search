@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Ashiqfardus\LaravelFuzzySearch\Support\StopWords;
 
 /**
  * @internal This class is not part of the public API and may change without notice.
@@ -261,7 +262,7 @@ class IndexManager
 
         $stopWords = $this->default->stopWords();
         if (isset($overrides['locale'])) {
-            $stopWords = (array) config('fuzzy-search.stop_words.' . $overrides['locale'], []); // Task 5: StopWords::resolve(config(...))
+            $stopWords = StopWords::forLocale($overrides['locale']);
         }
 
         return new Pipeline($tokenizer, $stemmer, $stopWords, $this->default->foldsAccents());

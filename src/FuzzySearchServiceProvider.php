@@ -43,7 +43,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
             $stemmerCls   = $cfg['indexing']['stemmer']
                 ?? \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class;
             $locale       = $cfg['locale'] ?? 'en';
-            $stopWords    = $cfg['stop_words'][$locale] ?? [];
+            $stopWords    = \Ashiqfardus\LaravelFuzzySearch\Support\StopWords::resolve($cfg['stop_words'][$locale] ?? null);
 
             return new \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager(
                 new $tokenizerCls(),
