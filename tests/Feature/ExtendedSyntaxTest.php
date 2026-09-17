@@ -46,4 +46,11 @@ class ExtendedSyntaxTest extends TestCase
         $this->assertSame('extended', $info['algorithm']);
         $this->assertTrue($info['index_ignored']);
     }
+
+    public function test_field_scopes_inside_an_or_group(): void
+    {
+        $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();
+
+        $this->assertSame(['Bob Johnson', 'Jane Doe'], $names);
+    }
 }

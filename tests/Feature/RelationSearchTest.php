@@ -290,4 +290,14 @@ class RelationSearchTest extends TestCase
         // every returned post belongs to Tolkien; the title-only match ("Tolkien Fan Club") is absent
         $this->assertSame(['The Ring'], $titles);
     }
+
+    public function test_a_typo_term_scoped_to_a_relation_column_goes_through_the_fuzzy_driver(): void
+    {
+        // "tolkein" is one transposition away from "Tolkien"; with a relation column in scope the
+        // compiler receives an Eloquent builder and must unwrap it for the fuzzy driver.
+        $query = fn () => Post::search('tolkein')->searchIn(['title', 'author.name'])->extended('author.name:~tolkein');
+
+        $this->assertSame(['The Ring'], $query()->get()->pluck('title')->all());
+        $this->assertSame([], $query()->typoTolerance(0)->get()->pluck('title')->all());
+    }
 }
