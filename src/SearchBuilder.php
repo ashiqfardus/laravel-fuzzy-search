@@ -2040,7 +2040,7 @@ class SearchBuilder
         $open  = $this->highlightTagOpen ?? '<em>';
         $close = $this->highlightTagClose ?? '</em>';
 
-        return $results->map(function ($item) use ($needles, $open, $close) {
+        return $results->map(function ($item) use ($needles, $terms, $open, $close) {
             $matches     = [];
             $highlighted = [];
 
@@ -2058,7 +2058,13 @@ class SearchBuilder
                     foreach ($needles as $needle) {
                         $found = array_merge($found, $this->findMatchOffsets($value, $needle));
                     }
-                    $found = $this->mergeRanges($found);
+                    // Merge only on the index path (multiple needles from term expansion):
+                    // the LIKE/extended path keeps v2.0's raw, unmerged offsets so adjacent
+                    // matches of the same single needle stay separate tags (e.g. "an" in
+                    // "banana" stays two <em> pairs instead of collapsing into one).
+                    if ($terms !== null) {
+                        $found = $this->mergeRanges($found);
+                    }
                     if (!empty($found)) {
                         $chosen  = $value;
                         $indices = $found;
@@ -2109,7 +2115,10 @@ class SearchBuilder
 
     /**
      * Sort [start, end] ranges and merge overlapping or touching ones, so two needles that
-     * hit the same characters ("john" and "johnny") produce one tag pair.
+     * hit the same characters ("john" and "johnny") produce one tag pair. Only called on the
+     * index path (multiple expanded needles); the LIKE/extended path keeps v2.0's raw,
+     * unmerged offsets from a single needle, so back-to-back repeats of the same needle
+     * (e.g. "an" in "banana") stay separate tags instead of collapsing into one.
      *
      * @param  array<int, array{0: int, 1: int}> $ranges
      * @return array<int, array{0: int, 1: int}>

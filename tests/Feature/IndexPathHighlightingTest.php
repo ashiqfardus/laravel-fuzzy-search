@@ -51,4 +51,14 @@ class IndexPathHighlightingTest extends TestCase
 
         $this->assertSame('<em>John Doe</em>', $john->_highlighted['name']);
     }
+
+    public function test_like_path_keeps_adjacent_matches_as_separate_tags(): void
+    {
+        User::create(['name' => 'banana', 'email' => 'banana@example.com']);
+
+        $row = User::search('an')->using('like')->highlight('em')->get()->firstWhere('name', 'banana');
+
+        $this->assertSame('b<em>an</em><em>an</em>a', $row->_highlighted['name']);
+        $this->assertCount(2, $row->_matches[0]['indices']);
+    }
 }
