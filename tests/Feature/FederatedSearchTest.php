@@ -443,7 +443,7 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
-    | Relation Columns (Out of Scope for Phase 2)
+    | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */
 

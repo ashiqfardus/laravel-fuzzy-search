@@ -71,6 +71,9 @@ class AstCompiler
                 $first = false;
             }
             foreach ($relations as $relation => $leafColumns) {
+                // $q is guaranteed to be an Eloquent builder whenever $relations is non-empty:
+                // SearchBuilder only ever compiles relation paths against an Eloquent source
+                // (it rejects them upfront on a plain Query Builder — see resolveColumnTarget()).
                 $q->{$first ? 'whereHas' : 'orWhereHas'}($relation, function (Builder $related) use ($leafColumns, $node, $pattern, $term) {
                     $inner = true;
                     foreach ($leafColumns as $column) {

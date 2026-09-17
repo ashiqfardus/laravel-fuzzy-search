@@ -26,15 +26,10 @@ class IndexModelJob implements ShouldQueue
     {
         // Load through IndexQuery so a model's searchIndexQuery() eager loads (e.g. the
         // relations a searchableText() hook reads) apply to single-row reindexes too, not
-        // just bulk rebuilds. Use withTrashed() when available so SoftDeletes models are not
-        // silently excluded by the global scope. A soft-deleted model must be removed from
-        // the index, not re-indexed. A restored model (trashed=false) is re-indexed.
-        $query = IndexQuery::for($this->modelClass);
-        if (method_exists($this->modelClass, 'withTrashed')) {
-            $query->withTrashed();
-        }
-
-        $model = $query->find($this->modelId);
+        // just bulk rebuilds. A SoftDeletes model's global scope already hides trashed
+        // rows, so find() returns null for one and it falls into the removeFromIndex()
+        // branch below like any other missing row.
+        $model = IndexQuery::for($this->modelClass)->find($this->modelId);
 
         if ($model === null || (method_exists($model, 'trashed') && $model->trashed())) {
             $indexManager->removeFromIndex($this->modelClass, $this->modelId);

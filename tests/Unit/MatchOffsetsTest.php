@@ -75,4 +75,25 @@ class MatchOffsetsTest extends TestCase
         $rendered = \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($row, 'name');
         $this->assertEquals(e('<b>plain</b>'), $rendered);
     }
+
+    public function test_non_matching_column_with_an_unclosed_angle_bracket_is_not_stripped(): void
+    {
+        // _highlighted[$column] holds the raw, un-escaped value for a searched column
+        // that did not match. displayValueFor() must not strip_tags() it: PHP's
+        // strip_tags() treats an unterminated "<" as an open tag and eats everything
+        // after it, silently truncating content like "fits S<M<L".
+        $this->app['db']->table('products')->insert([
+            'title' => 'Special Shirt', 'description' => 'fits S<M<L', 'price' => 10,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $builder = new SearchBuilder($this->app['db']->table('products'), app(FuzzySearch::class));
+        $results = $builder->search('Special')->searchIn(['title', 'description'])->highlight()->get();
+
+        $row = $results->firstWhere('title', 'Special Shirt');
+        $this->assertNotNull($row);
+
+        $rendered = SearchBuilder::renderHighlighted($row, 'description');
+        $this->assertSame('fits S&lt;M&lt;L', $rendered);
+    }
 }

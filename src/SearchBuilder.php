@@ -1044,6 +1044,13 @@ class SearchBuilder
             ? clone $this->query
             : $modelClass::query();
 
+        // Eager-load every relation a searchIn() column points at, so PHP rescoring and
+        // highlighting on BM25 results read loaded relations instead of issuing one
+        // query per row (mirrors buildQuery()'s LIKE/extended-path eager load).
+        if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
+            $base->with($this->relationPaths());
+        }
+
         foreach ($this->filters as $filter) {
             if ($filter['operator'] === 'IN') {
                 $base->whereIn($filter['column'], $filter['value']);
@@ -1646,8 +1653,8 @@ class SearchBuilder
                 $this->query->where(function ($q) use ($tokenTerms, $targets) {
                     $first = true;
                     foreach ($tokenTerms as $term) {
-                        foreach ($targets as $column => $target) {
-                            $this->applyColumnCondition($q, $column, $target, $term, $first ? 'and' : 'or');
+                        foreach ($targets as $target) {
+                            $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or');
                             $first = false;
                         }
                     }
@@ -1660,8 +1667,8 @@ class SearchBuilder
         $this->query->where(function ($q) use ($allTerms, $targets) {
             $first = true;
             foreach ($allTerms as $term) {
-                foreach ($targets as $column => $target) {
-                    $this->applyColumnCondition($q, $column, $target, $term, $first ? 'and' : 'or');
+                foreach ($targets as $target) {
+                    $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or');
                     $first = false;
                 }
             }
@@ -1676,7 +1683,7 @@ class SearchBuilder
      *
      * @param array{relation: ?string, column: string} $target
      */
-    protected function applyColumnCondition($query, string $column, array $target, string $term, string $boolean): void
+    protected function applyColumnCondition($query, array $target, string $term, string $boolean): void
     {
         $options = array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]);
 
@@ -1775,8 +1782,16 @@ class SearchBuilder
                 $weight   = $this->columnWeights[$column] ?? 1;
                 $colScore = 0;
 
+                $values = $this->columnValues($item, $column, $target);
+                if ($values === [] && $target['relation'] === null) {
+                    // v2.0 fed '' into scoreValue() for a missing/NULL direct column, so it
+                    // could still earn a fuzzy-floor score under typoTolerance(). Keep that:
+                    // an empty relation value stays absent, only direct columns get the ''.
+                    $values = [''];
+                }
+
                 // A to-many relation contributes its best related row, never an average.
-                foreach ($this->columnValues($item, $column, $target) as $value) {
+                foreach ($values as $value) {
                     $colScore = max($colScore, $this->scoreValue($value, $term, $weight));
                 }
 
@@ -1838,10 +1853,12 @@ class SearchBuilder
     /**
      * Every candidate string for a searchIn() column on one result: the column itself for a
      * direct column; for a relation path, the leaf column of every related row (to-many
-     * relations and nested paths contribute one string per related row). The LIKE path
-     * eager-loads relationPaths() in buildQuery(), so this reads memory there. For an
-     * Eloquent Model, an unloaded relation segment (BM25/extended results don't eager-load
-     * yet) contributes nothing rather than triggering a lazy-load query.
+     * relations and nested paths contribute one string per related row). Every query path
+     * (LIKE in buildQuery(), extended in compileExtendedQuery(), BM25 in indexedBaseQuery(),
+     * suggest() in suggestCandidateQuery()) eager-loads relationPaths(), so this reads
+     * memory there. For an Eloquent Model, an unloaded relation segment — e.g. a model
+     * handed to columnValues()/renderHighlighted() directly rather than through one of
+     * those paths — contributes nothing rather than triggering a lazy-load query.
      *
      * @param  array{relation: ?string, column: string} $target
      * @return string[] non-empty strings only
@@ -1858,9 +1875,10 @@ class SearchBuilder
             $next = [];
             foreach ($rows as $row) {
                 if ($row instanceof Model) {
-                    // Never trigger Eloquent's magic lazy load here: this path is also
-                    // reached from BM25/extended results, which don't eager-load relations
-                    // yet. An unloaded relation contributes nothing rather than a query.
+                    // Never trigger Eloquent's magic lazy load here: every search path
+                    // eager-loads relationPaths() up front, so an unloaded relation means
+                    // this model bypassed that (e.g. a caller-supplied row) — contribute
+                    // nothing rather than issuing a query.
                     if (!$row->relationLoaded($segment)) {
                         continue;
                     }
@@ -2050,7 +2068,7 @@ class SearchBuilder
     {
         $highlighted = is_object($result) ? ($result->_highlighted ?? []) : ($result['_highlighted'] ?? []);
         if (array_key_exists($column, $highlighted)) {
-            return strip_tags((string) $highlighted[$column]);
+            return (string) $highlighted[$column];
         }
 
         $value = data_get($result, $column);

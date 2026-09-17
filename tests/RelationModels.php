@@ -50,6 +50,12 @@ class Post extends Model
         return $this->belongsTo(Author::class, 'author_id');
     }
 
+    /** Relation-shaped method that fails when invoked — exercises isRelationPath()'s catch (\Throwable). */
+    public function brokenRelation()
+    {
+        throw new \RuntimeException('relation construction failed');
+    }
+
     public function tags(): BelongsToMany
     {
         return $this->belongsToMany(Tag::class, 'post_tag', 'post_id', 'tag_id');

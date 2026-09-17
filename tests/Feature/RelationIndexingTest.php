@@ -4,8 +4,10 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 require_once __DIR__ . '/../RelationModels.php';
 
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Author;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\CreatesRelationTables;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Post;
@@ -137,6 +139,27 @@ class RelationIndexingTest extends TestCase
         app(IndexManager::class)->indexModel($post);
 
         $this->assertSame(['epic', 'fantasy'], $this->termsFor($post));
+    }
+
+    public function test_bm25_results_eager_load_the_searched_relation_path(): void
+    {
+        app(IndexManager::class)->indexBatch(IndexedPost::with('author', 'tags')->get());
+
+        // Built directly against IndexedPost::query() rather than IndexedPost::search():
+        // the fixture's configured 'author_name' accessor column (getAuthorNameAttribute()
+        // reads $this->author) would lazy-load and cache the author relation as a side
+        // effect, masking whether BM25 hydration itself eager-loaded it.
+        $results = (new SearchBuilder(IndexedPost::query(), app(FuzzySearch::class)))
+            ->search('ring')->searchIn(['title', 'author.name'])
+            ->useInvertedIndex()->highlight('em')->get();
+
+        $first = $results->firstWhere('title', 'The Ring');
+        $this->assertNotNull($first);
+        $this->assertTrue($first->relationLoaded('author'), 'BM25 hydration must eager-load searchIn() relation paths');
+        // "ring" matches the title, not the author's name, so author.name renders
+        // untagged — but @fuzzyHighlight still needs the key present to render it at all.
+        $this->assertArrayHasKey('author.name', $first->_highlighted);
+        $this->assertSame('Tolkien', $first->_highlighted['author.name']);
     }
 
     public function test_searchable_text_non_scalar_value_throws(): void

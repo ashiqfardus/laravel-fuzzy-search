@@ -163,6 +163,22 @@ class RelationSearchTest extends TestCase
         $this->assertSame('The Ring', \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($post, 'title'));
     }
 
+    public function test_render_highlighted_escapes_a_non_matching_relation_value(): void
+    {
+        // The relation column's raw value carries an HTML tag; it must render escaped,
+        // not silently truncated (strip_tags() eats an unterminated "<" to the end).
+        $author = \Ashiqfardus\LaravelFuzzySearch\Tests\Author::create(['name' => '<b>Tolkien</b>']);
+        \Ashiqfardus\LaravelFuzzySearch\Tests\Post::create([
+            'author_id' => $author->id, 'title' => 'Special Post', 'body' => null,
+        ]);
+
+        $post = Post::search('Special')->searchIn(['title', 'author.name'])->using('like')->highlight('em')->get()->first();
+
+        $this->assertSame('Special Post', $post->title);
+        $rendered = SearchBuilder::renderHighlighted($post, 'author.name');
+        $this->assertSame('&lt;b&gt;Tolkien&lt;/b&gt;', $rendered);
+    }
+
     public function test_column_values_never_lazy_loads_an_unloaded_relation(): void
     {
         $post = Post::where('title', 'The Ring')->first(); // author relation NOT eager-loaded
