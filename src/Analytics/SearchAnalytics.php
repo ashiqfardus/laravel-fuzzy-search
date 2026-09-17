@@ -108,6 +108,11 @@ class SearchAnalytics
             ->all();
     }
 
+    /**
+     * Deletes rows older than the exact instant $days ago. The read windows (since()) start at
+     * the beginning of that day on purpose — a report for "the last 30 days" should include the
+     * whole first day — while retention is a hard cutoff; do not "align" the two.
+     */
     public static function prune(?int $days = null): int
     {
         $days ??= (int) config('fuzzy-search.analytics.retention_days', 30);
