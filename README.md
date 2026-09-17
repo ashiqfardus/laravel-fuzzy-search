@@ -525,6 +525,8 @@ $page = FederatedSearch::across([User::class, Product::class])
 
 Narrowing the columns per search with `searchIn()` still keeps each model's own configured stop words, synonyms and accent-insensitivity settings — only the column list is overridden.
 
+Relation columns (`author.name`) are not supported in federated searches yet and are ignored.
+
 ### Search Analytics
 
 Get detailed analytics about your search configuration:

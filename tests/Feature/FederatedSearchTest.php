@@ -440,6 +440,25 @@ class FederatedSearchTest extends TestCase
 
         $this->assertContains('John Doe', $results->pluck('name')->all());
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Relation Columns (Out of Scope for Phase 2)
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_relation_columns_are_ignored_by_federated_search_without_error(): void
+    {
+        require_once __DIR__ . '/../RelationModels.php';
+
+        $results = FederatedSearch::across([User::class])
+            ->search('john')
+            ->searchIn(['name' => 10, 'author.name' => 5])
+            ->using('like')
+            ->get();
+
+        $this->assertTrue($results->contains('name', 'John Doe'));
+    }
 }
 
 /**
