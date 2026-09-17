@@ -91,6 +91,41 @@ class ExtendedSyntaxTest extends TestCase
         $this->assertContains('Johnny Bravo', $names);
     }
 
+    public function test_extended_results_are_highlighted_by_the_query_leaf_terms(): void
+    {
+        $john = User::search('x')->extended('name:john')->highlight('mark')->get()->firstWhere('name', 'John Doe');
+
+        $this->assertNotEmpty($john->_matches);
+        $this->assertStringContainsString('<mark>John</mark>', $john->_highlighted['name']);
+
+        // A typo term contributes its own word as the needle, not the raw "~john" string.
+        $typo = User::search('x')->extended('~john')->highlight('mark')->get()->firstWhere('name', 'John Doe');
+        $this->assertStringContainsString('<mark>John</mark>', $typo->_highlighted['name']);
+    }
+
+    public function test_excluded_terms_are_not_highlighted(): void
+    {
+        // Name carries "Johnny", email does not — so !email:johnny keeps this row.
+        User::create(['name' => 'Johnny Cash', 'email' => 'cash@example.com']);
+
+        $cash = User::search('x')->extended('name:john !email:johnny')->highlight('mark')->get()->firstWhere('name', 'Johnny Cash');
+
+        $this->assertSame('<mark>John</mark>ny Cash', $cash->_highlighted['name']);
+    }
+
+    public function test_extended_results_are_scored_by_the_query_leaf_terms(): void
+    {
+        $names = User::search('x')->extended('name:~jonh !email:johnny')->get()->pluck('name')->all();
+
+        $this->assertContains('John Doe', $names);
+        $this->assertContains('Bob Johnson', $names);
+        $this->assertLessThan(
+            array_search('Bob Johnson', $names, true),
+            array_search('John Doe', $names, true),
+            'scored against the leaf term "jonh", not the literal query string'
+        );
+    }
+
     public function test_field_scopes_inside_an_or_group(): void
     {
         $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();

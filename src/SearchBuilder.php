@@ -13,6 +13,7 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidConfigException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
+use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{AstNode, AndNode, OrNode, NotNode, FieldTerm};
 
 /**
  * SearchBuilder - Fluent API for building fuzzy search queries
@@ -66,6 +67,8 @@ class SearchBuilder
     /** @var array<string, float> Weighted terms of the last inverted-index query — see indexedQueryTerms(). */
     protected array $indexedTermWeights = [];
     protected ?string $extendedQuery = null;
+    /** @var string[] Positive leaf terms of the compiled extended query — see positiveLeafTerms(). */
+    protected array $extendedLeafTerms = [];
     protected ?int $cacheMinutes = null;
     protected ?string $cacheKey = null;
     protected bool $stableRankingEnabled = false;
@@ -1199,6 +1202,8 @@ class SearchBuilder
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
         $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
 
+        $this->extendedLeafTerms = array_values(array_unique($this->positiveLeafTerms($ast)));
+
         $dbDriver = $this->query->getConnection()->getDriverName();
 
         // Group the resolved targets: direct columns as before; relation columns by path.
@@ -1233,6 +1238,40 @@ class SearchBuilder
     }
 
     /**
+     * What the extended path scores rows against: the leaf terms joined, or null on the LIKE
+     * path (and for a query with no positive leaf, e.g. a pure NOT) so that
+     * calculateRelevanceScores() falls back to the search term as before.
+     */
+    private function extendedScoringTerm(): ?string
+    {
+        return $this->extendedLeafTerms === [] ? null : implode(' ', $this->extendedLeafTerms);
+    }
+
+    /**
+     * The terms an extended query actually asks to match: every leaf term outside a NOT
+     * subtree, with field scopes unwrapped (name:~jonh contributes "jonh"). Highlighting and
+     * scoring use these — the raw query string is a query, not a needle.
+     *
+     * @return string[]
+     */
+    private function positiveLeafTerms(AstNode $node): array
+    {
+        if ($node instanceof NotNode) {
+            return [];
+        }
+
+        if ($node instanceof FieldTerm) {
+            return $this->positiveLeafTerms($node->term);
+        }
+
+        if ($node instanceof AndNode || $node instanceof OrNode) {
+            return array_merge([], ...array_map(fn (AstNode $child) => $this->positiveLeafTerms($child), $node->children));
+        }
+
+        return property_exists($node, 'term') && $node->term !== '' ? [$node->term] : [];
+    }
+
+    /**
      * Execute search using Fuse-style extended/boolean syntax.
      * Routes through Lexer → ExtendedQueryParser → AstCompiler.
      */
@@ -1246,13 +1285,13 @@ class SearchBuilder
         $candidates = $this->query->limit($maxCandidates)->get();
 
         if ($this->withRelevance) {
-            $candidates = $this->calculateRelevanceScores($candidates);
+            $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerm());
         }
 
         $results = $candidates->slice($this->offset, $this->limit)->values();
 
         if ($this->highlightTagOpen) {
-            $results = $this->applyHighlighting($results);
+            $results = $this->applyHighlighting($results, $this->extendedLeafTerms ?: null);
         }
 
         if ($this->debugMode) {
@@ -1363,17 +1402,17 @@ class SearchBuilder
         } else {
             $candidates = $this->query->clone()->limit($maxCandidates)->get();
             if ($this->withRelevance && $term !== '') {
-                $candidates = $this->calculateRelevanceScores($candidates);
+                $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerm());
             }
             $items = $candidates->slice($offset, $perPage)->values();
         }
 
         if ($this->withRelevance && $offset >= $maxCandidates && $term !== '') {
-            $items = $this->calculateRelevanceScores($items);
+            $items = $this->calculateRelevanceScores($items, $this->extendedScoringTerm());
         }
 
         if ($this->highlightTagOpen) {
-            $items = $this->applyHighlighting($items);
+            $items = $this->applyHighlighting($items, $this->extendedLeafTerms ?: null);
         }
         if ($this->debugMode) {
             $items = $this->addDebugInfo($items);
@@ -1893,9 +1932,9 @@ class SearchBuilder
     /**
      * Calculate relevance scores for results
      */
-    protected function calculateRelevanceScores(Collection $results): Collection
+    protected function calculateRelevanceScores(Collection $results, ?string $scoreTerm = null): Collection
     {
-        $term = strtolower($this->searchTerm);
+        $term = strtolower($scoreTerm ?? $this->searchTerm);
 
         $results = $results->map(function ($item) use ($term) {
             $score = 0;
