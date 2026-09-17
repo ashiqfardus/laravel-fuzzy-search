@@ -182,7 +182,9 @@ class StringKeyIndexingTest extends TestCase
         $results = $engine->search($builder);
         $ids     = $engine->mapIds($results)->all();
         $this->assertCount(2, $ids);
-        $this->assertContainsOnlyString($ids);
+        foreach ($ids as $id) {
+            $this->assertIsString($id); // PHPUnit 10 (Laravel 10) and 13 disagree on the typed/two-arg helpers
+        }
 
         $mapped = $engine->map($builder, $results, $model);
         $this->assertCount(2, $mapped);
