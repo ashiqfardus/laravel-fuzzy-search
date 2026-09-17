@@ -49,6 +49,7 @@ class IndexSuggestTest extends TestCase
         // A term only another model indexed must not be proposed for User.
         $termId = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'joystick', 'doc_count' => 99, 'term_length' => 8]);
         DB::table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => 'App\\Models\\Product', 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name']);
+        DB::table('fuzzy_index_meta')->insert(['model_type' => 'App\\Models\\Product', 'total_docs' => 1, 'total_tokens' => 1, 'avg_doc_length' => 1]); // the meta row is what marks a model as indexed (P6-R6)
 
         $this->assertNotContains('joystick', User::search('jo')->suggest(10));
         $this->assertContains('joystick', User::search('jo')->useInvertedIndex('App\\Models\\Product')->suggestFrom('index')->suggest(10));

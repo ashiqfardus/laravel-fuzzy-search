@@ -2505,11 +2505,13 @@ class SearchBuilder
     /**
      * Complete the last whitespace token from the BM25 dictionary, scoped to the model's
      * postings, and prefix the earlier tokens back ("Bob jo" → "Bob johnson"). Returns null
-     * when the dictionary cannot serve this builder (no Eloquent model, no postings for it —
-     * checked directly against fuzzy_index_postings rather than fuzzy_index_meta, since a
-     * meta row only exists once IndexManager has run and the model_type strings this builder
-     * exposes via useInvertedIndex()/suggestFrom('index') need not have gone through it — or
-     * the index tables are missing) so suggest() can fall back to the table scan.
+     * when the dictionary cannot serve this builder (no Eloquent model, no fuzzy_index_meta
+     * row for it, or the index tables are missing) so suggest() can fall back to the table
+     * scan. The meta row — not the postings table — is the "is this model indexed" signal:
+     * IndexManager keeps it even after every document is individually removed (total_docs
+     * decrements to 0; only flush() deletes the row), so a model that was indexed and is now
+     * empty still returns [] from the dictionary (P6-R6's documented auto semantics) instead
+     * of silently reverting to the table scan.
      */
     protected function suggestFromIndex(int $limit): ?array
     {
@@ -2526,7 +2528,7 @@ class SearchBuilder
         }
 
         try {
-            $indexed = \Illuminate\Support\Facades\DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->exists();
+            $indexed = \Illuminate\Support\Facades\DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->exists();
             if (!$indexed) {
                 return null;
             }
