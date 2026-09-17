@@ -223,16 +223,24 @@ class IndexManager
     /**
      * Tokenize + stem search input — used by Bm25Scorer and didYouMean().
      */
-    public function processTerms(string $text): array
+    /**
+     * Tokenize + stem search input — used by Bm25Scorer, SearchBuilder and didYouMean().
+     * $stopWords: null keeps the configured locale list; an array replaces it for this call
+     * (SearchBuilder::ignoreStopWords() on the inverted-index path).
+     *
+     * @return string[]
+     */
+    public function processTerms(string $text, ?array $stopWords = null): array
     {
+        $stop  = $stopWords === null ? $this->stopWords : array_map('mb_strtolower', $stopWords);
         $words = $this->tokenizer->tokenize($text);
         $terms = [];
         foreach ($words as $word) {
-            if (!in_array($word, $this->stopWords, true)) {
+            if (!in_array($word, $stop, true)) {
                 $terms[] = $this->stemmer->stem($word);
             }
         }
-        return array_unique($terms);
+        return array_values(array_unique($terms));
     }
 
     /**

@@ -51,6 +51,8 @@ class SearchBuilder
     protected int $minMatchLength = 2;
     protected ?Closure $customScoreCallback = null;
     protected array $stopWords = [];
+
+    protected bool $stopWordsOverridden = false;
     protected ?string $stopWordLocale = null;
     protected array $synonyms = [];
     protected array $synonymGroups = [];
@@ -386,6 +388,7 @@ class SearchBuilder
      */
     public function ignoreStopWords(array|string|null $stopWords = null): self
     {
+        $this->stopWordsOverridden = true;
         if (is_string($stopWords)) {
             // Locale code
             $this->stopWordLocale = $stopWords;
@@ -1087,15 +1090,33 @@ class SearchBuilder
      */
     protected function indexedQueryTerms(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager $indexManager): array
     {
-        $terms   = $indexManager->processTerms($this->searchTerm);
-        $weights = array_fill_keys($terms, 1.0);
+        $override = $this->stopWordsOverridden ? $this->stopWords : null;
+        $terms    = $indexManager->processTerms($this->searchTerm, $override);
+        $weights  = array_fill_keys($terms, 1.0);
+
+        // Synonyms are alternatives the caller declared, not typos: full weight. They are
+        // looked up on the raw lowercased words (before stemming) and then processed like
+        // any other query text so the stemmer and stop words apply to them too.
+        if ($this->synonyms !== [] || $this->synonymGroups !== []) {
+            foreach (preg_split('/\s+/u', mb_strtolower(trim($this->searchTerm)), -1, PREG_SPLIT_NO_EMPTY) as $word) {
+                foreach ($this->expandWithSynonyms($word) as $synonym) {
+                    if ($synonym === $word) {
+                        continue;
+                    }
+                    foreach ($indexManager->processTerms($synonym, $override) as $term) {
+                        $weights[$term] = 1.0;
+                    }
+                }
+            }
+            $terms = array_keys($weights);
+        }
 
         $distance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
 
         if ($distance > 0 && $terms !== []) {
             $fuzzy   = (array) config('fuzzy-search.bm25.fuzzy', []);
             $weights = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->expand(
-                $terms,
+                array_map('strval', $terms),
                 $distance,
                 (int) config('fuzzy-search.typo_tolerance.min_word_length', 4),
                 (int) ($fuzzy['max_expansions'] ?? 5),
@@ -1109,7 +1130,7 @@ class SearchBuilder
             // $terms is de-duplicated (a repeated last word would vanish) and a trailing
             // stop word must not silently prefix-expand the word before it.
             $rawWords  = preg_split('/\s+/u', trim($this->searchTerm), -1, PREG_SPLIT_NO_EMPTY) ?: [];
-            $lastTerms = $rawWords === [] ? [] : $indexManager->processTerms((string) end($rawWords));
+            $lastTerms = $rawWords === [] ? [] : $indexManager->processTerms((string) end($rawWords), $override);
 
             if ($lastTerms !== []) {
                 $prefixed = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
