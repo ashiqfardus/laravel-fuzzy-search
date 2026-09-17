@@ -54,10 +54,12 @@ abstract class TestCase extends BaseTestCase
                 'job'                => ['tries' => 3, 'backoff' => [10, 60, 300], 'timeout' => 120],
             ],
             'bm25' => [
-                'k1'                  => 1.5,
-                'b'                   => 0.75,
+                'k1'                    => 1.5,
+                'b'                     => 0.75,
                 'max_postings_per_term' => 50000,
                 'candidate_chunk'       => 200,
+                'fuzzy'                 => ['candidate_pool' => 500, 'max_expansions' => 5, 'damping' => true],
+                'prefix'                => ['max_expansions' => 10],
             ],
             'query' => [
                 'max_depth'  => 16,

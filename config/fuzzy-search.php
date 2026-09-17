@@ -212,6 +212,25 @@ return [
          * on selective filters; larger = fewer round trips.
          */
         'candidate_chunk' => 200,
+        /*
+         * fuzzy: typo-tolerant BM25. Each query term of at least
+         * typo_tolerance.min_word_length characters is expanded with up to max_expansions
+         * dictionary terms within typoTolerance() edits, chosen from the candidate_pool most
+         * common terms of a similar length. With damping on, an expansion scores
+         * 1 - distance / length of the exact term, so exact matches rank first.
+         */
+        'fuzzy' => [
+            'candidate_pool' => 500,
+            'max_expansions' => 5,
+            'damping'        => true,
+        ],
+        /*
+         * prefix: asYouType() expands the last query token with the most common dictionary
+         * terms that start with it (LIKE 'joh%'), capped at max_expansions.
+         */
+        'prefix' => [
+            'max_expansions' => 10,
+        ],
     ],
 
     /*

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - searchableText() model hook: return name => text (related data allowed) and the BM25 index stores exactly that; searchIndexQuery() is honoured by single-row reindexes too.
 - Searchable::reindexRelated($foreignKey, $id) reindexes every row pointing at a related record (queued or in-process).
 - BM25 results eager-load the relation paths named in `searchIn()`, so `@fuzzyHighlight` on a relation column works on the index path too.
+- fuzzy_index_terms.term_length (new migration, backfilled) lets the dictionary be filtered by length; run php artisan migrate after upgrading.
 
 ### Changed
 

@@ -68,7 +68,11 @@ class IndexManager
 
             // Batch upsert all terms
             DB::table('fuzzy_index_terms')->upsert(
-                array_map(fn($term) => ['term' => (string) $term, 'doc_count' => 1], $termKeys),
+                array_map(fn($term) => [
+                    'term'        => (string) $term,
+                    'doc_count'   => 1,
+                    'term_length' => mb_strlen((string) $term),
+                ], $termKeys),
                 ['term'],
                 // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
                 // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
@@ -350,7 +354,7 @@ class IndexManager
             foreach ($allTerms as $term) {
                 $increment = $termOccurrences[$term] ?? 0;
                 DB::table('fuzzy_index_terms')->upsert(
-                    [['term' => $term, 'doc_count' => $increment]],
+                    [['term' => $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)]],
                     ['term'],
                     ['doc_count' => DB::raw("fuzzy_index_terms.doc_count + {$increment}")]
                 );
