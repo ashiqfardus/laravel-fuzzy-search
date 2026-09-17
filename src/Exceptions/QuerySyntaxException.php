@@ -51,7 +51,7 @@ class QuerySyntaxException extends LaravelFuzzySearchException
     public static function typoOperatorCombination(): self
     {
         return new self(
-            "The typo operator (~) cannot be combined with ', =, ^ or a trailing $. " .
+            "The typo operator (~) cannot be combined with ', =, ^, a quote or a trailing $. " .
             "Use ~word on its own (a field scope is fine: name:~word)."
         );
     }

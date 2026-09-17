@@ -46,15 +46,6 @@ class Lexer
             } elseif ($query[$i] === ')') {
                 $tokens[] = new Token(Token::TYPE_RPAREN);
                 $i++;
-            } elseif ($query[$i] === '"') {
-                // Quoted phrase
-                $end = strpos($query, '"', $i + 1);
-                if ($end === false) {
-                    throw QuerySyntaxException::unterminatedQuote();
-                }
-                $value    = mb_substr(substr($query, $i + 1, $end - $i - 1), 0, $maxTermLen, 'UTF-8');
-                $tokens[] = new Token(Token::TYPE_FUZZY, $value);
-                $i        = $end + 1;
             } else {
                 // Operator-prefixed term: [!][field:][~ | ' | = | ^]word[$]  (or [!][field:]"phrase")
                 $isNot = false;
@@ -80,22 +71,28 @@ class Lexer
                     if ($i >= $len || ctype_space($query[$i]) || in_array($query[$i], ['|', '(', ')', '!'], true)) {
                         throw QuerySyntaxException::fieldNeedsTerm($field);
                     }
-                    if ($query[$i] === '"') {
-                        $end = strpos($query, '"', $i + 1);
-                        if ($end === false) {
-                            throw QuerySyntaxException::unterminatedQuote();
-                        }
-                        $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, mb_substr(substr($query, $i + 1, $end - $i - 1), 0, $maxTermLen, 'UTF-8'), $field);
-                        $i = $end + 1;
-                        continue;
+                }
+
+                // One quoted-phrase read for every prefix combination — "phrase", !"phrase",
+                // name:"phrase" and !name:"phrase" all land here.
+                if ($query[$i] === '"') {
+                    $end = strpos($query, '"', $i + 1);
+                    if ($end === false) {
+                        throw QuerySyntaxException::unterminatedQuote();
                     }
+                    $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, mb_substr(substr($query, $i + 1, $end - $i - 1), 0, $maxTermLen, 'UTF-8'), $field);
+                    $i        = $end + 1;
+                    if (count($tokens) >= $maxTokens) {
+                        throw QuerySyntaxException::tokenLimitExceeded(count($tokens), $maxTokens);
+                    }
+                    continue;
                 }
 
                 $opPrefix = null;
                 if ($query[$i] === '~') {
                     $opPrefix = 'TYPO';
                     $i++;
-                    if ($i < $len && in_array($query[$i], ["'", '=', '^', '~'], true)) {
+                    if ($i < $len && in_array($query[$i], ["'", '=', '^', '~', '"'], true)) {
                         throw QuerySyntaxException::typoOperatorCombination();
                     }
                 } elseif ($query[$i] === "'") {

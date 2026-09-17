@@ -176,6 +176,29 @@ class LexerTest extends TestCase
         }
     }
 
+    public function test_a_quoted_phrase_reads_the_same_after_every_prefix(): void
+    {
+        foreach (['"john doe"' => [Token::TYPE_FUZZY, null], '!"john doe"' => [Token::TYPE_NOT_FUZZY, null], 'name:"john doe"' => [Token::TYPE_FUZZY, 'name'], '!name:"john doe"' => [Token::TYPE_NOT_FUZZY, 'name']] as $query => [$type, $field]) {
+            $tokens = $this->lexer->tokenize($query);
+            $this->assertCount(1, $tokens, $query);
+            $this->assertSame($type, $tokens[0]->type, $query);
+            $this->assertSame('john doe', $tokens[0]->value, $query);
+            $this->assertSame($field, $tokens[0]->field, $query);
+        }
+    }
+
+    public function test_tilde_cannot_combine_with_a_quoted_phrase(): void
+    {
+        foreach (['~"john doe"', 'name:~"a b"'] as $query) {
+            try {
+                $this->lexer->tokenize($query);
+                $this->fail("Expected QuerySyntaxException for {$query}");
+            } catch (QuerySyntaxException $e) {
+                $this->assertStringContainsString('~', $e->getMessage());
+            }
+        }
+    }
+
     public function test_field_scope_is_captured(): void
     {
         $tokens = (new Lexer())->tokenize('name:john email:^admin author.name:smith');

@@ -1044,7 +1044,7 @@ Use Fuse.js-style operators inside your search string for precise control over m
 
 ### Typo-tolerant and field-scoped terms
 
-`~word` runs the term through the same typo-tolerant matching as the rest of the package — the level set by `->typoTolerance()` (default 2), or a plain substring when the level is `0` or `config('fuzzy-search.typo_tolerance.enabled')` is `false`. `~` can't combine with `'`, `=`, `^`, or a trailing `$`; `~word` stands on its own (a field scope in front is fine — `name:~jonh`).
+`~word` runs the term through the same typo-tolerant matching as the rest of the package — the level set by `->typoTolerance()` (default 2), or a plain substring when the level is `0` or `config('fuzzy-search.typo_tolerance.enabled')` is `false`. `~` can't combine with `'`, `=`, `^`, a quoted phrase, or a trailing `$`; `~word` stands on its own (a field scope in front is fine — `name:~jonh`).
 
 `field:word` limits a term to one searchable column: a direct column, a table-qualified column matched by its bare name (`users.name` answers to `name:`), or a relation column declared in `searchIn()` / `$searchable['columns']` (`author.name:smith`). Any operator can follow the colon — `email:^admin`, `name:~jonh`, `!name:bob`, `name:"john doe"`. An unknown field throws `QuerySyntaxException` listing the searchable fields; `field:` with nothing after the colon throws too.
 

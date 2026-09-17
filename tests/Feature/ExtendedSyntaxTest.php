@@ -82,6 +82,15 @@ class ExtendedSyntaxTest extends TestCase
         User::search('x')->extended('nickname:john')->getAnalytics();
     }
 
+    public function test_a_negated_quoted_phrase_excludes_that_phrase(): void
+    {
+        $names = User::search('x')->extended('!"john doe"')->get()->pluck('name')->all();
+
+        $this->assertNotContains('John Doe', $names);
+        $this->assertContains('Jane Doe', $names);
+        $this->assertContains('Johnny Bravo', $names);
+    }
+
     public function test_field_scopes_inside_an_or_group(): void
     {
         $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();

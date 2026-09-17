@@ -121,7 +121,7 @@ few affect what you get back from a search:
 
 - **`~word`** — a typo-tolerant term, run through the same driver as the rest of the package. It
   follows `typoTolerance()` (default 2; `0`, or `config('fuzzy-search.typo_tolerance.enabled') ===
-  false`, makes it a plain substring match). `~` can't combine with `'`, `=`, `^` or a trailing
+  false`, makes it a plain substring match). `~` can't combine with `'`, `=`, `^`, a quoted phrase or a trailing
   `$` — `~word` stands on its own (a field scope in front is fine: `name:~jonh`) — and `~` alone
   throws.
 - **`field:term`** — scopes one term to one searchable column: a direct column, a table-qualified
