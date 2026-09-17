@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `query.max_term_length` now caps every extended-syntax token (a `~word` of thousands of characters could exhaust memory in the fuzzy driver) and applies to `count()`/`paginate()` on the LIKE path, not only `get()`.
 - `paginate()` totals on the LIKE and extended paths now apply Eloquent global scopes (SoftDeletes, tenant scopes) — they overcounted since the Phase 1 pagination rewrite.
 - `count()` now agrees with `paginate()->total()` on the extended and BM25 paths.
 - extended() + useInvertedIndex(): count() and paginate() took the BM25 index path on the plain search term while get() ran the extended query; every entry point now runs the extended query on the LIKE path (see getDebugInfo()["index_ignored"]).

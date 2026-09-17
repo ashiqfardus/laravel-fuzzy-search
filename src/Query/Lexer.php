@@ -22,6 +22,9 @@ class Lexer
         }
 
         $maxTokens = (int) config('fuzzy-search.query.max_tokens', 32);
+        // Every token value is capped here, so no leaf term can reach a driver's pattern
+        // generator at a length that makes it build O(n^2) LIKE patterns (~word does).
+        $maxTermLen = (int) config('fuzzy-search.query.max_term_length', 128);
         $tokens    = [];
         $i         = 0;
         $len       = strlen($query);
@@ -49,7 +52,7 @@ class Lexer
                 if ($end === false) {
                     throw QuerySyntaxException::unterminatedQuote();
                 }
-                $value    = substr($query, $i + 1, $end - $i - 1);
+                $value    = mb_substr(substr($query, $i + 1, $end - $i - 1), 0, $maxTermLen, 'UTF-8');
                 $tokens[] = new Token(Token::TYPE_FUZZY, $value);
                 $i        = $end + 1;
             } else {
@@ -81,7 +84,7 @@ class Lexer
                         if ($end === false) {
                             throw QuerySyntaxException::unterminatedQuote();
                         }
-                        $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, substr($query, $i + 1, $end - $i - 1), $field);
+                        $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, mb_substr(substr($query, $i + 1, $end - $i - 1), 0, $maxTermLen, 'UTF-8'), $field);
                         $i = $end + 1;
                         continue;
                     }
@@ -119,7 +122,7 @@ class Lexer
                 ) {
                     $i++;
                 }
-                $term = substr($query, $start, $i - $start);
+                $term = mb_substr(substr($query, $start, $i - $start), 0, $maxTermLen, 'UTF-8');
                 if ($term === '') {
                     if ($opPrefix === 'TYPO') {
                         throw QuerySyntaxException::typoOperatorNeedsTerm();

@@ -1072,6 +1072,10 @@ $users = User::search('admin (john | jane)')->extended()->get();
 | --- | --- | --- |
 | Maximum tokens per query | 32 | `query.max_tokens` |
 | Maximum nesting depth | 16 | `query.max_depth` |
+| Maximum characters per term | 128 | `query.max_term_length` |
+
+`query.max_term_length` applies to the LIKE path and to every extended-syntax token: a longer
+term is silently truncated before the driver generates its LIKE patterns.
 
 ### Pagination with Extended Syntax
 

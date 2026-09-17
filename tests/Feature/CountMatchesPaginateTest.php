@@ -34,6 +34,21 @@ class CountMatchesPaginateTest extends TestCase
         $this->assertSame($make()->count(), $make()->paginate(2)->total());
     }
 
+    /**
+     * query.max_term_length used to be applied inside executeSearch() only, so count(),
+     * paginate() and getBindings() bound the untruncated 400-character term.
+     */
+    public function test_max_term_length_caps_the_term_outside_get_too(): void
+    {
+        $make = fn () => User::search(str_repeat('a', 400))->using('like');
+
+        $maxLength = (int) config('fuzzy-search.query.max_term_length', 128);
+        $lengths   = array_map('strlen', array_filter($make()->getBindings(), 'is_string'));
+
+        $this->assertLessThanOrEqual($maxLength + 2, max($lengths), 'term plus the two LIKE wildcards');
+        $this->assertSame($make()->get()->count(), $make()->count());
+    }
+
     public function test_bm25_path_count_matches_paginate_total_and_get_count(): void
     {
         app(IndexManager::class)->indexBatch(User::all());

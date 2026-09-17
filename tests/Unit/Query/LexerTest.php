@@ -213,6 +213,18 @@ class LexerTest extends TestCase
         }
     }
 
+    public function test_token_values_are_capped_at_max_term_length(): void
+    {
+        config(['fuzzy-search.query.max_term_length' => 16]);
+
+        $long = str_repeat('a', 300);
+
+        $this->assertSame(16, strlen($this->lexer->tokenize($long)[0]->value), 'bare word');
+        $this->assertSame(16, strlen($this->lexer->tokenize('"' . $long . '"')[0]->value), 'quoted phrase');
+        $this->assertSame(16, strlen($this->lexer->tokenize('~' . $long)[0]->value), 'typo term');
+        $this->assertSame(16, strlen($this->lexer->tokenize('name:"' . $long . '"')[0]->value), 'field-scoped phrase');
+    }
+
     public function test_field_scope_combines_with_include_match_and_exact(): void
     {
         $tokens = (new Lexer())->tokenize("name:'john name:=john");

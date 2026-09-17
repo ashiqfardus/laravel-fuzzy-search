@@ -47,6 +47,15 @@ class ExtendedSyntaxTest extends TestCase
         $this->assertTrue($info['index_ignored']);
     }
 
+    public function test_a_huge_typo_term_is_capped_instead_of_exhausting_memory(): void
+    {
+        // Without the Lexer's max_term_length cap the fuzzy driver builds 3*8000 patterns of
+        // 8000 characters each before capPatterns() trims them — a dead worker.
+        $builder = fn () => User::search('x')->extended('~' . str_repeat('a', 8000));
+
+        $this->assertSame($builder()->get()->count(), $builder()->count());
+    }
+
     public function test_field_scopes_inside_an_or_group(): void
     {
         $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();

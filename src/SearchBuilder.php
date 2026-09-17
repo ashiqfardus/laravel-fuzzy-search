@@ -935,10 +935,8 @@ class SearchBuilder
             if (mb_strlen($this->searchTerm, 'UTF-8') < $minLength) {
                 return collect();
             }
-            $maxLength = (int) config('fuzzy-search.query.max_term_length', 128);
-            if (mb_strlen($this->searchTerm, 'UTF-8') > $maxLength) {
-                $this->searchTerm = mb_substr($this->searchTerm, 0, $maxLength, 'UTF-8');
-            }
+            // Here as well as in buildQuery() so the BM25 fast path below inherits the cap.
+            $this->capSearchTerm();
         }
 
         // Extended-search path (Fuse-style operators)
@@ -1604,10 +1602,33 @@ class SearchBuilder
     }
 
     /**
+     * Truncate the search term to query.max_term_length characters (never bytes), so no
+     * driver ever generates O(n²) LIKE patterns from a multi-kilobyte term.
+     *
+     * Called from executeSearch() (which also covers the BM25 fast path) and from
+     * buildQuery(), so count(), paginate(), getFacets(), toSql(), getBindings() and
+     * getAnalytics() inherit the same cap instead of only get() having it.
+     * An extended query is a query, not a term — the Lexer caps each of its tokens.
+     */
+    protected function capSearchTerm(): void
+    {
+        if ($this->extendedQuery !== null || $this->searchTerm === '') {
+            return;
+        }
+
+        $maxLength = (int) config('fuzzy-search.query.max_term_length', 128);
+        if (mb_strlen($this->searchTerm, 'UTF-8') > $maxLength) {
+            $this->searchTerm = mb_substr($this->searchTerm, 0, $maxLength, 'UTF-8');
+        }
+    }
+
+    /**
      * Build the query
      */
     protected function buildQuery(): void
     {
+        $this->capSearchTerm();
+
         // Process search term
         $searchTerm = $this->processSearchTerm($this->searchTerm);
 
