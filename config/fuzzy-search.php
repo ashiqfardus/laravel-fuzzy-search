@@ -283,6 +283,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Search Analytics
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, every executed search (get(), paginate(), in-memory) writes one row to
+    | fuzzy_search_logs through the FuzzySearchExecuted event. Search terms are user input:
+    | keep retention short, or set hash_terms to store only a SHA-256 of the normalized term.
+    |
+    | queue: null inserts inline; a queue name dispatches RecordSearchLogJob there instead.
+    | sample_rate: 0.0–1.0 share of searches recorded.
+    | retention_days: what `php artisan fuzzy-search:analytics:prune` deletes beyond.
+    |
+    */
+    'analytics' => [
+        'enabled'        => false,
+        'queue'          => null,
+        'sample_rate'    => 1.0,
+        'retention_days' => 30,
+        'hash_terms'     => false,
+        'table'          => 'fuzzy_search_logs',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Performance Settings
     |--------------------------------------------------------------------------
     |

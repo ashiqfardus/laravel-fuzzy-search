@@ -69,6 +69,15 @@ class FuzzySearchServiceProvider extends ServiceProvider
         // Load package migrations
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
 
+        // Persisted search analytics — the listener is registered only when enabled at boot;
+        // it re-checks the flag per event so runtime toggles (and tests) behave.
+        if (config('fuzzy-search.analytics.enabled', false)) {
+            \Illuminate\Support\Facades\Event::listen(
+                \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted::class,
+                \Ashiqfardus\LaravelFuzzySearch\Analytics\RecordSearchLog::class
+            );
+        }
+
         // Publish migrations
         $this->publishes([
             __DIR__ . '/../database/migrations' => database_path('migrations'),

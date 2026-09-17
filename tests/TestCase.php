@@ -81,6 +81,14 @@ abstract class TestCase extends BaseTestCase
                 'fr' => ['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'mais', 'dans', 'sur', 'à'],
                 'es' => ['el', 'la', 'los', 'las', 'un', 'una', 'y', 'o', 'pero', 'en', 'sobre', 'a'],
             ],
+            'analytics' => [
+                'enabled'        => false,
+                'queue'          => null,
+                'sample_rate'    => 1.0,
+                'retention_days' => 30,
+                'hash_terms'     => false,
+                'table'          => 'fuzzy_search_logs',
+            ],
         ]);
     }
 

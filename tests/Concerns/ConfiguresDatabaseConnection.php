@@ -32,6 +32,7 @@ trait ConfiguresDatabaseConnection
     protected static function fuzzyIndexTables(): array
     {
         return [
+            'fuzzy_search_logs',
             'fuzzy_index_postings',
             'fuzzy_index_documents',
             'fuzzy_index_meta',
