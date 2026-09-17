@@ -1104,11 +1104,25 @@ class SearchBuilder
             );
         }
 
-        if ($this->asYouType && $terms !== []) {
-            $weights += app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
-                (string) end($terms),
-                (int) config('fuzzy-search.bm25.prefix.max_expansions', 10)
-            );
+        if ($this->asYouType) {
+            // The prefix source is the last RAW word the user typed, processed on its own:
+            // $terms is de-duplicated (a repeated last word would vanish) and a trailing
+            // stop word must not silently prefix-expand the word before it.
+            $rawWords  = preg_split('/\s+/u', trim($this->searchTerm), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            $lastTerms = $rawWords === [] ? [] : $indexManager->processTerms((string) end($rawWords));
+
+            if ($lastTerms !== []) {
+                $prefixed = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
+                    (string) end($lastTerms),
+                    (int) config('fuzzy-search.bm25.prefix.max_expansions', 10)
+                );
+
+                // A term reached twice keeps the higher weight (a prefix hit at 1.0 beats a
+                // damped typo expansion of the same term; `+=` would have kept the lower one).
+                foreach ($prefixed as $term => $weight) {
+                    $weights[$term] = max($weights[$term] ?? 0.0, $weight);
+                }
+            }
         }
 
         return $this->indexedTermWeights = $weights;

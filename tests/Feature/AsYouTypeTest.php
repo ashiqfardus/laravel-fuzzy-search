@@ -47,10 +47,45 @@ class AsYouTypeTest extends TestCase
 
     public function test_only_the_last_token_is_a_prefix(): void
     {
-        // 'doe' must match exactly; 'joh' is the prefix → John Doe, not Jane Doe alone.
-        $names = User::search('doe joh')->useInvertedIndex()->asYouType()->get()->pluck('name')->all();
+        // 'joh' is not last, so it is not prefix-expanded (and at 3 chars it is below
+        // min_word_length, so no typo expansion either): Johnny Bravo must NOT appear.
+        $names = User::search('joh doe')->useInvertedIndex()->asYouType()->get()->pluck('name')->all();
 
         $this->assertContains('John Doe', $names);
+        $this->assertContains('Jane Doe', $names);
+        $this->assertNotContains('Johnny Bravo', $names);
+    }
+
+    public function test_a_prefix_hit_that_is_also_a_typo_expansion_keeps_the_higher_weight(): void
+    {
+        // 'john' → 'johnny' is a distance-2 typo expansion (weight 0.5) AND a prefix hit (1.0).
+        $builder = User::search('john')->useInvertedIndex()->asYouType();
+        $builder->get();
+
+        $terms = $builder->getDebugInfo()['index_terms'];
+
+        $this->assertSame(1.0, $terms['john']);
+        $this->assertSame(1.0, $terms['johnny']);
+    }
+
+    public function test_a_repeated_last_token_is_still_the_prefix_source(): void
+    {
+        // processTerms() de-duplicates to ['doe', 'john']; the prefix source must still be
+        // the raw last word 'doe', so 'john' is not prefix-expanded to Johnny Bravo.
+        $names = User::search('doe john doe')->useInvertedIndex()->typoTolerance(0)->asYouType()
+            ->get()->pluck('name')->all();
+
+        $this->assertContains('John Doe', $names);
+        $this->assertNotContains('Johnny Bravo', $names);
+    }
+
+    public function test_a_trailing_stop_word_is_not_prefix_expanded_and_does_not_shift_the_prefix(): void
+    {
+        $names = User::search('john the')->useInvertedIndex()->typoTolerance(0)->asYouType()
+            ->get()->pluck('name')->all();
+
+        $this->assertContains('John Doe', $names);
+        $this->assertNotContains('Johnny Bravo', $names);
     }
 
     public function test_the_model_can_default_to_as_you_type(): void
