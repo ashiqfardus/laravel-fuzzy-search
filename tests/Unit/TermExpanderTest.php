@@ -77,6 +77,35 @@ class TermExpanderTest extends TestCase
         $this->assertSame(1.0, $weights['john']);
     }
 
+    public function test_the_expansion_cap_keeps_the_closest_terms(): void
+    {
+        // john is the most common candidate but two edits away; jon is one edit away and wins the single slot.
+        $weights = (new TermExpander)->expand(['jonh'], 2, 4, 1, 500, true);
+
+        $this->assertSame(0.75, $weights['jon']);
+        $this->assertArrayNotHasKey('john', $weights);
+    }
+
+    public function test_expansions_at_or_beyond_the_term_length_are_dropped(): void
+    {
+        $this->seedTerm('zzzz', 1); // four edits from a four-character term: weight 0
+
+        $weights = (new TermExpander)->expand(['john'], 4, 4, 5, 500, true);
+
+        foreach ($weights as $term => $weight) {
+            $this->assertGreaterThan(0, $weight, "weight for {$term}");
+        }
+
+        $this->assertArrayNotHasKey('zzzz', $weights);
+    }
+
+    public function test_prefix_finds_an_accented_term(): void
+    {
+        $this->seedTerm('café', 3);
+
+        $this->assertSame(['café' => 1.0], (new TermExpander)->prefix('caf', 10));
+    }
+
     public function test_prefix_returns_the_most_common_terms_starting_with_the_prefix(): void
     {
         $this->assertSame(['john' => 1.0, 'jon' => 1.0, 'joan' => 1.0, 'johnny' => 1.0], (new TermExpander)->prefix('jo', 10));

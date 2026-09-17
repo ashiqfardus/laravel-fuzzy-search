@@ -69,12 +69,18 @@ final class TermExpander
                 continue;
             }
 
+            $candidates = $this->candidates((string) $term, $maxDistance, $pool);
+            usort($candidates, fn ($a, $b) => [$a['distance'], $b['doc_count']] <=> [$b['distance'], $a['doc_count']]);
+
             $taken = 0;
-            foreach ($this->candidates((string) $term, $maxDistance, $pool) as $candidate) {
+            foreach ($candidates as $candidate) {
                 if ($taken >= $maxExpansions) {
                     break;
                 }
                 $weight = $damping ? 1 - $candidate['distance'] / max($length, 1) : 1.0;
+                if ($weight <= 0) {
+                    continue;
+                }
                 $weights[$candidate['term']] = max($weights[$candidate['term']] ?? 0.0, $weight);
                 $taken++;
             }
@@ -95,12 +101,19 @@ final class TermExpander
             return [];
         }
 
-        $terms = DB::table('fuzzy_index_terms')
-            ->where('term', 'like', $prefix . '%')
-            ->where('term', '!=', $prefix)
-            ->orderByDesc('doc_count')
-            ->limit($max)
-            ->pluck('term');
+        $last = mb_substr($prefix, -1);
+        $next = mb_chr(mb_ord($last, 'UTF-8') + 1, 'UTF-8');
+
+        $query = DB::table('fuzzy_index_terms')->where('term', '!=', $prefix);
+
+        if ($next === false) {
+            $query->where('term', 'like', $prefix . '%');
+        } else {
+            $query->where('term', '>=', $prefix)
+                  ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
+        }
+
+        $terms = $query->orderByDesc('doc_count')->limit($max)->pluck('term');
 
         $weights = [];
         foreach ($terms as $term) {
