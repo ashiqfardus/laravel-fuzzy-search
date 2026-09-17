@@ -1531,7 +1531,6 @@ Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy
 - Table has 10k+ rows
 - Result ranking/relevance quality matters
 - You have queue workers running
-- Models use integer primary keys
 
 **Use LIKE / fuzzy when:**
 - Small tables (< 10k rows) — LIKE can be faster due to BM25 scoring overhead
