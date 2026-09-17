@@ -918,6 +918,25 @@ class SearchBuilder
     }
 
     /**
+     * One place to build FuzzySearchExecuted so every path reports the same fields.
+     * $candidateCount is what the DB matched before the page/limit cut; $resultCount is what
+     * the caller receives.
+     */
+    protected function dispatchExecuted(string $algorithm, string $path, int $candidateCount, int $resultCount, float $startedAt, ?string $term = null): void
+    {
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $term ?? $this->searchTerm,
+            columns:        $this->searchableColumns,
+            algorithm:      $algorithm,
+            candidateCount: $candidateCount,
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+            resultCount:    $resultCount,
+            path:           $path,
+            modelClass:     $this->query instanceof EloquentBuilder ? $this->query->getModel()::class : null,
+        ));
+    }
+
+    /**
      * Execute the search
      */
     protected function executeSearch(): Collection
@@ -977,13 +996,7 @@ class SearchBuilder
             $results = $this->addDebugInfo($results);
         }
 
-        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->searchTerm,
-            columns:        $this->searchableColumns,
-            algorithm:      $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
-            candidateCount: $candidates->count(),
-            latencyMs:      round((microtime(true) - $startTime) * 1000, 2),
-        ));
+        $this->dispatchExecuted($this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'), 'like', $candidates->count(), $results->count(), $startTime);
 
         return $results;
     }
@@ -1039,13 +1052,7 @@ class SearchBuilder
             $sorted = $this->addDebugInfo($sorted);
         }
 
-        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->searchTerm,
-            columns:        $this->searchableColumns,
-            algorithm:      'bm25',
-            candidateCount: count($ranked),
-            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
-        ));
+        $this->dispatchExecuted('bm25', 'bm25', count($ranked), $sorted->count(), $startedAt);
 
         return $sorted;
     }
@@ -1280,7 +1287,7 @@ class SearchBuilder
     {
         $startedAt = microtime(true);
 
-        $columns = $this->compileExtendedQuery();
+        $this->compileExtendedQuery();
 
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
         $candidates = $this->query->limit($maxCandidates)->get();
@@ -1299,13 +1306,7 @@ class SearchBuilder
             $results = $this->addDebugInfo($results);
         }
 
-        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->extendedQuery,
-            columns:        $columns,
-            algorithm:      'extended',
-            candidateCount: $candidates->count(),
-            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
-        ));
+        $this->dispatchExecuted('extended', 'extended', $candidates->count(), $results->count(), $startedAt, $this->extendedQuery);
 
         return $results;
     }
@@ -1419,18 +1420,14 @@ class SearchBuilder
             $items = $this->addDebugInfo($items);
         }
 
-        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $term,
-            columns:        $this->searchableColumns,
-            algorithm:      $algorithm,
-            candidateCount: $total,
-            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
-        ));
-
-        return new \Illuminate\Pagination\LengthAwarePaginator(
+        $paginator = new \Illuminate\Pagination\LengthAwarePaginator(
             $items, $total, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
+
+        $this->dispatchExecuted($algorithm, $this->extendedQuery !== null ? 'extended' : 'like', $total, count($paginator->items()), $startedAt, $term);
+
+        return $paginator;
     }
 
     /**
@@ -1479,18 +1476,14 @@ class SearchBuilder
             $sorted = $this->addDebugInfo($sorted);
         }
 
-        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->searchTerm,
-            columns:        $this->searchableColumns,
-            algorithm:      'bm25',
-            candidateCount: $total,
-            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
-        ));
-
-        return new \Illuminate\Pagination\LengthAwarePaginator(
+        $paginator = new \Illuminate\Pagination\LengthAwarePaginator(
             $sorted, $total, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
+
+        $this->dispatchExecuted('bm25', 'bm25', $total, count($paginator->items()), $startedAt);
+
+        return $paginator;
     }
 
     /**

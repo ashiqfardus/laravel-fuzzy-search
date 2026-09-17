@@ -84,6 +84,8 @@ class InMemorySearch
 
     public function get(): Collection
     {
+        $startedAt = microtime(true);
+
         if ($this->term === '' || empty($this->columns)) {
             return $this->items->slice($this->offset, $this->limit)->values();
         }
@@ -149,6 +151,19 @@ class InMemorySearch
             return $item;
         });
 
-        return $scored->slice($this->offset, $this->limit)->values();
+        $results = $scored->slice($this->offset, $this->limit)->values();
+
+        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+            searchTerm:     $this->term,
+            columns:        $this->columns,
+            algorithm:      'in_memory',
+            candidateCount: $this->items->count(),
+            latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
+            resultCount:    $results->count(),
+            path:           'in_memory',
+            modelClass:     null,
+        ));
+
+        return $results;
     }
 }
