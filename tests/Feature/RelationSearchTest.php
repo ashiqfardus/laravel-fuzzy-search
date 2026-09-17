@@ -4,6 +4,8 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 require_once __DIR__ . '/../RelationModels.php';
 
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\CreatesRelationTables;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Post;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
@@ -99,5 +101,64 @@ class RelationSearchTest extends TestCase
         $titles = Post::search('winter')->searchIn(['posts.title'])->using('like')->get()->pluck('title')->all();
 
         $this->assertSame(['Winter'], $titles);
+    }
+
+    public function test_relation_matches_are_scored_with_the_column_weight(): void
+    {
+        // Only the relation column is searched, so no other column adds a fuzzy contribution.
+        // Built directly against Post::query() rather than Post::search(): the latter would
+        // also inject the model's configured `title` column (searchIn() accumulates, it never
+        // replaces), which would add its own fuzzy contribution and muddy this assertion.
+        $post = (new SearchBuilder(Post::query(), app(FuzzySearch::class)))
+            ->search('tolkien')->searchIn(['author.name' => 10])->using('like')->withRelevance()->get()->first();
+
+        $this->assertSame('The Ring', $post->title);
+        // exact match on a weight-10 column: scoring.exact_match (100) × 10 = 1000 raw
+        $this->assertEquals(1000.0, (float) $post->_raw_score);
+    }
+
+    public function test_to_many_relation_takes_the_best_related_row(): void
+    {
+        // "The Ring" has tags fantasy + epic; "Harry" has fantasy only. Searching "epic":
+        // Built directly against Post::query() rather than Post::search(): the latter would
+        // also inject the model's configured `title` column (searchIn() accumulates, it never
+        // replaces), which would add its own fuzzy contribution and muddy this assertion.
+        $ranked = (new SearchBuilder(Post::query(), app(FuzzySearch::class)))
+            ->search('epic')->searchIn(['tags.name'])->using('like')->withRelevance()->get();
+
+        $this->assertSame(['The Ring', 'Winter'], $ranked->pluck('title')->sort()->values()->all());
+        foreach ($ranked as $post) {
+            $this->assertEquals(100.0, (float) $post->_raw_score, 'exact tag match scores the exact tier, not an average over tags');
+        }
+    }
+
+    public function test_relation_columns_are_highlighted_and_reported_in_matches(): void
+    {
+        $post = Post::search('tolk')->searchIn(['title', 'author.name'])->using('like')->highlight('em')->get()->first();
+
+        $this->assertSame('<em>Tolk</em>ien', $post->_highlighted['author.name']);
+        $this->assertSame('The Ring', $post->_highlighted['title']); // untouched, no match
+
+        $match = collect($post->_matches)->firstWhere('column', 'author.name');
+        $this->assertSame('Tolkien', $match['value']);
+        $this->assertSame([[0, 3]], $match['indices']);
+    }
+
+    public function test_to_many_highlight_uses_the_matching_related_row(): void
+    {
+        $post = Post::search('epic')->searchIn(['tags.name'])->using('like')->highlight('em')
+            ->get()->firstWhere('title', 'The Ring');
+
+        $this->assertSame('<em>epic</em>', $post->_highlighted['tags.name']);
+        $this->assertSame('<em>epic</em>', \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($post, 'tags.name', 'em'));
+    }
+
+    public function test_blade_helper_renders_a_belongs_to_relation_column(): void
+    {
+        $post = Post::search('tolkien')->searchIn(['author.name'])->using('like')->highlight('mark')->get()->first();
+
+        $this->assertSame('<mark>Tolkien</mark>', \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($post, 'author.name'));
+        // A column that was searched but did not match renders escaped, unwrapped text.
+        $this->assertSame('The Ring', \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($post, 'title'));
     }
 }

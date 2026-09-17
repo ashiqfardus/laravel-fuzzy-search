@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SearchBuilder forwards Eloquent/Query Builder calls (where*, whereHas, with*, join*, when, local scopes, …) and adds query(Closure) — no more filter()-only workarounds. Cache keys now include forwarded constraints.
 - FederatedSearch: paginate(), simplePaginate(), limitPerModel(), orderByModel().
 - Relationship search: searchIn(['title', 'author.name', 'tags.name', 'comments.author.name']) filters through the relation (whereHas / EXISTS) on the LIKE path; nested paths and to-many relations supported. A dotted name is a relation only when its head is a relation method on the model, so table-qualified columns keep working.
+- Relation columns are scored with their searchIn() weight (a to-many relation counts its best related row), highlighted under the dotted key (`_highlighted['author.name']`), reported in `_matches`, and rendered by `@fuzzyHighlight($post, 'author.name')`.
 
 ### Changed
 

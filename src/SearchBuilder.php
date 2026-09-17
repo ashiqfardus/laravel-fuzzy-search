@@ -1755,39 +1755,13 @@ class SearchBuilder
             $score = 0;
             $columnScores = [];
 
-            foreach ($this->searchableColumns as $column) {
-                $value = strtolower((string) data_get($item, $column, ''));
-                $weight = $this->columnWeights[$column] ?? 1;
+            foreach ($this->resolveColumnTargets() as $column => $target) {
+                $weight   = $this->columnWeights[$column] ?? 1;
                 $colScore = 0;
 
-                // Exact match - highest score
-                if ($value === $term) {
-                    $colScore = $this->scoring['exact_match'] * $weight;
-                }
-                // Prefix match - very high score
-                elseif (str_starts_with($value, $term)) {
-                    $colScore = $this->scoring['prefix_match'] * $weight * $this->prefixBoostMultiplier;
-                }
-                // Contains - high score
-                elseif (str_contains($value, $term)) {
-                    $colScore = $this->scoring['contains'] * $weight;
-                }
-                // Similarity-based scoring for fuzzy matches
-                else {
-                    // Use similar_text for percentage-based similarity
-                    $similarity = 0;
-                    similar_text($term, $value, $similarity);
-
-                    // Also check Levenshtein distance
-                    $distance = FuzzySearch::levenshteinDistance($value, $term);
-
-                    // Use the better of the two scores
-                    $similarityScore = ($similarity / 100) * $this->scoring['fuzzy_match'] * $weight;
-                    $levenshteinScore = ($distance <= $this->typoTolerance)
-                        ? max(0, (20 - $distance * 4)) * $weight
-                        : 0;
-
-                    $colScore = max($similarityScore, $levenshteinScore);
+                // A to-many relation contributes its best related row, never an average.
+                foreach ($this->columnValues($item, $column, $target) as $value) {
+                    $colScore = max($colScore, $this->scoreValue($value, $term, $weight));
                 }
 
                 $columnScores[$column] = $colScore;
@@ -1846,6 +1820,76 @@ class SearchBuilder
     }
 
     /**
+     * Every candidate string for a searchIn() column on one result: the column itself for a
+     * direct column; for a relation path, the leaf column of every related row (to-many
+     * relations and nested paths contribute one string per related row). Relations were
+     * eager-loaded in buildQuery(), so this reads memory, not the database.
+     *
+     * @param  array{relation: ?string, column: string} $target
+     * @return string[] non-empty strings only
+     */
+    protected function columnValues($item, string $column, array $target): array
+    {
+        if ($target['relation'] === null) {
+            $value = (string) data_get($item, $target['column'], '');
+            return $value === '' ? [] : [$value];
+        }
+
+        $rows = [$item];
+        foreach (explode('.', $target['relation']) as $segment) {
+            $next = [];
+            foreach ($rows as $row) {
+                $related = is_object($row) ? ($row->{$segment} ?? null) : null;
+                if ($related instanceof \Illuminate\Support\Collection) {
+                    foreach ($related as $r) {
+                        $next[] = $r;
+                    }
+                } elseif ($related !== null) {
+                    $next[] = $related;
+                }
+            }
+            $rows = $next;
+        }
+
+        $values = [];
+        foreach ($rows as $row) {
+            $value = (string) data_get($row, $target['column'], '');
+            if ($value !== '') {
+                $values[] = $value;
+            }
+        }
+        return $values;
+    }
+
+    /**
+     * Score one string against the search term: the tier constants from scoring.* times the
+     * column weight, or the similarity/Levenshtein floor for fuzzy matches.
+     */
+    protected function scoreValue(string $value, string $term, float|int $weight): float
+    {
+        $value = strtolower($value);
+
+        if ($value === $term) {
+            return $this->scoring['exact_match'] * $weight;
+        }
+        if (str_starts_with($value, $term)) {
+            return $this->scoring['prefix_match'] * $weight * $this->prefixBoostMultiplier;
+        }
+        if (str_contains($value, $term)) {
+            return $this->scoring['contains'] * $weight;
+        }
+
+        $similarity = 0;
+        similar_text($term, $value, $similarity);
+        $distance = FuzzySearch::levenshteinDistance($value, $term);
+
+        $similarityScore  = ($similarity / 100) * $this->scoring['fuzzy_match'] * $weight;
+        $levenshteinScore = ($distance <= $this->typoTolerance) ? max(0, (20 - $distance * 4)) * $weight : 0;
+
+        return max($similarityScore, $levenshteinScore);
+    }
+
+    /**
      * Apply highlighting to results
      */
     protected function applyHighlighting(Collection $results): Collection
@@ -1862,23 +1906,29 @@ class SearchBuilder
             $matches     = [];
             $highlighted = [];
 
-            foreach ($this->searchableColumns as $column) {
-                $value = (string) data_get($item, $column, '');
-                if ($value === '') {
+            foreach ($this->resolveColumnTargets() as $column => $target) {
+                $values = $this->columnValues($item, $column, $target);
+                if (empty($values)) {
                     continue;
                 }
 
-                $indices = $this->findMatchOffsets($value, $term);
+                // Highlight the first related value that matches; fall back to the first value.
+                $chosen  = $values[0];
+                $indices = [];
+                foreach ($values as $value) {
+                    $found = $this->findMatchOffsets($value, $term);
+                    if (!empty($found)) {
+                        $chosen  = $value;
+                        $indices = $found;
+                        break;
+                    }
+                }
 
                 if (!empty($indices)) {
-                    $matches[] = [
-                        'column'  => $column,
-                        'value'   => $value,
-                        'indices' => $indices,
-                    ];
-                    $highlighted[$column] = $this->wrapWithTags($value, $indices, $open, $close);
+                    $matches[] = ['column' => $column, 'value' => $chosen, 'indices' => $indices];
+                    $highlighted[$column] = $this->wrapWithTags($chosen, $indices, $open, $close);
                 } else {
-                    $highlighted[$column] = $value;
+                    $highlighted[$column] = $chosen;
                 }
             }
 
@@ -1949,16 +1999,34 @@ class SearchBuilder
         }
 
         $matches = is_object($result) ? ($result->_matches ?? []) : ($result['_matches'] ?? []);
-        $value   = (string) data_get($result, $column, '');
 
         foreach ($matches as $match) {
             if (($match['column'] ?? null) === $column) {
-                $indices = $match['indices'] ?? [];
-                return self::escapeAndWrap($value, $indices, $tag);
+                // The match carries the exact string that was scored (for a to-many
+                // relation that is the related row that matched, which data_get cannot reach).
+                return self::escapeAndWrap((string) ($match['value'] ?? ''), $match['indices'] ?? [], $tag);
             }
         }
 
-        return e($value);
+        return e(self::displayValueFor($result, $column));
+    }
+
+    /**
+     * Plain (unhighlighted) display value for a column: `_highlighted` when the search
+     * produced one, otherwise data_get(), collapsing a to-many collection to its first row.
+     */
+    protected static function displayValueFor($result, string $column): string
+    {
+        $highlighted = is_object($result) ? ($result->_highlighted ?? []) : ($result['_highlighted'] ?? []);
+        if (array_key_exists($column, $highlighted)) {
+            return strip_tags((string) $highlighted[$column]);
+        }
+
+        $value = data_get($result, $column);
+        if ($value instanceof \Illuminate\Support\Collection) {
+            $value = $value->first();
+        }
+        return is_scalar($value) ? (string) $value : '';
     }
 
     private static function escapeAndWrap(string $value, array $indices, string $tag): string
