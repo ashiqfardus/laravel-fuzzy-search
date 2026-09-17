@@ -44,13 +44,41 @@ class Bm25Scorer
         return array_map('strval', array_keys($weights));
     }
 
+    /** Columns whose weight is <= 0 contribute nothing to rank(); count() must skip them too. */
+    private function excludedColumns(array $columnWeights): array
+    {
+        return array_keys(array_filter($columnWeights, fn ($w) => (float) $w <= 0));
+    }
+
+    /**
+     * Weighted frequency per posting row as SQL: SUM(CASE p.column_name WHEN ? THEN p.frequency * w … ELSE p.frequency END).
+     * Weights are inlined as floats (they come from code, never from user strings); column names are bound.
+     * '' (legacy) and unknown columns fall to the ELSE branch (weight 1). Returns [sql, bindings].
+     */
+    private function weightedFrequencySql(array $columnWeights): array
+    {
+        $cases    = '';
+        $bindings = [];
+        foreach ($columnWeights as $column => $weight) {
+            $w = (float) $weight;
+            if ($w <= 0 || $w == 1.0) {
+                continue; // excluded by whereNotIn() / default branch
+            }
+            $cases     .= ' WHEN ? THEN p.frequency * ' . sprintf('%.6F', $w);
+            $bindings[] = (string) $column;
+        }
+
+        return [$cases === '' ? 'SUM(p.frequency)' : "SUM(CASE p.column_name{$cases} ELSE p.frequency END)", $bindings];
+    }
+
     /**
      * Count the number of distinct models that contain at least one query term.
      * Used by FuzzySearchEngine::paginate() to obtain an accurate total (C13).
      *
-     * @param array<int, string>|array<string, float> $terms Processed terms, or term => weight
+     * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
+     * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
      */
-    public function count(array $terms, string $modelType): int
+    public function count(array $terms, string $modelType, array $columnWeights = []): int
     {
         $weights = $this->weights($terms);
         if ($weights === []) {
@@ -68,6 +96,7 @@ class Bm25Scorer
         return (int) DB::table('fuzzy_index_postings')
             ->where('model_type', $modelType)
             ->whereIn('term_id', $termIds)
+            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('column_name', $cols))
             ->distinct('model_id')
             ->count('model_id');
     }
@@ -132,15 +161,16 @@ class Bm25Scorer
         $termIds = $termData->keys()->toArray();
 
         // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
-        // Order by frequency DESC and cap at max_postings_per_term so that a high-frequency
-        // term (e.g. "john" with 50k hits) cannot pull the entire posting list into PHP.
-        // High-frequency rows are prioritised globally across all matched terms; in a pathological
-        // corpus a single dominant term could consume the cap, but at the default 50k the bound
-        // is never reached for normal workloads. Postings are now per (term, column), so a
-        // document's own column rows for a term can straddle this cap — its lower-frequency
-        // column row may be the one cut — which under-weights that document rather than
-        // dropping it outright.
+        // One row per (document, term), weighted in SQL, ordered by that weighted frequency DESC
+        // and capped at max_postings_per_term so that a high-frequency term (e.g. "john" with 50k
+        // hits) cannot pull the entire posting list into PHP. The cap is over (document, term)
+        // rows — exactly what v2.0 capped, which ordered by raw frequency — so a document is
+        // never partially cut across its columns. High-frequency rows are prioritised globally
+        // across all matched terms; in a pathological corpus a single dominant term could consume
+        // the cap, but at the default 50k the bound is never reached for normal workloads.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+
+        [$wf, $wfBindings] = $this->weightedFrequencySql($columnWeights);
 
         $postings = DB::table('fuzzy_index_postings as p')
             ->join('fuzzy_index_documents as d', function ($join) use ($modelType) {
@@ -149,35 +179,27 @@ class Bm25Scorer
             })
             ->where('p.model_type', $modelType)
             ->whereIn('p.term_id', $termIds)
-            ->select('p.model_id', 'p.term_id', 'p.column_name', 'p.frequency', 'd.doc_length as doc_len')
-            ->orderBy('p.frequency', 'desc')
+            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('p.column_name', $cols))
+            ->groupBy('p.model_id', 'p.term_id', 'd.doc_length')
+            ->select('p.model_id', 'p.term_id', 'd.doc_length as doc_len')
+            ->selectRaw("{$wf} as wf", $wfBindings)
+            ->orderByDesc('wf')
             ->limit($maxPostings)
             ->get();
 
-        // BM25F-lite: weighted frequency per (document, term) summed across columns, then one
-        // saturation. '' (legacy) and unknown column names weigh 1; a weight <= 0 removes the column.
-        $frequency = []; // model_id => term_id => weighted frequency
-        $docLen    = [];
-        foreach ($postings as $row) {
-            $cw = max(0.0, (float) ($columnWeights[$row->column_name] ?? 1.0));
-            $frequency[$row->model_id][$row->term_id] = ($frequency[$row->model_id][$row->term_id] ?? 0.0) + $cw * $row->frequency;
-            $docLen[$row->model_id] = (float) $row->doc_len;
-        }
-
         $scores = [];
-        foreach ($frequency as $modelId => $byTerm) {
-            foreach ($byTerm as $termId => $f) {
-                if ($f <= 0) {
-                    continue;
-                }
-                $td     = $termData[$termId];
-                $weight = (float) ($weights[$td->term] ?? 1.0);
-                $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
-                $tf     = ($f * ($this->k1 + 1))
-                        / ($f + $this->k1 * (1 - $this->b + $this->b * $docLen[$modelId] / $avgdl));
-
-                $scores[$modelId] = ($scores[$modelId] ?? 0) + $weight * $idf * $tf;
+        foreach ($postings as $row) {
+            $f = (float) $row->wf;
+            if ($f <= 0) {
+                continue;
             }
+            $td     = $termData[$row->term_id];
+            $weight = (float) ($weights[$td->term] ?? 1.0);
+            $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
+            $tf     = ($f * ($this->k1 + 1))
+                    / ($f + $this->k1 * (1 - $this->b + $this->b * (float) $row->doc_len / $avgdl));
+
+            $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $weight * $idf * $tf;
         }
 
         arsort($scores);

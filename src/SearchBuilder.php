@@ -1480,7 +1480,7 @@ class SearchBuilder
         // (chunked); otherwise a single COUNT(DISTINCT) over the postings is exact.
         $total = $this->hasIndexedConstraints($base)
             ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::count($base, array_keys($ranked))
-            : $scorer->count($terms, $modelClass);
+            : $scorer->count($terms, $modelClass, $this->columnWeights);
 
         return ['total' => $total, 'ranked' => $ranked, 'base' => $base];
     }
