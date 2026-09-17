@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The FuzzySearch singleton reads config('fuzzy-search') live, so runtime config overrides (tests, multi-tenant setups) reach the drivers.
 - The inverted index stores one posting per (term, column) — fuzzy_index_postings gained column_name (migration; existing rows keep '' and keep working). Run fuzzy-search:rebuild {Model} --fresh to get weighted ranking.
 - getDebugInfo() reports algorithm "extended" for extended-syntax searches and index_ignored when useInvertedIndex() was combined with extended() (the extended syntax runs on the LIKE path).
+- IndexManager::processTerms() accepts an optional model class (third argument) so query-time processing can use that model's pipeline; the two-argument form is unchanged.
 
 ### Removed
 

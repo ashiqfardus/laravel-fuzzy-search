@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\DB;
  */
 class IndexManager
 {
+    private Pipeline $default;
+
     public function __construct(
         private TokenizerInterface $tokenizer,
         private StemmerInterface   $stemmer,
@@ -17,6 +19,8 @@ class IndexManager
     ) {
         // Normalise stop words to lowercase so they match tokenizer output regardless of caller casing
         $this->stopWords = array_map('mb_strtolower', $stopWords);
+
+        $this->default = new Pipeline($tokenizer, $stemmer, $stopWords, (bool) config('fuzzy-search.indexing.accent_insensitive', false));
     }
 
     /**
@@ -216,31 +220,27 @@ class IndexManager
     }
 
     /**
-     * Tokenize + stem search input — used by Bm25Scorer and didYouMean().
+     * The pipeline (tokenizer, stemmer, stop words, accent folding) for one model class.
+     * Task 3 resolves $searchable overrides here; until then every class gets the default.
      */
+    public function pipelineFor(?string $modelClass): Pipeline
+    {
+        return $this->default;
+    }
+
     /**
      * Tokenize + stem search input — used by Bm25Scorer, SearchBuilder and didYouMean().
      * $stopWords: null keeps the configured locale list; an array is ADDED to it for this call
      * (SearchBuilder::ignoreStopWords() on the inverted-index path). Adding rather than
      * replacing is the only useful behaviour here: a term dropped at index time cannot match
      * anyway, so restoring a configured stop word would only feed typo expansion with noise.
+     * $modelClass selects the pipeline (Task 3 adds per-model overrides); null uses the default.
      *
      * @return string[]
      */
-    public function processTerms(string $text, ?array $stopWords = null): array
+    public function processTerms(string $text, ?array $stopWords = null, ?string $modelClass = null): array
     {
-        $stop = $stopWords === null
-            ? $this->stopWords
-            : array_values(array_unique(array_merge($this->stopWords, array_map('mb_strtolower', $stopWords))));
-
-        $words = $this->tokenizer->tokenize($text);
-        $terms = [];
-        foreach ($words as $word) {
-            if (!in_array($word, $stop, true)) {
-                $terms[] = $this->stemmer->stem($word);
-            }
-        }
-        return array_values(array_unique($terms));
+        return array_values(array_unique($this->pipelineFor($modelClass)->tokens($text, $stopWords ?? [])));
     }
 
     /**
@@ -490,13 +490,11 @@ class IndexManager
         $distinct  = 0;
         $maxTokens = config('fuzzy-search.indexing.max_tokens_per_doc', 5000);
 
+        $pipeline = $this->pipelineFor(get_class($model));
+
         foreach ($this->searchableTexts($model, $columns) as $name => $value) {
             $column = mb_substr((string) $name, 0, 64);
-            foreach ($this->tokenizer->tokenize($value) as $word) {
-                if (in_array($word, $this->stopWords, true)) {
-                    continue;
-                }
-                $stemmed = $this->stemmer->stem($word);
+            foreach ($pipeline->tokens($value) as $stemmed) {
                 if (strlen($stemmed) > 255) {
                     continue; // token exceeds varchar(255) — skip rather than truncate silently
                 }

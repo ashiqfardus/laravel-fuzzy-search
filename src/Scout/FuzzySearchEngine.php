@@ -41,8 +41,8 @@ class FuzzySearchEngine extends Engine
 
     public function search(Builder $builder)
     {
-        $terms     = $this->indexManager->processTerms($builder->query);
         $modelType = $builder->model::class;
+        $terms     = $this->indexManager->processTerms($builder->query, null, $modelType);
         $limit     = $builder->limit ?? 15;
 
         $ranked = $this->scorer->rank($terms, $modelType);
@@ -65,8 +65,8 @@ class FuzzySearchEngine extends Engine
 
     public function paginate(Builder $builder, $perPage, $page)
     {
-        $terms     = $this->indexManager->processTerms($builder->query);
         $modelType = $builder->model::class;
+        $terms     = $this->indexManager->processTerms($builder->query, null, $modelType);
         $offset    = ($page - 1) * $perPage;
 
         $ranked = $this->scorer->rank($terms, $modelType);

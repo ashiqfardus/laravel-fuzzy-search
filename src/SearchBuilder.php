@@ -13,6 +13,7 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidConfigException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
+use Ashiqfardus\LaravelFuzzySearch\Support\Accents;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{AstNode, AndNode, OrNode, NotNode, FieldTerm};
 
 /**
@@ -1123,9 +1124,10 @@ class SearchBuilder
      */
     protected function indexedQueryTerms(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager $indexManager): array
     {
-        $override = $this->stopWordsOverridden ? $this->stopWords : null;
-        $terms    = $indexManager->processTerms($this->searchTerm, $override);
-        $weights  = array_fill_keys($terms, 1.0);
+        $modelClass = $this->resolveIndexModelClass();
+        $override   = $this->stopWordsOverridden ? $this->stopWords : null;
+        $terms      = $indexManager->processTerms($this->searchTerm, $override, $modelClass);
+        $weights    = array_fill_keys($terms, 1.0);
 
         // Synonyms are alternatives the caller declared, not typos: full weight. They are
         // looked up on the raw lowercased words (before stemming) and then processed like
@@ -1144,7 +1146,7 @@ class SearchBuilder
                     if ($synonym === $word) {
                         continue;
                     }
-                    foreach ($indexManager->processTerms($synonym, $override) as $term) {
+                    foreach ($indexManager->processTerms($synonym, $override, $modelClass) as $term) {
                         $weights[$term] = 1.0;
                     }
                 }
@@ -1171,7 +1173,7 @@ class SearchBuilder
             // $terms is de-duplicated (a repeated last word would vanish) and a trailing
             // stop word must not silently prefix-expand the word before it.
             $rawWords  = preg_split('/[^\p{L}\p{M}\p{N}]+/u', trim($this->searchTerm), -1, PREG_SPLIT_NO_EMPTY) ?: [];
-            $lastTerms = $rawWords === [] ? [] : $indexManager->processTerms((string) end($rawWords), $override);
+            $lastTerms = $rawWords === [] ? [] : $indexManager->processTerms((string) end($rawWords), $override, $modelClass);
 
             if ($lastTerms !== []) {
                 $prefixed = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
@@ -1771,23 +1773,7 @@ class SearchBuilder
      */
     protected function removeAccents(string $string): string
     {
-        $accents = [
-            'à' => 'a', 'á' => 'a', 'â' => 'a', 'ã' => 'a', 'ä' => 'a', 'å' => 'a',
-            'è' => 'e', 'é' => 'e', 'ê' => 'e', 'ë' => 'e',
-            'ì' => 'i', 'í' => 'i', 'î' => 'i', 'ï' => 'i',
-            'ò' => 'o', 'ó' => 'o', 'ô' => 'o', 'õ' => 'o', 'ö' => 'o', 'ø' => 'o',
-            'ù' => 'u', 'ú' => 'u', 'û' => 'u', 'ü' => 'u',
-            'ý' => 'y', 'ÿ' => 'y',
-            'ñ' => 'n', 'ç' => 'c', 'ß' => 'ss',
-            'À' => 'A', 'Á' => 'A', 'Â' => 'A', 'Ã' => 'A', 'Ä' => 'A', 'Å' => 'A',
-            'È' => 'E', 'É' => 'E', 'Ê' => 'E', 'Ë' => 'E',
-            'Ì' => 'I', 'Í' => 'I', 'Î' => 'I', 'Ï' => 'I',
-            'Ò' => 'O', 'Ó' => 'O', 'Ô' => 'O', 'Õ' => 'O', 'Ö' => 'O', 'Ø' => 'O',
-            'Ù' => 'U', 'Ú' => 'U', 'Û' => 'U', 'Ü' => 'U',
-            'Ý' => 'Y', 'Ñ' => 'N', 'Ç' => 'C',
-        ];
-
-        return strtr($string, $accents);
+        return Accents::fold($string);
     }
 
     /**
