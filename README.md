@@ -878,7 +878,7 @@ Product::search('watch')
 - Each column's term frequency is scaled by its weight and summed per document and term before BM25 saturation runs once (BM25F-lite) — heavier columns win ties and near-ties, but a 10:1 weight does not multiply the final score by 10.
 - A weight of `0` removes that column from scoring entirely.
 - Hook models (`searchableText()`) are weighted by the hook's returned keys when a key matches a searchable column name; any other key weighs 1.
-- Postings are stored per `(term, column)` and capped by `bm25.max_postings_per_term` per matched term; at the cap a document's own lower-frequency column row for that term can be the one cut, which under-weights the document rather than dropping it — raise `bm25.max_postings_per_term` if that matters for your data.
+- Postings are stored per `(term, column)`; `bm25.max_postings_per_term` is one shared cap over all the query's matched terms (highest frequencies first). At the cap a document's own lower-frequency column row for a term can be the one cut, which under-weights the document rather than dropping it — raise the cap if that matters for your data.
 - Requires `php artisan migrate` and `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh` per model — rows indexed before this feature rank at weight 1 until rebuilt, and `php artisan fuzzy-search:status` lists them.
 
 ### Typo tolerance, as-you-type, synonyms and stop words on the index
