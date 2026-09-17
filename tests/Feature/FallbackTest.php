@@ -202,16 +202,26 @@ class FallbackTest extends TestCase
 
     public function test_bm25_path_falls_back_to_a_like_algorithm_when_the_index_has_no_match(): void
     {
+        // Only Jane is indexed. "charlie" has no dictionary neighbour within two edits, so even the
+        // typo-tolerant index (Phase 3) finds nothing and the LIKE fuzzy fallback must rescue the search.
         $manager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
-        $manager->indexModel(User::where('name', 'John Doe')->first());
+        $manager->indexModel(User::where('name', 'Jane Doe')->first());
 
-        // Since Phase 3 the index is typo-tolerant by default and would find John itself;
-        // this test pins the fallback mechanics, so expansion is off.
-        $this->assertCount(0, User::search('jonh')->useInvertedIndex()->typoTolerance(0)->get());
+        Event::fake([FuzzySearchExecuted::class]);
 
-        $results = User::search('jonh')->useInvertedIndex()->fallback('fuzzy')->get();
+        $this->assertCount(0, User::search('charlie')->useInvertedIndex()->get());
 
-        $this->assertTrue($results->contains('name', 'John Doe'));
+        $results = User::search('charlie')->useInvertedIndex()->fallback('fuzzy')->get();
+
+        $this->assertTrue($results->contains('name', 'Charlie Brown'));
+
+        // Proves the fallback actually ran the LIKE path, not that BM25 happened to match another way.
+        $algorithms = [];
+        Event::assertDispatched(FuzzySearchExecuted::class, function (FuzzySearchExecuted $e) use (&$algorithms) {
+            $algorithms[] = $e->algorithm;
+            return true;
+        });
+        $this->assertSame('fuzzy', end($algorithms));
     }
 
     public function test_fallback_applies_to_paginate(): void
