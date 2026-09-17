@@ -4,10 +4,13 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Post;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Illuminate\Support\Facades\DB;
+
+require_once __DIR__ . '/../RelationModels.php';
 
 /**
  * SearchBuilder Unit Tests
@@ -479,6 +482,26 @@ class SearchBuilderTest extends TestCase
             } else {
                 $this->assertStringContainsString('like', $sql, $driver);
                 $this->assertStringNotContainsString('ilike', $sql, $driver);
+            }
+
+            // fakeConnectionTable() registers the "fake_{driver}" connection; Post::on() then
+            // gives an Eloquent builder (needed for whereHas) on that same connection.
+            $relationBuilder = new SearchBuilder(
+                Post::on('fake_' . $driver),
+                app(FuzzySearch::class)
+            );
+            $relationBuilder->search('tol')->searchIn(['title', 'author.name']);
+
+            $relationSql = strtolower(\Closure::bind(
+                fn () => $this->suggestCandidateQuery('tol')->toSql(),
+                $relationBuilder,
+                SearchBuilder::class
+            )());
+
+            $this->assertMatchesRegularExpression('/exists \(select \* from .*authors/i', $relationSql, $driver);
+
+            if ($expectsIlike) {
+                $this->assertSame(2, substr_count($relationSql, 'ilike'), $driver);
             }
 
             $checked++;

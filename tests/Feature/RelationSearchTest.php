@@ -209,4 +209,18 @@ class RelationSearchTest extends TestCase
 
         $this->assertStringContainsString('<em>Tolkien</em>', $post->_highlighted['comments.author.name']);
     }
+
+    public function test_suggest_proposes_related_values(): void
+    {
+        $suggestions = Post::search('tol')->searchIn(['title', 'author.name'])->suggest(5);
+
+        $this->assertContains('Tolkien', $suggestions);
+    }
+
+    public function test_suggest_proposes_to_many_related_values(): void
+    {
+        $suggestions = Post::search('fan')->searchIn(['tags.name'])->suggest(5);
+
+        $this->assertContains('fantasy', $suggestions);
+    }
 }

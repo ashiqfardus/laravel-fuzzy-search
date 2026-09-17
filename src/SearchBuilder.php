@@ -2209,9 +2209,8 @@ class SearchBuilder
 
         // Extract unique suggestions from results
         foreach ($results as $result) {
-            foreach ($this->searchableColumns as $column) {
-                $value = (string) data_get($result, $column, '');
-                if (!empty($value)) {
+            foreach ($this->resolveColumnTargets() as $column => $target) {
+                foreach ($this->columnValues($result, $column, $target) as $value) {
                     // Extract the matching word/phrase
                     $words = preg_split('/\s+/', $value);
                     foreach ($words as $word) {
@@ -2256,16 +2255,34 @@ class SearchBuilder
         // Clone query to avoid modifying the original
         $suggestQuery = clone $this->query;
 
-        $suggestQuery->where(function ($q) use ($safeTerm, $driver) {
-            foreach ($this->searchableColumns as $column) {
-                if ($driver === 'pgsql') {
-                    // PostgreSQL's LIKE is case-sensitive; ILIKE matches capitalised values too.
-                    $q->orWhereRaw($this->quoteColumn($column, $driver) . ' ILIKE ?', [$safeTerm . '%']);
+        $targets = $this->resolveColumnTargets();
+
+        $prefixWhere = function ($q, string $column, string $boolean) use ($safeTerm, $driver) {
+            if ($driver === 'pgsql') {
+                // PostgreSQL's LIKE is case-sensitive; ILIKE matches capitalised values too.
+                $q->{$boolean === 'or' ? 'orWhereRaw' : 'whereRaw'}($this->quoteColumn($column, $driver) . ' ILIKE ?', [$safeTerm . '%']);
+            } else {
+                $q->{$boolean === 'or' ? 'orWhere' : 'where'}($column, 'LIKE', $safeTerm . '%');
+            }
+        };
+
+        $suggestQuery->where(function ($q) use ($targets, $prefixWhere) {
+            $first = true;
+            foreach ($targets as $target) {
+                if ($target['relation'] === null) {
+                    $prefixWhere($q, $target['column'], $first ? 'and' : 'or');
                 } else {
-                    $q->orWhere($column, 'LIKE', $safeTerm . '%');
+                    $q->{$first ? 'whereHas' : 'orWhereHas'}($target['relation'], function ($related) use ($target, $prefixWhere) {
+                        $prefixWhere($related, $target['column'], 'and');
+                    });
                 }
+                $first = false;
             }
         });
+
+        if ($suggestQuery instanceof EloquentBuilder && !empty($this->relationPaths())) {
+            $suggestQuery->with($this->relationPaths());
+        }
 
         return $suggestQuery;
     }
