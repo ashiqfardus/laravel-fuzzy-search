@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relationship search: searchIn(['title', 'author.name', 'tags.name', 'comments.author.name']) filters through the relation (whereHas / EXISTS) on the LIKE path; nested paths and to-many relations supported. A dotted name is a relation only when its head is a relation method on the model, so table-qualified columns keep working.
 - Relation columns are scored with their searchIn() weight (a to-many relation counts its best related row), highlighted under the dotted key (`_highlighted['author.name']`), reported in `_matches`, and rendered by `@fuzzyHighlight($post, 'author.name')`.
 - suggest() proposes values from relation columns too.
+- Extended syntax (`'include`, `^prefix`, `word$`, `=exact`, `!not`, `|`, grouping) works on relation columns; NOT of a relation term excludes rows with any matching related row.
 
 ### Changed
 

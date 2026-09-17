@@ -116,4 +116,22 @@ class AstCompilerTest extends TestCase
         $this->assertContains('Alice Smith', $names);
         $this->assertContains('Bob Johnson', $names);
     }
+
+    public function test_relation_columns_compile_to_where_has_groups(): void
+    {
+        require_once __DIR__ . '/../../RelationModels.php';
+
+        $ast     = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())
+            ->parse((new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize("'ring !tolkien"));
+        $builder = \Ashiqfardus\LaravelFuzzySearch\Tests\Post::query();
+
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($builder->getConnection()->getDriverName()))
+            ->compile($ast, $builder, ['title'], ['author' => ['name']]);
+
+        $sql = strtolower($builder->toSql());
+        $this->assertSame(2, substr_count($sql, 'exists (select * from'), 'one EXISTS per leaf term that touches the relation');
+        $this->assertStringContainsString('not (', $sql);
+        $this->assertContains('%ring%', $builder->getBindings());
+        $this->assertContains('%tolkien%', $builder->getBindings());
+    }
 }

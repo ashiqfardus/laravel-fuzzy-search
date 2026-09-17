@@ -1088,9 +1088,10 @@ class SearchBuilder
      */
     protected function compileExtendedQuery(): array
     {
-        $columns = !empty($this->searchableColumns)
-            ? $this->searchableColumns
-            : $this->autoDetectColumnsForExtended();
+        if (empty($this->searchableColumns)) {
+            $this->searchIn($this->autoDetectColumnsForExtended());
+        }
+        $columns = $this->searchableColumns;
 
         if (empty($columns)) {
             throw new \Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException();
@@ -1100,9 +1101,24 @@ class SearchBuilder
         $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
 
         $dbDriver = $this->query->getConnection()->getDriverName();
-        $rawQuery = $this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query;
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver))->compile($ast, $rawQuery, $columns);
+        // Group the resolved targets: direct columns as before; relation columns by path.
+        $direct    = array_values($this->directTargets());
+        $relations = [];
+        foreach ($this->relationTargets() as $target) {
+            $relations[$target['relation']][] = $target['column'];
+        }
+
+        // whereHas() needs the Eloquent builder; Query Builder sources never have relations (Task 1).
+        $compileTarget = $this->query instanceof EloquentBuilder && !empty($relations)
+            ? $this->query
+            : ($this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query);
+
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver))->compile($ast, $compileTarget, $direct, $relations);
+
+        if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
+            $this->query->with($this->relationPaths());
+        }
 
         foreach ($this->filters as $filter) {
             if ($filter['operator'] === 'IN') {

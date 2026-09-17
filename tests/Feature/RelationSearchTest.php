@@ -223,4 +223,41 @@ class RelationSearchTest extends TestCase
 
         $this->assertContains('fantasy', $suggestions);
     }
+
+    public function test_extended_include_term_matches_a_relation_column(): void
+    {
+        $titles = Post::search("'tolkien")->extended()->searchIn(['title', 'author.name'])->get()->pluck('title')->all();
+
+        $this->assertSame(['The Ring'], $titles);
+    }
+
+    public function test_extended_prefix_and_exact_terms_work_on_relations(): void
+    {
+        $this->assertSame(['The Ring'], Post::search('^tolk')->extended()->searchIn(['author.name'])->get()->pluck('title')->all());
+        $this->assertSame(['The Ring'], Post::search('=tolkien')->extended()->searchIn(['author.name'])->get()->pluck('title')->all());
+        $this->assertCount(0, Post::search('=tolk')->extended()->searchIn(['author.name'])->get());
+    }
+
+    public function test_extended_not_excludes_rows_whose_relation_matches(): void
+    {
+        // Every post except the one by Tolkien (Cooking has no author and is kept).
+        $titles = Post::search('!tolkien')->extended()->searchIn(['title', 'author.name'])->get()->pluck('title')->sort()->values()->all();
+
+        $this->assertSame(['Cooking', 'Harry', 'Winter'], $titles);
+    }
+
+    public function test_extended_or_across_direct_and_to_many_relation(): void
+    {
+        $titles = Post::search('winter | epic')->extended()->searchIn(['title', 'tags.name'])->get()->pluck('title')->sort()->values()->all();
+
+        $this->assertSame(['The Ring', 'Winter'], $titles);
+    }
+
+    public function test_extended_paginate_works_with_relation_columns(): void
+    {
+        $page = Post::search("'fantasy")->extended()->searchIn(['tags.name'])->paginate(1, 'page', 1);
+
+        $this->assertSame(2, $page->total());
+        $this->assertCount(1, $page->items());
+    }
 }
