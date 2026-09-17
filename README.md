@@ -615,7 +615,7 @@ Built-in lists cover eight locales — `en`, `de`, `fr`, `es`, `it`, `pt`, `nl`,
 ],
 ```
 
-`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's smaller built-in en/de/fr/es lists when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely.
+`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's smaller built-in en/de/fr/es lists when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list.
 
 ### Synonym Support
 
@@ -983,7 +983,7 @@ Rebuilds load rows through the model's optional `searchIndexQuery()` hook (see *
 
 ### Tokenizers
 
-The index splits each column's text into tokens before storing it. The default, `WhitespaceTokenizer`, splits on anything that isn't a letter, mark or digit — it works for Latin, Cyrillic, Greek, Bengali, Hindi, Thai and every other script that separates words with spaces.
+The index splits each column's text into tokens before storing it. The default, `WhitespaceTokenizer`, splits on anything that isn't a letter, mark or digit and drops single-character tokens — it works for Latin, Cyrillic, Greek, Bengali, Hindi, Thai and every other script that separates words with spaces.
 
 Chinese, Japanese and Korean don't use spaces between words, so `WhitespaceTokenizer` keeps a whole CJK run as one token — searching for part of it won't match. Two opt-in tokenizers cut character n-grams instead:
 
@@ -1042,7 +1042,7 @@ class Product extends Model
 
 Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline — it's independent of the query builder's `->locale()`.
 
-The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion, `didYouMean()`, `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. Rebuild after changing any of these keys, same as the global tokenizer/stemmer:
+The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion and `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. `didYouMean()` is a separate, unscoped lookup: it queries the whole cross-model dictionary on the raw search term without running it through any model's tokenizer, stemmer or stop-word list. Rebuild after changing any of these keys, same as the global tokenizer/stemmer:
 
 ```bash
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
@@ -1086,7 +1086,7 @@ composer require wamania/php-stemmer
 ],
 ```
 
-Supported languages: English, French, German, Spanish, Italian, Russian, Dutch, Portuguese, Swedish, Danish, Norwegian. You must rebuild the index after changing the stemmer.
+Supported languages: English, French, German, Spanish, Italian, Russian, Romanian, Dutch, Portuguese, Swedish, Danish, Norwegian. You must rebuild the index after changing the stemmer.
 
 ### Observer Auto-Attach
 
