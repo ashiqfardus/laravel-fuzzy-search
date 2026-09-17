@@ -866,6 +866,25 @@ $suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
 
 > **Column weights and BM25:** `searchIn()` weights are respected by the LIKE/Levenshtein scoring paths but are ignored by BM25. BM25 scores by term frequency and inverse document frequency only.
 
+### Typo tolerance, as-you-type, synonyms and stop words on the index
+
+The inverted index expands your query through its own term dictionary, so it no longer needs an exact token to match:
+
+```php
+User::search('jonh')->useInvertedIndex()->get();                 // finds "john" (typoTolerance() = 2 by default)
+User::search('jonh')->useInvertedIndex()->typoTolerance(0)->get(); // exact terms only
+User::search('joh')->useInvertedIndex()->asYouType()->get();      // last token is a prefix: john, johnny …
+User::search('laptop')->useInvertedIndex()->withSynonyms(['laptop' => ['notebook']])->get();
+User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); // replaces the configured list for this query
+```
+
+- Each query term of at least `typo_tolerance.min_word_length` characters is expanded with up to `bm25.fuzzy.max_expansions` dictionary terms within `typoTolerance()` edits, picked from the `bm25.fuzzy.candidate_pool` most common terms of a similar length. With `bm25.fuzzy.damping` (default on) an expansion scores `1 − distance / length` of the exact term, so exact matches rank first. `typo_tolerance.enabled = false` turns expansion off globally.
+- `asYouType()` (or `$searchable['as_you_type' => true]`) expands the **last** token by prefix, capped at `bm25.prefix.max_expansions`.
+- Synonyms score at full weight (they are alternatives, not typos). `ignoreStopWords()` replaces the configured locale list for that query.
+- `highlight()` marks every term that matched, including expansions. `getDebugInfo()['index_terms']` lists the weighted terms that ran.
+- The Scout engine keeps exact-term matching; use the builder for typo-tolerant index searches.
+- Upgrading from v2.0: the dictionary gained a `term_length` column — run `php artisan migrate` (existing rows are backfilled).
+
 ### Artisan Commands
 
 ```bash
@@ -893,6 +912,14 @@ Rebuilds load rows through the model's optional `searchIndexQuery()` hook (see *
 'bm25' => [
     'k1' => 1.5,   // Term-frequency saturation (1.2–2.0). Higher = more weight to repeated terms.
     'b'  => 0.75,  // Length normalisation (0–1). 0 = ignore doc length. 1 = full normalisation.
+    'fuzzy' => [
+        'candidate_pool' => 500,  // Dictionary terms (most common first) considered per query term for typo expansion.
+        'max_expansions' => 5,    // Max dictionary terms added per query term within typoTolerance() edits.
+        'damping'        => true, // Score expansions by 1 - distance/length so exact matches rank first.
+    ],
+    'prefix' => [
+        'max_expansions' => 10,   // Max dictionary terms added by asYouType() for the last token's prefix.
+    ],
 ],
 ```
 
@@ -1076,7 +1103,8 @@ php artisan fuzzy-search:rebuild "App\Models\User"
 
 ### Usage
 
-Add both traits to your model:
+Add both traits to your model. Both traits declare `bootSearchable()`, so the conflict
+resolution below aliases the package's copy and runs Scout's from `booted()`:
 
 ```php
 use Laravel\Scout\Searchable;
@@ -1085,10 +1113,20 @@ use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable as FuzzySearchable;
 class User extends Model
 {
     use Searchable, FuzzySearchable {
-        // FuzzySearchable::search() takes precedence — returns the fluent SearchBuilder.
-        // Scout's underlying engine (FuzzySearchEngine) is still used when SCOUT_DRIVER=fuzzy-search.
+        // FuzzySearchable::search() wins — it returns the fluent SearchBuilder.
+        // Scout's search() stays reachable as scoutSearch().
         FuzzySearchable::search insteadof Searchable;
         Searchable::search as scoutSearch;
+
+        // Both traits boot through bootSearchable() and Laravel calls that name only
+        // once, so keep the package's and run Scout's from booted().
+        FuzzySearchable::bootSearchable insteadof Searchable;
+        Searchable::bootSearchable as bootScoutSearchable;
+    }
+
+    protected static function booted(): void
+    {
+        static::bootScoutSearchable();
     }
 
     public function toSearchableArray(): array
@@ -1097,7 +1135,8 @@ class User extends Model
     }
 }
 
-$users = User::search('john')->get();
+$users = User::search('john')->get();       // fluent package builder
+$users = User::scoutSearch('john')->get();  // Scout's builder, when you need it
 ```
 
 ### Relevance Scores

@@ -113,3 +113,9 @@ few affect what you get back from a search:
 - Nothing to change for existing calls — table-qualified column names (`table.column`) are unchanged.
 - `_highlighted`/`_matches` gain dotted keys only when you search relation columns.
 - `AstCompiler::compile()` (internal, `@internal`) gained an optional fourth argument.
+
+## Inverted index (BM25)
+
+- **New migration to run.** `fuzzy_index_terms` gained a `term_length` column — run `php artisan migrate`. Existing rows are backfilled automatically; no index rebuild is required.
+- **BM25 searches are typo-tolerant by default.** `useInvertedIndex()` now expands each query term against the dictionary within `typoTolerance()` edits (2 by default). Call `->typoTolerance(0)` to restore exact-term-only matching. `_score` normalisation itself is unchanged, but rankings can now include near-miss rows that a pre-2.1.0 search would not have returned.
+- **`didYouMean()` now throws on real database errors** instead of swallowing them — it still returns `[]` only when the `fuzzy_index_terms` table itself is missing (e.g. migrations not yet run).

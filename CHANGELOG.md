@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FederatedSearch `paginate()`/`simplePaginate()` totals now count only reachable rows: when `limitPerModel()` caps a model's contribution, that model's share of the total is capped too — previously the total (and page count) could promise more rows than the search would ever return.
 - FederatedSearch `paginate()` could duplicate or skip a row across a page boundary when scores tied; each model's results are now ordered by `stableRanking()` (Searchable models) or the primary key (query-builder fallback) before the per-page limit is applied.
 - UUID/ULID primary keys are verified end to end on the inverted index, Scout engine, filter(), stableRanking() and fuzzy-search:rebuild (which now chunks by key with chunkById()); the README no longer lists them as unsupported (B5).
+- README Scout recipe: the dual-trait example now resolves bootSearchable() (it was a PHP fatal) and boots Scout's observers from booted() (B26).
 
 ### Database compatibility
 
