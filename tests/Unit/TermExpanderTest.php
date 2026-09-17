@@ -127,6 +127,25 @@ class TermExpanderTest extends TestCase
         $this->assertSame([], (new TermExpander)->prefix('', 10));
     }
 
+    public function test_prefix_can_be_scoped_to_a_model(): void
+    {
+        $johnId = DB::table('fuzzy_index_terms')->where('term', 'john')->value('id');
+        DB::table('fuzzy_index_postings')->insert([
+            'term_id' => $johnId, 'model_type' => 'App\\Models\\User', 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name',
+        ]);
+        $jonId = DB::table('fuzzy_index_terms')->where('term', 'jon')->value('id');
+        DB::table('fuzzy_index_postings')->insert([
+            'term_id' => $jonId, 'model_type' => 'App\\Models\\Product', 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name',
+        ]);
+
+        $scoped = (new TermExpander)->prefix('jo', 10, 'App\\Models\\User');
+
+        $this->assertArrayHasKey('john', $scoped);
+        $this->assertArrayNotHasKey('jon', $scoped); // posted only under App\Models\Product
+        $this->assertArrayNotHasKey('joan', $scoped); // never posted under any model
+        $this->assertArrayHasKey('jon', (new TermExpander)->prefix('jo', 10)); // unscoped still sees it
+    }
+
     public function test_distance_counts_characters_not_bytes(): void
     {
         $this->assertSame(1, TermExpander::distance('café', 'cafe'));

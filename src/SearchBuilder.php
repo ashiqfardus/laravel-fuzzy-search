@@ -64,6 +64,8 @@ class SearchBuilder
     protected bool $useSearchIndex = false;
     protected bool $asYouType = false;
     protected ?string $invertedIndexModelClass = null;
+    /** suggest() source: 'auto' (dictionary when the model is indexed), 'index' or 'table'. */
+    protected string $suggestSource = 'auto';
     /** @var array<string, float> Weighted terms of the last inverted-index query — see indexedQueryTerms(). */
     protected array $indexedTermWeights = [];
     protected ?string $extendedQuery = null;
@@ -546,6 +548,20 @@ class SearchBuilder
             $this->invertedIndexModelClass = $modelClass;
         }
 
+        return $this;
+    }
+
+    /**
+     * Override suggest()'s source: 'auto' (default) uses the BM25 dictionary when the model
+     * is indexed and falls back to the table scan otherwise; 'index' forces the dictionary
+     * (empty array if it cannot serve the request); 'table' forces the LIKE table scan.
+     */
+    public function suggestFrom(string $source): self
+    {
+        if (!in_array($source, ['auto', 'index', 'table'], true)) {
+            throw new \InvalidArgumentException("suggestFrom() expects 'auto', 'index' or 'table', got '{$source}'.");
+        }
+        $this->suggestSource = $source;
         return $this;
     }
 
@@ -2432,6 +2448,13 @@ class SearchBuilder
             return [];
         }
 
+        if ($this->suggestSource !== 'table') {
+            $fromIndex = $this->suggestFromIndex($limit);
+            if ($fromIndex !== null || $this->suggestSource === 'index') {
+                return $fromIndex ?? [];
+            }
+        }
+
         $suggestions = [];
         // $rawTerm  → PHP str_starts_with / strcmp comparisons (must be unescaped)
         // $safeTerm → LIKE bindings only (% and _ escaped so they match literally)
@@ -2477,6 +2500,42 @@ class SearchBuilder
         });
 
         return array_slice($sortedSuggestions, 0, $limit);
+    }
+
+    /**
+     * Complete the last whitespace token from the BM25 dictionary, scoped to the model's
+     * postings, and prefix the earlier tokens back ("Bob jo" → "Bob johnson"). Returns null
+     * when the dictionary cannot serve this builder (no Eloquent model, no postings for it —
+     * checked directly against fuzzy_index_postings rather than fuzzy_index_meta, since a
+     * meta row only exists once IndexManager has run and the model_type strings this builder
+     * exposes via useInvertedIndex()/suggestFrom('index') need not have gone through it — or
+     * the index tables are missing) so suggest() can fall back to the table scan.
+     */
+    protected function suggestFromIndex(int $limit): ?array
+    {
+        $modelClass = $this->resolveIndexModelClass();
+        if ($modelClass === null) {
+            return null;
+        }
+
+        $tokens = preg_split('/\s+/u', trim($this->searchTerm)) ?: [];
+        $last   = mb_strtolower((string) array_pop($tokens), 'UTF-8');
+        $head   = $tokens === [] ? '' : implode(' ', $tokens) . ' ';
+        if ($last === '') {
+            return [];
+        }
+
+        try {
+            $indexed = \Illuminate\Support\Facades\DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->exists();
+            if (!$indexed) {
+                return null;
+            }
+            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, $modelClass);
+        } catch (\Illuminate\Database\QueryException $e) {
+            return null; // dictionary not migrated
+        }
+
+        return array_map(fn (string $term) => $head . $term, array_keys($rows)); // prefix() returns term => weight
     }
 
     /**

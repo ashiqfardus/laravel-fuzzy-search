@@ -93,7 +93,8 @@ final class TermExpander
 
     /**
      * Dictionary terms that start with $prefix (as-you-type), most common first, at weight 1.0.
-     * Tokens contain only letters, marks and digits (WhitespaceTokenizer), so LIKE needs no escaping.
+     * $prefix is caller-supplied (not necessarily a dictionary token), so the LIKE branch escapes
+     * '%' and '_' to match them literally; the byte-range branch below compares literally already.
      *
      * Where `term` is byte-ordered (SQLite, and MySQL/MariaDB since the utf8mb4_bin migration)
      * the prefix becomes a half-open range, which a btree index can seek; LIKE 'x%' would be a
@@ -103,9 +104,12 @@ final class TermExpander
      * scan unless fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there
      * if as-you-type latency matters on a large dictionary.
      *
+     * @param  ?string $modelType Restrict to terms posted under this model_type (a whereExists
+     *                            semi-join against fuzzy_index_postings, same shape Bm25Scorer
+     *                            uses); null leaves the dictionary unscoped.
      * @return array<string, float>
      */
-    public function prefix(string $prefix, int $max): array
+    public function prefix(string $prefix, int $max, ?string $modelType = null): array
     {
         if ($prefix === '' || $max <= 0) {
             return [];
@@ -120,10 +124,19 @@ final class TermExpander
         $query = DB::table('fuzzy_index_terms')->where('term', '!=', $prefix);
 
         if ($next === false || !$byteOrdered) {
-            $query->where('term', 'like', $prefix . '%');
+            $query->where('term', 'like', addcslashes($prefix, '%_') . '%');
         } else {
             $query->where('term', '>=', $prefix)
                   ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
+        }
+
+        if ($modelType !== null) {
+            $query->whereExists(function ($q) use ($modelType) {
+                $q->selectRaw('1')
+                  ->from('fuzzy_index_postings as sp')
+                  ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
+                  ->where('sp.model_type', $modelType);
+            });
         }
 
         $terms = $query->orderByDesc('doc_count')->limit($max)->pluck('term');
