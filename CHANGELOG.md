@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scoring.*`, `highlighting.*`, `performance.max_patterns` and `unicode.normalize` config keys are now read (they were documented as reserved). Defaults preserve v2.0 ranking.
 - FederatedSearch results are now deterministically ordered: score, then orderByModel() (or the across() order), then primary key — previously ties and withRelevance(false) results came back in database order.
 - Federated `searchIn()` narrowing keeps each model's configured stop words, synonyms and accent settings.
+- searchIn() rejects dotted names whose first segment is neither a relation on the model nor a plain table prefix (three or more segments), with a message naming the column.
 
 ### Removed
 

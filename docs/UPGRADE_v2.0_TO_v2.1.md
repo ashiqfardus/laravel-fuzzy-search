@@ -107,3 +107,9 @@ few affect what you get back from a search:
   `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) sets the chunk size used
   when checking BM25 rankings against a constrained query.
 - **`indexing.table` was removed** — see "Removed config keys" above.
+
+## Relationship search
+
+- Nothing to change for existing calls — table-qualified column names (`table.column`) are unchanged.
+- `_highlighted`/`_matches` gain dotted keys only when you search relation columns.
+- `AstCompiler::compile()` (internal, `@internal`) gained an optional fourth argument.

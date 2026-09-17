@@ -16,7 +16,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 | Category | Features |
 |----------|----------|
-| **Core** | Zero-config search • Fluent API • Eloquent & Query Builder support |
+| **Core** | Zero-config search • Fluent API • Eloquent & Query Builder support • Relationship search (dot notation) |
 | **Algorithms** | Multiple fuzzy algorithms • Typo tolerance • Multi-word token search |
 | **Scoring** | Field weighting • Relevance scoring • Prefix boosting • Partial match • Recency boost |
 | **Text Processing** | Stop-word filtering • Synonym support • Language/locale awareness |
@@ -178,6 +178,62 @@ $users = User::search('john')
 Executing methods that would bypass the search conditions (`delete()`, `exists()`, `pluck()`, `update()`, …) are not forwarded and throw a `BadMethodCallException` — call `get()`, `first()`, `count()` or `paginate()` instead.
 
 `latest()`, `oldest()`, `inRandomOrder()` and `reorder()` are forwarded the same way as `orderBy()`: they only shape which rows make it into the candidate window, since the relevance `ORDER BY` is appended after them and PHP-side rescoring re-sorts by `_score` whenever `withRelevance` is on (the default) — call `withRelevance(false)` if you want the forwarded order to stick. The closure passed to `when()`, `unless()` or `tap()` receives the underlying Eloquent builder, not the `SearchBuilder`.
+
+### Searching Relationships
+
+Dotted column names search through Eloquent relations — `belongsTo`, `hasMany`, `belongsToMany`, and nested paths — on every search path:
+
+```php
+Post::search('tolkien')
+    ->searchIn(['title' => 10, 'author.name' => 5, 'tags.name' => 3, 'comments.author.name' => 1])
+    ->highlight('mark')
+    ->paginate(15);
+
+$post->_highlighted['author.name'];            // "<mark>Tolk</mark>ien"
+@fuzzyHighlight($post, 'tags.name')            // the related row that matched
+```
+
+- **Filtering** compiles to `whereHas()` (a portable `EXISTS` subquery); nested paths use the same `whereHas('comments.author', …)` Eloquent supports.
+- **Scoring** uses the column's `searchIn()` weight; a to-many relation counts its best related row.
+- **Highlighting**, `_matches` and `suggest()` include relation columns under the dotted key.
+- **Extended syntax** (`'include`, `^prefix`, `=exact`, `!not`, `|`) works on relation columns; `!tolkien` excludes rows with any matching related row.
+- A dotted name is treated as a relation only when its first segment is a relation method on the model. `posts.title` on a model whose table is `posts` stays a table-qualified column, exactly as in v2.0. Relation paths need `Model::search()`; a Query Builder source throws.
+- Touched relations are eager-loaded on the results.
+- `searchIn()` on a `Model::search()` builder *adds* the listed columns to the model's configured `$searchable['columns']` (it has never replaced them); to search only the listed columns, list them all in `searchIn()` or build the query from `new SearchBuilder(Model::query(), app(FuzzySearch::class))`.
+
+**BM25 index:** relations are not joined at query time. Define `searchableText()` to put related text into the index, eager-load it during rebuilds with `searchIndexQuery()`, declare the foreign key in `reindex_on`, and reindex the children when the parent changes:
+
+```php
+class Post extends Model
+{
+    use Searchable;
+
+    protected array $searchable = [
+        'columns'    => ['title' => 10, 'author_name' => 5],
+        'reindex_on' => ['author_id'],
+    ];
+
+    public function searchableText(): array
+    {
+        return ['title' => $this->title, 'author' => $this->author?->name, 'tags' => $this->tags->pluck('name')->implode(' ')];
+    }
+
+    public function searchIndexQuery(Builder $query): Builder
+    {
+        return $query->with(['author', 'tags']);
+    }
+}
+
+class Author extends Model
+{
+    protected static function booted(): void
+    {
+        static::saved(fn (Author $author) => Post::reindexRelated('author_id', $author->id));
+    }
+}
+```
+
+Changing a parent row (renaming an author) does **not** reindex its children automatically — that is what the `saved` hook above is for.
 
 ### Eloquent & Query Builder Support
 
