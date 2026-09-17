@@ -27,7 +27,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 | **Reliability** | Fallback search strategy • DB-agnostic • Rate-limit friendly • SQL-injection safe |
 | **Configuration** | Config file support • Per-model customization |
 | **Developer Tools** | CLI indexing • Benchmark tools • Built-in test suite • Performance utilities |
-| **Smart Search** | Autocomplete suggestions • "Did you mean" spell correction • Multi-model federation • Search analytics |
+| **Smart Search** | Autocomplete suggestions (dictionary-backed on indexed models) • "Did you mean" spell correction • Multi-model federation • Persisted search analytics |
 
 ## Table of Contents
 
@@ -558,6 +558,8 @@ Narrowing the columns per search with `searchIn()` still keeps each model's own 
 Relation columns (`author.name`) are not supported in federated searches yet and are ignored.
 
 ### Search Analytics
+
+Per-query debug information about the builder you are holding — nothing is stored. For DB-backed reporting across searches (popular terms, zero-result terms, latency by path) see [Persisted Search Analytics](#persisted-search-analytics).
 
 Get detailed analytics about your search configuration:
 
@@ -1665,6 +1667,8 @@ php artisan fuzzy-search:status
 ```
 
 ### Benchmark & Debug Commands
+
+`fuzzy-search:analytics` and `fuzzy-search:analytics:prune` are documented under [Persisted Search Analytics](#persisted-search-analytics).
 
 ```bash
 # Benchmark search performance
