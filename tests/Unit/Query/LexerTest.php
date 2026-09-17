@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit\Query;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Query\Lexer;
 use Ashiqfardus\LaravelFuzzySearch\Query\Token;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 
 class LexerTest extends TestCase
 {
@@ -140,5 +141,75 @@ class LexerTest extends TestCase
         $this->assertEquals('john', $tokens[0]->value);
         $this->assertEquals(Token::TYPE_NOT_FUZZY, $tokens[1]->type);
         $this->assertEquals('banned', $tokens[1]->value);
+    }
+
+    public function test_tilde_marks_a_typo_term(): void
+    {
+        $tokens = (new Lexer())->tokenize('~john');
+        $this->assertSame(Token::TYPE_TYPO, $tokens[0]->type);
+        $this->assertSame('john', $tokens[0]->value);
+        $this->assertNull($tokens[0]->field);
+    }
+
+    public function test_bang_tilde_is_a_not_typo_term(): void
+    {
+        $tokens = (new Lexer())->tokenize('!~john');
+        $this->assertSame(Token::TYPE_NOT_TYPO, $tokens[0]->type);
+        $this->assertSame('john', $tokens[0]->value);
+    }
+
+    public function test_tilde_alone_is_rejected(): void
+    {
+        $this->expectException(QuerySyntaxException::class);
+        (new Lexer())->tokenize('~');
+    }
+
+    public function test_tilde_cannot_combine_with_other_operators(): void
+    {
+        foreach (['~^john', '~=john', "~'john", '^~john', '~john$'] as $query) {
+            try {
+                (new Lexer())->tokenize($query);
+                $this->fail("Expected QuerySyntaxException for {$query}");
+            } catch (QuerySyntaxException $e) {
+                $this->assertStringContainsString('~', $e->getMessage());
+            }
+        }
+    }
+
+    public function test_field_scope_is_captured(): void
+    {
+        $tokens = (new Lexer())->tokenize('name:john email:^admin author.name:smith');
+        $this->assertSame([Token::TYPE_FUZZY, Token::TYPE_PREFIX, Token::TYPE_FUZZY], array_map(fn ($t) => $t->type, $tokens));
+        $this->assertSame(['name', 'email', 'author.name'], array_map(fn ($t) => $t->field, $tokens));
+        $this->assertSame(['john', 'admin', 'smith'], array_map(fn ($t) => $t->value, $tokens));
+    }
+
+    public function test_field_scope_combines_with_not_and_typo_and_quotes(): void
+    {
+        $tokens = (new Lexer())->tokenize('!name:john name:~jonh name:"john doe"');
+        $this->assertSame([Token::TYPE_NOT_FUZZY, Token::TYPE_TYPO, Token::TYPE_FUZZY], array_map(fn ($t) => $t->type, $tokens));
+        $this->assertSame(['name', 'name', 'name'], array_map(fn ($t) => $t->field, $tokens));
+        $this->assertSame('john doe', $tokens[2]->value);
+    }
+
+    public function test_a_colon_inside_a_word_or_a_quoted_phrase_is_literal(): void
+    {
+        $tokens = (new Lexer())->tokenize('12:30 "name:john"');
+        $this->assertSame('12:30', $tokens[0]->value);
+        $this->assertNull($tokens[0]->field);
+        $this->assertSame('name:john', $tokens[1]->value);
+        $this->assertNull($tokens[1]->field);
+    }
+
+    public function test_field_without_a_term_is_rejected(): void
+    {
+        foreach (['name:', 'name: john', 'name:|'] as $query) {
+            try {
+                (new Lexer())->tokenize($query);
+                $this->fail("Expected QuerySyntaxException for {$query}");
+            } catch (QuerySyntaxException $e) {
+                $this->assertStringContainsString('name', $e->getMessage());
+            }
+        }
     }
 }

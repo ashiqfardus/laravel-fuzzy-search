@@ -53,7 +53,7 @@ class Lexer
                 $tokens[] = new Token(Token::TYPE_FUZZY, $value);
                 $i        = $end + 1;
             } else {
-                // Operator-prefixed term
+                // Operator-prefixed term: [!][field:][~ | ' | = | ^]word[$]  (or [!][field:]"phrase")
                 $isNot = false;
                 if ($query[$i] === '!') {
                     $isNot = true;
@@ -67,8 +67,34 @@ class Lexer
                     }
                 }
 
+                // Field scope: an identifier (letters, digits, _ and . for relation paths) followed by ':'.
+                // Only at the start of a token, so 12:30 or a URL inside a word stays literal.
+                $field = null;
+                if (preg_match('/\G([A-Za-z_][A-Za-z0-9_.]*):/', $query, $m, 0, $i) === 1) {
+                    $field = $m[1];
+                    $i    += strlen($m[0]);
+                    if ($i >= $len || ctype_space($query[$i]) || in_array($query[$i], ['|', '(', ')', '!'], true)) {
+                        throw QuerySyntaxException::fieldNeedsTerm($field);
+                    }
+                    if ($query[$i] === '"') {
+                        $end = strpos($query, '"', $i + 1);
+                        if ($end === false) {
+                            throw QuerySyntaxException::unterminatedQuote();
+                        }
+                        $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, substr($query, $i + 1, $end - $i - 1), $field);
+                        $i = $end + 1;
+                        continue;
+                    }
+                }
+
                 $opPrefix = null;
-                if ($query[$i] === "'") {
+                if ($query[$i] === '~') {
+                    $opPrefix = 'TYPO';
+                    $i++;
+                    if ($i < $len && in_array($query[$i], ["'", '=', '^', '~'], true)) {
+                        throw QuerySyntaxException::typoOperatorCombination();
+                    }
+                } elseif ($query[$i] === "'") {
                     $opPrefix = 'INCLUDE_MATCH';
                     $i++;
                 } elseif ($query[$i] === '=') {
@@ -77,6 +103,9 @@ class Lexer
                 } elseif ($query[$i] === '^') {
                     $opPrefix = 'PREFIX';
                     $i++;
+                }
+                if ($opPrefix !== null && $opPrefix !== 'TYPO' && $i < $len && $query[$i] === '~') {
+                    throw QuerySyntaxException::typoOperatorCombination();
                 }
 
                 // Read bare word — stop at whitespace, grouping chars, OR '!' (prefix operator)
@@ -92,21 +121,33 @@ class Lexer
                 }
                 $term = substr($query, $start, $i - $start);
                 if ($term === '') {
+                    if ($opPrefix === 'TYPO') {
+                        throw QuerySyntaxException::typoOperatorNeedsTerm();
+                    }
+                    if ($field !== null) {
+                        throw QuerySyntaxException::fieldNeedsTerm($field);
+                    }
                     continue;
                 }
 
-                // Suffix operator
+                // Suffix operator (never with ~: the fuzzy driver has no suffix mode)
                 $isSuffix = false;
-                if ($opPrefix === null && str_ends_with($term, '$')) {
-                    $isSuffix = true;
-                    $term     = substr($term, 0, -1);
-                    if ($term === '') {
-                        continue;
+                if (str_ends_with($term, '$')) {
+                    if ($opPrefix === 'TYPO') {
+                        throw QuerySyntaxException::typoOperatorCombination();
+                    }
+                    if ($opPrefix === null) {
+                        $isSuffix = true;
+                        $term     = substr($term, 0, -1);
+                        if ($term === '') {
+                            continue;
+                        }
                     }
                 }
 
                 // Determine type
                 $base = match (true) {
+                    $opPrefix === 'TYPO'          => 'TYPO',
                     $opPrefix === 'INCLUDE_MATCH' => 'INCLUDE_MATCH',
                     $opPrefix === 'EXACT'         => 'EXACT',
                     $opPrefix === 'PREFIX'        => 'PREFIX',
@@ -115,7 +156,7 @@ class Lexer
                 };
 
                 $type = $isNot ? "NOT_{$base}" : $base;
-                $tokens[] = new Token($type, $term);
+                $tokens[] = new Token($type, $term, $field);
             }
 
             if (count($tokens) >= $maxTokens) {

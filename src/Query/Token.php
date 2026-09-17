@@ -14,6 +14,8 @@ class Token
     public const TYPE_NOT_PREFIX       = 'NOT_PREFIX';
     public const TYPE_NOT_SUFFIX       = 'NOT_SUFFIX';
     public const TYPE_NOT_INCLUDE_MATCH = 'NOT_INCLUDE_MATCH';
+    public const TYPE_TYPO              = 'TYPO';
+    public const TYPE_NOT_TYPO          = 'NOT_TYPO';
     public const TYPE_OR               = 'OR';
     public const TYPE_LPAREN           = 'LPAREN';
     public const TYPE_RPAREN           = 'RPAREN';
@@ -21,5 +23,6 @@ class Token
     public function __construct(
         public readonly string $type,
         public readonly string $value = '',
+        public readonly ?string $field = null,
     ) {}
 }

@@ -42,4 +42,29 @@ class QuerySyntaxException extends LaravelFuzzySearchException
             "Use individual NOT terms instead: '!term1 !term2'."
         );
     }
+
+    public static function typoOperatorNeedsTerm(): self
+    {
+        return new self('The typo operator (~) needs a term after it, for example ~john.');
+    }
+
+    public static function typoOperatorCombination(): self
+    {
+        return new self(
+            "The typo operator (~) cannot be combined with ', =, ^ or a trailing $. " .
+            "Use ~word on its own (a field scope is fine: name:~word)."
+        );
+    }
+
+    public static function fieldNeedsTerm(string $field): self
+    {
+        return new self("The field scope \"{$field}:\" needs a term after the colon, for example {$field}:john.");
+    }
+
+    public static function unknownSearchField(string $field, array $known): self
+    {
+        $list = $known === [] ? 'none' : implode(', ', $known);
+
+        return new self("Unknown search field \"{$field}\". Searchable fields: {$list}.");
+    }
 }

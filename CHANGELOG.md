@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - highlight() on the inverted index marks every term the query actually matched — exact tokens, typo expansions and as-you-type prefixes — with overlapping matches merged into one tag.
 - Column weights apply on the inverted index: searchIn(['title' => 10, 'body' => 1]) and $searchable['columns'] weights scale each column's term frequency before BM25 saturation (BM25F-lite). Unweighted calls and legacy postings score exactly as before.
 - fuzzy-search:status warns when a model still has postings without a column (rebuild with --fresh to enable weighted ranking).
+- Extended syntax: ~word (typo-tolerant term, gated by typoTolerance()) and field:term / field:^term / relation.field:term scopes; unknown fields and malformed operators throw QuerySyntaxException.
 
 ### Changed
 

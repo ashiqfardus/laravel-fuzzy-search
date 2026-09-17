@@ -5,7 +5,8 @@ namespace Ashiqfardus\LaravelFuzzySearch\Query;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
     AstNode, AndNode, OrNode, NotNode,
-    FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm
+    FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm,
+    TypoTerm, FieldTerm
 };
 
 /**
@@ -110,19 +111,24 @@ class ExtendedQueryParser
 
     private function makeTermNode(Token $token): AstNode
     {
-        return match ($token->type) {
-            Token::TYPE_FUZZY             => new FuzzyTerm($token->value),
-            Token::TYPE_EXACT             => new ExactTerm($token->value),
-            Token::TYPE_PREFIX            => new PrefixTerm($token->value),
-            Token::TYPE_SUFFIX            => new SuffixTerm($token->value),
-            Token::TYPE_INCLUDE_MATCH     => new IncludeMatchTerm($token->value),
-            Token::TYPE_NOT_FUZZY         => new NotNode(new FuzzyTerm($token->value)),
-            Token::TYPE_NOT_EXACT         => new NotNode(new ExactTerm($token->value)),
-            Token::TYPE_NOT_PREFIX        => new NotNode(new PrefixTerm($token->value)),
-            Token::TYPE_NOT_SUFFIX        => new NotNode(new SuffixTerm($token->value)),
-            Token::TYPE_NOT_INCLUDE_MATCH => new NotNode(new IncludeMatchTerm($token->value)),
-            default => throw QuerySyntaxException::emptyQuery(),
+        $isNot = str_starts_with($token->type, 'NOT_');
+        $base  = $isNot ? substr($token->type, 4) : $token->type;
+
+        $leaf = match ($base) {
+            Token::TYPE_FUZZY         => new FuzzyTerm($token->value),
+            Token::TYPE_EXACT         => new ExactTerm($token->value),
+            Token::TYPE_PREFIX        => new PrefixTerm($token->value),
+            Token::TYPE_SUFFIX        => new SuffixTerm($token->value),
+            Token::TYPE_INCLUDE_MATCH => new IncludeMatchTerm($token->value),
+            Token::TYPE_TYPO          => new TypoTerm($token->value),
+            default                   => throw QuerySyntaxException::emptyQuery(),
         };
+
+        if ($token->field !== null) {
+            $leaf = new FieldTerm($token->field, $leaf);
+        }
+
+        return $isNot ? new NotNode($leaf) : $leaf;
     }
 
     private function peek(): ?Token

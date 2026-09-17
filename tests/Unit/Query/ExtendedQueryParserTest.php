@@ -6,7 +6,8 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Query\Lexer;
 use Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
-    AndNode, OrNode, NotNode, FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm
+    AndNode, OrNode, NotNode, FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm,
+    TypoTerm, FieldTerm
 };
 
 class ExtendedQueryParserTest extends TestCase
@@ -85,5 +86,33 @@ class ExtendedQueryParserTest extends TestCase
     {
         $this->expectException(\Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException::class);
         (new ExtendedQueryParser())->parse([]);
+    }
+
+    public function test_typo_token_becomes_a_typo_term(): void
+    {
+        $this->assertInstanceOf(TypoTerm::class, $this->parse('~john'));
+        $this->assertSame('john', $this->parse('~john')->term);
+
+        $not = $this->parse('!~john');
+        $this->assertInstanceOf(NotNode::class, $not);
+        $this->assertInstanceOf(TypoTerm::class, $not->child);
+    }
+
+    public function test_scoped_tokens_are_wrapped_in_a_field_term(): void
+    {
+        $node = $this->parse('email:^admin');
+        $this->assertInstanceOf(FieldTerm::class, $node);
+        $this->assertSame('email', $node->field);
+        $this->assertInstanceOf(PrefixTerm::class, $node->term);
+
+        $not = $this->parse('!name:john');
+        $this->assertInstanceOf(NotNode::class, $not);
+        $this->assertInstanceOf(FieldTerm::class, $not->child);
+        $this->assertInstanceOf(FuzzyTerm::class, $not->child->term);
+    }
+
+    public function test_field_term_depth_is_its_leaf_depth(): void
+    {
+        $this->assertSame((new FuzzyTerm('x'))->depth(), (new FieldTerm('name', new FuzzyTerm('x')))->depth());
     }
 }
