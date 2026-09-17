@@ -47,6 +47,18 @@ class IndexPathSynonymsStopWordsTest extends TestCase
         $this->assertContains('Notebook Pro', $titles);
     }
 
+    public function test_a_synonym_key_containing_punctuation_still_matches(): void
+    {
+        $product = Product::create(['title' => 'Router X', 'description' => 'wireless router', 'price' => 90]);
+        app(IndexManager::class)->indexModel($product);
+
+        // 'wi-fi' is one word to the caller but two tokens to the tokenizer: the lookup must try both.
+        $titles = Product::search('wi-fi')->useInvertedIndex()->typoTolerance(0)
+            ->withSynonyms(['wi-fi' => ['wireless']])->get()->pluck('title')->all();
+
+        $this->assertContains('Router X', $titles);
+    }
+
     public function test_builder_stop_words_extend_the_configured_list_on_the_index_path(): void
     {
         // Config list drops "the"; "pro" is a real term (Notebook Pro, MacBook Pro, iPhone 15 Pro …).

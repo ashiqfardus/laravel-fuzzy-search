@@ -93,6 +93,14 @@ final class TermExpander
      * Dictionary terms that start with $prefix (as-you-type), most common first, at weight 1.0.
      * Tokens contain only letters, marks and digits (WhitespaceTokenizer), so LIKE needs no escaping.
      *
+     * Where `term` is byte-ordered (SQLite, and MySQL/MariaDB since the utf8mb4_bin migration)
+     * the prefix becomes a half-open range, which a btree index can seek; LIKE 'x%' would be a
+     * full scan there. Everywhere else the column is compared under a UCA collation, where the
+     * successor character ('{' after 'z', ':' after '9') sorts BELOW letters and digits and the
+     * range would silently return nothing — those drivers keep LIKE. On PostgreSQL that costs a
+     * scan unless fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there
+     * if as-you-type latency matters on a large dictionary.
+     *
      * @return array<string, float>
      */
     public function prefix(string $prefix, int $max): array
@@ -104,9 +112,12 @@ final class TermExpander
         $last = mb_substr($prefix, -1);
         $next = mb_chr(mb_ord($last, 'UTF-8') + 1, 'UTF-8');
 
+        $driver      = DB::connection()->getDriverName();
+        $byteOrdered = $driver === 'sqlite' || \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver);
+
         $query = DB::table('fuzzy_index_terms')->where('term', '!=', $prefix);
 
-        if ($next === false) {
+        if ($next === false || !$byteOrdered) {
             $query->where('term', 'like', $prefix . '%');
         } else {
             $query->where('term', '>=', $prefix)

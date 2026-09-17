@@ -1096,9 +1096,17 @@ class SearchBuilder
 
         // Synonyms are alternatives the caller declared, not typos: full weight. They are
         // looked up on the raw lowercased words (before stemming) and then processed like
-        // any other query text so the stemmer and stop words apply to them too.
+        // any other query text so the stemmer and stop words apply to them too. Both splits
+        // are tried: the tokenizer's boundaries (so "laptop," finds the key "laptop") and
+        // whitespace (so a key that contains punctuation, like "wi-fi", survives as one word).
         if ($this->synonyms !== [] || $this->synonymGroups !== []) {
-            foreach (preg_split('/[^\p{L}\p{M}\p{N}]+/u', mb_strtolower(trim($this->searchTerm)), -1, PREG_SPLIT_NO_EMPTY) as $word) {
+            $lower = mb_strtolower(trim($this->searchTerm));
+            $words = array_unique(array_merge(
+                preg_split('/[^\p{L}\p{M}\p{N}]+/u', $lower, -1, PREG_SPLIT_NO_EMPTY),
+                preg_split('/\s+/u', $lower, -1, PREG_SPLIT_NO_EMPTY)
+            ));
+
+            foreach ($words as $word) {
                 foreach ($this->expandWithSynonyms($word) as $synonym) {
                     if ($synonym === $word) {
                         continue;

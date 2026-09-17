@@ -106,6 +106,19 @@ class TermExpanderTest extends TestCase
         $this->assertSame(['café' => 1.0], (new TermExpander)->prefix('caf', 10));
     }
 
+    public function test_prefix_works_when_the_prefix_ends_at_the_top_of_its_range(): void
+    {
+        // '{' (after 'z') and ':' (after '9') sort BELOW letters and digits under a UCA
+        // collation, so a naive range upper bound returns nothing on PostgreSQL/SQL Server.
+        $this->seedTerm('cruz', 9);
+        $this->seedTerm('cruzeiro', 4);
+        $this->seedTerm('199', 8);
+        $this->seedTerm('1999', 3);
+
+        $this->assertArrayHasKey('cruzeiro', (new TermExpander)->prefix('cruz', 10));
+        $this->assertArrayHasKey('1999', (new TermExpander)->prefix('199', 10));
+    }
+
     public function test_prefix_returns_the_most_common_terms_starting_with_the_prefix(): void
     {
         $this->assertSame(['john' => 1.0, 'jon' => 1.0, 'joan' => 1.0, 'johnny' => 1.0], (new TermExpander)->prefix('jo', 10));
