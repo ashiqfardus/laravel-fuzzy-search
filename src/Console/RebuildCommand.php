@@ -50,10 +50,12 @@ class RebuildCommand extends Command
         $bar = $this->output->createProgressBar($total);
 
         $keyName = (new $modelClass)->getKeyName();
-        IndexQuery::for($modelClass)->orderBy($keyName)->chunk($chunkSize, function ($models) use ($indexManager, $bar) {
+        // chunkById() is keyset-based: rows inserted or deleted while the rebuild runs cannot
+        // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
+        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar) {
             $indexManager->indexBatch($models);
             $bar->advance($models->count());
-        });
+        }, $keyName);
 
         $bar->finish();
         $this->newLine();

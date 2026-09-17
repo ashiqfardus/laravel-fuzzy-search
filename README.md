@@ -862,7 +862,7 @@ $suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
 
 > **Note:** `useIndex()` is an alias for `useInvertedIndex()`. The deprecated legacy `search_index` table from v1 is no longer used.
 
-> **Limitation:** The BM25 inverted index requires integer primary keys. Models with UUID/ULID primary keys are not currently supported — use the standard LIKE or Levenshtein paths for those.
+> **Primary keys:** Integer, UUID and ULID primary keys are supported (`model_id` is stored as a 36-character string).
 
 > **Column weights and BM25:** `searchIn()` weights are respected by the LIKE/Levenshtein scoring paths but are ignored by BM25. BM25 scores by term frequency and inverse document frequency only.
 
@@ -1119,6 +1119,8 @@ User::search('john')
     ->query(fn($q) => $q->withoutTrashed()->where('tenant_id', auth()->user()->tenant_id))
     ->get();
 ```
+
+With `scout.soft_delete` enabled, trashed models stay in the index as Scout expects; the engine filters them at query time through Scout's `__soft_deleted` constraint.
 
 ### How It Works
 
@@ -1533,7 +1535,6 @@ Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy
 
 **Use LIKE / fuzzy when:**
 - Small tables (< 10k rows) — LIKE can be faster due to BM25 scoring overhead
-- UUID/ULID primary keys
 - You need column weights to affect ranking
 
 ### `max_candidates` Tuning

@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config/fuzzy-search.php` shipped `unicode.normalize => true` — the inert v2.0 default for a key that is now live in v2.1.0. A published config would have silently started NFC-normalising every search term. The shipped default is now `false`, matching v2.0 behaviour; the published `scoring`, `performance.max_patterns` and `highlighting.enabled` defaults are also pinned to match what the code actually uses.
 - FederatedSearch `paginate()`/`simplePaginate()` totals now count only reachable rows: when `limitPerModel()` caps a model's contribution, that model's share of the total is capped too — previously the total (and page count) could promise more rows than the search would ever return.
 - FederatedSearch `paginate()` could duplicate or skip a row across a page boundary when scores tied; each model's results are now ordered by `stableRanking()` (Searchable models) or the primary key (query-builder fallback) before the per-page limit is applied.
+- UUID/ULID primary keys are verified end to end on the inverted index, Scout engine, filter(), stableRanking() and fuzzy-search:rebuild (which now chunks by key with chunkById()); the README no longer lists them as unsupported (B5).
 
 ### Database compatibility
 
