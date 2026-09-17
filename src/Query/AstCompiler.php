@@ -102,10 +102,19 @@ class AstCompiler
      */
     private function resolveField(string $field, array $columns, array $relations): array
     {
-        foreach ($columns as $column) {
-            if ($column === $field || str_ends_with($column, '.' . $field)) {
-                return [[$column], []];
-            }
+        $matches = array_values(array_filter(
+            $columns,
+            fn (string $column) => $column === $field || str_ends_with($column, '.' . $field)
+        ));
+
+        if (count($matches) > 1) {
+            // "name" with both users.name and profiles.name in scope: picking the first
+            // silently searched one table, so say so instead.
+            throw QuerySyntaxException::ambiguousSearchField($field, $matches);
+        }
+
+        if ($matches !== []) {
+            return [[$matches[0]], []];
         }
 
         $dot = strrpos($field, '.');
@@ -117,7 +126,15 @@ class AstCompiler
             }
         }
 
-        $known = $columns;
+        // Direct columns are listed by the bare name — that is what the user types, and the
+        // message is shown to end users, so it should not echo the schema's table names.
+        $known = [];
+        foreach ($columns as $column) {
+            $dotPos  = strrpos($column, '.');
+            $known[] = $dotPos === false ? $column : substr($column, $dotPos + 1);
+        }
+        $known = array_values(array_unique($known));
+
         foreach ($relations as $path => $leaves) {
             foreach ($leaves as $leaf) {
                 $known[] = $path . '.' . $leaf;

@@ -168,4 +168,18 @@ class AstCompilerTest extends TestCase
         $this->expectExceptionMessage('Searchable fields: name, email');
         $this->runQuery('nickname:john');
     }
+
+    public function test_the_unknown_field_message_lists_bare_column_names(): void
+    {
+        $this->expectException(QuerySyntaxException::class);
+        $this->expectExceptionMessage('Searchable fields: name, email');
+        $this->runQuery('nickname:john', ['users.name', 'users.email']);
+    }
+
+    public function test_a_bare_field_matching_two_columns_is_ambiguous(): void
+    {
+        $this->expectException(QuerySyntaxException::class);
+        $this->expectExceptionMessage('The field "name" is ambiguous (users.name, products.name). Use the table-qualified form, for example users.name:john.');
+        $this->runQuery('name:john', ['users.name', 'products.name']);
+    }
 }

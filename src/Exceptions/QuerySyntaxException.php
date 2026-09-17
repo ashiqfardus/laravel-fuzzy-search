@@ -61,6 +61,17 @@ class QuerySyntaxException extends LaravelFuzzySearchException
         return new self("The field scope \"{$field}:\" needs a term after the colon, for example {$field}:john.");
     }
 
+    /** @param string[] $matches the searchable columns whose bare name is $field */
+    public static function ambiguousSearchField(string $field, array $matches): self
+    {
+        $list = implode(', ', $matches);
+
+        return new self(
+            "The field \"{$field}\" is ambiguous ({$list}). " .
+            "Use the table-qualified form, for example {$matches[0]}:john."
+        );
+    }
+
     public static function unknownSearchField(string $field, array $known): self
     {
         $list = $known === [] ? 'none' : implode(', ', $known);
