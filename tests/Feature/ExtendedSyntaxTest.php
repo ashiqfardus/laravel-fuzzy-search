@@ -56,6 +56,32 @@ class ExtendedSyntaxTest extends TestCase
         $this->assertSame($builder()->get()->count(), $builder()->count());
     }
 
+    public function test_get_facets_runs_the_extended_query(): void
+    {
+        $emails = User::search('x')->extended('name:john')->get()->pluck('email')->all();
+        $facets = User::search('x')->extended('name:john')->facet('email')->getFacets();
+
+        $this->assertNotEmpty($facets['email']);
+        $this->assertEqualsCanonicalizing($emails, array_keys($facets['email']));
+    }
+
+    public function test_to_sql_and_get_bindings_compile_the_extended_query(): void
+    {
+        $bindings = User::search('x')->extended('name:~jonh')->getBindings();
+
+        $this->assertContains('%jonh%', $bindings, 'the typo term reached the fuzzy driver');
+        $this->assertNotContains('%name:~jonh%', $bindings, 'the raw query string was LIKE-matched');
+    }
+
+    public function test_get_analytics_runs_the_extended_query(): void
+    {
+        $this->assertSame('extended', User::search('x')->extended('name:john')->getAnalytics()['algorithm']);
+
+        // Proof it compiled the AST rather than the LIKE query: only the extended path throws here.
+        $this->expectException(QuerySyntaxException::class);
+        User::search('x')->extended('nickname:john')->getAnalytics();
+    }
+
     public function test_field_scopes_inside_an_or_group(): void
     {
         $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();

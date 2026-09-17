@@ -1342,15 +1342,11 @@ class SearchBuilder
         $page      = max(1, $page);
         $offset    = ($page - 1) * $perPage;
 
-        if ($this->extendedQuery !== null) {
-            $this->compileExtendedQuery();
-            $algorithm = 'extended';
-            $term      = $this->extendedQuery;
-        } else {
-            $this->buildQuery();
-            $algorithm = $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy');
-            $term      = $this->searchTerm;
-        }
+        $this->prepareQuery();
+        $algorithm = $this->extendedQuery !== null
+            ? 'extended'
+            : ($this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'));
+        $term      = $this->extendedQuery ?? $this->searchTerm;
 
         // toBase() applies global scopes (SoftDeletes, tenant scopes, ...); getQuery() does
         // not. The page items come from $this->query->clone()->get(), which does apply
@@ -1561,11 +1557,7 @@ class SearchBuilder
                     $this->useSearchIndex = false;
                 }
 
-                if ($this->extendedQuery !== null) {
-                    $this->compileExtendedQuery();
-                } else {
-                    $this->buildQuery();
-                }
+                $this->prepareQuery();
 
                 // Query\Builder::count() keeps columns/orders/limit/offset, and the relevance
                 // ORDER BY buildQuery() adds makes PostgreSQL reject the aggregate ("column
@@ -1586,7 +1578,7 @@ class SearchBuilder
             return [];
         }
 
-        $this->buildQuery();
+        $this->prepareQuery();
         $facetResults = [];
 
         foreach ($this->facets as $facet) {
@@ -1599,6 +1591,18 @@ class SearchBuilder
         }
 
         return $facetResults;
+    }
+
+    /**
+     * Apply this builder's search to $this->query: the extended/boolean AST when extended()
+     * or searchBoolean() was called, the LIKE conditions otherwise. Every entry point that
+     * needs a prepared query but does not go through executeSearch() (which dispatches to
+     * executeExtendedSearch() itself) calls this, so none of them can run the raw extended
+     * string — "name:john" — through the LIKE path as if it were a plain term.
+     */
+    private function prepareQuery(): void
+    {
+        $this->extendedQuery !== null ? $this->compileExtendedQuery() : $this->buildQuery();
     }
 
     /**
@@ -2343,7 +2347,7 @@ class SearchBuilder
      */
     public function toSql(): string
     {
-        $this->buildQuery();
+        $this->prepareQuery();
         return $this->query->toSql();
     }
 
@@ -2352,7 +2356,7 @@ class SearchBuilder
      */
     public function getBindings(): array
     {
-        $this->buildQuery();
+        $this->prepareQuery();
         return $this->query->getBindings();
     }
 
@@ -2595,7 +2599,7 @@ class SearchBuilder
      */
     public function getAnalytics(): array
     {
-        $this->buildQuery();
+        $this->prepareQuery();
 
         return [
             'search_term' => $this->searchTerm,
