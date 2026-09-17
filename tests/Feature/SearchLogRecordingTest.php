@@ -4,11 +4,13 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 require_once __DIR__ . '/../TestModels.php';
 
+use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RecordSearchLogJob;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class SearchLogRecordingTest extends TestCase
 {
@@ -96,6 +98,27 @@ class SearchLogRecordingTest extends TestCase
         (new RecordSearchLogJob(['term' => 'x', 'normalized_term' => 'x', 'model_type' => null, 'algorithm' => 'fuzzy', 'path' => 'like', 'result_count' => 0, 'latency_ms' => 1.2, 'day' => now()->toDateString(), 'created_at' => now()]))->handle();
 
         $this->assertSame(1, DB::table('fuzzy_search_logs')->count());
+    }
+
+    public function test_a_failed_log_write_does_not_fail_the_search(): void
+    {
+        config(['fuzzy-search.analytics.enabled' => false]);
+        $expected = User::search('john')->get()->pluck('id')->all();
+        config(['fuzzy-search.analytics.enabled' => true]);
+
+        // analytics.enabled turned on before `php artisan migrate` — the insert cannot work.
+        Schema::drop('fuzzy_search_logs');
+
+        $this->assertNotEmpty($expected);
+        $this->assertEqualsCanonicalizing($expected, User::search('john')->get()->pluck('id')->all());
+    }
+
+    public function test_oversized_event_values_are_cut_to_their_column_width(): void
+    {
+        // The event is public API: a third-party dispatcher may pass a longer path than the column holds.
+        event(new FuzzySearchExecuted('x', [], 'a', 0, 1.0, 0, str_repeat('p', 40), User::class));
+
+        $this->assertSame(str_repeat('p', 16), DB::table('fuzzy_search_logs')->value('path'));
     }
 
     public function test_zero_result_and_extended_searches_are_logged_with_their_path(): void

@@ -22,11 +22,19 @@ class RecordSearchLog
         $row   = SearchAnalytics::rowFor($event);
         $queue = config('fuzzy-search.analytics.queue');
 
-        if (is_string($queue) && $queue !== '') {
-            RecordSearchLogJob::dispatch($row)->onQueue($queue);
-            return;
-        }
+        // Analytics is observability, never a failure mode for the search itself: a missing
+        // table (enabled before `php artisan migrate`), an oversized value or a transient DB
+        // error is reported and swallowed here so the caller still gets their results.
+        // RecordSearchLogJob::handle() deliberately keeps throwing, so the queue can retry.
+        try {
+            if (is_string($queue) && $queue !== '') {
+                RecordSearchLogJob::dispatch($row)->onQueue($queue);
+                return;
+            }
 
-        SearchAnalytics::record($row);
+            SearchAnalytics::record($row);
+        } catch (\Throwable $e) {
+            report($e);
+        }
     }
 }

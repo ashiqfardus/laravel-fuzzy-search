@@ -33,9 +33,12 @@ class SearchAnalytics
         return [
             'term'            => $hash ? '' : mb_substr($event->searchTerm, 0, 255),
             'normalized_term' => $hash ? hash('sha256', $normalized) : mb_substr($normalized, 0, 255),
-            'model_type'      => $event->modelClass,
+            // Every string is cut to its column width: the event is public API, so a
+            // third-party dispatcher may pass a longer path or model class than the
+            // migration's columns hold.
+            'model_type'      => $event->modelClass === null ? null : mb_substr($event->modelClass, 0, 191),
             'algorithm'       => mb_substr($event->algorithm, 0, 32),
-            'path'            => $event->path,
+            'path'            => mb_substr($event->path, 0, 16),
             'result_count'    => max(0, $event->resultCount),
             'latency_ms'      => $event->latencyMs,
             'day'             => $now->toDateString(),
