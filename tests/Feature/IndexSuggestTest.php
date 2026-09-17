@@ -78,6 +78,31 @@ class IndexSuggestTest extends TestCase
         $this->assertSame([], User::search('jo')->useInvertedIndex('Nope\\Model')->suggestFrom('index')->suggest(5));
     }
 
+    public function test_a_missing_dictionary_table_falls_back_to_the_table_scan(): void
+    {
+        $this->index();
+
+        // Children first: fuzzy_index_postings carries the FK to fuzzy_index_terms.
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_postings');
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_terms');
+
+        // The meta row still marks User as indexed, so suggestFromIndex() reaches the dictionary
+        // query, fails, finds no fuzzy_index_terms table and hands the query to the table scan.
+        $this->assertContains('John', User::search('jo')->suggest(5));
+    }
+
+    public function test_a_real_dictionary_error_surfaces_instead_of_falling_back(): void
+    {
+        $this->index();
+
+        // fuzzy_index_terms is still there, so the failing semi-join against the postings table
+        // is a real database error, not "the dictionary was never migrated".
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_postings');
+
+        $this->expectException(\Illuminate\Database\QueryException::class);
+        User::search('jo')->suggest(5);
+    }
+
     public function test_invalid_source_is_rejected(): void
     {
         $this->expectException(\InvalidArgumentException::class);

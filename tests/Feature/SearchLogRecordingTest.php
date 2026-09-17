@@ -8,12 +8,29 @@ use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RecordSearchLogJob;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class SearchLogRecordingTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // One instant for the whole test: the fixtures and the assertions both read now(),
+        // and a run that straddles midnight would otherwise compare different days.
+        Carbon::setTestNow(now());
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+
+        parent::tearDown();
+    }
+
     protected function defineEnvironment($app): void
     {
         parent::defineEnvironment($app);

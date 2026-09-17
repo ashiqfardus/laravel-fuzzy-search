@@ -4,10 +4,27 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
 use Ashiqfardus\LaravelFuzzySearch\Analytics\SearchAnalytics;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 class AnalyticsCommandsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // One instant for the whole test: the fixtures and the assertions both read now(),
+        // and a run that straddles midnight would otherwise compare different days.
+        Carbon::setTestNow(now());
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+
+        parent::tearDown();
+    }
+
     private function log(string $term, int $results, string $path = 'like', int $daysAgo = 0): void
     {
         $at = now()->subDays($daysAgo);

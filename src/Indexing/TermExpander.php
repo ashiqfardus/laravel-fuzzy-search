@@ -124,6 +124,11 @@ final class TermExpander
         $query = DB::table('fuzzy_index_terms')->where('term', '!=', $prefix);
 
         if ($next === false || !$byteOrdered) {
+            // The backslash escape is honoured by PostgreSQL (its LIKE has a default ESCAPE of
+            // '\'), but SQL Server has no default escape character: there a '%', '_' or '[' in
+            // the prefix stays literal-but-unmatched rather than acting as a wildcard. Safe
+            // either way (the value is always a binding), and dictionary tokens never contain
+            // those characters; same limitation as suggestCandidateQuery().
             $query->where('term', 'like', addcslashes($prefix, '%_') . '%');
         } else {
             $query->where('term', '>=', $prefix)

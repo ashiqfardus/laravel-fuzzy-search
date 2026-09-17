@@ -451,7 +451,7 @@ $suggestions = User::search('joh')
 // Returns: ['John', 'Johnny', 'Johanna', ...]
 ```
 
-**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own dictionary, scoped to its postings and ordered by document count; any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
+**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own dictionary, scoped to its postings and ordered by document count across all indexed models (the dictionary's `doc_count` is global, so a term that is common in another indexed model can head the list); any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
 
 ```php
 // Product is indexed; only "mo" is completed, "wireless " is kept as typed
@@ -459,6 +459,8 @@ Product::search('wireless mo')->suggest(5);
 
 // Returns: ['wireless monitor', 'wireless mouse', 'wireless modem', ...]
 ```
+
+`searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use `suggestFrom('table')` when the column matters — the table scan respects `searchIn()`.
 
 **Un-indexed models keep the table scan** — the v2.0 behaviour, proposing column values as stored:
 
@@ -1445,7 +1447,14 @@ php artisan fuzzy-search:analytics:prune --days=14
 Schedule the prune so the log doesn't grow unbounded:
 
 ```php
-// routes/console.php (Laravel 11+) or app/Console/Kernel.php::schedule()
+// routes/console.php (Laravel 11+)
+use Illuminate\Support\Facades\Schedule;
+
+Schedule::command('fuzzy-search:analytics:prune')->daily();
+```
+
+```php
+// app/Console/Kernel.php::schedule() (Laravel 10, or an app that still has a console kernel)
 $schedule->command('fuzzy-search:analytics:prune')->daily();
 ```
 

@@ -2523,8 +2523,8 @@ class SearchBuilder
      * Complete the last whitespace token from the BM25 dictionary, scoped to the model's
      * postings, and prefix the earlier tokens back ("Bob jo" → "Bob johnson"). Returns null
      * when the dictionary cannot serve this builder (no Eloquent model, no fuzzy_index_meta
-     * row for it, or the index tables are missing) so suggest() can fall back to the table
-     * scan. The meta row — not the postings table — is the "is this model indexed" signal:
+     * row for it, or the index tables are missing — any other database error surfaces) so
+     * suggest() can fall back to the table scan. The meta row — not the postings table — is the "is this model indexed" signal:
      * IndexManager keeps it even after every document is individually removed (total_docs
      * decrements to 0; only flush() deletes the row), so a model that was indexed and is now
      * empty still returns [] from the dictionary (P6-R6's documented auto semantics) instead
@@ -2551,7 +2551,14 @@ class SearchBuilder
             }
             $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, $modelClass);
         } catch (\Illuminate\Database\QueryException $e) {
-            return null; // dictionary not migrated
+            // Same rule as didYouMean(): a missing dictionary means "not migrated" and hands the
+            // query back to the table scan; anything else is a real database error and must
+            // surface instead of being hidden behind a silently different result set.
+            if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
+                throw $e;
+            }
+
+            return null; // dictionary not migrated yet
         }
 
         return array_map(fn (string $term) => $head . $term, array_keys($rows)); // prefix() returns term => weight
