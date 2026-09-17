@@ -876,7 +876,8 @@ Product::search('watch')
 ```
 
 - Each column's term frequency is scaled by its weight and summed per document and term before BM25 saturation runs once (BM25F-lite) — heavier columns win ties and near-ties, but a 10:1 weight does not multiply the final score by 10.
-- A weight of `0` removes that column from scoring entirely.
+- A weight of `0` removes that column from scoring entirely. Weights are integers `>= 1`: a fractional weight is truncated to an integer (`0.5` becomes `0`, i.e. removed).
+- The list form `searchIn(['title'])` sets that column to weight **1** and leaves the model's other weights in place — pass explicit weights (`searchIn(['title' => 10, 'description' => 1])`) when you mean to re-rank.
 - Hook models (`searchableText()`) are weighted by the hook's returned keys when a key matches a searchable column name; any other key weighs 1.
 - Postings are stored per `(term, column)`, but the scorer sums them in SQL first: `bm25.max_postings_per_term` is one shared cap over the query's matched terms applied to `(document, term)` rows ordered by weighted frequency (highest first), so a document is never partially cut across its columns — raise the cap if your corpus reaches it.
 - Requires `php artisan migrate` and `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh` per model — rows indexed before this feature rank at weight 1 until rebuilt, and `php artisan fuzzy-search:status` lists them.
@@ -904,7 +905,7 @@ User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); //
 ### Artisan Commands
 
 ```bash
-# Show index statistics (total docs, tokens, avg length per model) and lists postings that predate column weighting
+# Show index statistics (total docs, tokens, avg length per model) and list postings that predate column weighting
 php artisan fuzzy-search:status
 
 # Rebuild synchronously (good for < 50k rows)
@@ -1538,7 +1539,7 @@ php artisan fuzzy-search:clear "App\Models\User"
 # Clear BM25 index for all models
 php artisan fuzzy-search:clear --all
 
-# Show index status (row counts, avg doc length, term count per model) and lists postings that predate column weighting
+# Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
 php artisan fuzzy-search:status
 ```
 
