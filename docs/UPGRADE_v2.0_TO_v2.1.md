@@ -107,6 +107,7 @@ few affect what you get back from a search:
   `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) sets the chunk size used
   when checking BM25 rankings against a constrained query.
 - **`indexing.table` was removed** — see "Removed config keys" above.
+- **`FuzzySearch::$config` is now nullable (`?array`)** and is null when the class is container-built; subclasses that read `$this->config` must call `currentConfig()` instead.
 
 ## Relationship search
 

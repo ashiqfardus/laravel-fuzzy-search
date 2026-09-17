@@ -878,7 +878,8 @@ User::search('laptop')->useInvertedIndex()->withSynonyms(['laptop' => ['notebook
 User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); // added to the configured list for this query
 ```
 
-- Each query term of at least `typo_tolerance.min_word_length` characters is expanded with up to `bm25.fuzzy.max_expansions` dictionary terms within `typoTolerance()` edits, picked from the `bm25.fuzzy.candidate_pool` most common terms of a similar length. With `bm25.fuzzy.damping` (default on) an expansion scores `1 − distance / length` of the exact term, so exact matches rank first. `typo_tolerance.enabled = false` turns expansion off globally.
+- Each query term of at least `typo_tolerance.min_word_length` characters is expanded with up to `bm25.fuzzy.max_expansions` dictionary terms within `typoTolerance()` edits, closest first. With `bm25.fuzzy.damping` (default on) an expansion contributes `1 − distance / length` of what the exact term would, so it always counts for less — but it is not outranked automatically: BM25 weighs rarity (idf), so a rare expansion can still outscore a common exact term. `typo_tolerance.enabled = false` turns expansion off globally.
+- Expansions are picked from the `bm25.fuzzy.candidate_pool` (default 500) most common dictionary terms of a similar length — a term outside that window is **never** reached, however close it is. Rare surnames, SKUs and part numbers live in that tail, so raise the pool for such catalogs.
 - `asYouType()` (or `$searchable['as_you_type' => true]`) expands the **last** token by prefix, capped at `bm25.prefix.max_expansions`.
 - Synonyms score at full weight (they are alternatives, not typos). On the inverted index `ignoreStopWords()` **adds** its list to the configured locale list for that query — a term dropped at index time cannot match anyway, so a configured stop word cannot be restored. On the LIKE path it still replaces the configured list.
 - `highlight()` marks every term that matched, including expansions. `getDebugInfo()['index_terms']` lists the weighted terms that ran.
@@ -915,7 +916,7 @@ Rebuilds load rows through the model's optional `searchIndexQuery()` hook (see *
     'fuzzy' => [
         'candidate_pool' => 500,  // Dictionary terms (most common first) considered per query term for typo expansion.
         'max_expansions' => 5,    // Max dictionary terms added per query term within typoTolerance() edits.
-        'damping'        => true, // Score expansions by 1 - distance/length so exact matches rank first.
+        'damping'        => true, // An expansion contributes 1 - distance/length of what the exact term would.
     ],
     'prefix' => [
         'max_expansions' => 10,   // Max dictionary terms added by asYouType() for the last token's prefix.
@@ -1562,7 +1563,7 @@ Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy
 | BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
 | Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
 
-**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index returns results in the same ~12–20 ms window as the 100k baseline.
+**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index returns results in the same ~12–20 ms window as the 100k baseline. Typo expansion adds one dictionary query per query term whose cost grows with dictionary size (about 30 ms per term at ~450k distinct terms); call `typoTolerance(0)` on latency-critical searches.
 
 ### When to Use BM25 vs LIKE
 
