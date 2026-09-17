@@ -67,6 +67,18 @@ class TypoTolerantBm25Test extends TestCase
         $this->assertSame(['jonh smith'], User::search('jonh')->useInvertedIndex()->get()->pluck('name')->all());
     }
 
+    public function test_a_numeric_query_term_survives_the_whole_index_path(): void
+    {
+        // PHP turns the array key '2024' into int 2024 at every hop (processTerms → expand →
+        // rank bindings); none of them may raise a TypeError or lose the match.
+        $user = User::create(['name' => 'Report 2024', 'email' => 'report@example.com']);
+        app(IndexManager::class)->indexModel($user);
+
+        $names = User::search('2024')->useInvertedIndex()->get()->pluck('name')->all();
+
+        $this->assertContains('Report 2024', $names);
+    }
+
     public function test_debug_info_reports_the_weighted_terms(): void
     {
         $builder = User::search('jonh')->useInvertedIndex();
