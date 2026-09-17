@@ -219,13 +219,61 @@ class IndexManager
         });
     }
 
+    /** @var array<string, Pipeline> model class → resolved pipeline */
+    private static array $pipelines = [];
+
+    public static function resetPipelineCache(): void
+    {
+        self::$pipelines = [];
+    }
+
     /**
      * The pipeline (tokenizer, stemmer, stop words, accent folding) for one model class.
-     * Task 3 resolves $searchable overrides here; until then every class gets the default.
+     * Resolves $searchable['tokenizer'|'stemmer'|'stemmer_language'|'locale'] overrides
+     * (Phase 7), cached per class; non-Searchable classes and null get the default pipeline.
      */
     public function pipelineFor(?string $modelClass): Pipeline
     {
-        return $this->default;
+        if ($modelClass === null || !class_exists($modelClass) || !method_exists($modelClass, 'getSearchablePipeline')) {
+            return $this->default;
+        }
+
+        return self::$pipelines[$modelClass] ??= $this->resolvePipeline($modelClass);
+    }
+
+    private function resolvePipeline(string $modelClass): Pipeline
+    {
+        $overrides = (new $modelClass)->getSearchablePipeline();
+        if ($overrides === []) {
+            return $this->default;
+        }
+
+        $tokenizer = $this->default->tokenizer();
+        if (isset($overrides['tokenizer'])) {
+            $tokenizer = $this->instantiate($overrides['tokenizer'], TokenizerInterface::class, $modelClass, 'tokenizer');
+        }
+
+        $stemmer = $this->default->stemmer();
+        if (isset($overrides['stemmer']) || isset($overrides['stemmer_language'])) {
+            $class   = $overrides['stemmer'] ?? get_class($this->default->stemmer());
+            $stemmer = $this->instantiate($class, StemmerInterface::class, $modelClass, 'stemmer', $overrides['stemmer_language'] ?? null);
+        }
+
+        $stopWords = $this->default->stopWords();
+        if (isset($overrides['locale'])) {
+            $stopWords = (array) config('fuzzy-search.stop_words.' . $overrides['locale'], []); // Task 5: StopWords::resolve(config(...))
+        }
+
+        return new Pipeline($tokenizer, $stemmer, $stopWords, $this->default->foldsAccents());
+    }
+
+    private function instantiate(string $class, string $interface, string $modelClass, string $key, ?string $language = null): object
+    {
+        if (!class_exists($class) || !is_subclass_of($class, $interface)) {
+            throw new \InvalidArgumentException("{$modelClass}::\$searchable['{$key}'] must name a class implementing {$interface}, got '{$class}'.");
+        }
+
+        return $language === null ? new $class() : new $class($language);
     }
 
     /**

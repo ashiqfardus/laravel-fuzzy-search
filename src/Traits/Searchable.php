@@ -187,6 +187,25 @@ trait Searchable
     }
 
     /**
+     * Per-model index pipeline overrides (Phase 7): tokenizer, stemmer, stemmer_language,
+     * locale. Only the keys declared in $searchable are returned; IndexManager fills the rest
+     * from config. Changing any of them requires `fuzzy-search:rebuild --fresh`.
+     *
+     * @return array{tokenizer?: string, stemmer?: string, stemmer_language?: string, locale?: string}
+     */
+    public function getSearchablePipeline(): array
+    {
+        $config = $this->searchable ?? [];
+
+        return array_filter([
+            'tokenizer'        => $config['tokenizer'] ?? null,
+            'stemmer'          => $config['stemmer'] ?? null,
+            'stemmer_language' => $config['stemmer_language'] ?? null,
+            'locale'           => $config['locale'] ?? null,
+        ], fn ($v) => $v !== null);
+    }
+
+    /**
      * Get searchable configuration
      */
     protected function getSearchableConfig(): array

@@ -160,6 +160,7 @@ abstract class TestCase extends BaseTestCase
         // leak between test cases that use different in-memory databases.
         \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::resetColumnCache();
         \Ashiqfardus\LaravelFuzzySearch\FederatedSearch::resetColumnCache();
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
 
         parent::tearDown();
     }
