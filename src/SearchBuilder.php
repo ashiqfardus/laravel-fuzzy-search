@@ -2295,6 +2295,8 @@ class SearchBuilder
             'recency_days'           => $this->recencyDays,
             'sort_by'                => $this->sortBy,
             'stable_ranking'         => $this->stableRankingEnabled,
+            'as_you_type'            => $this->asYouType,
+            'stop_words_overridden'  => $this->stopWordsOverridden,
             'typo_tolerance'         => $this->typoTolerance,
             'fallback_algorithms'    => $this->fallbackAlgorithms,
             'base_sql'               => $this->query->toSql(),

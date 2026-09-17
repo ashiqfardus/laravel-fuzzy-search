@@ -96,6 +96,15 @@ class AsYouTypeTest extends TestCase
         $this->assertTrue(AsYouTypeUser::search('joh')->getDebugInfo()['as_you_type']);
     }
 
+    public function test_as_you_type_is_part_of_the_cache_key(): void
+    {
+        $this->assertCount(0, User::search('joh')->useInvertedIndex()->cache(10)->get());
+
+        $names = User::search('joh')->useInvertedIndex()->asYouType()->cache(10)->get()->pluck('name')->all();
+
+        $this->assertContains('Johnny Bravo', $names);
+    }
+
     public function test_prefix_expansions_are_capped_by_config(): void
     {
         config(['fuzzy-search.bm25.prefix.max_expansions' => 1]);
