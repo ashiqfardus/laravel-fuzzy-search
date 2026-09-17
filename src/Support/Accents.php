@@ -21,6 +21,10 @@ final class Accents
      */
     public static function fold(string $string): string
     {
+        if (!preg_match('/[\x80-\xFF]/', $string)) {
+            return $string; // pure ASCII: nothing to decompose and no key of MAP can match
+        }
+
         if (self::usesIntl()) {
             $decomposed = \Normalizer::normalize($string, \Normalizer::FORM_D);
             if ($decomposed !== false) {

@@ -21,6 +21,7 @@ class AccentsTest extends TestCase
         $this->assertSame('Resume', Accents::fold('Résumé'));
         $this->assertSame('strasse', Accents::fold('straße'));
         $this->assertSame('o', Accents::fold('ø'));
+        $this->assertSame('plain ascii 123', Accents::fold('plain ascii 123')); // fast path
     }
 
     public function test_intl_path_folds_characters_the_map_does_not_know(): void
