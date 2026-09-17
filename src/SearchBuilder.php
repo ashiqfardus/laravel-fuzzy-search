@@ -1083,8 +1083,9 @@ class SearchBuilder
     /**
      * The weighted terms the inverted index is queried with: the processed tokens at 1.0
      * plus, when typoTolerance() > 0 (and typo_tolerance.enabled), dictionary neighbours
-     * within that many edits, damped so exact matches rank first. Remembered so highlighting
-     * and getDebugInfo() can see what actually ran.
+     * within that many edits, damped so an expansion contributes less than the exact term
+     * would (a rare expansion can still outscore a common exact term — BM25 weighs rarity).
+     * Remembered so highlighting and getDebugInfo() can see what actually ran.
      *
      * @return array<string, float>
      */

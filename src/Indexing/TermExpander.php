@@ -48,9 +48,11 @@ final class TermExpander
 
     /**
      * Weighted query terms: every input term at 1.0 plus, for terms of at least $minWordLength
-     * characters, up to $maxExpansions dictionary neighbours within $maxDistance edits. With
-     * $damping an expansion weighs 1 - distance / length (exact terms outrank typo matches);
-     * without it 1.0. A term reached more than once keeps its highest weight.
+     * characters, up to $maxExpansions dictionary neighbours within $maxDistance edits, closest
+     * first. With $damping an expansion contributes 1 - distance / length of what the exact term
+     * would, so it always counts for less — but it is not outranked automatically: BM25 weighs
+     * rarity (idf), so a rare expansion can still outscore a common exact term. Without $damping
+     * every expansion is 1.0. A term reached more than once keeps its highest weight.
      *
      * @param  string[] $terms
      * @return array<string, float>
