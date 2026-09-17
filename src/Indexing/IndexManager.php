@@ -88,6 +88,13 @@ class IndexManager
             // Build posting rows
             $postingRows = [];
             foreach ($tokens as $term => $frequency) {
+                if (!isset($termIds[$term])) {
+                    // Pre-migration MySQL/MariaDB: a *_ci collation collapsed this term into
+                    // an accent/case variant, so the upsert never created a row for it (B25).
+                    // Skip the posting instead of crashing the whole transaction.
+                    continue;
+                }
+
                 $postingRows[] = [
                     'term_id'    => $termIds[$term],
                     'model_type' => $modelType,
@@ -393,6 +400,10 @@ class IndexManager
                     'doc_length' => $docLength,
                 ];
                 foreach ($tokens as $term => $frequency) {
+                    if (!isset($termIds[$term])) {
+                        continue; // see indexModel(): an un-migrated *_ci dictionary (B25)
+                    }
+
                     $postingRows[] = [
                         'term_id'    => $termIds[$term],
                         'model_type' => $modelType,

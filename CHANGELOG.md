@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FederatedSearch `paginate()` could duplicate or skip a row across a page boundary when scores tied; each model's results are now ordered by `stableRanking()` (Searchable models) or the primary key (query-builder fallback) before the per-page limit is applied.
 - UUID/ULID primary keys are verified end to end on the inverted index, Scout engine, filter(), stableRanking() and fuzzy-search:rebuild (which now chunks by key with chunkById()); the README no longer lists them as unsupported (B5).
 - README Scout recipe: the dual-trait example now resolves bootSearchable() (it was a PHP fatal) and boots Scout's observers from booted() (B26).
+- MySQL/MariaDB: the dictionary column fuzzy_index_terms.term now uses utf8mb4_bin, so café/cafe (and résumé/resume) are distinct terms as on the other drivers; indexing a document containing both no longer fails with "Undefined array key" (B25). Run php artisan migrate — the migration rewrites the table.
 
 ### Database compatibility
 
