@@ -18,10 +18,11 @@ class StatusCommandTest extends TestCase
 
         // PendingCommand, like the other command tests: buffered Artisan output is empty on
         // Laravel 10 in this harness, but expectsOutputToContain() works on every version.
+        // One expectation: PendingCommand consumes a matched output line, so two substrings of
+        // the same warning line cannot both be asserted separately.
         $this->artisan('fuzzy-search:status')
             ->assertSuccessful()
-            ->expectsOutputToContain('predate column weighting')
-            ->expectsOutputToContain('--fresh')
+            ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '" --fresh')
             ->run();
     }
 }
