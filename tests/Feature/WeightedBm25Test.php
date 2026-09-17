@@ -19,7 +19,7 @@ class WeightedBm25Test extends TestCase
         app(IndexManager::class)->indexBatch(Product::all());
     }
 
-    private function titles(callable $tweak = null): array
+    private function titles(?callable $tweak = null): array
     {
         $builder = Product::search('quantum')->useInvertedIndex()->typoTolerance(0);
         if ($tweak) {
