@@ -114,6 +114,8 @@ few affect what you get back from a search:
 - Nothing to change for existing calls — table-qualified column names (`table.column`) are unchanged.
 - `_highlighted`/`_matches` gain dotted keys only when you search relation columns.
 - `AstCompiler::compile()` (internal, `@internal`) gained an optional fourth argument.
+- `AstCompiler::__construct()` (internal) gained optional second and third arguments (`int $typoDistance`, `array $fuzzyOptions`).
+- `SearchBuilder::calculateRelevanceScores()` (protected) gained an optional second argument (the term to score against); a subclass overriding it must accept it.
 
 ## Extended syntax: ~ and field: are operators now
 

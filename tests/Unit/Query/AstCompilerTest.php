@@ -182,4 +182,9 @@ class AstCompilerTest extends TestCase
         $this->expectExceptionMessage('The field "name" is ambiguous (users.name, products.name). Use the table-qualified form, for example users.name:john.');
         $this->runQuery('name:john', ['users.name', 'products.name']);
     }
+
+    public function test_an_exact_bare_column_wins_over_a_table_qualified_twin(): void
+    {
+        $this->assertContains('John Doe', $this->runQuery('name:john', ['name', 'users.name']));
+    }
 }

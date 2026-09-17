@@ -2101,7 +2101,7 @@ class SearchBuilder
     /**
      * Apply highlighting to results. $terms (index path) lists every weighted query term —
      * exact tokens, typo and prefix expansions — so a document that matched through "john"
-     * for the query "jonh" still gets its match marked. null (LIKE/extended paths) keeps the
+     * for the query "jonh" still gets its match marked. null (LIKE path) keeps the
      * single-term behaviour: the whole search string is one needle.
      *
      * @param string[]|null $terms
@@ -2135,7 +2135,7 @@ class SearchBuilder
                         $found = array_merge($found, $this->findMatchOffsets($value, $needle));
                     }
                     // Merge only on the index path (multiple needles from term expansion):
-                    // the LIKE/extended path keeps v2.0's raw, unmerged offsets so adjacent
+                    // the LIKE path keeps v2.0's raw, unmerged offsets so adjacent
                     // matches of the same single needle stay separate tags (e.g. "an" in
                     // "banana" stays two <em> pairs instead of collapsing into one).
                     if ($terms !== null) {
@@ -2192,7 +2192,7 @@ class SearchBuilder
     /**
      * Sort [start, end] ranges and merge overlapping or touching ones, so two needles that
      * hit the same characters ("john" and "johnny") produce one tag pair. Only called on the
-     * index path (multiple expanded needles); the LIKE/extended path keeps v2.0's raw,
+     * index and extended paths (multiple needles); the LIKE path keeps v2.0's raw,
      * unmerged offsets from a single needle, so back-to-back repeats of the same needle
      * (e.g. "an" in "banana") stay separate tags instead of collapsing into one.
      *

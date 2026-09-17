@@ -54,6 +54,9 @@ class ExtendedSyntaxTest extends TestCase
         $builder = fn () => User::search('x')->extended('~' . str_repeat('a', 8000));
 
         $this->assertSame($builder()->get()->count(), $builder()->count());
+
+        $longest = max(array_map(fn ($b) => is_string($b) ? strlen($b) : 0, $builder()->getBindings()));
+        $this->assertLessThanOrEqual(config('fuzzy-search.query.max_term_length', 128) + 2, $longest);
     }
 
     public function test_get_facets_runs_the_extended_query(): void

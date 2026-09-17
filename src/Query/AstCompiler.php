@@ -115,6 +115,10 @@ class AstCompiler
             fn (string $column) => $column === $field || str_ends_with($column, '.' . $field)
         ));
 
+        if (in_array($field, $matches, true)) {
+            return [[$field], []]; // an exact bare-name declaration wins outright (P5-R15a)
+        }
+
         if (count($matches) > 1) {
             // "name" with both users.name and profiles.name in scope: picking the first
             // silently searched one table, so say so instead.
