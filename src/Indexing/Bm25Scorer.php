@@ -30,7 +30,12 @@ class Bm25Scorer
             return [];
         }
 
-        return array_is_list($terms) ? array_fill_keys($terms, 1.0) : $terms;
+        // A weight map always has numeric values; a term list never does.
+        $first = $terms[array_key_first($terms)];
+
+        return (is_int($first) || is_float($first))
+            ? $terms
+            : array_fill_keys(array_map('strval', array_values($terms)), 1.0);
     }
 
     /** @param array<string, float> $weights */

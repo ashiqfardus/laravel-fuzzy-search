@@ -47,6 +47,17 @@ class Bm25WeightedTermsTest extends TestCase
         $this->assertCount(1, $scorer->search(['john' => 1.0, 'jonh' => 0.5], User::class, 1));
     }
 
+    public function test_a_gapped_term_list_is_still_a_plain_list(): void
+    {
+        // array_unique() leaves gaps in the keys — v2.0's processTerms() returned exactly that.
+        $scorer = app(Bm25Scorer::class);
+
+        $this->assertSame(
+            $scorer->rank(['doe', 'john'], User::class),
+            $scorer->rank(array_unique(['doe', 'doe', 'john']), User::class)
+        );
+    }
+
     public function test_numeric_terms_are_bound_as_strings(): void
     {
         $scorer = app(Bm25Scorer::class);
