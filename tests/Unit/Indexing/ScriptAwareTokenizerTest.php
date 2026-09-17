@@ -40,7 +40,9 @@ class ScriptAwareTokenizerTest extends TestCase
         $this->assertSame(['ソニ', 'ニー'], (new ScriptAwareTokenizer())->tokenize('ソニー'));
         $this->assertSame(['らー', 'ーめ', 'めん'], (new ScriptAwareTokenizer())->tokenize('らーめん'));
         $this->assertSame(['ｿﾆ', 'ﾆｰ'], (new ScriptAwareTokenizer())->tokenize('ｿﾆｰ'));
-        $this->assertSame(['か\u{3099}き'], (new ScriptAwareTokenizer())->tokenize("か\u{3099}き")); // decomposed が stays one run (≤ n chars after the mark)
+        // decomposed が (か + U+3099) + き is one CJK run of three code points → two bigrams; the
+        // per-code-point cut is the documented NgramTokenizer rule, the point here is no split at the mark
+        $this->assertSame(["か\u{3099}", "\u{3099}き"], (new ScriptAwareTokenizer())->tokenize("か\u{3099}き"));
         $this->assertSame(['東京', '京タ', 'タワ', 'ワー'], (new ScriptAwareTokenizer())->tokenize('東京タワー'));
     }
 
