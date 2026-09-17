@@ -82,6 +82,19 @@ class FuzzySearchExecutedTest extends TestCase
         $this->assertSame(User::search('o')->count(), $events[0]->candidateCount);
     }
 
+    public function test_simple_paginate_reports_the_page_size_not_the_look_ahead_row(): void
+    {
+        $paginator = null;
+        $events = $this->capture(function () use (&$paginator) {
+            $paginator = User::search('jo')->simplePaginate(2);
+        });
+
+        $this->assertCount(1, $events);
+        $this->assertSame(2, $events[0]->resultCount);   // the perPage + 1 probe row is not a result
+        $this->assertCount(2, $paginator->items());
+        $this->assertTrue($paginator->hasMorePages());
+    }
+
     public function test_in_memory_search_dispatches_with_its_own_path(): void
     {
         $events = $this->capture(fn () => FuzzySearch::on(collect([['name' => 'John Doe'], ['name' => 'Jane']]))->search('john')->searchIn(['name'])->get());

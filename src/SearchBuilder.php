@@ -37,6 +37,13 @@ class SearchBuilder
     protected bool $withRelevance = true;
     protected int $limit = 15;
     protected int $offset = 0;
+    /**
+     * Ceiling for FuzzySearchExecuted::resultCount only — never for the query or the returned
+     * rows. simplePaginate() fetches perPage + 1 rows so the paginator can see whether a next
+     * page exists; that look-ahead row is not a result the caller receives, so it must not be
+     * reported as one. null = report whatever was returned.
+     */
+    protected ?int $reportedResultCap = null;
     protected array $filters = [];
     protected array $facets = [];
     protected ?string $highlightTagOpen = null;
@@ -946,7 +953,7 @@ class SearchBuilder
             algorithm:      $algorithm,
             candidateCount: $candidateCount,
             latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
-            resultCount:    $resultCount,
+            resultCount:    min($resultCount, $this->reportedResultCap ?? PHP_INT_MAX),
             path:           $path,
             modelClass:     $this->query instanceof EloquentBuilder ? $this->query->getModel()::class : null,
         ));
@@ -1552,9 +1559,16 @@ class SearchBuilder
         $savedOffset  = $this->offset;
         $this->limit  = $perPage + 1;
         $this->offset = $offset;
-        $all          = $this->get();
-        $this->limit  = $savedLimit;
-        $this->offset = $savedOffset;
+        // The extra row is a look-ahead, not a result: keep it out of the event's resultCount.
+        $this->reportedResultCap = $perPage;
+
+        try {
+            $all = $this->get();
+        } finally {
+            $this->limit  = $savedLimit;
+            $this->offset = $savedOffset;
+            $this->reportedResultCap = null;
+        }
 
         return new \Illuminate\Pagination\Paginator(
             $all, $perPage, $page,

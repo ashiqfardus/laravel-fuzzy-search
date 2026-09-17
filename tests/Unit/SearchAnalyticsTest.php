@@ -22,14 +22,14 @@ class SearchAnalyticsTest extends TestCase
     public function test_popular_groups_by_normalized_term_and_orders_by_count(): void
     {
         $this->log('John', 3);
-        $this->log('john ', 5);
+        $this->log('john ', 4); // 3 and 4 average to 3.5 — an integer AVG would report 3
         $this->log('jane', 0);
 
         $rows = SearchAnalytics::popular(30, 10);
 
         $this->assertSame('john', $rows[0]['term']);
         $this->assertSame(2, $rows[0]['searches']);
-        $this->assertEqualsWithDelta(4.0, $rows[0]['avg_results'], 0.001);
+        $this->assertEqualsWithDelta(3.5, $rows[0]['avg_results'], 0.001);
         $this->assertSame('jane', $rows[1]['term']);
         $this->assertCount(2, $rows);
         $this->assertCount(1, SearchAnalytics::popular(30, 1));

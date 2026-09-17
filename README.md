@@ -1395,6 +1395,15 @@ Run `php artisan migrate` to create the table — it has no effect until `analyt
 
 Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms`, `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
 
+### What counts as one row
+
+One row per executed search **attempt**, which is not always one row per user query:
+
+- `fallback()` writes one row per algorithm it tries — a query that misses on `fuzzy` and then matches on `soundex` is two rows (two `popular()` searches, and the miss's latency is mixed into `averageLatency()`).
+- `FederatedSearch` writes one row per inner model — "laptop" across three models is three rows.
+- Nothing is recorded for a `cache()` hit (the search never runs), for `count()` or `exists`-style calls (only `get()`, `paginate()` and `simplePaginate()` fire the event), for terms shorter than `min_search_length`, or for an in-memory search with an empty term or no `searchIn()` columns.
+- `simplePaginate($n)` records the page size, not the `$n + 1` rows it fetches to look ahead for a next page.
+
 ### Querying the log
 
 ```php

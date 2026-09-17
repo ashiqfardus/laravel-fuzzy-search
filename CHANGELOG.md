@@ -69,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A BM25 search that matched nothing fired no FuzzySearchExecuted, so zero-result analytics never saw index-path misses.
 - A failed analytics insert (missing table, oversized value, DB blip) no longer throws out of the search; it is reported and the search returns normally.
+- simplePaginate() reported its look-ahead row in FuzzySearchExecuted::resultCount.
 - Extended-syntax results are highlighted and scored by the query's terms (`~john`, `name:john`) instead of the literal query string; a misspelled `~jonh` still ranks by its term but only literal occurrences are marked instead of the literal query string; terms under a `!` are excluded from both.
 - `query.max_term_length` now caps every extended-syntax token (a `~word` of thousands of characters could exhaust memory in the fuzzy driver) and applies to `count()`/`paginate()` on the LIKE path, not only `get()`.
 - `paginate()` totals on the LIKE and extended paths now apply Eloquent global scopes (SoftDeletes, tenant scopes) — they overcounted since the Phase 1 pagination rewrite.

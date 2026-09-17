@@ -62,7 +62,9 @@ class SearchAnalytics
         return DB::table(static::table())
             ->where('created_at', '>=', static::since($days))
             ->groupBy('normalized_term')
-            ->selectRaw('normalized_term, COUNT(*) as searches, AVG(result_count) as avg_results')
+            // * 1.0 forces a decimal average: SQL Server's AVG over an int column is an
+            // integer average (3 and 4 would report 3, not 3.5).
+            ->selectRaw('normalized_term, COUNT(*) as searches, AVG(result_count * 1.0) as avg_results')
             ->orderByDesc('searches')->orderBy('normalized_term')
             ->limit($limit)
             ->get()

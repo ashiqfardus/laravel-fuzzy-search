@@ -286,8 +286,10 @@ return [
     | Search Analytics
     |--------------------------------------------------------------------------
     |
-    | When enabled, every executed search (get(), paginate(), in-memory) writes one row to
-    | fuzzy_search_logs through the FuzzySearchExecuted event. Search terms are user input:
+    | When enabled, every executed search attempt (get(), paginate(), in-memory) writes one row
+    | to fuzzy_search_logs through the FuzzySearchExecuted event — fallback() records one row
+    | per algorithm tried and a federated search one per inner model; cached and count() calls
+    | record nothing. See "What counts as one row" in the README. Search terms are user input:
     | keep retention short, or set hash_terms to store only a SHA-256 of the normalized term.
     |
     | queue: null inserts inline; a queue name dispatches RecordSearchLogJob there instead.
