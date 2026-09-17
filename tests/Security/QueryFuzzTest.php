@@ -17,7 +17,7 @@ class QueryFuzzTest extends TestCase
     {
         $lexer  = new Lexer();
         $parser = new ExtendedQueryParser();
-        $chars  = ['a','b','c',' ','|','(',')','!','=','^','$','\'','"','x','y','z'];
+        $chars  = ['a','b','c',' ','|','(',')','!','=','^','$','\'','"','~',':','.','x','y','z'];
 
         $iterations = 1000;
         $caught     = 0;
