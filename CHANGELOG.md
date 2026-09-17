@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - asYouType() (and $searchable['as_you_type']): on the inverted index the last token also matches dictionary terms that start with it, capped at bm25.prefix.max_expansions.
 - withSynonyms()/synonymGroup() and ignoreStopWords() now apply on the inverted-index path (synonyms at full weight; the builder's stop-word list is added to the configured locale list for that query, since a term dropped at index time cannot match — on the LIKE path it still replaces it).
 - highlight() on the inverted index marks every term the query actually matched — exact tokens, typo expansions and as-you-type prefixes — with overlapping matches merged into one tag.
+- Column weights apply on the inverted index: searchIn(['title' => 10, 'body' => 1]) and $searchable['columns'] weights scale each column's term frequency before BM25 saturation (BM25F-lite). Unweighted calls and legacy postings score exactly as before.
 
 ### Changed
 

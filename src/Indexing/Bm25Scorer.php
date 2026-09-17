@@ -75,14 +75,15 @@ class Bm25Scorer
     /**
      * Run BM25 over the inverted index and return the top scored model IDs.
      *
-     * @param  array<int, string>|array<string, float> $terms     Processed terms, or term => weight
-     * @param  string                                  $modelType Fully-qualified model class name
+     * @param  array<int, string>|array<string, float> $terms         Processed terms, or term => weight
+     * @param  string                                  $modelType     Fully-qualified model class name
      * @param  int                                     $limit
+     * @param  array<string, int|float>                $columnWeights column => weight; '' and unknown names weigh 1
      * @return Collection<object{model_id: int|string, score: float}>
      */
-    public function search(array $terms, string $modelType, int $limit = 15): Collection
+    public function search(array $terms, string $modelType, int $limit = 15, array $columnWeights = []): Collection
     {
-        return collect(array_slice($this->rank($terms, $modelType), 0, $limit, true))
+        return collect(array_slice($this->rank($terms, $modelType, $columnWeights), 0, $limit, true))
             ->map(fn($score, $modelId) => (object) ['model_id' => $modelId, 'score' => $score]);
     }
 
@@ -91,10 +92,16 @@ class Bm25Scorer
      * [model_id => score], best first. Callers that must apply Eloquent constraints
      * (filters, scopes) walk this list so the cut happens after constraining, not before.
      *
-     * @param  array<int, string>|array<string, float> $terms Processed terms, or term => weight
+     * BM25F-lite: for each (document, term), sums columnWeight × frequency across that
+     * term's column postings, then applies the BM25 saturation once. With no weights this
+     * equals the merged frequency, so unweighted calls and legacy ('' column_name) postings
+     * score exactly as before column weights existed.
+     *
+     * @param  array<int, string>|array<string, float> $terms         Processed terms, or term => weight
+     * @param  array<string, int|float>                $columnWeights column => weight; '' and unknown names weigh 1
      * @return array<int|string, float>
      */
-    public function rank(array $terms, string $modelType): array
+    public function rank(array $terms, string $modelType, array $columnWeights = []): array
     {
         $weights = $this->weights($terms);
         if ($weights === []) {
@@ -139,20 +146,35 @@ class Bm25Scorer
             })
             ->where('p.model_type', $modelType)
             ->whereIn('p.term_id', $termIds)
-            ->select('p.model_id', 'p.term_id', 'p.frequency', 'd.doc_length as doc_len')
+            ->select('p.model_id', 'p.term_id', 'p.column_name', 'p.frequency', 'd.doc_length as doc_len')
             ->orderBy('p.frequency', 'desc')
             ->limit($maxPostings)
             ->get();
 
-        $scores = [];
+        // BM25F-lite: weighted frequency per (document, term) summed across columns, then one
+        // saturation. '' (legacy) and unknown column names weigh 1; a weight <= 0 removes the column.
+        $frequency = []; // model_id => term_id => weighted frequency
+        $docLen    = [];
         foreach ($postings as $row) {
-            $td     = $termData[$row->term_id];
-            $weight = (float) ($weights[$td->term] ?? 1.0);
-            $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
-            $tf     = ($row->frequency * ($this->k1 + 1))
-                    / ($row->frequency + $this->k1 * (1 - $this->b + $this->b * $row->doc_len / $avgdl));
+            $cw = max(0.0, (float) ($columnWeights[$row->column_name] ?? 1.0));
+            $frequency[$row->model_id][$row->term_id] = ($frequency[$row->model_id][$row->term_id] ?? 0.0) + $cw * $row->frequency;
+            $docLen[$row->model_id] = (float) $row->doc_len;
+        }
 
-            $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $weight * $idf * $tf;
+        $scores = [];
+        foreach ($frequency as $modelId => $byTerm) {
+            foreach ($byTerm as $termId => $f) {
+                if ($f <= 0) {
+                    continue;
+                }
+                $td     = $termData[$termId];
+                $weight = (float) ($weights[$td->term] ?? 1.0);
+                $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
+                $tf     = ($f * ($this->k1 + 1))
+                        / ($f + $this->k1 * (1 - $this->b + $this->b * $docLen[$modelId] / $avgdl));
+
+                $scores[$modelId] = ($scores[$modelId] ?? 0) + $weight * $idf * $tf;
+            }
         }
 
         arsort($scores);

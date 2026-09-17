@@ -214,4 +214,17 @@ class Bm25ScorerTest extends TestCase
         // The top result should be one of our high-score rows (laravel appearing twice)
         $this->assertContains($page1->first()->id, $highScoreIds);
     }
+
+    public function test_legacy_rows_score_at_weight_one_whatever_the_column_weights(): void
+    {
+        // seedDoc() inserts postings without column_name — i.e. rows written before this phase.
+        $this->seedDoc('alpha one');
+        $this->seedDoc('alpha alpha two');
+
+        $plain    = $this->scorer->rank(['alpha'], $this->modelType);
+        $weighted = $this->scorer->rank(['alpha'], $this->modelType, ['name' => 10, 'email' => 1]);
+
+        $this->assertCount(2, $plain);
+        $this->assertSame($plain, $weighted);
+    }
 }

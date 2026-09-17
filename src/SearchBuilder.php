@@ -947,9 +947,6 @@ class SearchBuilder
 
         // BM25 fast path via inverted index
         if ($this->useSearchIndex && !empty($this->searchTerm)) {
-            if (!empty($this->columnWeights) && config('app.debug')) {
-                logger()->debug('SearchBuilder: column weights are ignored on the BM25 path.');
-            }
             return $this->executeIndexedSearch();
         }
 
@@ -1011,7 +1008,7 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass); // model_id => score, best first
+        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
 
         if (empty($ranked)) {
             return collect();
@@ -1472,7 +1469,7 @@ class SearchBuilder
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
         $terms  = $this->indexedQueryTerms($indexManager);
-        $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
+        $ranked = $scorer->rank($terms, $modelClass, $this->columnWeights); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 
         if (empty($ranked)) {
