@@ -59,6 +59,7 @@ class SearchBuilder
     protected bool $unicodeNormalizeEnabled = false;
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
+    protected bool $asYouType = false;
     protected ?string $invertedIndexModelClass = null;
     /** @var array<string, float> Weighted terms of the last inverted-index query — see indexedQueryTerms(). */
     protected array $indexedTermWeights = [];
@@ -509,6 +510,7 @@ class SearchBuilder
             'cache_ttl' => $this->cacheMinutes,
             'use_index' => $this->useSearchIndex,
             'index_terms' => $this->indexedTermWeights,
+            'as_you_type' => $this->asYouType,
             'stable_ranking' => $this->stableRankingEnabled,
             'fallback_algorithms' => $this->fallbackAlgorithms,
             'options' => $this->options,
@@ -537,6 +539,17 @@ class SearchBuilder
             $this->invertedIndexModelClass = $modelClass;
         }
 
+        return $this;
+    }
+
+    /**
+     * As-you-type mode for the inverted index: the last query token also matches every
+     * dictionary term that starts with it (up to bm25.prefix.max_expansions, most common
+     * first), so "joh" finds "john" and "johnny" while the user is still typing.
+     */
+    public function asYouType(bool $enabled = true): self
+    {
+        $this->asYouType = $enabled;
         return $this;
     }
 
@@ -1088,6 +1101,13 @@ class SearchBuilder
                 (int) ($fuzzy['max_expansions'] ?? 5),
                 (int) ($fuzzy['candidate_pool'] ?? 500),
                 (bool) ($fuzzy['damping'] ?? true),
+            );
+        }
+
+        if ($this->asYouType && $terms !== []) {
+            $weights += app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
+                (string) end($terms),
+                (int) config('fuzzy-search.bm25.prefix.max_expansions', 10)
             );
         }
 

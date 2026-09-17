@@ -145,6 +145,10 @@ trait Searchable
             $builder->typoTolerance($config['typo_tolerance']);
         }
 
+        if (!empty($config['as_you_type'])) {
+            $builder->asYouType();
+        }
+
         if (!empty($config['stop_words'])) {
             $builder->ignoreStopWords($config['stop_words']);
         }

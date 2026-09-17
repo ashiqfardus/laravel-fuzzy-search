@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - BM25 results eager-load the relation paths named in `searchIn()`, so `@fuzzyHighlight` on a relation column works on the index path too.
 - fuzzy_index_terms.term_length (new migration, backfilled) lets the dictionary be filtered by length; run php artisan migrate after upgrading.
 - Typo-tolerant BM25: useInvertedIndex() searches expand each query term with up to bm25.fuzzy.max_expansions dictionary terms within typoTolerance() edits (damped so exact terms rank first); typoTolerance(0) or typo_tolerance.enabled=false keeps exact matching. getDebugInfo()['index_terms'] shows the weighted terms.
+- asYouType() (and $searchable['as_you_type']): on the inverted index the last token also matches dictionary terms that start with it, capped at bm25.prefix.max_expansions.
 
 ### Changed
 
