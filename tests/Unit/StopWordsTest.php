@@ -19,10 +19,13 @@ class StopWordsTest extends TestCase
     public function test_a_string_is_a_file_with_one_word_per_line(): void
     {
         $path = sys_get_temp_dir() . '/fuzzy-stop-' . uniqid() . '.txt';
-        file_put_contents($path, "# comment\nDer\n\n die \ndas\n");
+        file_put_contents($path, "\xEF\xBB\xBF# comment\r\nDer\r\n\n die \ndas\n"); // BOM + CRLF, as a Windows editor would save it
 
-        $this->assertSame(['der', 'die', 'das'], StopWords::resolve($path));
-        unlink($path);
+        try {
+            $this->assertSame(['der', 'die', 'das'], StopWords::resolve($path));
+        } finally {
+            unlink($path);
+        }
     }
 
     public function test_a_missing_file_names_the_path(): void
@@ -57,7 +60,10 @@ class StopWordsTest extends TestCase
         config(['fuzzy-search.stop_words.en' => $path, 'fuzzy-search.locale' => 'en']);
         $this->app->forgetInstance(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
 
-        $this->assertSame(['the'], app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->processTerms('the pro'));
-        unlink($path);
+        try {
+            $this->assertSame(['the'], app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->processTerms('the pro'));
+        } finally {
+            unlink($path);
+        }
     }
 }

@@ -16,8 +16,12 @@ final class StopWords
             if (!is_file($value)) {
                 throw new \InvalidArgumentException("Stop-word file not found: {$value}");
             }
+            $lines = file($value, FILE_IGNORE_NEW_LINES) ?: [];
+            if ($lines !== [] && str_starts_with($lines[0], "\xEF\xBB\xBF")) {
+                $lines[0] = substr($lines[0], 3); // editors on Windows like to prefix a UTF-8 BOM
+            }
             $value = array_filter(
-                array_map('trim', file($value, FILE_IGNORE_NEW_LINES) ?: []),
+                array_map('trim', $lines),
                 fn (string $line) => $line !== '' && !str_starts_with($line, '#')
             );
         }
