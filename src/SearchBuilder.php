@@ -60,6 +60,8 @@ class SearchBuilder
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
     protected ?string $invertedIndexModelClass = null;
+    /** @var array<string, float> Weighted terms of the last inverted-index query — see indexedQueryTerms(). */
+    protected array $indexedTermWeights = [];
     protected ?string $extendedQuery = null;
     protected ?int $cacheMinutes = null;
     protected ?string $cacheKey = null;
@@ -506,6 +508,7 @@ class SearchBuilder
             'use_cache' => $this->cacheMinutes !== null,
             'cache_ttl' => $this->cacheMinutes,
             'use_index' => $this->useSearchIndex,
+            'index_terms' => $this->indexedTermWeights,
             'stable_ranking' => $this->stableRankingEnabled,
             'fallback_algorithms' => $this->fallbackAlgorithms,
             'options' => $this->options,
@@ -992,8 +995,7 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $terms  = $indexManager->processTerms($this->searchTerm);
-        $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
+        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass); // model_id => score, best first
 
         if (empty($ranked)) {
             return collect();
@@ -1060,6 +1062,36 @@ class SearchBuilder
         }
 
         return $base;
+    }
+
+    /**
+     * The weighted terms the inverted index is queried with: the processed tokens at 1.0
+     * plus, when typoTolerance() > 0 (and typo_tolerance.enabled), dictionary neighbours
+     * within that many edits, damped so exact matches rank first. Remembered so highlighting
+     * and getDebugInfo() can see what actually ran.
+     *
+     * @return array<string, float>
+     */
+    protected function indexedQueryTerms(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager $indexManager): array
+    {
+        $terms   = $indexManager->processTerms($this->searchTerm);
+        $weights = array_fill_keys($terms, 1.0);
+
+        $distance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+
+        if ($distance > 0 && $terms !== []) {
+            $fuzzy   = (array) config('fuzzy-search.bm25.fuzzy', []);
+            $weights = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->expand(
+                $terms,
+                $distance,
+                (int) config('fuzzy-search.typo_tolerance.min_word_length', 4),
+                (int) ($fuzzy['max_expansions'] ?? 5),
+                (int) ($fuzzy['candidate_pool'] ?? 500),
+                (bool) ($fuzzy['damping'] ?? true),
+            );
+        }
+
+        return $this->indexedTermWeights = $weights;
     }
 
     /**
@@ -1375,7 +1407,7 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $terms  = $indexManager->processTerms($this->searchTerm);
+        $terms  = $this->indexedQueryTerms($indexManager);
         $ranked = $scorer->rank($terms, $modelClass); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 

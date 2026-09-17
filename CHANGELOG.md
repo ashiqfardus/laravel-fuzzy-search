@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Searchable::reindexRelated($foreignKey, $id) reindexes every row pointing at a related record (queued or in-process).
 - BM25 results eager-load the relation paths named in `searchIn()`, so `@fuzzyHighlight` on a relation column works on the index path too.
 - fuzzy_index_terms.term_length (new migration, backfilled) lets the dictionary be filtered by length; run php artisan migrate after upgrading.
+- Typo-tolerant BM25: useInvertedIndex() searches expand each query term with up to bm25.fuzzy.max_expansions dictionary terms within typoTolerance() edits (damped so exact terms rank first); typoTolerance(0) or typo_tolerance.enabled=false keeps exact matching. getDebugInfo()['index_terms'] shows the weighted terms.
 
 ### Changed
 

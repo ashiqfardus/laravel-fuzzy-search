@@ -205,7 +205,9 @@ class FallbackTest extends TestCase
         $manager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $manager->indexModel(User::where('name', 'John Doe')->first());
 
-        $this->assertCount(0, User::search('jonh')->useInvertedIndex()->get());
+        // Since Phase 3 the index is typo-tolerant by default and would find John itself;
+        // this test pins the fallback mechanics, so expansion is off.
+        $this->assertCount(0, User::search('jonh')->useInvertedIndex()->typoTolerance(0)->get());
 
         $results = User::search('jonh')->useInvertedIndex()->fallback('fuzzy')->get();
 
