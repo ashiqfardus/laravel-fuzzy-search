@@ -13,7 +13,8 @@ final class Accents
     /**
      * Strip diacritics: decompose (NFD) and drop non-spacing marks that belong to Latin/Greek/
      * Cyrillic letters, then apply the legacy map for characters without a decomposition
-     * (ø, ß, đ…). Without ext-intl only the map runs — the v2.0 behaviour.
+     * (ø, ß). Letters outside the map with no decomposition (đ, ł, ı, æ, œ) are left as they are.
+     * Without ext-intl only the map runs — the v2.0 behaviour.
      *
      * Marks that carry meaning in Indic/Thai/Arabic scripts (\p{Mc} and the \p{Mn} used by
      * those scripts) are not diacritics: only marks in the Combining Diacritical Marks blocks

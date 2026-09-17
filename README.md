@@ -983,7 +983,7 @@ Rebuilds load rows through the model's optional `searchIndexQuery()` hook (see *
 
 ### Tokenizers
 
-The index splits each column's text into tokens before storing it. The default, `WhitespaceTokenizer`, splits on anything that isn't a letter, mark or digit and drops single-character tokens — it works for Latin, Cyrillic, Greek, Bengali, Hindi, Thai and every other script that separates words with spaces.
+The index splits each column's text into tokens before storing it. The default, `WhitespaceTokenizer`, splits on anything that isn't a letter, mark or digit and drops single-character tokens — it works for Latin, Cyrillic, Greek, Bengali, Hindi and every other script that separates words with spaces. Thai does not: a Thai phrase stays one token under the whitespace rule (and under `ScriptAwareTokenizer`, which only n-grams CJK), so use `NgramTokenizer` for Thai-only columns.
 
 Chinese, Japanese and Korean don't use spaces between words, so `WhitespaceTokenizer` keeps a whole CJK run as one token — searching for part of it won't match. Two opt-in tokenizers cut character n-grams instead:
 
@@ -999,6 +999,8 @@ Chinese, Japanese and Korean don't use spaces between words, so `WhitespaceToken
   Pick this whenever a column can contain both CJK and non-CJK text.
 
 Both tokenizers cut windows per Unicode code point, not per grapheme: on scripts that write accents as combining marks (decomposed Latin, Vietnamese, Indic, Thai) a window can separate a base letter from its mark. `ScriptAwareTokenizer` sidesteps this outside CJK runs by falling back to the whitespace rule, which keeps marks attached.
+
+With an n-gram tokenizer `suggest()` completes only prefixes of up to `n` characters (the dictionary holds n-grams, so `東` completes to `東京` but `東京タ` finds nothing) — call `suggestFrom('table')` on such models when you need longer completions.
 
 Enable a tokenizer globally, or per model (see **Per-Model Pipelines** below):
 

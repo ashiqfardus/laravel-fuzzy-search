@@ -10,7 +10,7 @@ class ScriptAwareTokenizerTest extends TestCase
 {
     public function test_latin_runs_tokenize_exactly_like_the_whitespace_tokenizer(): void
     {
-        foreach (['Hello, World! café', "CAFE\u{0301}", 'মোবাইল ফোন', 'हिन्दी भाषा', 'ภาษาไทย', 'a b cd'] as $text) {
+        foreach (['Hello, World! café', "CAFE\u{0301}", 'মোবাইল ফোন', 'हिन्दी भाषा', 'ภาษาไทย', 'a b cd', "caf\xE9 latin1"] as $text) {
             $this->assertSame((new WhitespaceTokenizer())->tokenize($text), (new ScriptAwareTokenizer())->tokenize($text), $text);
         }
     }
@@ -31,5 +31,21 @@ class ScriptAwareTokenizerTest extends TestCase
     public function test_a_single_cjk_character_is_a_token(): void
     {
         $this->assertSame(['山', 'view'], (new ScriptAwareTokenizer())->tokenize('山 view'));
+    }
+
+    public function test_prolonged_sound_marks_and_kana_combining_marks_stay_inside_the_cjk_run(): void
+    {
+        // ー (U+30FC) and ｰ (U+FF70) are Script=Common, ゙ (U+3099) is Inherited: on PCRE2 < 10.40
+        // \p{Katakana} does not match them and the last bigram of every ー-ending word vanished.
+        $this->assertSame(['ソニ', 'ニー'], (new ScriptAwareTokenizer())->tokenize('ソニー'));
+        $this->assertSame(['らー', 'ーめ', 'めん'], (new ScriptAwareTokenizer())->tokenize('らーめん'));
+        $this->assertSame(['ｿﾆ', 'ﾆｰ'], (new ScriptAwareTokenizer())->tokenize('ｿﾆｰ'));
+        $this->assertSame(['か\u{3099}き'], (new ScriptAwareTokenizer())->tokenize("か\u{3099}き")); // decomposed が stays one run (≤ n chars after the mark)
+        $this->assertSame(['東京', '京タ', 'タワ', 'ワー'], (new ScriptAwareTokenizer())->tokenize('東京タワー'));
+    }
+
+    public function test_invalid_utf8_is_scrubbed_instead_of_emptying_the_result(): void
+    {
+        $this->assertSame(['东京'], (new ScriptAwareTokenizer())->tokenize("\xE9 东京"));
     }
 }

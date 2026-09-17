@@ -43,11 +43,6 @@ final class Pipeline
         return $tokens;
     }
 
-    public function withStopWords(array $stopWords): static
-    {
-        return new static($this->tokenizer, $this->stemmer, $stopWords, $this->foldAccents);
-    }
-
     public function tokenizer(): TokenizerInterface { return $this->tokenizer; }
     public function stemmer(): StemmerInterface     { return $this->stemmer; }
     /** @return string[] */

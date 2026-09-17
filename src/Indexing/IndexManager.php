@@ -239,7 +239,18 @@ class IndexManager
             return $this->default;
         }
 
-        return self::$pipelines[$modelClass] ??= $this->resolvePipeline($modelClass);
+        // Only resolved overrides are cached: an override-less class returns this instance's
+        // default, so a second IndexManager (tests, forgetInstance()) never serves a stale one.
+        if (isset(self::$pipelines[$modelClass])) {
+            return self::$pipelines[$modelClass];
+        }
+
+        $pipeline = $this->resolvePipeline($modelClass);
+        if ($pipeline !== $this->default) {
+            self::$pipelines[$modelClass] = $pipeline;
+        }
+
+        return $pipeline;
     }
 
     private function resolvePipeline(string $modelClass): Pipeline
@@ -289,7 +300,7 @@ class IndexManager
     }
 
     /**
-     * Tokenize + stem search input — used by Bm25Scorer, SearchBuilder and didYouMean().
+     * Tokenize + stem search input — used by SearchBuilder (BM25 query terms, asYouType) and the Scout engine.
      * $stopWords: null keeps the configured locale list; an array is ADDED to it for this call
      * (SearchBuilder::ignoreStopWords() on the inverted-index path). Adding rather than
      * replacing is the only useful behaviour here: a term dropped at index time cannot match

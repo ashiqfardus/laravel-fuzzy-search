@@ -12,7 +12,12 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
  */
 class ScriptAwareTokenizer implements TokenizerInterface
 {
-    public const CJK = '\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}';
+    /**
+     * U+3099/U+309A (combining dakuten/handakuten) are Script=Inherited and U+30FC/U+FF70 (the
+     * prolonged sound marks) are Script=Common: \p{Katakana} only matches them on PCRE2 >= 10.40,
+     * which resolves script extensions. Listing them keeps ソニー → ソニ, ニー on every PHP build.
+     */
+    public const CJK = '\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}\x{3099}\x{309A}\x{30FC}\x{FF70}';
 
     private NgramTokenizer $ngram;
     private WhitespaceTokenizer $words;
@@ -25,7 +30,9 @@ class ScriptAwareTokenizer implements TokenizerInterface
 
     public function tokenize(string $text): array
     {
-        preg_match_all('/[' . self::CJK . ']+|[^' . self::CJK . ']+/u', $text, $m);
+        // Invalid UTF-8 makes preg_match_all() return false and $m empty — the sibling tokenizers
+        // lower-case first, which scrubs bad bytes; do the same so a stray byte never empties a row.
+        preg_match_all('/[' . self::CJK . ']+|[^' . self::CJK . ']+/u', mb_scrub($text, 'UTF-8'), $m);
 
         $tokens = [];
         foreach ($m[0] as $segment) {
