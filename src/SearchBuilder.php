@@ -1042,23 +1042,26 @@ class SearchBuilder
         $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
 
         if (empty($ranked)) {
-            return collect();
+            // Fall through instead of returning early (the shape paginateIndexed() already
+            // uses): a search that matched nothing must still dispatch FuzzySearchExecuted,
+            // or zero-result analytics never sees a miss on the index path.
+            $sorted = collect();
+        } else {
+            // Walk the ranking against the constrained query until the requested window is
+            // full. Constraints (filters, wheres, scopes) are applied before the cut, so a
+            // selective filter fills its page from lower-ranked matches instead of coming
+            // back short or empty.
+            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
+                $this->indexedBaseQuery($modelClass),
+                array_keys($ranked),
+                $this->offset + $this->limit
+            );
+
+            $sorted = $this->attachBm25Scores(
+                $models->slice($this->offset, $this->limit)->values(),
+                $ranked
+            );
         }
-
-        // Walk the ranking against the constrained query until the requested window is
-        // full. Constraints (filters, wheres, scopes) are applied before the cut, so a
-        // selective filter fills its page from lower-ranked matches instead of coming
-        // back short or empty.
-        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
-            $this->indexedBaseQuery($modelClass),
-            array_keys($ranked),
-            $this->offset + $this->limit
-        );
-
-        $sorted = $this->attachBm25Scores(
-            $models->slice($this->offset, $this->limit)->values(),
-            $ranked
-        );
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));

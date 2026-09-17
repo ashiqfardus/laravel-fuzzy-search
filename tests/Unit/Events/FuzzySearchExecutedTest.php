@@ -60,6 +60,19 @@ class FuzzySearchExecutedTest extends TestCase
         $this->assertSame(User::search('x')->extended('name:john')->get()->count(), $ext[0]->resultCount);
     }
 
+    public function test_a_bm25_search_that_matches_nothing_still_fires_the_event(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+
+        $events = $this->capture(fn () => User::search('zzzz')->useInvertedIndex()->get());
+
+        $this->assertCount(1, $events);
+        $this->assertSame('bm25', $events[0]->path);
+        $this->assertSame('bm25', $events[0]->algorithm);
+        $this->assertSame(0, $events[0]->resultCount);
+        $this->assertSame(0, $events[0]->candidateCount);
+    }
+
     public function test_paginate_reports_the_page_size_as_results_and_the_total_as_candidates(): void
     {
         $events = $this->capture(fn () => User::search('o')->paginate(2));
