@@ -136,7 +136,10 @@ class Bm25Scorer
         // term (e.g. "john" with 50k hits) cannot pull the entire posting list into PHP.
         // High-frequency rows are prioritised globally across all matched terms; in a pathological
         // corpus a single dominant term could consume the cap, but at the default 50k the bound
-        // is never reached for normal workloads.
+        // is never reached for normal workloads. Postings are now per (term, column), so a
+        // document's own column rows for a term can straddle this cap — its lower-frequency
+        // column row may be the one cut — which under-weights that document rather than
+        // dropping it outright.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
         $postings = DB::table('fuzzy_index_postings as p')

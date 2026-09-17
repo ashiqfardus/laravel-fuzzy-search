@@ -757,7 +757,7 @@ Product::search('watch')
 | Table | Purpose |
 | --- | --- |
 | `fuzzy_index_terms` | Term dictionary: unique terms + document frequency (used for `didYouMean()`) |
-| `fuzzy_index_postings` | Postings: term → model mapping with term frequency |
+| `fuzzy_index_postings` | Postings: term → model mapping with term frequency, one row per `(term, column)` |
 | `fuzzy_index_meta` | BM25 normalization: total docs + avg document length per model |
 | `fuzzy_index_documents` | Per-document length cache for O(1) BM25 scoring |
 
@@ -864,7 +864,22 @@ $suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
 
 > **Primary keys:** Integer, UUID and ULID primary keys are supported (`model_id` is stored as a 36-character string).
 
-> **Column weights and BM25:** `searchIn()` weights are respected by the LIKE/Levenshtein scoring paths but are ignored by BM25. BM25 scores by term frequency and inverse document frequency only.
+### Column weights on the index (BM25F-lite)
+
+`searchIn()` weights (and `$searchable['columns']` weights) now scale ranking on `useInvertedIndex()` too, not just the LIKE/Levenshtein paths:
+
+```php
+Product::search('watch')
+    ->useInvertedIndex()
+    ->searchIn(['title' => 10, 'description' => 1])
+    ->get();
+```
+
+- Each column's term frequency is scaled by its weight and summed per document and term before BM25 saturation runs once (BM25F-lite) — heavier columns win ties and near-ties, but a 10:1 weight does not multiply the final score by 10.
+- A weight of `0` removes that column from scoring entirely.
+- Hook models (`searchableText()`) are weighted by the hook's returned keys when a key matches a searchable column name; any other key weighs 1.
+- Postings are stored per `(term, column)` and capped by `bm25.max_postings_per_term` per matched term; at the cap a document's own lower-frequency column row for that term can be the one cut, which under-weights the document rather than dropping it — raise `bm25.max_postings_per_term` if that matters for your data.
+- Requires `php artisan migrate` and `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh` per model — rows indexed before this feature rank at weight 1 until rebuilt, and `php artisan fuzzy-search:status` lists them.
 
 ### Typo tolerance, as-you-type, synonyms and stop words on the index
 
@@ -889,7 +904,7 @@ User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); //
 ### Artisan Commands
 
 ```bash
-# Show index statistics (total docs, tokens, avg length per model)
+# Show index statistics (total docs, tokens, avg length per model) and lists postings that predate column weighting
 php artisan fuzzy-search:status
 
 # Rebuild synchronously (good for < 50k rows)
@@ -1523,7 +1538,7 @@ php artisan fuzzy-search:clear "App\Models\User"
 # Clear BM25 index for all models
 php artisan fuzzy-search:clear --all
 
-# Show index status (row counts, avg doc length, term count per model)
+# Show index status (row counts, avg doc length, term count per model) and lists postings that predate column weighting
 php artisan fuzzy-search:status
 ```
 
@@ -1574,7 +1589,6 @@ Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy
 
 **Use LIKE / fuzzy when:**
 - Small tables (< 10k rows) — LIKE can be faster due to BM25 scoring overhead
-- You need column weights to affect ranking
 
 ### `max_candidates` Tuning
 
