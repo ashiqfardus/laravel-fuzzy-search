@@ -72,6 +72,13 @@ abstract class TestCase extends BaseTestCase
             'highlighting' => ['enabled' => false, 'tag_open' => '<em>', 'tag_close' => '</em>'],
             'unicode' => ['normalize' => false, 'accent_insensitive' => false],
             'typo_tolerance' => ['enabled' => true, 'max_distance' => 2, 'min_word_length' => 4],
+            'locale' => 'en',
+            'stop_words' => [
+                'en' => ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it'],
+                'de' => ['der', 'die', 'das', 'und', 'oder', 'aber', 'in', 'auf', 'an', 'zu', 'für', 'von'],
+                'fr' => ['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'mais', 'dans', 'sur', 'à'],
+                'es' => ['el', 'la', 'los', 'las', 'un', 'una', 'y', 'o', 'pero', 'en', 'sobre', 'a'],
+            ],
         ]);
     }
 

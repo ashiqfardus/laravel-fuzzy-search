@@ -30,7 +30,7 @@ class IndexManager
         $modelId   = $model->getKey();
         $columns   = $model->getSearchableColumns();
 
-        if (empty($columns)) {
+        if (empty($columns) && !method_exists($model, 'searchableText')) {
             return;
         }
 
@@ -246,7 +246,7 @@ class IndexManager
             }
 
             $columns = $model->getSearchableColumns();
-            if (empty($columns)) {
+            if (empty($columns) && !method_exists($model, 'searchableText')) {
                 continue;
             }
 
@@ -416,17 +416,35 @@ class IndexManager
     // Private helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * The texts to index for a model: the searchableText() hook when the model defines one
+     * (any keys, related data allowed), otherwise the searchable columns' attributes.
+     *
+     * @return array<string, string> name => non-empty text
+     */
+    private function searchableTexts(Model $model, array $columns): array
+    {
+        $texts = method_exists($model, 'searchableText')
+            ? (array) $model->searchableText()
+            : array_combine($columns, array_map(fn ($c) => $model->getAttribute($c), $columns));
+
+        $clean = [];
+        foreach ($texts as $name => $value) {
+            if ($value === null || $value === '') { // empty() would also skip the legitimate string "0"
+                continue;
+            }
+            $clean[$name] = (string) $value;
+        }
+        return $clean;
+    }
+
     private function buildTokenFrequencyMap(Model $model, array $columns): array
     {
         $tokens    = [];
         $maxTokens = config('fuzzy-search.indexing.max_tokens_per_doc', 5000);
 
-        foreach ($columns as $column) {
-            $value = $model->getAttribute($column);
-            if ($value === null || $value === '') { // empty() would also skip the legitimate string "0"
-                continue;
-            }
-            foreach ($this->tokenizer->tokenize((string) $value) as $word) {
+        foreach ($this->searchableTexts($model, $columns) as $value) {
+            foreach ($this->tokenizer->tokenize($value) as $word) {
                 if (in_array($word, $this->stopWords, true)) {
                     continue;
                 }

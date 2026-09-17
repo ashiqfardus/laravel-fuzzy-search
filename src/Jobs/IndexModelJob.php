@@ -23,12 +23,15 @@ class IndexModelJob implements ShouldQueue
 
     public function handle(IndexManager $indexManager): void
     {
-        // Use withTrashed() when available so SoftDeletes models are not silently
-        // excluded by the global scope. A soft-deleted model must be removed from
+        // Load through IndexQuery so a model's searchIndexQuery() eager loads (e.g. the
+        // relations a searchableText() hook reads) apply to single-row reindexes too, not
+        // just bulk rebuilds. Use withTrashed() when available so SoftDeletes models are not
+        // silently excluded by the global scope. A soft-deleted model must be removed from
         // the index, not re-indexed. A restored model (trashed=false) is re-indexed.
-        $query = method_exists($this->modelClass, 'withTrashed')
-            ? $this->modelClass::withTrashed()
-            : $this->modelClass::query();
+        $query = \Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery::for($this->modelClass);
+        if (method_exists($this->modelClass, 'withTrashed')) {
+            $query->withTrashed();
+        }
 
         $model = $query->find($this->modelId);
 

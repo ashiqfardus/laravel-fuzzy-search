@@ -86,6 +86,37 @@ trait Searchable
     }
 
     /**
+     * Reindex every row of this model whose $foreignKey equals $id — for the related
+     * side of a relation-backed searchable field (renaming an Author must reindex its
+     * Posts; Eloquent does not do that for you). Queued per row when indexing.async is on,
+     * run in-process otherwise. Returns the number of rows scheduled.
+     *
+     *   // in Author::saved (or an observer):
+     *   Post::reindexRelated('author_id', $author->id);
+     */
+    public static function reindexRelated(string $foreignKey, int|string $id): int
+    {
+        $async = config('fuzzy-search.indexing.async', true);
+        $queue = config('fuzzy-search.indexing.queue', 'default');
+        $count = 0;
+
+        static::query()->where($foreignKey, $id)->select((new static)->getKeyName())
+            ->chunkById(500, function ($rows) use ($async, $queue, &$count) {
+                foreach ($rows as $row) {
+                    if ($async) {
+                        \Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob::dispatch(static::class, $row->getKey())->onQueue($queue);
+                    } else {
+                        (new \Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob(static::class, $row->getKey()))
+                            ->handle(app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class));
+                    }
+                    $count++;
+                }
+            });
+
+        return $count;
+    }
+
+    /**
      * Start a new search query
      */
     public static function search(string $term): SearchBuilder

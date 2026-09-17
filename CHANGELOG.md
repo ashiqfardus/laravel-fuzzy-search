@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relation columns are scored with their searchIn() weight (a to-many relation counts its best related row), highlighted under the dotted key (`_highlighted['author.name']`), reported in `_matches`, and rendered by `@fuzzyHighlight($post, 'author.name')`.
 - suggest() proposes values from relation columns too.
 - Extended syntax (`'include`, `^prefix`, `word$`, `=exact`, `!not`, `|`, grouping) works on relation columns; NOT of a relation term excludes rows with any matching related row.
+- searchableText() model hook: return name => text (related data allowed) and the BM25 index stores exactly that; searchIndexQuery() is honoured by single-row reindexes too.
+- Searchable::reindexRelated($foreignKey, $id) reindexes every row pointing at a related record (queued or in-process).
 
 ### Changed
 
