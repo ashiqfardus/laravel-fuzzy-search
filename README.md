@@ -1403,7 +1403,7 @@ One row per executed search **attempt**, which is not always one row per user qu
 
 - `fallback()` writes one row per algorithm it tries — a query that misses on `fuzzy` and then matches on `soundex` is two rows (two `popular()` searches, and the miss's latency is mixed into `averageLatency()`).
 - `FederatedSearch` writes one row per inner model — "laptop" across three models is three rows.
-- Nothing is recorded for a `cache()` hit (the search never runs), for `count()` or `exists`-style calls (only `get()`, `paginate()` and `simplePaginate()` fire the event), for terms shorter than `min_search_length`, or for an in-memory search with an empty term or no `searchIn()` columns.
+- Nothing is recorded for a `cache()` hit (the search never runs), for `count()` or `exists`-style calls (only `get()`, `paginate()` and `simplePaginate()` fire the event), for terms shorter than `min_search_length`, or for an in-memory search with an empty term or no `searchIn()` columns (on a single-model search; `FederatedSearch::simplePaginate()` records each inner model's own fetch).
 - `simplePaginate($n)` records the page size, not the `$n + 1` rows it fetches to look ahead for a next page.
 
 ### Querying the log
@@ -1462,7 +1462,7 @@ $schedule->command('fuzzy-search:analytics:prune')->daily();
 
 Search terms are user input — treat this table accordingly. Recording is **off by default**; you opt in per environment. The default `retention_days` is 30, enforced by running `fuzzy-search:analytics:prune` on a schedule (it isn't automatic). On high-traffic endpoints, `sample_rate` (`0.0`–`1.0`) records only a fraction of searches instead of every one.
 
-Set `hash_terms` to `true` to store a **keyed SHA-256** (an HMAC with your `APP_KEY`) of the normalized term instead of the term itself, with `term` left empty. `popular()` and `zeroResults()` still group and count correctly, since two equal terms hash equally — it is a pseudonym, not an encryption. Because the digest is keyed, someone holding only the table cannot brute-force it by hashing guessed terms; conversely, rotating `APP_KEY` changes every future digest, so history splits at the rotation and terms recorded before and after it no longer group together.
+Set `hash_terms` to `true` to store a **keyed SHA-256** (an HMAC with your `APP_KEY`) of the normalized term instead of the term itself, with `term` left empty. `popular()` and `zeroResults()` still group and count correctly, since two equal terms hash equally — it is a pseudonym, not an encryption. Because the digest is keyed, someone holding only the table cannot brute-force it by hashing guessed terms; conversely, rotating `APP_KEY` changes every future digest, so history splits at the rotation and terms recorded before and after it no longer group together. With `APP_KEY` unset the digest is unkeyed and offers no protection against guessing.
 
 With `hash_terms` off and `analytics.queue` set, a job that exhausts its retries leaves the raw term in the serialized payload in `failed_jobs`, outside `prune()`'s reach — prune that table too (`php artisan queue:flush`) if retention matters.
 

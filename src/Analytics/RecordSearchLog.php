@@ -19,7 +19,6 @@ class RecordSearchLog
             return;
         }
 
-        $row   = SearchAnalytics::rowFor($event);
         $queue = config('fuzzy-search.analytics.queue');
 
         // Analytics is observability, never a failure mode for the search itself: a missing
@@ -27,6 +26,8 @@ class RecordSearchLog
         // error is reported and swallowed here so the caller still gets their results.
         // RecordSearchLogJob::handle() deliberately keeps throwing, so the queue can retry.
         try {
+            $row = SearchAnalytics::rowFor($event);
+
             if (is_string($queue) && $queue !== '') {
                 RecordSearchLogJob::dispatch($row)->onQueue($queue);
                 return;

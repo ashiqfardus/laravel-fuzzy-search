@@ -94,7 +94,8 @@ final class TermExpander
     /**
      * Dictionary terms that start with $prefix (as-you-type), most common first, at weight 1.0.
      * $prefix is caller-supplied (not necessarily a dictionary token), so the LIKE branch escapes
-     * '%' and '_' to match them literally; the byte-range branch below compares literally already.
+     * '%' and '_' to match them literally (honoured by PostgreSQL's default ESCAPE, not by SQL Server —
+     * see the note at that branch); the byte-range branch below compares literally already.
      *
      * Where `term` is byte-ordered (SQLite, and MySQL/MariaDB since the utf8mb4_bin migration)
      * the prefix becomes a half-open range, which a btree index can seek; LIKE 'x%' would be a
