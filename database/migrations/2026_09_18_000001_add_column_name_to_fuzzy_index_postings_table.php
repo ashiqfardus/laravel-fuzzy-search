@@ -14,13 +14,16 @@ return new class extends Migration
             // rows written before column weighting existed; they score at weight 1.
             // NOT NULL on purpose: SQL Server treats NULLs as equal in unique indexes while the
             // other drivers treat them as distinct, and an upsert cannot match a NULL key.
-            $table->string('column_name', 64)->default('')->after('model_id');
+            // No ->after(): it is MySQL-only syntax and forces a full table rebuild on 8.0.12–8.0.28.
+            $table->string('column_name', 64)->default('');
         });
 
         Schema::table('fuzzy_index_postings', function (Blueprint $table) {
             $table->dropUnique('postings_unique_idx');
+            // No index on column_name: every read filters on (model_type, term_id), which the
+            // unique key prefix and postings_term_model_idx already serve; the status command's
+            // legacy-posting scan is an admin-only full scan.
             $table->unique(['term_id', 'model_type', 'model_id', 'column_name'], 'postings_unique_idx');
-            $table->index(['term_id', 'model_type', 'column_name'], 'postings_term_model_column_idx');
         });
     }
 
@@ -35,7 +38,6 @@ return new class extends Migration
         DB::table('fuzzy_index_postings')->where('column_name', '!=', '')->delete();
 
         Schema::table('fuzzy_index_postings', function (Blueprint $table) {
-            $table->dropIndex('postings_term_model_column_idx');
             $table->dropUnique('postings_unique_idx');
             $table->unique(['term_id', 'model_type', 'model_id'], 'postings_unique_idx');
         });

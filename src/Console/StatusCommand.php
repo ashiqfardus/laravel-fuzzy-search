@@ -5,6 +5,10 @@ namespace Ashiqfardus\LaravelFuzzySearch\Console;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * The legacy-postings query at the end of handle() is a full table scan by design: there is no
+ * index on column_name, and this is an admin command run by hand, not on a request path.
+ */
 class StatusCommand extends Command
 {
     protected $signature   = 'fuzzy-search:status';
