@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Column weights apply on the inverted index: searchIn(['title' => 10, 'body' => 1]) and $searchable['columns'] weights scale each column's term frequency before BM25 saturation (BM25F-lite). Unweighted calls and legacy postings score exactly as before.
 - fuzzy-search:status warns when a model still has postings without a column (rebuild with --fresh to enable weighted ranking).
 - Extended syntax: ~word (typo-tolerant term, gated by typoTolerance()) and field:term / field:^term / relation.field:term scopes; unknown fields and malformed operators throw QuerySyntaxException.
+- Extended-syntax field scopes work on relation columns (author.name:john) and combine with every operator (!name:john, name:^jo, name:~jonh).
 
 ### Changed
 

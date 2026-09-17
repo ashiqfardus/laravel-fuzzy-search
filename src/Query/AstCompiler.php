@@ -2,9 +2,11 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Query;
 
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
     AstNode, AndNode, OrNode, NotNode,
-    FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm
+    FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm,
+    TypoTerm, FieldTerm
 };
 use Illuminate\Contracts\Database\Query\Builder;
 
@@ -16,7 +18,7 @@ use Illuminate\Contracts\Database\Query\Builder;
  */
 class AstCompiler
 {
-    public function __construct(private readonly string $dbDriver = 'mysql') {}
+    public function __construct(private readonly string $dbDriver = 'mysql', private readonly int $typoDistance = 0) {}
 
     /**
      * @param string[]                $columns   direct columns (may be table-qualified)
@@ -59,6 +61,12 @@ class AstCompiler
             return;
         }
 
+        if ($node instanceof FieldTerm) {
+            [$fieldColumns, $fieldRelations] = $this->resolveField($node->field, $columns, $relations);
+            $this->visit($node->term, $builder, $fieldColumns, $fieldRelations, $boolean);
+            return;
+        }
+
         // Leaf term — match against any direct column OR any relation column (all OR'd)
         $term    = $this->extractTerm($node);
         $pattern = $this->patternFor($node, $term);
@@ -86,11 +94,53 @@ class AstCompiler
         });
     }
 
+    /**
+     * A field scope names one direct column (bare or table-qualified) or one relation leaf
+     * ("author.name"). Anything else is a syntax error listing the searchable fields.
+     *
+     * @return array{0: string[], 1: array<string, string[]>}
+     */
+    private function resolveField(string $field, array $columns, array $relations): array
+    {
+        foreach ($columns as $column) {
+            if ($column === $field || str_ends_with($column, '.' . $field)) {
+                return [[$column], []];
+            }
+        }
+
+        $dot = strrpos($field, '.');
+        if ($dot !== false) {
+            $path = substr($field, 0, $dot);
+            $leaf = substr($field, $dot + 1);
+            if (isset($relations[$path]) && in_array($leaf, $relations[$path], true)) {
+                return [[], [$path => [$leaf]]];
+            }
+        }
+
+        $known = $columns;
+        foreach ($relations as $path => $leaves) {
+            foreach ($leaves as $leaf) {
+                $known[] = $path . '.' . $leaf;
+            }
+        }
+        throw QuerySyntaxException::unknownSearchField($field, $known);
+    }
+
     /** One column's condition for a leaf term (the pre-Phase-2 loop body, parameterised on the boolean). */
     private function leafCondition(Builder $q, string $column, AstNode $node, string $pattern, string $term, string $boolean): void
     {
         $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
         $colMethod = $boolean === 'or' ? 'orWhere'    : 'where';
+
+        if ($node instanceof TypoTerm) {
+            // The fuzzy driver builds the omission/substitution/transposition patterns for
+            // $typoDistance (0 = plain substring); it wants the underlying query builder.
+            $target = $q instanceof \Illuminate\Database\Eloquent\Builder ? $q->getQuery() : $q;
+            app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)->applyFuzzyWhere(
+                $target, $column, $term, 'fuzzy', ['max_distance' => $this->typoDistance], $boolean
+            );
+            return;
+        }
 
         if ($node instanceof ExactTerm) {
             // Case-insensitive exact: LOWER(quoted_col) = LOWER(?) on all drivers

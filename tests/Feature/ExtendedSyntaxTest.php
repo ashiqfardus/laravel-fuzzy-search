@@ -1,0 +1,41 @@
+<?php
+
+namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
+
+require_once __DIR__ . '/../TestModels.php';
+
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
+use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+
+class ExtendedSyntaxTest extends TestCase
+{
+    public function test_typo_operator_uses_the_builder_typo_tolerance(): void
+    {
+        $this->assertContains('John Doe', User::search('jonh')->extended('~jonh')->get()->pluck('name')->all());
+        $this->assertNotContains('John Doe', User::search('jonh')->extended('~jonh')->typoTolerance(0)->get()->pluck('name')->all());
+    }
+
+    public function test_typo_operator_respects_the_global_switch(): void
+    {
+        config(['fuzzy-search.typo_tolerance.enabled' => false]);
+
+        $this->assertNotContains('John Doe', User::search('jonh')->extended('~jonh')->get()->pluck('name')->all());
+    }
+
+    public function test_field_scope_and_typo_combine_and_count_agrees(): void
+    {
+        $builder = fn () => User::search('jonh')->extended('name:~jonh !email:johnny');
+
+        $names = $builder()->get()->pluck('name')->all();
+        $this->assertContains('John Doe', $names);
+        $this->assertNotContains('Johnny Bravo', $names); // Johnny Bravo's email is johnny@example.com — excluded through the email scope
+        $this->assertSame(count($names), $builder()->count());
+    }
+
+    public function test_unknown_field_throws_a_query_syntax_exception(): void
+    {
+        $this->expectException(QuerySyntaxException::class);
+        User::search('john')->extended('nickname:john')->get();
+    }
+}

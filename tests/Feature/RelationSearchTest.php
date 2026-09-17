@@ -276,4 +276,18 @@ class RelationSearchTest extends TestCase
         $this->assertSame(2, $page->total());
         $this->assertCount(1, $page->items());
     }
+
+    public function test_a_relation_field_scope_searches_only_that_relation_column(): void
+    {
+        // "The Ring" is Tolkien's only post. Add a post whose TITLE contains the surname
+        // but whose author is someone else — the field scope must exclude it.
+        $rowling = \Ashiqfardus\LaravelFuzzySearch\Tests\Author::where('name', 'Rowling')->first();
+        Post::create(['author_id' => $rowling->id, 'title' => 'Tolkien Fan Club', 'body' => null]);
+
+        $titles = Post::search('tolkien')->searchIn(['title' => 10, 'author.name' => 5])
+            ->extended('author.name:tolkien')->get()->pluck('title')->all();
+
+        // every returned post belongs to Tolkien; the title-only match ("Tolkien Fan Club") is absent
+        $this->assertSame(['The Ring'], $titles);
+    }
 }

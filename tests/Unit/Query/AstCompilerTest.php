@@ -6,14 +6,15 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Query\Lexer;
 use Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 
 class AstCompilerTest extends TestCase
 {
-    private function runQuery(string $query, array $columns = ['name', 'email']): array
+    private function runQuery(string $query, array $columns = ['name', 'email'], int $typoDistance = 2): array
     {
         $tokens   = (new Lexer())->tokenize($query);
         $ast      = (new ExtendedQueryParser())->parse($tokens);
-        $compiler = new AstCompiler($this->app['db']->connection()->getDriverName());
+        $compiler = new AstCompiler($this->app['db']->connection()->getDriverName(), $typoDistance);
 
         $builder = $this->app['db']->table('users');
         $compiler->compile($ast, $builder, $columns);
@@ -133,5 +134,38 @@ class AstCompilerTest extends TestCase
         $this->assertStringContainsString('not (', $sql);
         $this->assertContains('%ring%', $builder->getBindings());
         $this->assertContains('%tolkien%', $builder->getBindings());
+    }
+
+    public function test_typo_term_finds_near_misses_through_the_fuzzy_driver(): void
+    {
+        $this->assertContains('John Doe', $this->runQuery('~jonh'));
+        $this->assertNotContains('John Doe', $this->runQuery('~jonh', ['name', 'email'], 0)); // tolerance 0 = plain substring
+        $this->assertNotContains('John Doe', $this->runQuery('!~jonh'));
+    }
+
+    public function test_field_scope_limits_the_term_to_one_column(): void
+    {
+        // Seed a user whose email, but not name, contains "john"
+        $this->app['db']->table('users')->insert([
+            'name' => 'Field Scope', 'email' => 'john.scope@test.com',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $this->assertContains('Field Scope', $this->runQuery('email:john'));
+        $this->assertNotContains('Field Scope', $this->runQuery('name:john'));
+        $this->assertContains('John Doe', $this->runQuery('name:^Jo'));
+        $this->assertNotContains('John Doe', $this->runQuery('!name:john'));
+    }
+
+    public function test_table_qualified_columns_match_a_bare_field_name(): void
+    {
+        $this->assertContains('John Doe', $this->runQuery('name:john', ['users.name', 'users.email']));
+    }
+
+    public function test_unknown_field_is_rejected_with_the_known_list(): void
+    {
+        $this->expectException(QuerySyntaxException::class);
+        $this->expectExceptionMessage('Searchable fields: name, email');
+        $this->runQuery('nickname:john');
     }
 }
