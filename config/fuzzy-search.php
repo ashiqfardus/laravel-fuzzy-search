@@ -174,6 +174,11 @@ return [
         'stemmer'            => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
         'max_tokens_per_doc' => 5000,  // Cap unique tokens per document to prevent index poisoning
 
+        // Fold accents when indexing and when processing query terms for the BM25 index
+        // (café and cafe become one dictionary term). Off by default: turning it on changes
+        // the dictionary, so run `fuzzy-search:rebuild {Model} --fresh` afterwards.
+        'accent_insensitive' => false,
+
         /*
          * Retry limits for IndexModelJob and RebuildIndexJob. Without these a failing
          * index write retries on the queue worker's defaults with no delay between attempts.

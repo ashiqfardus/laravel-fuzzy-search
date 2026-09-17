@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - suggest() completes the last word from the BM25 dictionary (scoped to the model's postings, ordered by document count) when the model is indexed, falling back to the table scan otherwise; suggestFrom('index'|'table') overrides.
 - NgramTokenizer (character n-grams, default 2) and ScriptAwareTokenizer (whitespace for Latin/Cyrillic/Indic runs, n-grams for Chinese/Japanese/Korean runs) for the BM25 index; opt-in via indexing.tokenizer or $searchable['tokenizer'].
 - Per-model index pipelines: $searchable['tokenizer'], ['stemmer'], ['stemmer_language'], ['locale'] override the global indexing config for that model (query-time processing follows); rebuild --fresh after changing them.
+- indexing.accent_insensitive folds accents at index and query time on the BM25 path (ext-intl decomposition when available, the built-in map otherwise); the LIKE path's accentInsensitive() uses the same folding.
 
 ### Changed
 

@@ -2530,6 +2530,10 @@ class SearchBuilder
             return [];
         }
 
+        if (app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->pipelineFor($modelClass)->foldsAccents()) {
+            $last = \Ashiqfardus\LaravelFuzzySearch\Support\Accents::fold($last);
+        }
+
         try {
             $indexed = \Illuminate\Support\Facades\DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->exists();
             if (!$indexed) {
