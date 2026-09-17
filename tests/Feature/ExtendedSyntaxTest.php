@@ -126,6 +126,17 @@ class ExtendedSyntaxTest extends TestCase
         );
     }
 
+    public function test_max_patterns_caps_the_patterns_of_a_typo_term(): void
+    {
+        $likes = fn (string $sql) => substr_count(strtolower($sql), 'like ?');
+
+        $uncapped = $likes(User::search('x')->extended('~jonh')->toSql());
+        $capped   = $likes(User::search('x')->extended('~jonh')->maxPatterns(2)->toSql());
+
+        $this->assertLessThan($uncapped, $capped);
+        $this->assertSame(4, $capped, 'two patterns for each of the two searchable columns');
+    }
+
     public function test_field_scopes_inside_an_or_group(): void
     {
         $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();

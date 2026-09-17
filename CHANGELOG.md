@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `maxPatterns()` and `performance.max_patterns` now actually cap the LIKE-pattern list for all pattern-based algorithms.
+- `maxPatterns()` and `performance.max_patterns` now actually cap the LIKE-pattern list for all pattern-based algorithms, including the extended syntax's `~word`.
 - TrigramDriver's LIKE fallback now caps its pattern list at `performance.max_patterns` (default 100) instead of a hard-coded 10, so long terms match more widely; lower the key or call `maxPatterns()` to restore the old cap.
 - **BM25 honours your constraints.** `filter()`/`filterIn()`, `where()` constraints applied before the search, and global scopes are applied *before* the ranking is cut to the page, so selective filters no longer return short or empty pages, and `paginate()` totals count only matching rows. The Scout engine applies the builder's `where()`/`whereIn()`/`whereNotIn()`/`query()` the same way.
 - `_score` on paginated BM25 results is normalised against the corpus-wide maximum (as `get()` already did) instead of the page maximum, so page 2's first row is no longer always 1.0.

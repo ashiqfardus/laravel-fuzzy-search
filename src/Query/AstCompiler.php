@@ -18,7 +18,15 @@ use Illuminate\Contracts\Database\Query\Builder;
  */
 class AstCompiler
 {
-    public function __construct(private readonly string $dbDriver = 'mysql', private readonly int $typoDistance = 0) {}
+    /**
+     * @param array<string, mixed> $fuzzyOptions the builder's driver options (max_patterns, ...),
+     *                                           forwarded to applyFuzzyWhere() for ~ terms
+     */
+    public function __construct(
+        private readonly string $dbDriver = 'mysql',
+        private readonly int $typoDistance = 0,
+        private readonly array $fuzzyOptions = [],
+    ) {}
 
     /**
      * @param string[]                $columns   direct columns (may be table-qualified)
@@ -154,7 +162,7 @@ class AstCompiler
             // $typoDistance (0 = plain substring); it wants the underlying query builder.
             $target = $q instanceof \Illuminate\Database\Eloquent\Builder ? $q->getQuery() : $q;
             app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)->applyFuzzyWhere(
-                $target, $column, $term, 'fuzzy', ['max_distance' => $this->typoDistance], $boolean
+                $target, $column, $term, 'fuzzy', ['max_distance' => $this->typoDistance] + $this->fuzzyOptions, $boolean
             );
             return;
         }

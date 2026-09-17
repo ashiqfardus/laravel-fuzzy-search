@@ -1220,7 +1220,8 @@ class SearchBuilder
 
         $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance))->compile($ast, $compileTarget, $direct, $relations);
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options))
+            ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
             $this->query->with($this->relationPaths());
