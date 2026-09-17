@@ -168,3 +168,16 @@ through `get()`) now agree.
 - **Opt out and keep v2.0 ordering** by passing equal weights, e.g. `->searchIn(['name' => 1, 'email' => 1])` — `searchIn()` overrides the weights it names and leaves the model's other `$searchable['columns']` weights in place, so list every weighted column.
 - **The Scout engine scores as before** — it reads the same postings but calls the scorer without column weights, so every column weighs 1 and rankings match v2.0.
 - **`migrate:rollback` deletes per-column postings.** Rolling back the `column_name` migration removes every posting row that isn't `''`-column (see the migration's `down()`); run `fuzzy-search:rebuild "App\Models\YourModel" --fresh` again afterwards to restore a working index.
+
+## Search analytics (new)
+
+- **New migration to run.** `php artisan migrate` creates `fuzzy_search_logs`. The table sits there with no effect until you set `analytics.enabled` to `true` in `config/fuzzy-search.php`; `migrate:rollback` drops it again.
+- **`FuzzySearchExecuted` gained three parameters:** `resultCount` (int, `-1` = unknown), `path` (`like`|`bm25`|`extended`|`in_memory`) and `modelClass` (`?string`, `null` for query-builder and in-memory searches). All three are appended with defaults, so an existing five-argument listener or third-party dispatcher keeps working unchanged.
+- **In-memory searches now fire `FuzzySearchExecuted` too.** `FuzzySearch::on($items)->search(...)->get()` previously fired nothing; it now dispatches the same event (`path: 'in_memory'`, `modelClass: null`). If you have a listener that counts or logs this event — including the persisted analytics listener below — it now also sees in-memory searches, so counts recorded after upgrading will be higher than before if your app uses `FuzzySearch::on()`. An in-memory search with an empty term or no `searchIn()` columns still fires nothing, same as v2.0.
+- See [Persisted Search Analytics](../README.md#persisted-search-analytics) in the README for the opt-in `fuzzy_search_logs` recording, the `SearchAnalytics` query API and the two `fuzzy-search:analytics*` commands — none of this runs unless you enable `analytics.enabled`.
+
+## `suggest()` on an indexed model now completes from the dictionary
+
+- **Completions changed for indexed models.** In v2.0, `suggest()` always scanned the table and returned column values as stored. As of v2.1.0, when the model has a `fuzzy_index_meta` row (it has been BM25-indexed), `suggest()` instead completes the last word of the term from that model's dictionary — completions are **lower-case dictionary terms**, not the column value as written, and any earlier words in a multi-word term are kept as typed (`"Bob jo"` → `"Bob john"`).
+- **Restore v2.0 behaviour** by calling `->suggestFrom('table')`, which forces the table scan regardless of whether the model is indexed.
+- Un-indexed models are unaffected — they always used, and still use, the table scan.

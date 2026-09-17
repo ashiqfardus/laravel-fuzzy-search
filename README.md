@@ -44,6 +44,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 - [Pagination](#pagination)
 - [Reliability & Safety](#reliability--safety)
 - [Events](#events)
+- [Persisted Search Analytics](#persisted-search-analytics)
 - [Configuration](#configuration)
 - [CLI Tools](#cli-tools)
 - [Performance & Scaling](#performance--scaling)
@@ -448,6 +449,31 @@ $suggestions = User::search('joh')
     ->suggest(5);
 
 // Returns: ['John', 'Johnny', 'Johanna', ...]
+```
+
+**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own dictionary, scoped to its postings and ordered by document count; any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
+
+```php
+// Product is indexed; only "mo" is completed, "wireless " is kept as typed
+Product::search('wireless mo')->suggest(5);
+
+// Returns: ['wireless monitor', 'wireless mouse', 'wireless modem', ...]
+```
+
+**Un-indexed models keep the table scan** — the v2.0 behaviour, proposing column values as stored:
+
+```php
+// User has no fuzzy_index_meta row
+User::search('joh')->searchIn(['name'])->suggest(5);
+
+// Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
+```
+
+`suggestFrom('auto'|'index'|'table')` overrides which source `suggest()` uses; `'auto'` (the default) picks the dictionary when the model is indexed and falls back to the table scan otherwise:
+
+```php
+User::search('joh')->suggestFrom('index')->suggest(5); // dictionary only — [] if the model isn't indexed
+User::search('joh')->suggestFrom('table')->suggest(5); // table scan only, even on an indexed model
 ```
 
 ### "Did You Mean" Spell Correction
@@ -1313,7 +1339,9 @@ try {
 
 ### `FuzzySearchExecuted`
 
-Fired after every `->get()` or `->paginate()` call. Useful for monitoring search latency and volume in production.
+Fired after every `->get()` or `->paginate()` call, and — since v2.1 — after every in-memory search too (`FuzzySearch::on($items)->search(...)->get()`). Useful for monitoring search latency and volume in production.
+
+An in-memory search called with an empty term or no `searchIn()` columns returns early and fires no event: nothing was searched, so there's nothing to log — the same rule the query-builder path already applies via its minimum search-length guard.
 
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
@@ -1325,6 +1353,9 @@ Event::listen(FuzzySearchExecuted::class, function ($event) {
         'algorithm' => $event->algorithm,
         'count'     => $event->candidateCount,
         'ms'        => $event->latencyMs,
+        'results'   => $event->resultCount,
+        'path'      => $event->path,
+        'model'     => $event->modelClass,
     ]);
 });
 ```
@@ -1336,6 +1367,80 @@ Properties:
 - `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, or `bm25`
 - `candidateCount` (int) — rows fetched from SQL before scoring
 - `latencyMs` (float) — total search time in milliseconds
+- `resultCount` (int) — rows returned to the caller; `-1` when unknown
+- `path` (string) — which code path answered: `like`, `bm25`, `extended`, or `in_memory`
+- `modelClass` (`?string`) — the Eloquent model class searched; `null` for query-builder and in-memory searches
+
+---
+
+## Persisted Search Analytics
+
+Opt-in, DB-backed search analytics: every `FuzzySearchExecuted` event can be written to a `fuzzy_search_logs` table for later reporting, instead of (or alongside) the live event listener above.
+
+```php
+// config/fuzzy-search.php
+'analytics' => [
+    'enabled'        => false,              // off by default — enable deliberately
+    'queue'          => null,               // null = insert inline; a queue name dispatches RecordSearchLogJob there instead
+    'sample_rate'    => 1.0,                // 0.0–1.0 share of searches recorded
+    'retention_days' => 30,                 // what `fuzzy-search:analytics:prune` deletes beyond
+    'hash_terms'     => false,              // true stores only a SHA-256 of the term, never the term itself
+    'table'          => 'fuzzy_search_logs',
+],
+```
+
+Run `php artisan migrate` to create the table — it has no effect until `analytics.enabled` is `true`.
+
+Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms`, `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
+
+### Querying the log
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Facades\SearchAnalytics;
+
+SearchAnalytics::popular(7, 5);
+// [['term' => 'laptop', 'searches' => 42, 'avg_results' => 6.3], ...] — last 7 days, top 5
+
+SearchAnalytics::zeroResults(7, 5);
+// [['term' => 'asdfgh', 'searches' => 3], ...] — terms whose every search in the window returned nothing
+
+SearchAnalytics::averageLatency(7);
+// ['bm25' => 2.7, 'like' => 4.1] — average latency in ms, grouped by path
+
+SearchAnalytics::volume(7);
+// ['2026-09-11' => 120, '2026-09-12' => 98, ...] — searches per day, ascending
+
+SearchAnalytics::prune(); // deletes rows older than analytics.retention_days, returns the number deleted
+SearchAnalytics::prune(14); // or override the window explicitly
+```
+
+### Artisan commands
+
+```bash
+# Popular / zero-result / latency / volume report for the last 30 days
+php artisan fuzzy-search:analytics
+
+# Same report over a different window and row cap
+php artisan fuzzy-search:analytics --days=7 --limit=5
+
+# Only the zero-result table
+php artisan fuzzy-search:analytics --zero-results
+
+# Delete rows older than analytics.retention_days (or --days)
+php artisan fuzzy-search:analytics:prune
+php artisan fuzzy-search:analytics:prune --days=14
+```
+
+Schedule the prune so the log doesn't grow unbounded:
+
+```php
+// routes/console.php (Laravel 11+) or app/Console/Kernel.php::schedule()
+$schedule->command('fuzzy-search:analytics:prune')->daily();
+```
+
+### Privacy
+
+Search terms are user input — treat this table accordingly. Recording is **off by default**; you opt in per environment. The default `retention_days` is 30, enforced by running `fuzzy-search:analytics:prune` on a schedule (it isn't automatic). Set `hash_terms` to `true` to store only a SHA-256 hash of the normalized term instead of the term itself — `popular()` and `zeroResults()` still group and count correctly, since two equal terms hash equally, but the literal term can no longer be read back. On high-traffic endpoints, `sample_rate` (`0.0`–`1.0`) records only a fraction of searches instead of every one.
 
 ---
 

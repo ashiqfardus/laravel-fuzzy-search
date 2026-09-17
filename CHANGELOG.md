@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TrigramDriver's LIKE fallback now caps its pattern list at `performance.max_patterns` (default 100) instead of a hard-coded 10, so long terms match more widely; lower the key or call `maxPatterns()` to restore the old cap.
 - **BM25 honours your constraints.** `filter()`/`filterIn()`, `where()` constraints applied before the search, and global scopes are applied *before* the ranking is cut to the page, so selective filters no longer return short or empty pages, and `paginate()` totals count only matching rows. The Scout engine applies the builder's `where()`/`whereIn()`/`whereNotIn()`/`query()` the same way.
 - `_score` on paginated BM25 results is normalised against the corpus-wide maximum (as `get()` already did) instead of the page maximum, so page 2's first row is no longer always 1.0.
+- suggest() on an indexed model returns dictionary completions (lower-case terms) instead of column values; use suggestFrom('table') for the v2.0 behaviour.
 - `WhitespaceTokenizer` keeps combining marks (`\p{M}`) inside tokens. Indexes built from Bengali, Hindi, Thai or decomposed-accent text need one `fuzzy-search:rebuild --fresh`.
 - The trigram fallback's whole-term pattern is the term itself; previously it was a concatenation of the trigrams and never matched.
 - A model whose searchable columns include an accessor is reindexed on every save unless it declares `reindex_on` (previously such models never reindexed after an update).
