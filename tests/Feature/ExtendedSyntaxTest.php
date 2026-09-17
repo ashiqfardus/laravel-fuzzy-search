@@ -38,4 +38,12 @@ class ExtendedSyntaxTest extends TestCase
         $this->expectException(QuerySyntaxException::class);
         User::search('john')->extended('nickname:john')->get();
     }
+
+    public function test_debug_info_reports_the_extended_algorithm_and_the_ignored_index(): void
+    {
+        $info = User::search('john')->extended('name:john')->useInvertedIndex()->getDebugInfo();
+
+        $this->assertSame('extended', $info['algorithm']);
+        $this->assertTrue($info['index_ignored']);
+    }
 }

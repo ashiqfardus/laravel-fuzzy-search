@@ -496,7 +496,7 @@ class SearchBuilder
     {
         return [
             'search_term' => $this->searchTerm,
-            'algorithm' => $this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy'),
+            'algorithm' => $this->extendedQuery !== null ? 'extended' : ($this->algorithm ?? config('fuzzy-search.default_algorithm', 'fuzzy')),
             'searchable_columns' => $this->searchableColumns,
             'column_weights' => $this->columnWeights,
             'column_targets' => $this->resolveColumnTargets(),
@@ -512,6 +512,7 @@ class SearchBuilder
             'use_cache' => $this->cacheMinutes !== null,
             'cache_ttl' => $this->cacheMinutes,
             'use_index' => $this->useSearchIndex,
+            'index_ignored' => $this->extendedQuery !== null && $this->useSearchIndex,
             'index_terms' => $this->indexedTermWeights,
             'as_you_type' => $this->asYouType,
             'stable_ranking' => $this->stableRankingEnabled,
@@ -1322,8 +1323,9 @@ class SearchBuilder
      */
     protected function paginateOnce(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        // BM25 fast path via inverted index
-        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+        // BM25 fast path via inverted index — never for extended queries, which run on the
+        // LIKE path (mirrors executeSearch(); see getDebugInfo()['index_ignored']).
+        if ($this->extendedQuery === null && $this->useSearchIndex && !empty($this->searchTerm)) {
             return $this->paginateIndexed($perPage, $pageName, $page);
         }
 
@@ -1544,8 +1546,9 @@ class SearchBuilder
         return $this->withFallback(
             function (): int {
                 // Mirror paginateOnce()/paginateRanked() so count() never disagrees with
-                // paginate()->total() on the same builder.
-                if ($this->useSearchIndex && !empty($this->searchTerm)) {
+                // paginate()->total() on the same builder. Never for extended queries, which
+                // run on the LIKE path (mirrors executeSearch(); see getDebugInfo()['index_ignored']).
+                if ($this->extendedQuery === null && $this->useSearchIndex && !empty($this->searchTerm)) {
                     $modelClass = $this->resolveIndexModelClass();
 
                     if ($modelClass !== null) {
@@ -2244,7 +2247,7 @@ class SearchBuilder
         return $results->map(function ($item) {
             $debug = [
                 'term' => $this->searchTerm,
-                'algorithm' => $this->algorithm ?? 'fuzzy',
+                'algorithm' => $this->extendedQuery !== null ? 'extended' : ($this->algorithm ?? 'fuzzy'),
                 'typo_tolerance' => $this->typoTolerance,
                 'prefix_boost' => $this->prefixBoostMultiplier,
                 'columns' => $this->searchableColumns,
@@ -2575,7 +2578,7 @@ class SearchBuilder
 
         return [
             'search_term' => $this->searchTerm,
-            'algorithm' => $this->algorithm ?? 'fuzzy',
+            'algorithm' => $this->extendedQuery !== null ? 'extended' : ($this->algorithm ?? 'fuzzy'),
             'columns_searched' => $this->searchableColumns,
             'column_weights' => $this->columnWeights,
             'typo_tolerance' => $this->typoTolerance,

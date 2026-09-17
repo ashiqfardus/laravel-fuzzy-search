@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - didYouMean() reads the dictionary through the new term_length index (no LENGTH() SQL), uses character-based distances, and only returns [] when the fuzzy_index_terms table is missing — other database errors now surface.
 - The FuzzySearch singleton reads config('fuzzy-search') live, so runtime config overrides (tests, multi-tenant setups) reach the drivers.
 - The inverted index stores one posting per (term, column) — fuzzy_index_postings gained column_name (migration; existing rows keep '' and keep working). Run fuzzy-search:rebuild {Model} --fresh to get weighted ranking.
+- getDebugInfo() reports algorithm "extended" for extended-syntax searches and index_ignored when useInvertedIndex() was combined with extended() (the extended syntax runs on the LIKE path).
 
 ### Removed
 
@@ -63,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `paginate()` totals on the LIKE and extended paths now apply Eloquent global scopes (SoftDeletes, tenant scopes) — they overcounted since the Phase 1 pagination rewrite.
 - `count()` now agrees with `paginate()->total()` on the extended and BM25 paths.
+- extended() + useInvertedIndex(): count() and paginate() took the BM25 index path on the plain search term while get() ran the extended query; every entry point now runs the extended query on the LIKE path (see getDebugInfo()["index_ignored"]).
 - **Multibyte terms:** `FuzzyDriver`, `LevenshteinDriver`, `TrigramDriver` and `SoundexDriver` sliced the search term by byte, producing invalid UTF-8 LIKE patterns for Bengali, Hindi, Thai and accented Latin (PostgreSQL rejected them; other databases never matched). `min_search_length` and `query.max_term_length` also counted bytes. All now work per character.
 - Accessor-backed searchable fields never reindexed on update (`wasChanged()` cannot see them), so a product moved to another brand stayed findable under the old brand.
 - `fallback()` stored its algorithms and never ran them.

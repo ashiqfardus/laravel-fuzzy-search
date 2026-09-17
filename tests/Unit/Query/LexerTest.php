@@ -212,4 +212,12 @@ class LexerTest extends TestCase
             }
         }
     }
+
+    public function test_field_scope_combines_with_include_match_and_exact(): void
+    {
+        $tokens = (new Lexer())->tokenize("name:'john name:=john");
+        $this->assertSame([Token::TYPE_INCLUDE_MATCH, Token::TYPE_EXACT], array_map(fn ($t) => $t->type, $tokens));
+        $this->assertSame(['name', 'name'], array_map(fn ($t) => $t->field, $tokens));
+        $this->assertSame(['john', 'john'], array_map(fn ($t) => $t->value, $tokens));
+    }
 }
