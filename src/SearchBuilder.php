@@ -1098,7 +1098,7 @@ class SearchBuilder
         // looked up on the raw lowercased words (before stemming) and then processed like
         // any other query text so the stemmer and stop words apply to them too.
         if ($this->synonyms !== [] || $this->synonymGroups !== []) {
-            foreach (preg_split('/\s+/u', mb_strtolower(trim($this->searchTerm)), -1, PREG_SPLIT_NO_EMPTY) as $word) {
+            foreach (preg_split('/[^\p{L}\p{M}\p{N}]+/u', mb_strtolower(trim($this->searchTerm)), -1, PREG_SPLIT_NO_EMPTY) as $word) {
                 foreach ($this->expandWithSynonyms($word) as $synonym) {
                     if ($synonym === $word) {
                         continue;
@@ -1129,7 +1129,7 @@ class SearchBuilder
             // The prefix source is the last RAW word the user typed, processed on its own:
             // $terms is de-duplicated (a repeated last word would vanish) and a trailing
             // stop word must not silently prefix-expand the word before it.
-            $rawWords  = preg_split('/\s+/u', trim($this->searchTerm), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            $rawWords  = preg_split('/[^\p{L}\p{M}\p{N}]+/u', trim($this->searchTerm), -1, PREG_SPLIT_NO_EMPTY) ?: [];
             $lastTerms = $rawWords === [] ? [] : $indexManager->processTerms((string) end($rawWords), $override);
 
             if ($lastTerms !== []) {

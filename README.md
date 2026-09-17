@@ -875,12 +875,12 @@ User::search('jonh')->useInvertedIndex()->get();                 // finds "john"
 User::search('jonh')->useInvertedIndex()->typoTolerance(0)->get(); // exact terms only
 User::search('joh')->useInvertedIndex()->asYouType()->get();      // last token is a prefix: john, johnny …
 User::search('laptop')->useInvertedIndex()->withSynonyms(['laptop' => ['notebook']])->get();
-User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); // replaces the configured list for this query
+User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); // added to the configured list for this query
 ```
 
 - Each query term of at least `typo_tolerance.min_word_length` characters is expanded with up to `bm25.fuzzy.max_expansions` dictionary terms within `typoTolerance()` edits, picked from the `bm25.fuzzy.candidate_pool` most common terms of a similar length. With `bm25.fuzzy.damping` (default on) an expansion scores `1 − distance / length` of the exact term, so exact matches rank first. `typo_tolerance.enabled = false` turns expansion off globally.
 - `asYouType()` (or `$searchable['as_you_type' => true]`) expands the **last** token by prefix, capped at `bm25.prefix.max_expansions`.
-- Synonyms score at full weight (they are alternatives, not typos). `ignoreStopWords()` replaces the configured locale list for that query.
+- Synonyms score at full weight (they are alternatives, not typos). On the inverted index `ignoreStopWords()` **adds** its list to the configured locale list for that query — a term dropped at index time cannot match anyway, so a configured stop word cannot be restored. On the LIKE path it still replaces the configured list.
 - `highlight()` marks every term that matched, including expansions. `getDebugInfo()['index_terms']` lists the weighted terms that ran.
 - The Scout engine keeps exact-term matching; use the builder for typo-tolerant index searches.
 - Upgrading from v2.0: the dictionary gained a `term_length` column — run `php artisan migrate` (existing rows are backfilled).

@@ -96,6 +96,14 @@ class AsYouTypeTest extends TestCase
         $this->assertTrue(AsYouTypeUser::search('joh')->getDebugInfo()['as_you_type']);
     }
 
+    public function test_trailing_punctuation_does_not_hide_the_prefix_source(): void
+    {
+        // The tokenizer splits on punctuation, so the raw-last-word split must too.
+        $names = User::search('joh.')->useInvertedIndex()->asYouType()->get()->pluck('name')->all();
+
+        $this->assertContains('Johnny Bravo', $names);
+    }
+
     public function test_as_you_type_is_part_of_the_cache_key(): void
     {
         $this->assertCount(0, User::search('joh')->useInvertedIndex()->cache(10)->get());

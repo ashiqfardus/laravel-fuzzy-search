@@ -225,14 +225,19 @@ class IndexManager
      */
     /**
      * Tokenize + stem search input — used by Bm25Scorer, SearchBuilder and didYouMean().
-     * $stopWords: null keeps the configured locale list; an array replaces it for this call
-     * (SearchBuilder::ignoreStopWords() on the inverted-index path).
+     * $stopWords: null keeps the configured locale list; an array is ADDED to it for this call
+     * (SearchBuilder::ignoreStopWords() on the inverted-index path). Adding rather than
+     * replacing is the only useful behaviour here: a term dropped at index time cannot match
+     * anyway, so restoring a configured stop word would only feed typo expansion with noise.
      *
      * @return string[]
      */
     public function processTerms(string $text, ?array $stopWords = null): array
     {
-        $stop  = $stopWords === null ? $this->stopWords : array_map('mb_strtolower', $stopWords);
+        $stop = $stopWords === null
+            ? $this->stopWords
+            : array_values(array_unique(array_merge($this->stopWords, array_map('mb_strtolower', $stopWords))));
+
         $words = $this->tokenizer->tokenize($text);
         $terms = [];
         foreach ($words as $word) {

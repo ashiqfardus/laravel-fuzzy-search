@@ -38,14 +38,24 @@ class IndexPathSynonymsStopWordsTest extends TestCase
         $this->assertContains('Notebook Pro', $titles);
     }
 
-    public function test_builder_stop_words_replace_the_configured_list_at_query_time(): void
+    public function test_a_synonym_is_found_when_the_query_word_ends_in_punctuation(): void
+    {
+        // The tokenizer splits on punctuation, so the synonym lookup must too.
+        $titles = Product::search('laptop,')->useInvertedIndex()->typoTolerance(0)
+            ->withSynonyms(['laptop' => ['notebook']])->get()->pluck('title')->all();
+
+        $this->assertContains('Notebook Pro', $titles);
+    }
+
+    public function test_builder_stop_words_extend_the_configured_list_on_the_index_path(): void
     {
         // Config list drops "the"; "pro" is a real term (Notebook Pro, MacBook Pro, iPhone 15 Pro …).
         $titles = Product::search('the pro')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all();
         $this->assertContains('Notebook Pro', $titles);
         $this->assertContains('MacBook Pro', $titles);
 
-        // Override: only "pro" is a stop word now → nothing left to match ("the" was never indexed).
+        // The builder list is ADDED to the configured one, so "the" and "pro" are both
+        // dropped → nothing left to match.
         $this->assertCount(0, Product::search('the pro')->useInvertedIndex()->typoTolerance(0)->ignoreStopWords(['pro'])->get());
     }
 
@@ -54,7 +64,7 @@ class IndexPathSynonymsStopWordsTest extends TestCase
         $manager = app(IndexManager::class);
 
         $this->assertSame(['pro'], $manager->processTerms('the pro'));
-        $this->assertSame(['the'], $manager->processTerms('the pro', ['pro']));
-        $this->assertSame(['the', 'pro'], $manager->processTerms('the pro', []));
+        $this->assertSame([], $manager->processTerms('the pro', ['pro']));
+        $this->assertSame(['pro'], $manager->processTerms('the pro', []));
     }
 }
