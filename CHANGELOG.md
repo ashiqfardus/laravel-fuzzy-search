@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Typo-tolerant BM25: useInvertedIndex() searches expand each query term with up to bm25.fuzzy.max_expansions dictionary terms within typoTolerance() edits (damped so exact terms rank first); typoTolerance(0) or typo_tolerance.enabled=false keeps exact matching. getDebugInfo()['index_terms'] shows the weighted terms.
 - asYouType() (and $searchable['as_you_type']): on the inverted index the last token also matches dictionary terms that start with it, capped at bm25.prefix.max_expansions.
 - withSynonyms()/synonymGroup() and ignoreStopWords() now apply on the inverted-index path (synonyms at full weight; the builder's stop-word list replaces the configured locale list for that query).
+- highlight() on the inverted index marks every term the query actually matched — exact tokens, typo expansions and as-you-type prefixes — with overlapping matches merged into one tag.
 
 ### Changed
 

@@ -1033,7 +1033,7 @@ class SearchBuilder
         );
 
         if ($this->highlightTagOpen) {
-            $sorted = $this->applyHighlighting($sorted);
+            $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));
         }
 
         if ($this->debugMode) {
@@ -1428,7 +1428,7 @@ class SearchBuilder
         }
 
         if ($this->highlightTagOpen) {
-            $sorted = $this->applyHighlighting($sorted);
+            $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));
         }
 
         if ($this->debugMode) {
@@ -2023,19 +2023,24 @@ class SearchBuilder
     }
 
     /**
-     * Apply highlighting to results
+     * Apply highlighting to results. $terms (index path) lists every weighted query term —
+     * exact tokens, typo and prefix expansions — so a document that matched through "john"
+     * for the query "jonh" still gets its match marked. null (LIKE/extended paths) keeps the
+     * single-term behaviour: the whole search string is one needle.
+     *
+     * @param string[]|null $terms
      */
-    protected function applyHighlighting(Collection $results): Collection
+    protected function applyHighlighting(Collection $results, ?array $terms = null): Collection
     {
-        $term = $this->searchTerm;
-        if (empty($term)) {
+        $needles = $terms === null ? [$this->searchTerm] : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
+        if ($needles === [] || $needles === ['']) {
             return $results;
         }
 
         $open  = $this->highlightTagOpen ?? '<em>';
         $close = $this->highlightTagClose ?? '</em>';
 
-        return $results->map(function ($item) use ($term, $open, $close) {
+        return $results->map(function ($item) use ($needles, $open, $close) {
             $matches     = [];
             $highlighted = [];
 
@@ -2049,7 +2054,11 @@ class SearchBuilder
                 $chosen  = $values[0];
                 $indices = [];
                 foreach ($values as $value) {
-                    $found = $this->findMatchOffsets($value, $term);
+                    $found = [];
+                    foreach ($needles as $needle) {
+                        $found = array_merge($found, $this->findMatchOffsets($value, $needle));
+                    }
+                    $found = $this->mergeRanges($found);
                     if (!empty($found)) {
                         $chosen  = $value;
                         $indices = $found;
@@ -2096,6 +2105,32 @@ class SearchBuilder
             $offset    = $pos + strlen($term);
         }
         return $indices;
+    }
+
+    /**
+     * Sort [start, end] ranges and merge overlapping or touching ones, so two needles that
+     * hit the same characters ("john" and "johnny") produce one tag pair.
+     *
+     * @param  array<int, array{0: int, 1: int}> $ranges
+     * @return array<int, array{0: int, 1: int}>
+     */
+    private function mergeRanges(array $ranges): array
+    {
+        if (count($ranges) < 2) {
+            return $ranges;
+        }
+        usort($ranges, fn ($a, $b) => $a[0] <=> $b[0]);
+        $merged = [array_shift($ranges)];
+        foreach ($ranges as [$start, $end]) {
+            $last = &$merged[count($merged) - 1];
+            if ($start <= $last[1] + 1) {
+                $last[1] = max($last[1], $end);
+            } else {
+                $merged[] = [$start, $end];
+            }
+            unset($last);
+        }
+        return $merged;
     }
 
     private function wrapWithTags(string $value, array $indices, string $open, string $close): string
