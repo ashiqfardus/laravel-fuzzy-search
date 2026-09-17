@@ -32,7 +32,10 @@ class SearchAnalytics
 
         return [
             'term'            => $hash ? '' : mb_substr($event->searchTerm, 0, 255),
-            'normalized_term' => $hash ? hash('sha256', $normalized) : mb_substr($normalized, 0, 255),
+            // Keyed, not a bare sha256: search terms are low-entropy (names, product words),
+            // so an unsalted digest can be confirmed by anyone who guesses the term. Equal
+            // terms still hash equally, so popular()/zeroResults() group as before.
+            'normalized_term' => $hash ? hash_hmac('sha256', $normalized, (string) config('app.key')) : mb_substr($normalized, 0, 255),
             // Every string is cut to its column width: the event is public API, so a
             // third-party dispatcher may pass a longer path or model class than the
             // migration's columns hold.

@@ -11,7 +11,7 @@ return new class extends Migration
         Schema::create('fuzzy_search_logs', function (Blueprint $table) {
             $table->id();
             $table->string('term', 255);                 // '' when analytics.hash_terms is on
-            $table->string('normalized_term', 255);      // lower-cased, whitespace-collapsed (or its sha256)
+            $table->string('normalized_term', 255);      // lower-cased, whitespace-collapsed (or its keyed sha256)
             $table->string('model_type', 191)->nullable();
             $table->string('algorithm', 32);
             $table->string('path', 16);                  // like | bm25 | extended | in_memory

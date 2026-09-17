@@ -1386,14 +1386,14 @@ Opt-in, DB-backed search analytics: every `FuzzySearchExecuted` event can be wri
     'queue'          => null,               // null = insert inline; a queue name dispatches RecordSearchLogJob there instead
     'sample_rate'    => 1.0,                // 0.0–1.0 share of searches recorded
     'retention_days' => 30,                 // what `fuzzy-search:analytics:prune` deletes beyond
-    'hash_terms'     => false,              // true stores only a SHA-256 of the term, never the term itself
+    'hash_terms'     => false,              // true stores only a keyed SHA-256 (HMAC with APP_KEY), never the term itself
     'table'          => 'fuzzy_search_logs',
 ],
 ```
 
 Run `php artisan migrate` to create the table — it has no effect until `analytics.enabled` is `true`.
 
-Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms`, `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
+Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its keyed SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms`, `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
 
 ### What counts as one row
 
@@ -1451,7 +1451,11 @@ $schedule->command('fuzzy-search:analytics:prune')->daily();
 
 ### Privacy
 
-Search terms are user input — treat this table accordingly. Recording is **off by default**; you opt in per environment. The default `retention_days` is 30, enforced by running `fuzzy-search:analytics:prune` on a schedule (it isn't automatic). Set `hash_terms` to `true` to store only a SHA-256 hash of the normalized term instead of the term itself — `popular()` and `zeroResults()` still group and count correctly, since two equal terms hash equally, but the literal term can no longer be read back. On high-traffic endpoints, `sample_rate` (`0.0`–`1.0`) records only a fraction of searches instead of every one.
+Search terms are user input — treat this table accordingly. Recording is **off by default**; you opt in per environment. The default `retention_days` is 30, enforced by running `fuzzy-search:analytics:prune` on a schedule (it isn't automatic). On high-traffic endpoints, `sample_rate` (`0.0`–`1.0`) records only a fraction of searches instead of every one.
+
+Set `hash_terms` to `true` to store a **keyed SHA-256** (an HMAC with your `APP_KEY`) of the normalized term instead of the term itself, with `term` left empty. `popular()` and `zeroResults()` still group and count correctly, since two equal terms hash equally — it is a pseudonym, not an encryption. Because the digest is keyed, someone holding only the table cannot brute-force it by hashing guessed terms; conversely, rotating `APP_KEY` changes every future digest, so history splits at the rotation and terms recorded before and after it no longer group together.
+
+With `hash_terms` off and `analytics.queue` set, a job that exhausts its retries leaves the raw term in the serialized payload in `failed_jobs`, outside `prune()`'s reach — prune that table too (`php artisan queue:flush`) if retention matters.
 
 ---
 

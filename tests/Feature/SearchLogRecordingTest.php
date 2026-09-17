@@ -17,6 +17,8 @@ class SearchLogRecordingTest extends TestCase
     protected function defineEnvironment($app): void
     {
         parent::defineEnvironment($app);
+        // Testbench leaves app.key unset; hash_terms keys its HMAC with it.
+        $app['config']->set('app.key', 'base64:' . base64_encode(str_repeat('k', 32)));
         $app['config']->set('fuzzy-search.analytics', [
             'enabled'        => true,
             'queue'          => null,
@@ -79,7 +81,8 @@ class SearchLogRecordingTest extends TestCase
 
         $row = DB::table('fuzzy_search_logs')->first();
         $this->assertSame('', $row->term);
-        $this->assertSame(hash('sha256', 'john'), $row->normalized_term);
+        $this->assertSame(hash_hmac('sha256', 'john', config('app.key')), $row->normalized_term);
+        $this->assertNotSame(hash('sha256', 'john'), $row->normalized_term); // keyed, not a bare digest
     }
 
     public function test_a_configured_queue_dispatches_the_job_instead_of_inserting(): void

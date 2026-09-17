@@ -290,7 +290,9 @@ return [
     | to fuzzy_search_logs through the FuzzySearchExecuted event — fallback() records one row
     | per algorithm tried and a federated search one per inner model; cached and count() calls
     | record nothing. See "What counts as one row" in the README. Search terms are user input:
-    | keep retention short, or set hash_terms to store only a SHA-256 of the normalized term.
+    | keep retention short, or set hash_terms to store only a keyed SHA-256 of the normalized
+    | term (HMAC with APP_KEY, so the table alone cannot be brute-forced; rotating APP_KEY
+    | splits history at the rotation).
     |
     | queue: null inserts inline; a queue name dispatches RecordSearchLogJob there instead.
     | sample_rate: 0.0–1.0 share of searches recorded.
