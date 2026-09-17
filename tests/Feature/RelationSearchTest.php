@@ -9,6 +9,7 @@ use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\CreatesRelationTables;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Post;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Illuminate\Support\Facades\DB;
 
 class RelationSearchTest extends TestCase
 {
@@ -160,5 +161,52 @@ class RelationSearchTest extends TestCase
         $this->assertSame('<mark>Tolkien</mark>', \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($post, 'author.name'));
         // A column that was searched but did not match renders escaped, unwrapped text.
         $this->assertSame('The Ring', \Ashiqfardus\LaravelFuzzySearch\SearchBuilder::renderHighlighted($post, 'title'));
+    }
+
+    public function test_column_values_never_lazy_loads_an_unloaded_relation(): void
+    {
+        $post = Post::where('title', 'The Ring')->first(); // author relation NOT eager-loaded
+        $builder = new SearchBuilder(Post::query(), app(FuzzySearch::class));
+        $target  = ['relation' => 'author', 'column' => 'name'];
+
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+
+        $values = \Closure::bind(
+            fn () => $this->columnValues($post, 'author.name', $target),
+            $builder,
+            SearchBuilder::class
+        )();
+
+        $this->assertSame([], $values);
+        $this->assertSame([], DB::getQueryLog(), 'columnValues() must never trigger a lazy-load query.');
+
+        $post->load('author');
+
+        $values = \Closure::bind(
+            fn () => $this->columnValues($post, 'author.name', $target),
+            $builder,
+            SearchBuilder::class
+        )();
+
+        $this->assertSame(['Tolkien'], $values);
+    }
+
+    public function test_nested_to_many_relation_path_is_scored_and_highlighted(): void
+    {
+        $results = (new SearchBuilder(Post::query(), app(FuzzySearch::class)))
+            ->search('tolkien')->searchIn(['comments.author.name'])->using('like')->highlight('em')
+            ->withRelevance()->get();
+
+        $this->assertSame(['Cooking'], $results->pluck('title')->all());
+
+        $post = $results->first();
+        // Exact match on an unweighted relation column: scoring.exact_match (100) × 1 = 100 raw.
+        $this->assertEquals(100.0, (float) $post->_raw_score);
+
+        $match = collect($post->_matches)->firstWhere('column', 'comments.author.name');
+        $this->assertSame('Tolkien', $match['value']);
+
+        $this->assertStringContainsString('<em>Tolkien</em>', $post->_highlighted['comments.author.name']);
     }
 }

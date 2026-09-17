@@ -1822,8 +1822,10 @@ class SearchBuilder
     /**
      * Every candidate string for a searchIn() column on one result: the column itself for a
      * direct column; for a relation path, the leaf column of every related row (to-many
-     * relations and nested paths contribute one string per related row). Relations were
-     * eager-loaded in buildQuery(), so this reads memory, not the database.
+     * relations and nested paths contribute one string per related row). The LIKE path
+     * eager-loads relationPaths() in buildQuery(), so this reads memory there. For an
+     * Eloquent Model, an unloaded relation segment (BM25/extended results don't eager-load
+     * yet) contributes nothing rather than triggering a lazy-load query.
      *
      * @param  array{relation: ?string, column: string} $target
      * @return string[] non-empty strings only
@@ -1839,7 +1841,17 @@ class SearchBuilder
         foreach (explode('.', $target['relation']) as $segment) {
             $next = [];
             foreach ($rows as $row) {
-                $related = is_object($row) ? ($row->{$segment} ?? null) : null;
+                if ($row instanceof Model) {
+                    // Never trigger Eloquent's magic lazy load here: this path is also
+                    // reached from BM25/extended results, which don't eager-load relations
+                    // yet. An unloaded relation contributes nothing rather than a query.
+                    if (!$row->relationLoaded($segment)) {
+                        continue;
+                    }
+                    $related = $row->{$segment};
+                } else {
+                    $related = is_object($row) ? ($row->{$segment} ?? null) : null;
+                }
                 if ($related instanceof \Illuminate\Support\Collection) {
                     foreach ($related as $r) {
                         $next[] = $r;
@@ -2013,7 +2025,10 @@ class SearchBuilder
 
     /**
      * Plain (unhighlighted) display value for a column: `_highlighted` when the search
-     * produced one, otherwise data_get(), collapsing a to-many collection to its first row.
+     * produced one, otherwise data_get(). A Collection value is reduced to its first item;
+     * anything that isn't a scalar at that point — including a model instance, or a
+     * to-many relation collection data_get() couldn't resolve to one — renders as an
+     * empty string rather than a warning.
      */
     protected static function displayValueFor($result, string $column): string
     {
