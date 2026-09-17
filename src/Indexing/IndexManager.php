@@ -220,7 +220,7 @@ class IndexManager
         });
     }
 
-    /** @var array<string, Pipeline> model class → resolved pipeline */
+    /** @var array<string, Pipeline|false> model class → resolved override pipeline, or false = "uses the default" */
     private static array $pipelines = [];
 
     public static function resetPipelineCache(): void
@@ -239,16 +239,15 @@ class IndexManager
             return $this->default;
         }
 
-        // Only resolved overrides are cached: an override-less class returns this instance's
-        // default, so a second IndexManager (tests, forgetInstance()) never serves a stale one.
-        if (isset(self::$pipelines[$modelClass])) {
-            return self::$pipelines[$modelClass];
+        // Override pipelines are cached as objects; an override-less class is cached as `false` and
+        // answered with THIS instance's default, so the resolution (a model construction) runs once
+        // per class and a second IndexManager (tests, forgetInstance()) never serves a stale default.
+        if (array_key_exists($modelClass, self::$pipelines)) {
+            return self::$pipelines[$modelClass] ?: $this->default;
         }
 
         $pipeline = $this->resolvePipeline($modelClass);
-        if ($pipeline !== $this->default) {
-            self::$pipelines[$modelClass] = $pipeline;
-        }
+        self::$pipelines[$modelClass] = $pipeline === $this->default ? false : $pipeline;
 
         return $pipeline;
     }
