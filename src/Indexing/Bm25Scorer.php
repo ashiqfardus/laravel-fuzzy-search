@@ -16,19 +16,44 @@ class Bm25Scorer
     ) {}
 
     /**
+     * Normalise the two accepted term shapes — a plain list (every term at 1.0) or
+     * term => weight — into term => weight. Keys are cast back to strings for SQL bindings
+     * because PHP turns numeric-string keys ('2024') into ints and SQL Server refuses to
+     * compare an nvarchar column with an int binding.
+     *
+     * @param  array<int, string>|array<string, float> $terms
+     * @return array<string, float>
+     */
+    private function weights(array $terms): array
+    {
+        if ($terms === []) {
+            return [];
+        }
+
+        return array_is_list($terms) ? array_fill_keys($terms, 1.0) : $terms;
+    }
+
+    /** @param array<string, float> $weights */
+    private function termBindings(array $weights): array
+    {
+        return array_map('strval', array_keys($weights));
+    }
+
+    /**
      * Count the number of distinct models that contain at least one query term.
      * Used by FuzzySearchEngine::paginate() to obtain an accurate total (C13).
      *
-     * @param string[] $terms Already tokenized + stemmed query terms
+     * @param array<int, string>|array<string, float> $terms Processed terms, or term => weight
      */
     public function count(array $terms, string $modelType): int
     {
-        if (empty($terms)) {
+        $weights = $this->weights($terms);
+        if ($weights === []) {
             return 0;
         }
 
         $termIds = DB::table('fuzzy_index_terms')
-            ->whereIn('term', $terms)
+            ->whereIn('term', $this->termBindings($weights))
             ->pluck('id');
 
         if ($termIds->isEmpty()) {
@@ -45,10 +70,10 @@ class Bm25Scorer
     /**
      * Run BM25 over the inverted index and return the top scored model IDs.
      *
-     * @param  string[] $terms     Already tokenized + stemmed query terms
-     * @param  string   $modelType Fully-qualified model class name
-     * @param  int      $limit
-     * @return Collection<object{model_id: int, score: float}>
+     * @param  array<int, string>|array<string, float> $terms     Processed terms, or term => weight
+     * @param  string                                  $modelType Fully-qualified model class name
+     * @param  int                                     $limit
+     * @return Collection<object{model_id: int|string, score: float}>
      */
     public function search(array $terms, string $modelType, int $limit = 15): Collection
     {
@@ -61,12 +86,13 @@ class Bm25Scorer
      * [model_id => score], best first. Callers that must apply Eloquent constraints
      * (filters, scopes) walk this list so the cut happens after constraining, not before.
      *
-     * @param  string[] $terms
+     * @param  array<int, string>|array<string, float> $terms Processed terms, or term => weight
      * @return array<int|string, float>
      */
     public function rank(array $terms, string $modelType): array
     {
-        if (empty($terms)) {
+        $weights = $this->weights($terms);
+        if ($weights === []) {
             return [];
         }
 
@@ -82,8 +108,8 @@ class Bm25Scorer
         $avgdl = (float) $meta->avg_doc_length ?: 1.0;
 
         $termData = DB::table('fuzzy_index_terms')
-            ->whereIn('term', $terms)
-            ->select('id', 'doc_count')
+            ->whereIn('term', $this->termBindings($weights))
+            ->select('id', 'term', 'doc_count')
             ->get()
             ->keyBy('id');
 
@@ -115,12 +141,13 @@ class Bm25Scorer
 
         $scores = [];
         foreach ($postings as $row) {
-            $td  = $termData[$row->term_id];
-            $idf = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
-            $tf  = ($row->frequency * ($this->k1 + 1))
-                 / ($row->frequency + $this->k1 * (1 - $this->b + $this->b * $row->doc_len / $avgdl));
+            $td     = $termData[$row->term_id];
+            $weight = (float) ($weights[$td->term] ?? 1.0);
+            $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
+            $tf     = ($row->frequency * ($this->k1 + 1))
+                    / ($row->frequency + $this->k1 * (1 - $this->b + $this->b * $row->doc_len / $avgdl));
 
-            $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $idf * $tf;
+            $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $weight * $idf * $tf;
         }
 
         arsort($scores);
