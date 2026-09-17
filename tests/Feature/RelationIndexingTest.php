@@ -46,6 +46,7 @@ class RelationIndexingTest extends TestCase
         return DB::table('fuzzy_index_postings as p')
             ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', $model::class)->where('p.model_id', $model->getKey())
+            ->distinct()
             ->orderBy('t.term')->pluck('t.term')->map(fn ($t) => (string) $t)->all();
     }
 

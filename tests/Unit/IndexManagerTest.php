@@ -2,7 +2,13 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
+// Load shared models (Tests\User has a name/email searchable() weighting).
+require_once __DIR__ . '/../TestModels.php';
+
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class IndexManagerTest extends TestCase
@@ -286,6 +292,43 @@ class IndexManagerTest extends TestCase
             $helloAfterReindex,
             'doc_count must not inflate on repeated indexBatch of the same models'
         );
+    }
+
+    public function test_index_model_writes_one_posting_per_term_and_column(): void
+    {
+        $user = User::create(['name' => 'John Doe', 'email' => 'john@example.com']);
+        app(IndexManager::class)->indexModel($user);
+
+        $john = DB::table('fuzzy_index_terms')->where('term', 'john')->first();
+        $rows = DB::table('fuzzy_index_postings')
+            ->where('model_type', User::class)->where('model_id', (string) $user->getKey())
+            ->where('term_id', $john->id)->orderBy('column_name')->get();
+
+        $this->assertSame(['email', 'name'], $rows->pluck('column_name')->all());
+        $this->assertSame([1, 1], $rows->pluck('frequency')->map(fn ($f) => (int) $f)->all());
+        $this->assertSame(1, (int) $john->doc_count, 'a term in two columns of one document counts once');
+    }
+
+    public function test_index_batch_reindex_keeps_doc_count_correct_across_columns(): void
+    {
+        $user = User::create(['name' => 'John Doe', 'email' => 'john@example.com']);
+        $manager = app(IndexManager::class);
+        $manager->indexBatch(collect([$user]));
+        $manager->indexBatch(collect([$user]));
+
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
+        $this->assertSame(2, DB::table('fuzzy_index_postings')
+            ->where('model_id', (string) $user->getKey())
+            ->where('term_id', DB::table('fuzzy_index_terms')->where('term', 'john')->value('id'))
+            ->count());
+    }
+
+    public function test_legacy_posting_rows_default_to_an_empty_column_name(): void
+    {
+        $termId = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'legacy', 'doc_count' => 1, 'term_length' => 6]);
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => User::class, 'model_id' => '999', 'frequency' => 1]);
+
+        $this->assertSame('', DB::table('fuzzy_index_postings')->where('term_id', $termId)->value('column_name'));
     }
 
     public function test_meta_does_not_inflate_on_reindex(): void

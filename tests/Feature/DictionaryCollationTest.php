@@ -22,13 +22,17 @@ class DictionaryCollationTest extends TestCase
 
         $this->assertCount(2, $termIds); // the accented and the plain form are separate rows
 
-        // …and the document carries a posting for each of them (the email column contributes
-        // its own terms, so only these two are counted).
+        // …and the document is posted under both term ids. Count DISTINCT term_id, not posting
+        // rows: a term now gets one posting row per column it appears in (a later task weights
+        // columns), so "cafe" living in both `name` and `email` legitimately yields two rows for
+        // one term id — the property under test is "both variants are separate dictionary terms
+        // and this document is posted under both", which per-column rows don't change.
         $this->assertSame(2, DB::table('fuzzy_index_postings')
             ->where('model_type', User::class)
             ->where('model_id', $user->getKey())
             ->whereIn('term_id', $termIds)
-            ->count());
+            ->distinct()
+            ->count('term_id'));
     }
 
     public function test_index_model_keeps_an_accent_variant_as_its_own_term(): void

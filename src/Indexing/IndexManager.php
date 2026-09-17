@@ -34,7 +34,8 @@ class IndexManager
             return;
         }
 
-        $tokens = $this->buildTokenFrequencyMap($model, $columns);
+        $byColumn = $this->buildTokenFrequencyMap($model, $columns);
+        $tokens   = $this->mergeColumnFrequencies($byColumn);
 
         if (empty($tokens)) {
             // The model's indexable text became empty (tags/relations cleared, hook now
@@ -46,7 +47,7 @@ class IndexManager
 
         $docLength = array_sum($tokens);
 
-        DB::transaction(function () use ($modelType, $modelId, $tokens, $docLength) {
+        DB::transaction(function () use ($modelType, $modelId, $tokens, $byColumn, $docLength) {
             // Read old doc_length BEFORE removing so we can compute the delta for avg_doc_length (C11)
             $oldDoc       = DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)
@@ -85,30 +86,16 @@ class IndexManager
                 ->whereIn('term', $termKeys)
                 ->pluck('id', 'term');
 
-            // Build posting rows
-            $postingRows = [];
-            foreach ($tokens as $term => $frequency) {
-                if (!isset($termIds[$term])) {
-                    // Pre-migration MySQL/MariaDB: a *_ci collation collapsed this term into
-                    // an accent/case variant, so the upsert never created a row for it (B25).
-                    // Skip the posting instead of crashing the whole transaction.
-                    continue;
-                }
-
-                $postingRows[] = [
-                    'term_id'    => $termIds[$term],
-                    'model_type' => $modelType,
-                    'model_id'   => $modelId,
-                    'frequency'  => $frequency,
-                ];
-            }
+            // Build posting rows — one per (term, column); a term missing from $termIds means
+            // a pre-migration MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
+            $postingRows = $this->postingRows($byColumn, $termIds, $modelType, $modelId);
 
             // Upsert postings — INSERT ... ON DUPLICATE KEY UPDATE prevents concurrent-worker
-            // collisions on the UNIQUE (term_id, model_type, model_id) constraint (C9)
+            // collisions on the UNIQUE (term_id, model_type, model_id, column_name) constraint (C9)
             if (!empty($postingRows)) {
                 DB::table('fuzzy_index_postings')->upsert(
                     $postingRows,
-                    ['term_id', 'model_type', 'model_id'],
+                    ['term_id', 'model_type', 'model_id', 'column_name'],
                     ['frequency']
                 );
             }
@@ -133,6 +120,7 @@ class IndexManager
             $termIds = DB::table('fuzzy_index_postings')
                 ->where('model_type', $modelType)
                 ->where('model_id', $modelId)
+                ->distinct()
                 ->pluck('term_id');
 
             if ($termIds->isEmpty()) {
@@ -264,9 +252,10 @@ class IndexManager
      */
     public function indexBatch(iterable $models): int
     {
-        $modelType     = null;
-        $tokensByModel = []; // model_id => [term => freq]
-        $allTerms      = []; // unique terms across batch
+        $modelType      = null;
+        $tokensByModel  = []; // model_id => [term => freq] (merged across columns)
+        $columnsByModel = []; // model_id => [column => [term => freq]]
+        $allTerms       = []; // unique terms across batch
 
         foreach ($models as $model) {
             if ($modelType === null) {
@@ -278,7 +267,8 @@ class IndexManager
                 continue;
             }
 
-            $tokens = $this->buildTokenFrequencyMap($model, $columns);
+            $byColumn = $this->buildTokenFrequencyMap($model, $columns);
+            $tokens   = $this->mergeColumnFrequencies($byColumn);
             if (empty($tokens)) {
                 // Same as indexModel(): a model whose text emptied out must lose its stale
                 // postings, not just be skipped from the batch's re-index.
@@ -286,7 +276,8 @@ class IndexManager
                 continue;
             }
 
-            $tokensByModel[$model->getKey()] = $tokens;
+            $tokensByModel[$model->getKey()]  = $tokens;
+            $columnsByModel[$model->getKey()] = $byColumn;
             foreach (array_keys($tokens) as $term) {
                 $allTerms[$term] = true;
             }
@@ -302,7 +293,7 @@ class IndexManager
         $allTerms = array_map('strval', array_keys($allTerms));
         $modelIds = array_keys($tokensByModel);
 
-        return DB::transaction(function () use ($modelType, $tokensByModel, $allTerms, $modelIds) {
+        return DB::transaction(function () use ($modelType, $tokensByModel, $columnsByModel, $allTerms, $modelIds) {
             // Find which models in this batch are already indexed (for accurate meta)
             $alreadyIndexed = DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)
@@ -320,12 +311,14 @@ class IndexManager
             if ($alreadyIndexed->isNotEmpty()) {
                 $reindexIds = $alreadyIndexed->keys()->toArray();
 
-                // COUNT(*) per term_id = number of models in the batch that had this term
+                // COUNT(DISTINCT model_id) per term_id = number of models in the batch that had
+                // this term (a term now has one posting row per column it appears in, so
+                // COUNT(*) would double-count a term that lives in two columns of one document).
                 $oldReindexTermCounts = DB::table('fuzzy_index_postings')
                     ->where('model_type', $modelType)
                     ->whereIn('model_id', $reindexIds)
                     ->groupBy('term_id')
-                    ->selectRaw('term_id, COUNT(*) as cnt')
+                    ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
                     ->pluck('cnt', 'term_id');
 
                 $oldReindexTokens = (int) DB::table('fuzzy_index_documents')
@@ -399,17 +392,8 @@ class IndexManager
                     'model_id'   => $modelId,
                     'doc_length' => $docLength,
                 ];
-                foreach ($tokens as $term => $frequency) {
-                    if (!isset($termIds[$term])) {
-                        continue; // see indexModel(): an un-migrated *_ci dictionary (B25)
-                    }
-
-                    $postingRows[] = [
-                        'term_id'    => $termIds[$term],
-                        'model_type' => $modelType,
-                        'model_id'   => $modelId,
-                        'frequency'  => $frequency,
-                    ];
+                foreach ($this->postingRows($columnsByModel[$modelId], $termIds, $modelType, $modelId) as $row) {
+                    $postingRows[] = $row;
                 }
                 if (!$alreadyIndexed->has($modelId)) {
                     $totalNewDocs++;
@@ -423,7 +407,7 @@ class IndexManager
             foreach (array_chunk($postingRows, 1000) as $chunk) {
                 DB::table('fuzzy_index_postings')->upsert(
                     $chunk,
-                    ['term_id', 'model_type', 'model_id'],
+                    ['term_id', 'model_type', 'model_id', 'column_name'],
                     ['frequency']
                 );
             }
@@ -493,12 +477,21 @@ class IndexManager
         return $clean;
     }
 
+    /**
+     * Term frequencies per searchable column (or searchableText() key), stemmed and
+     * stop-word filtered: ['title' => ['widget' => 2], 'body' => ['widget' => 1]].
+     * The token cap counts distinct (column, term) pairs for the whole document.
+     *
+     * @return array<string, array<string, int>>
+     */
     private function buildTokenFrequencyMap(Model $model, array $columns): array
     {
-        $tokens    = [];
+        $byColumn  = [];
+        $distinct  = 0;
         $maxTokens = config('fuzzy-search.indexing.max_tokens_per_doc', 5000);
 
-        foreach ($this->searchableTexts($model, $columns) as $value) {
+        foreach ($this->searchableTexts($model, $columns) as $name => $value) {
+            $column = mb_substr((string) $name, 0, 64);
             foreach ($this->tokenizer->tokenize($value) as $word) {
                 if (in_array($word, $this->stopWords, true)) {
                     continue;
@@ -507,18 +500,57 @@ class IndexManager
                 if (strlen($stemmed) > 255) {
                     continue; // token exceeds varchar(255) — skip rather than truncate silently
                 }
-                $tokens[$stemmed] = ($tokens[$stemmed] ?? 0) + 1;
+                if (!isset($byColumn[$column][$stemmed])) {
+                    $distinct++;
+                }
+                $byColumn[$column][$stemmed] = ($byColumn[$column][$stemmed] ?? 0) + 1;
 
-                if (count($tokens) >= $maxTokens) {
+                if ($distinct >= $maxTokens) {
                     \Illuminate\Support\Facades\Log::warning(
                         'fuzzy-search: Token cap (' . $maxTokens . ') reached for ' .
                         get_class($model) . ' id=' . $model->getKey() . '. Extra tokens discarded.'
                     );
-                    return $tokens;
+                    return $byColumn;
                 }
             }
         }
+        return $byColumn;
+    }
+
+    /** Per-document term frequencies (term => total across columns) — doc_length and doc_count use this. */
+    private function mergeColumnFrequencies(array $byColumn): array
+    {
+        $tokens = [];
+        foreach ($byColumn as $terms) {
+            foreach ($terms as $term => $frequency) {
+                $tokens[$term] = ($tokens[$term] ?? 0) + $frequency;
+            }
+        }
         return $tokens;
+    }
+
+    /**
+     * One posting row per (term, column). Terms missing from $termIds are skipped (B25: an
+     * un-migrated *_ci dictionary collapsed them into a variant).
+     */
+    private function postingRows(array $byColumn, $termIds, string $modelType, int|string $modelId): array
+    {
+        $rows = [];
+        foreach ($byColumn as $column => $terms) {
+            foreach ($terms as $term => $frequency) {
+                if (!isset($termIds[$term])) {
+                    continue;
+                }
+                $rows[] = [
+                    'term_id'     => $termIds[$term],
+                    'model_type'  => $modelType,
+                    'model_id'    => $modelId,
+                    'column_name' => (string) $column,
+                    'frequency'   => $frequency,
+                ];
+            }
+        }
+        return $rows;
     }
 
     /**

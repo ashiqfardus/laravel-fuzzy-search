@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A search whose `searchIn()` contains a dotted name whose first segment is neither a relation on the model nor a plain table prefix (three or more segments) throws `InvalidArgumentException` naming the column when the query is built.
 - didYouMean() reads the dictionary through the new term_length index (no LENGTH() SQL), uses character-based distances, and only returns [] when the fuzzy_index_terms table is missing — other database errors now surface.
 - The FuzzySearch singleton reads config('fuzzy-search') live, so runtime config overrides (tests, multi-tenant setups) reach the drivers.
+- The inverted index stores one posting per (term, column) — fuzzy_index_postings gained column_name (migration; existing rows keep '' and keep working). Run fuzzy-search:rebuild {Model} --fresh to get weighted ranking.
 
 ### Removed
 
