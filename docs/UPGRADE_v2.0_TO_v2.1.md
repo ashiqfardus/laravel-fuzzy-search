@@ -137,6 +137,12 @@ Both operators are recognised only at the start of a token (after an optional `!
 now tries to parse `~5` as a typo term or `ratio:` as a field scope instead of matching the token
 literally. Quote the token to keep the old, literal behaviour: `"~5" rating` / `"ratio:1"`.
 
+The casualties you are most likely to have in production are URLs and mail addresses at the start
+of a token and `Re:` / `Fwd:` subject prefixes: `extended('http://example.com')` and
+`extended('mailto:bob@example.com')` now throw `Unknown search field "http"` / `"mailto"`, and
+`extended('Re: meeting')` throws because nothing follows the colon. Quote them to restore the v2.0
+substring match: `"http://example.com"`, `"mailto:bob@example.com"`, `"Re:" meeting`.
+
 `useInvertedIndex()` combined with `extended()` still runs the query on the LIKE path — that was
 already true in v2.0, it's just visible now: `getDebugInfo()` reports `'algorithm' => 'extended'`
 and `'index_ignored' => true` whenever both are set. `count()` and `paginate()` used to disagree

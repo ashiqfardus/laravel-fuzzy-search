@@ -1048,7 +1048,7 @@ Use Fuse.js-style operators inside your search string for precise control over m
 
 `field:word` limits a term to one searchable column: a direct column, a table-qualified column matched by its bare name (`users.name` answers to `name:`), or a relation column declared in `searchIn()` / `$searchable['columns']` (`author.name:smith`). Any operator can follow the colon — `email:^admin`, `name:~jonh`, `!name:bob`, `name:"john doe"`. An unknown field throws `QuerySyntaxException` listing the searchable fields; `field:` with nothing after the colon throws too.
 
-Both operators are only recognised at the start of a token (after an optional `!`), so `12:30` and `jo~hn` stay literal — and so does a quoted phrase. Quote a term that should start with a literal `:` or `~` (`"name:john"`, `"~x"`).
+Both operators are only recognised at the start of a token (after an optional `!`), so `12:30` and `jo~hn` stay literal — and so does a quoted phrase. Quote a token of the form `word:…`, or one starting with `~`, to keep it literal (`"name:john"`, `"~x"`). The everyday casualties are URLs and mail addresses at the start of a token (`http://example.com`, `mailto:bob@example.com` — `http:` and `mailto:` are read as field scopes) and `Re:` / `Fwd:` subject prefixes (nothing follows the colon, so they throw); quote them — `"http://example.com"`, `"mailto:bob@example.com"`, `"Re:" meeting`.
 
 The extended syntax always runs on the LIKE path; `->useInvertedIndex()` is ignored for it — `getDebugInfo()` reports `index_ignored => true` when both are set.
 

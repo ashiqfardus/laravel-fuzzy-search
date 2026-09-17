@@ -71,7 +71,8 @@ class Lexer
                 }
 
                 // Field scope: an identifier (letters, digits, _ and . for relation paths) followed by ':'.
-                // Only at the start of a token, so 12:30 or a URL inside a word stays literal.
+                // Only at the start of a token, so 12:30 or a colon inside a word stays literal
+                // (a URL at the start of a token is read as a scope — see the upgrade guide).
                 $field = null;
                 if (preg_match('/\G([A-Za-z_][A-Za-z0-9_.]*):/', $query, $m, 0, $i) === 1) {
                     $field = $m[1];
