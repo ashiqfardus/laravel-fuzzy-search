@@ -32,6 +32,19 @@ class StatusCommand extends Command
         $termCount = DB::table('fuzzy_index_terms')->count();
         $this->info('Total unique terms in dictionary: ' . number_format($termCount));
 
+        $legacy = DB::table('fuzzy_index_postings')
+            ->where('column_name', '')
+            ->groupBy('model_type')
+            ->selectRaw('model_type, COUNT(*) as cnt')
+            ->pluck('cnt', 'model_type');
+
+        foreach ($legacy as $modelType => $cnt) {
+            $this->warn(sprintf(
+                '%s: %s posting(s) predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "%s" --fresh',
+                class_basename($modelType), number_format($cnt), $modelType
+            ));
+        }
+
         return self::SUCCESS;
     }
 }
