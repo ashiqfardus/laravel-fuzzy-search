@@ -1262,6 +1262,7 @@ class SearchBuilder
                 (int) ($fuzzy['max_expansions'] ?? 5),
                 (int) ($fuzzy['candidate_pool'] ?? 500),
                 (bool) ($fuzzy['damping'] ?? true),
+                $modelClass,
             );
         }
 
@@ -2770,7 +2771,8 @@ class SearchBuilder
     /**
      * Get "Did you mean" spell corrections
      *
-     * Returns alternative spellings when the current search yields few or no results.
+     * Returns alternative spellings when the current search yields few or no results, drawn
+     * from the searched model's own terms in the BM25 dictionary.
      *
      * @param int $limit Maximum number of alternatives
      * @return array Array of alternative search terms with distance and confidence
@@ -2781,6 +2783,14 @@ class SearchBuilder
             return [];
         }
 
+        // The dictionary is shared by every indexed model: only this model's terms may be
+        // offered. Without a model there is nothing to scope to, and an unscoped read would
+        // hand out every other model's terms.
+        $modelClass = $this->resolveIndexModelClass();
+        if ($modelClass === null) {
+            return [];
+        }
+
         $term    = mb_strtolower(trim($this->searchTerm));
         $termLen = mb_strlen($term);
 
@@ -2788,7 +2798,7 @@ class SearchBuilder
         // path costs one query instead of two. A missing table (migrations not run) means
         // "nothing to suggest"; anything else is a real SQL error and must surface.
         try {
-            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, 3, 300);
+            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, 3, 300, $modelClass);
         } catch (\Illuminate\Database\QueryException $e) {
             if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
                 throw $e; // a real database error — surface it

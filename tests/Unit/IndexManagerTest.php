@@ -390,12 +390,8 @@ class IndexManagerTest extends TestCase
         $postingsMigration->down();
         $termsMigration->down();
 
-        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
-        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
-            $this->app['db']->table('users'),
-            $fuzzySearch
-        );
-        $builder->search('jonh')->searchIn(['name']);
+        // An Eloquent builder: without a model didYouMean() returns [] before reading the dictionary.
+        $builder = User::search('jonh')->searchIn(['name']);
 
         // Must return empty array, not throw
         $result = $builder->didYouMean(3);

@@ -482,6 +482,8 @@ $alternatives = User::search('jonh')  // Typo
 // ]
 ```
 
+Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
+
 ### Multi-Model Federation Search
 
 Search across multiple models simultaneously:

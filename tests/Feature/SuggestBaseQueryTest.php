@@ -77,8 +77,11 @@ class SuggestBaseQueryTest extends TestCase
 
     public function test_did_you_mean_is_unaffected_by_the_previous_search(): void
     {
-        $this->app['db']->table('fuzzy_index_terms')->insert(
+        $termId = $this->app['db']->table('fuzzy_index_terms')->insertGetId(
             ['term' => 'john', 'doc_count' => 50, 'term_length' => 4]
+        );
+        $this->app['db']->table('fuzzy_index_postings')->insert(
+            ['term_id' => $termId, 'model_type' => User::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name']
         );
 
         $builder = User::search('jonh')->searchIn(['name']);

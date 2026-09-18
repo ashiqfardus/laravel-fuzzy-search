@@ -90,20 +90,15 @@ class SearchEnhancementsTest extends TestCase
 
     public function test_did_you_mean_returns_alternatives_with_distance(): void
     {
-        // Seed term dictionary so didYouMean has something to find
-        $this->app['db']->table('fuzzy_index_terms')->insert([
-            ['term' => 'john',  'doc_count' => 50, 'term_length' => mb_strlen('john')],
-            ['term' => 'jones', 'doc_count' => 20, 'term_length' => mb_strlen('jones')],
-            ['term' => 'jane',  'doc_count' => 30, 'term_length' => mb_strlen('jane')],
-        ]);
+        // Seed term dictionary so didYouMean has something to find — posted under User, since
+        // didYouMean() only offers the searched model's terms
+        foreach (['john' => 50, 'jones' => 20, 'jane' => 30] as $term => $docCount) {
+            $termId = $this->app['db']->table('fuzzy_index_terms')->insertGetId(['term' => $term, 'doc_count' => $docCount, 'term_length' => mb_strlen($term)]);
+            $this->app['db']->table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => User::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name']);
+        }
 
         // 'jonh' has Levenshtein distance 1 from 'john'
-        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
-        $builder = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
-            $this->app['db']->table('users'),
-            $fuzzySearch
-        );
-        $alternatives = $builder->search('jonh')->searchIn(['name'])->didYouMean(3);
+        $alternatives = User::search('jonh')->searchIn(['name'])->didYouMean(3);
 
         $this->assertNotEmpty($alternatives);
         $first = $alternatives[0];

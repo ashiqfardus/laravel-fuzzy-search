@@ -2,15 +2,18 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
+require_once __DIR__ . '/../TestModels.php';
+
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
-use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 
 class DidYouMeanTest extends TestCase
 {
     use FakesDriverConnections;
 
+    /** A dictionary term posted under User: didYouMean() only offers the searched model's terms. */
     private function seedTerm(string $term, int $docCount = 10): void
     {
         $this->app['db']->table('fuzzy_index_terms')->upsert(
@@ -18,16 +21,18 @@ class DidYouMeanTest extends TestCase
             ['term'],
             ['doc_count' => $docCount]
         );
+        $this->app['db']->table('fuzzy_index_postings')->insert([
+            'term_id'     => $this->app['db']->table('fuzzy_index_terms')->where('term', $term)->value('id'),
+            'model_type'  => User::class,
+            'model_id'    => '1',
+            'frequency'   => 1,
+            'column_name' => 'name',
+        ]);
     }
 
     private function makeBuilder(string $term): SearchBuilder
     {
-        $builder = new SearchBuilder(
-            $this->app['db']->table('users'),
-            app(FuzzySearch::class)
-        );
-        $builder->search($term)->searchIn(['name']);
-        return $builder;
+        return User::search($term)->searchIn(['name']);
     }
 
     public function test_did_you_mean_finds_close_term_in_dictionary(): void

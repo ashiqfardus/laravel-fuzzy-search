@@ -2,7 +2,10 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Integration;
 
+require_once __DIR__ . '/../TestModels.php';
+
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer;
@@ -109,16 +112,10 @@ class IndexingPipelineTest extends TestCase
 
     public function test_did_you_mean_returns_suggestion_from_indexed_terms(): void
     {
-        $this->app['db']->table('fuzzy_index_terms')
-            ->upsert(['term' => 'laravel', 'doc_count' => 200, 'term_length' => mb_strlen('laravel')], ['term'], ['doc_count' => 200]);
+        // didYouMean() offers the searched model's own terms, so index a real User.
+        $this->manager->indexModel(User::create(['name' => 'Laravel Developer', 'email' => 'pipe@test.com']));
 
-        $fuzzySearch = app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class);
-        $builder     = new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(
-            $this->app['db']->table('users'),
-            $fuzzySearch
-        );
-
-        $suggestions = $builder->search('laravle')->searchIn(['name'])->didYouMean(3);
+        $suggestions = User::search('laravle')->searchIn(['name'])->didYouMean(3);
 
         $this->assertNotEmpty($suggestions);
         $terms = array_column($suggestions, 'term');

@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -16,9 +17,11 @@ final class TermExpander
     /**
      * Dictionary terms within $maxDistance edits of $term, most common first.
      *
+     * @param  ?string $modelType Restrict to terms posted under this model_type (see postedUnder());
+     *                            null leaves the dictionary unscoped.
      * @return list<array{term: string, doc_count: int, distance: int}>
      */
-    public function candidates(string $term, int $maxDistance, int $pool): array
+    public function candidates(string $term, int $maxDistance, int $pool, ?string $modelType = null): array
     {
         if ($term === '' || $pool <= 0) {
             return [];
@@ -26,7 +29,7 @@ final class TermExpander
 
         $length = mb_strlen($term);
 
-        $rows = DB::table('fuzzy_index_terms')
+        $rows = $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType)
             ->select('term', 'doc_count')
             ->where('term', '!=', $term)
             ->whereBetween('term_length', [max(1, $length - $maxDistance), $length + $maxDistance])
@@ -53,11 +56,12 @@ final class TermExpander
      * would, so it always counts for less — but it is not outranked automatically: BM25 weighs
      * rarity (idf), so a rare expansion can still outscore a common exact term. Without $damping
      * every expansion is 1.0. A term reached more than once keeps its highest weight.
+     * Neighbours come from $modelType's own terms when given (see candidates()).
      *
      * @param  string[] $terms
      * @return array<string, float>
      */
-    public function expand(array $terms, int $maxDistance, int $minWordLength, int $maxExpansions, int $pool, bool $damping): array
+    public function expand(array $terms, int $maxDistance, int $minWordLength, int $maxExpansions, int $pool, bool $damping, ?string $modelType = null): array
     {
         $weights = array_fill_keys($terms, 1.0);
 
@@ -71,7 +75,7 @@ final class TermExpander
                 continue;
             }
 
-            $candidates = $this->candidates((string) $term, $maxDistance, $pool);
+            $candidates = $this->candidates((string) $term, $maxDistance, $pool, $modelType);
             usort($candidates, fn ($a, $b) => [$a['distance'], $b['doc_count']] <=> [$b['distance'], $a['doc_count']]);
 
             $taken = 0;
@@ -105,9 +109,8 @@ final class TermExpander
      * scan unless fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there
      * if as-you-type latency matters on a large dictionary.
      *
-     * @param  ?string $modelType Restrict to terms posted under this model_type (a whereExists
-     *                            semi-join against fuzzy_index_postings, same shape Bm25Scorer
-     *                            uses); null leaves the dictionary unscoped.
+     * @param  ?string $modelType Restrict to terms posted under this model_type (see postedUnder());
+     *                            null leaves the dictionary unscoped.
      * @return array<string, float>
      */
     public function prefix(string $prefix, int $max, ?string $modelType = null): array
@@ -136,6 +139,24 @@ final class TermExpander
                   ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
         }
 
+        $terms = $this->postedUnder($query, $modelType)->orderByDesc('doc_count')->limit($max)->pluck('term');
+
+        $weights = [];
+        foreach ($terms as $term) {
+            $weights[(string) $term] = 1.0;
+        }
+
+        return $weights;
+    }
+
+    /**
+     * Restrict a fuzzy_index_terms query to terms posted under $modelType: a whereExists
+     * semi-join against fuzzy_index_postings, which postings_term_model_idx (term_id,
+     * model_type) covers. The dictionary is shared by every indexed model, so an unscoped
+     * lookup offers other models' terms. Null leaves the query unscoped.
+     */
+    private function postedUnder(Builder $query, ?string $modelType): Builder
+    {
         if ($modelType !== null) {
             $query->whereExists(function ($q) use ($modelType) {
                 $q->selectRaw('1')
@@ -145,14 +166,7 @@ final class TermExpander
             });
         }
 
-        $terms = $query->orderByDesc('doc_count')->limit($max)->pluck('term');
-
-        $weights = [];
-        foreach ($terms as $term) {
-            $weights[(string) $term] = 1.0;
-        }
-
-        return $weights;
+        return $query;
     }
 
     /**
