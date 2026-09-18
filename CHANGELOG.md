@@ -44,9 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stop-word lists for it, pt, nl and ru; any stop_words.{locale} entry may be a path to a one-word-per-line file; ignoreStopWords('xx') reads the configured list first.
 - Filament (v3/v4/v5) global search: the HasFuzzyGlobalSearch trait on a Resource runs the package's search over getGloballySearchableAttributes(), honours getGlobalSearchEloquentQuery()/modifyGlobalSearchQuery(), and adds highlighted details. Filament stays optional.
 - FuzzySearch::tableSearch() returns the (query, search) closure Filament tables expect for ->searchable(query: …) and ->searchUsing(), applying the fuzzy predicate to the named columns (or the model's $searchable columns).
+- JSON API resources: FuzzySearchResource (model attributes + _score, _raw_score, _highlighted, _matches, _model_type) and FuzzySearchCollection::fromBuilder() with meta.query, meta.algorithm, meta.latency_ms and meta.suggestions (didYouMean() when nothing matched); SearchBuilder::lastExecution() exposes the last FuzzySearchExecuted event.
 
 ### Changed
 
+- `_highlighted` values for columns that did not match are now HTML-escaped like matched ones, so the array is uniformly safe to render as HTML.
 - `maxPatterns()` and `performance.max_patterns` now actually cap the LIKE-pattern list for all pattern-based algorithms, including the extended syntax's `~word`.
 - TrigramDriver's LIKE fallback now caps its pattern list at `performance.max_patterns` (default 100) instead of a hard-coded 10, so long terms match more widely; lower the key or call `maxPatterns()` to restore the old cap.
 - **BM25 honours your constraints.** `filter()`/`filterIn()`, `where()` constraints applied before the search, and global scopes are applied *before* the ranking is cut to the page, so selective filters no longer return short or empty pages, and `paginate()` totals count only matching rows. The Scout engine applies the builder's `where()`/`whereIn()`/`whereNotIn()`/`query()` the same way.

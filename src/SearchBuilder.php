@@ -34,6 +34,8 @@ class SearchBuilder
      */
     protected array $columnTargets = [];
     protected ?string $algorithm = null;
+    /** The event built by the most recent get()/paginate() on this builder; see lastExecution(). */
+    protected ?\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted $lastExecution = null;
     protected array $options = [];
     protected bool $withRelevance = true;
     protected int $limit = 15;
@@ -950,7 +952,7 @@ class SearchBuilder
      */
     protected function dispatchExecuted(string $algorithm, string $path, int $candidateCount, int $resultCount, float $startedAt, ?string $term = null): void
     {
-        event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
+        $event = new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
             searchTerm:     $term ?? $this->searchTerm,
             columns:        $this->searchableColumns,
             algorithm:      $algorithm,
@@ -959,7 +961,22 @@ class SearchBuilder
             resultCount:    min($resultCount, $this->reportedResultCap ?? PHP_INT_MAX),
             path:           $path,
             modelClass:     $this->query instanceof EloquentBuilder ? $this->query->getModel()::class : null,
-        ));
+        );
+
+        $this->lastExecution = $event;
+
+        event($event);
+    }
+
+    /**
+     * The event built by the most recent get()/paginate() on this builder (null before any
+     * run). withFallback() re-runs the same builder for each fallback algorithm; the last
+     * attempt wins, which is the one whose results were actually returned. count() never
+     * dispatches FuzzySearchExecuted, so it never touches this.
+     */
+    public function lastExecution(): ?\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted
+    {
+        return $this->lastExecution;
     }
 
     /**
@@ -2166,7 +2183,9 @@ class SearchBuilder
                     $matches[] = ['column' => $column, 'value' => $chosen, 'indices' => $indices];
                     $highlighted[$column] = $this->wrapWithTags($chosen, $indices, $open, $close);
                 } else {
-                    $highlighted[$column] = $chosen;
+                    // Ruling P8-R10: escaped like the matched branch, so _highlighted is
+                    // uniformly safe HTML — not just the columns wrapWithTags() touched.
+                    $highlighted[$column] = e($chosen);
                 }
             }
 
@@ -2275,15 +2294,20 @@ class SearchBuilder
             }
         }
 
-        return e(self::displayValueFor($result, $column));
+        // displayValueFor() already returns safe HTML (the _highlighted branch is
+        // pre-escaped per P8-R10; the data_get() fallback escapes itself) — wrapping it in
+        // e() again here would double-escape entities like "&lt;" into "&amp;lt;".
+        return self::displayValueFor($result, $column);
     }
 
     /**
      * Plain (unhighlighted) display value for a column: `_highlighted` when the search
-     * produced one, otherwise data_get(). A Collection value is reduced to its first item;
-     * anything that isn't a scalar at that point — including a model instance, or a
-     * to-many relation collection data_get() couldn't resolve to one — renders as an
-     * empty string rather than a warning.
+     * produced one, otherwise data_get(). Always HTML-safe: the `_highlighted` branch is
+     * pre-escaped by applyHighlighting() (matched values via wrapWithTags(), non-matching
+     * ones via e() — P8-R10), and the data_get() fallback escapes here. A Collection value
+     * is reduced to its first item; anything that isn't a scalar at that point — including a
+     * model instance, or a to-many relation collection data_get() couldn't resolve to one —
+     * renders as an empty string rather than a warning.
      */
     protected static function displayValueFor($result, string $column): string
     {
@@ -2296,7 +2320,7 @@ class SearchBuilder
         if ($value instanceof \Illuminate\Support\Collection) {
             $value = $value->first();
         }
-        return is_scalar($value) ? (string) $value : '';
+        return is_scalar($value) ? e((string) $value) : '';
     }
 
     private static function escapeAndWrap(string $value, array $indices, string $tag): string
