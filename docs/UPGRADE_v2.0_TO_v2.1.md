@@ -129,8 +129,11 @@ few affect what you get back from a search:
   `search()`; previously `getSearchableColumns()` returned `[]` and every consumer except
   `search()` silently skipped the model. This only starts writing rows when `indexing.enabled` is
   `true` (it defaults to `false`): if you enable indexing and have such models, their first save
-  or `fuzzy-search:rebuild` will now populate the index. Declare `$searchable['columns']` to
-  control exactly which columns are indexed.
+  or `fuzzy-search:rebuild` will now populate the index. Only text-like columns are auto-detected
+  (a column cast to an enum, `array`, `json`, `object`, `collection` or a custom cast class is
+  skipped), so this cannot make a save throw. Declare `$searchable['columns']` to control exactly
+  which columns are indexed — a declared column that cannot be indexed as text still raises an
+  error naming it.
 
 ## Relationship search
 

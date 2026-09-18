@@ -166,6 +166,7 @@ abstract class TestCase extends BaseTestCase
         \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::resetColumnCache();
         \Ashiqfardus\LaravelFuzzySearch\FederatedSearch::resetColumnCache();
         \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
+        \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
 
         parent::tearDown();
     }

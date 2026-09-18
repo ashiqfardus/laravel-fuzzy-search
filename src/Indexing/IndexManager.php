@@ -515,11 +515,13 @@ class IndexManager
      * indexable text, so it throws rather than being coerced into a warning-laden string.
      *
      * @return array<string, string> name => non-empty text
-     * @throws \InvalidArgumentException if a hook value is a non-scalar, non-stringable object
+     * @throws \InvalidArgumentException if a hook value — or a declared column's attribute — is a
+     *         non-scalar, non-stringable object (the message names whichever it was)
      */
     private function searchableTexts(Model $model, array $columns): array
     {
-        $texts = method_exists($model, 'searchableText')
+        $fromHook = method_exists($model, 'searchableText');
+        $texts    = $fromHook
             ? (array) $model->searchableText()
             : array_combine($columns, array_map(fn ($c) => $model->getAttribute($c), $columns));
 
@@ -533,9 +535,12 @@ class IndexManager
                 $value = implode(' ', array_map('strval', array_filter($value, 'is_scalar')));
             } elseif (is_object($value) && !method_exists($value, '__toString')) {
                 throw new \InvalidArgumentException(
-                    'fuzzy-search: searchableText() value for "' . $name . '" on ' . get_class($model) .
+                    'fuzzy-search: ' . ($fromHook ? 'searchableText() value for' : 'searchable column') .
+                    ' "' . $name . '" on ' . get_class($model) .
                     ' is a ' . get_class($value) . ', which cannot be indexed as text. ' .
-                    'Return a string, scalar, array, or Collection of scalars instead.'
+                    ($fromHook
+                        ? 'Return a string, scalar, array, or Collection of scalars instead.'
+                        : "Cast it to a string, expose it through searchableText(), or drop it from \$searchable['columns'].")
                 );
             }
 

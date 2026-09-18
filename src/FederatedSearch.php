@@ -405,7 +405,7 @@ class FederatedSearch
 
         // Try to get from model's searchable property
         if (isset($instance->searchable['columns'])) {
-            return $this->validateColumns(array_keys($instance->searchable['columns']));
+            return $this->validateColumns(Support\SearchableColumns::names($instance->searchable['columns']));
         }
 
         // Try to get from fuzzySearchable property

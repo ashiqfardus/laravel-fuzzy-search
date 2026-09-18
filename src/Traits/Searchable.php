@@ -7,6 +7,7 @@ use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\ReindexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Support\Facades\Schema;
 
@@ -84,11 +85,7 @@ trait Searchable
             $columns = $this->getAutoDetectedColumns();
         }
 
-        return array_map(
-            fn ($key, $value) => is_int($key) ? (string) $value : $key,
-            array_keys($columns),
-            $columns
-        );
+        return SearchableColumns::names($columns);
     }
 
     /**
@@ -264,6 +261,16 @@ trait Searchable
      */
     protected function getAutoDetectedColumns(): array
     {
+        return SearchableColumns::detect(static::class, fn () => $this->detectSearchableColumns());
+    }
+
+    /**
+     * The uncached auto-detection itself — see getAutoDetectedColumns(). Columns whose cast is
+     * not text (an enum, an array, a custom cast class) are never selected: detection is a
+     * heuristic, and the indexer cannot turn such a value into text.
+     */
+    private function detectSearchableColumns(): array
+    {
         $table = $this->getTable();
         $columns = [];
 
@@ -287,8 +294,11 @@ trait Searchable
         ];
 
         try {
-            // Get actual table columns
-            $tableColumns = Schema::getColumnListing($table);
+            // Get actual table columns, minus any the indexer could not read as text.
+            $tableColumns = array_values(array_filter(
+                Schema::getColumnListing($table),
+                fn (string $column) => SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null)
+            ));
 
             // Check which priority columns exist
             foreach ($priorityColumns as $col => $weight) {

@@ -121,3 +121,36 @@ class ListColumnsUser extends Model
         'columns' => ['name', 'email'],
     ];
 }
+
+/** Backed enum cast used by ZeroConfigTicket — see the auto-detection cast tests. */
+enum TicketStatus: string
+{
+    case Open   = 'open';
+    case Closed = 'closed';
+}
+
+/**
+ * Zero-config model whose table carries none of the auto-detector's priority columns, so
+ * detection falls through to $fillable — where an enum cast and an array cast sit next to
+ * the one real text column. Neither can be indexed as text.
+ */
+class ZeroConfigTicket extends Model
+{
+    use Searchable;
+
+    protected $table = 'tickets';
+    protected $fillable = ['status', 'payload', 'subject_line'];
+
+    protected $casts = [
+        'status'  => TicketStatus::class,
+        'payload' => 'array',
+    ];
+}
+
+/** Same table and casts, but the non-text column is declared: that must still throw, naming the column. */
+class DeclaredCastTicket extends ZeroConfigTicket
+{
+    protected array $searchable = [
+        'columns' => ['status' => 1],
+    ];
+}
