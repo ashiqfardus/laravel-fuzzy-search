@@ -129,20 +129,35 @@ class BuilderReuseTest extends TestCase
 
     public function test_get_facets_does_not_change_what_get_executes(): void
     {
-        // withRelevance(false) keeps the relevance ORDER BY off the aggregate: getFacets()
-        // groups the prepared query as-is, and MySQL's only_full_group_by (and PostgreSQL)
-        // reject a GROUP BY carrying an ORDER BY over ungrouped columns. That is a separate,
-        // pre-existing defect — this test is about the facet call not poisoning the builder.
-        // @todo cover facet reuse on the default (relevance-on) path once getFacets() drops the
-        //       relevance ORDER BY from its aggregate.
-        $builder = User::search('john')->searchIn(['name'])->withRelevance(false)->facet('email');
-        $fresh   = User::search('john')->searchIn(['name'])->withRelevance(false);
+        // The default, relevance-ordered path: getFacets() reorders its own aggregate clone
+        // (see M17), so this covers both the facet call not poisoning the builder and the
+        // grouped query running at all on MySQL 8 / PostgreSQL.
+        $builder = User::search('john')->searchIn(['name'])->facet('email');
+        $fresh   = User::search('john')->searchIn(['name']);
 
         $this->assertNotEmpty($builder->getFacets());
 
         $executed = $this->executedSelect(fn () => $builder->get());
 
         $this->assertSame($this->searchShape($fresh->toSql()), $this->searchShape($executed));
+    }
+
+    public function test_get_facets_orders_by_count_then_value(): void
+    {
+        DB::table('users')->insert([
+            ['name' => 'Johnny Cash', 'email' => 'shared@example.com', 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'John Shared', 'email' => 'shared@example.com', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+
+        $facets = User::search('john')->searchIn(['name'])->facet('email')->getFacets()['email'];
+
+        $this->assertSame('shared@example.com', array_key_first($facets), 'the biggest count comes first');
+        $this->assertSame(2, (int) $facets['shared@example.com']);
+
+        $ties = array_keys(array_slice($facets, 1, null, true));
+        $sorted = $ties;
+        sort($sorted);
+        $this->assertSame($sorted, $ties, 'equal counts are ordered by value');
     }
 
     public function test_constraints_added_after_a_terminal_call_still_apply(): void

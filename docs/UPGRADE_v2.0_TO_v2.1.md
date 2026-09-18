@@ -101,6 +101,10 @@ No code changes required — these are bug fixes in the package itself:
 - **SQL Server:** BM25 indexing threw "This database engine does not support inserting while
   ignoring errors"; meta rows are now created with a portable upsert. `didYouMean()` also used
   `LENGTH()`, which SQL Server doesn't have.
+- **MySQL 8 / PostgreSQL:** `getFacets()` threw (1055 `only_full_group_by` / 42803) on every
+  relevance-ordered search, because the relevance `ORDER BY` reached the grouped aggregate. It
+  now works on all supported databases, and facets come back highest count first, then by value
+  — previously whatever order the database returned.
 - **MariaDB:** connections reporting driver name `"mariadb"` (Laravel 11+) now use native
   `SOUNDEX()`, the Levenshtein UDF path, quoted identifiers and the MySQL flush branch —
   previously every MySQL-only branch silently fell back to generic SQL on MariaDB.

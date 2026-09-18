@@ -1741,7 +1741,13 @@ class SearchBuilder
     }
 
     /**
-     * Get facet counts
+     * Get facet counts, highest count first and then by value.
+     *
+     * reorder() drops the search's relevance ORDER BY before the aggregate: it orders by a
+     * CASE expression over ungrouped columns, which MySQL 8 rejects under only_full_group_by
+     * (1055) and PostgreSQL under 42803 — every relevance-ordered search threw there. It is
+     * also meaningless for a grouped count, so the counts get an order of their own instead
+     * (the same fix count() applies by going through getCountForPagination()).
      */
     public function getFacets(): array
     {
@@ -1756,8 +1762,11 @@ class SearchBuilder
             foreach ($this->facets as $facet) {
                 $facetResults[$facet] = $this->query
                     ->clone()
+                    ->reorder()
                     ->select($facet, DB::raw('COUNT(*) as count'))
                     ->groupBy($facet)
+                    ->orderByDesc('count')
+                    ->orderBy($facet)
                     ->pluck('count', $facet)
                     ->toArray();
             }
