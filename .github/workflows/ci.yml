@@ -286,3 +286,28 @@ jobs:
           PHP
       - name: Run tests (SQL Server)
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+
+  # ── Filament v4 / v5 ──────────────────────────────────────────────────────
+  # require-dev pins Filament v3 (it spans the whole matrix); this job swaps in v4 and v5.
+  test-filament:
+    name: "Filament ${{ matrix.filament }} / PHP 8.4 / Laravel 12 / SQLite"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        filament: ["^4.0", "^5.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_sqlite, intl
+          coverage: none
+      - name: Install deps
+        run: |
+          composer config policy.advisories.block false
+          composer require "laravel/framework:12.*" --no-update --no-interaction
+          composer require --dev "filament/filament:${{ matrix.filament }}" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Run the Filament integration tests
+        run: vendor/bin/phpunit tests/Integration/Filament

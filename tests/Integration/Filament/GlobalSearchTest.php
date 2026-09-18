@@ -1,0 +1,60 @@
+<?php
+
+namespace Ashiqfardus\LaravelFuzzySearch\Tests\Integration\Filament;
+
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Filament\GlobalSearch\GlobalSearchResult;
+use Illuminate\Support\HtmlString;
+
+class GlobalSearchTest extends FilamentTestCase
+{
+    public function test_a_typo_finds_the_record(): void
+    {
+        // 'jonh' is one edit from "Jon Snow" and two from "John Doe": relevance ordering puts
+        // Jon Snow first, so assert presence, not position.
+        $results = UserResource::getGlobalSearchResults('jonh');
+
+        $this->assertNotEmpty($results);
+        $john = $results->first(fn (GlobalSearchResult $r) => (string) $r->title === 'John Doe');
+        $this->assertNotNull($john);
+        $this->assertSame('/admin/users/1', $john->url);
+        $this->assertSame('john@example.com', $john->details['Email']);
+    }
+
+    public function test_matching_attributes_are_added_to_details_highlighted(): void
+    {
+        // LIKE-path highlighting marks literal occurrences, so an exact term is what gets marked.
+        $john = UserResource::getGlobalSearchResults('john')->first(fn (GlobalSearchResult $r) => (string) $r->title === 'John Doe');
+
+        $this->assertNotNull($john);
+        $this->assertInstanceOf(HtmlString::class, $john->details['Name']);
+        $this->assertSame('<mark>John</mark> Doe', (string) $john->details['Name']);
+        $this->assertInstanceOf(HtmlString::class, $john->details['Email']); // john@example.com matches too — highlighted entry replaces the plain one
+        $this->assertStringContainsString('<mark>john</mark>', (string) $john->details['Email']);
+    }
+
+    public function test_the_resource_eloquent_query_is_honoured(): void
+    {
+        User::create(['name' => 'Jonh Outsider', 'email' => 'jonh@elsewhere.org']);
+
+        $titles = UserResource::getGlobalSearchResults('jonh')->map(fn (GlobalSearchResult $r) => (string) $r->title)->all();
+
+        $this->assertContains('John Doe', $titles);
+        $this->assertNotContains('Jonh Outsider', $titles); // filtered out by getGlobalSearchEloquentQuery()
+    }
+
+    public function test_results_are_capped_by_the_resource_limit_and_empty_search_returns_nothing(): void
+    {
+        $this->assertLessThanOrEqual(UserResource::getGlobalSearchResultsLimit(), UserResource::getGlobalSearchResults('o')->count());
+        $this->assertCount(0, UserResource::getGlobalSearchResults(''));
+    }
+
+    public function test_records_without_a_url_are_skipped(): void
+    {
+        $resource = new class extends UserResource {
+            public static function getGlobalSearchResultUrl(\Illuminate\Database\Eloquent\Model $record): ?string { return null; }
+        };
+
+        $this->assertCount(0, $resource::getGlobalSearchResults('john'));
+    }
+}

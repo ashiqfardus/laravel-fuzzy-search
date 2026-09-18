@@ -20,9 +20,10 @@
     },
     "require-dev": {
         "orchestra/testbench": "^8.0|^9.0|^10.0|^11.0",
-        "phpunit/phpunit": "^10.0|^11.0|^12.0",
+        "phpunit/phpunit": "^10.0|^11.0|^12.0|^13.0",
         "wamania/php-stemmer": "^1.2",
-        "laravel/scout": "^10.0|^11.0|^12.0"
+        "laravel/scout": "^10.0|^11.0|^12.0",
+        "filament/filament": "^3.3"
     },
     "suggest": {
         "laravel/scout": "Required for Scout driver integration (^10.0|^11.0|^12.0)",

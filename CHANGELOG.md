@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-model index pipelines: $searchable['tokenizer'], ['stemmer'], ['stemmer_language'], ['locale'] override the global indexing config for that model (query-time processing follows); rebuild --fresh after changing them.
 - indexing.accent_insensitive folds accents at index and query time on the BM25 path (ext-intl decomposition when available, the built-in map otherwise); the LIKE path's accentInsensitive() uses the same folding.
 - Stop-word lists for it, pt, nl and ru; any stop_words.{locale} entry may be a path to a one-word-per-line file; ignoreStopWords('xx') reads the configured list first.
+- Filament (v3/v4/v5) global search: the HasFuzzyGlobalSearch trait on a Resource runs the package's search over getGloballySearchableAttributes(), honours getGlobalSearchEloquentQuery()/modifyGlobalSearchQuery(), and adds highlighted details. Filament stays optional.
 
 ### Changed
 
