@@ -118,6 +118,16 @@ class DidYouMeanTest extends TestCase
         $this->assertSame(['jona', 'jonb'], array_column($this->makeBuilder('jonh')->didYouMean(5), 'term'));
     }
 
+    public function test_the_term_tie_break_compares_strings_not_numbers(): void
+    {
+        // One edit from "109" each, equally common and equally confident. As strings '100' sorts
+        // first; compared as numbers 19 came first, and '1e2' tied with '100'.
+        $this->seedTerm('19', 5);
+        $this->seedTerm('100', 5);
+
+        $this->assertSame(['100', '19'], array_column($this->makeBuilder('109')->didYouMean(5), 'term'));
+    }
+
     public function test_did_you_mean_filters_the_dictionary_by_term_length(): void
     {
         $this->seedTerm('john', 50);

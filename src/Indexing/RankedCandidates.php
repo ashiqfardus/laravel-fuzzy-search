@@ -29,7 +29,7 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
-            $found = (clone $base)->whereIn($key, $chunk)->get()->keyBy(fn ($model) => $model->getKey());
+            $found = self::among($base, $key, $chunk)->get()->keyBy(fn ($model) => $model->getKey());
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
@@ -58,7 +58,7 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
-            $found = array_flip((clone $base)->whereIn($key, $chunk)->pluck($key)->all());
+            $found = array_flip(self::among($base, $key, $chunk)->pluck($key)->all());
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
@@ -86,10 +86,23 @@ final class RankedCandidates
         $total = 0;
 
         foreach (array_chunk($rankedIds, self::COUNT_CHUNK) as $chunk) {
-            $total += (int) (clone $base)->whereIn($key, $chunk)->toBase()->getCountForPagination();
+            $total += (int) self::among($base, $key, $chunk)->toBase()->getCountForPagination();
         }
 
         return $total;
+    }
+
+    /**
+     * $base restricted to the ids in $chunk. The whereIn is added the way Eloquent adds a global
+     * scope, so a caller's ungrouped where(A)->orWhere(B) is wrapped in parentheses first:
+     * appended plainly, the whereIn bound to B alone (A OR (B AND id IN …)), which counted every
+     * row matching A and fetched them all for each chunk.
+     *
+     * @param  array<int|string> $chunk
+     */
+    private static function among(Builder $base, string $key, array $chunk): Builder
+    {
+        return (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIn($key, $chunk));
     }
 
     private static function chunkSize(?int $override): int

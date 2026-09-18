@@ -4,8 +4,10 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Security;
 
 require_once __DIR__ . '/../TestModels.php';
 
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
 use Ashiqfardus\LaravelFuzzySearch\Tests\SoftDeletedUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
@@ -32,7 +34,16 @@ class SuggestionConstraintsTest extends TestCase
             $table->id();
             $table->unsignedInteger('tenant_id');
             $table->string('body');
+            $table->string('extra')->nullable();
         });
+
+        // User 1 is a member of tenant 1 only — tenancy by join (MemberNote).
+        Schema::dropIfExists('tenant_members');
+        Schema::create('tenant_members', function ($table) {
+            $table->unsignedInteger('tenant_id');
+            $table->unsignedInteger('user_id');
+        });
+        DB::table('tenant_members')->insert(['tenant_id' => 1, 'user_id' => 1]);
 
         // Tenant 1 wrote "jonah", tenant 2 wrote "jonas". The index holds both, as it does
         // when a worker indexes every tenant's rows.
@@ -45,6 +56,7 @@ class SuggestionConstraintsTest extends TestCase
     protected function tearDown(): void
     {
         Schema::dropIfExists('tenant_notes');
+        Schema::dropIfExists('tenant_members');
 
         parent::tearDown();
     }
@@ -209,6 +221,66 @@ class SuggestionConstraintsTest extends TestCase
 
         $this->assertSame(['jonah'], $meta['suggestions']);
     }
+
+    public function test_did_you_mean_caps_distinct_rows_not_postings(): void
+    {
+        // Tenant 2's row holds "jonah" in two columns, so two of the term's postings; tenant 1's
+        // row holds it once. A cap of two postings was filled by tenant 2's row twice.
+        config(['fuzzy-search.max_candidates' => 2]);
+        DB::table('tenant_notes')->where('id', 2)->update(['body' => 'jonah speaker', 'extra' => 'jonah']);
+        $tenantOne = TwoColumnNote::create(['tenant_id' => 1, 'body' => 'jonah']);
+        $this->index([TwoColumnNote::find(2), $tenantOne]);
+
+        $this->assertSame(['jonah'], $this->terms(TwoColumnNote::search('jonaz')->where('tenant_id', 1)->didYouMean(5)));
+    }
+
+    // ---- a join is a constraint -----------------------------------------------------------
+
+    public function test_a_join_that_narrows_the_rows_scopes_suggestions(): void
+    {
+        $this->index(MemberNote::withoutGlobalScopes()->get());
+
+        $this->assertSame([], MemberNote::search('jonas')->useInvertedIndex()->typoTolerance(0)->get()->pluck('body')->all(), 'precondition: the search honours the join');
+        $this->assertSame(['jonah'], $this->terms(MemberNote::search('jonaz')->didYouMean(5)));
+        $this->assertEmpty(preg_grep('/^jonas/', MemberNote::search('jon')->suggest(5)), 'another tenant\'s term was suggested');
+
+        $callerJoin = TenantNote::search('jonaz')
+            ->join('tenant_members as m', fn ($join) => $join->on('m.tenant_id', '=', 'tenant_notes.tenant_id')->where('m.user_id', '=', 1))
+            ->select('tenant_notes.*');
+        $this->assertSame(['jonah'], $this->terms($callerJoin->didYouMean(5)));
+    }
+
+    public function test_a_join_that_narrows_the_rows_narrows_the_totals(): void
+    {
+        $this->index(MemberNote::withoutGlobalScopes()->get());
+
+        // Only tenant 2 wrote "jonas": a total above 0 tells tenant 1 that it exists.
+        $search = fn () => MemberNote::search('jonas')->useInvertedIndex()->typoTolerance(0);
+
+        $this->assertSame(0, $search()->count());
+        $this->assertSame(0, $search()->paginate(10)->total());
+    }
+
+    // ---- a plain query builder with an explicit model -------------------------------------
+
+    public function test_a_plain_query_builder_with_an_explicit_model_keeps_its_where(): void
+    {
+        $plain = fn (string $term) => (new SearchBuilder(DB::table('tenant_notes')->where('tenant_id', 1), app(FuzzySearch::class)))
+            ->search($term)->searchIn(['body'])->useInvertedIndex(TenantNote::class);
+
+        $this->assertSame([], $plain('jonas')->typoTolerance(0)->get()->pluck('body')->all(), 'the index path dropped the where()');
+        $this->assertSame(0, $plain('jonas')->typoTolerance(0)->count());
+        $this->assertSame(['jonah'], $this->terms($plain('jonaz')->didYouMean(5)));
+        $this->assertEmpty(preg_grep('/^jonas/', $plain('jon')->suggest(5)), 'another tenant\'s term was suggested');
+    }
+
+    public function test_a_plain_query_builder_checks_did_you_mean_against_the_models_global_scope(): void
+    {
+        $plain = (new SearchBuilder(DB::table('tenant_notes'), app(FuzzySearch::class)))
+            ->search('jonaz')->searchIn(['body'])->useInvertedIndex(TenantOneNote::class);
+
+        $this->assertSame(['jonah'], $this->terms($plain->didYouMean(5)));
+    }
 }
 
 class TenantNote extends Model
@@ -220,6 +292,23 @@ class TenantNote extends Model
     public $timestamps = false;
 
     protected array $searchable = ['columns' => ['body' => 1]];
+}
+
+/** Tenancy by join: the request's user (1) is a member of tenant 1 only. */
+class MemberNote extends TenantNote
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('member', fn ($query) => $query
+            ->join('tenant_members as m', fn ($join) => $join->on('m.tenant_id', '=', 'tenant_notes.tenant_id')->where('m.user_id', '=', 1))
+            ->select('tenant_notes.*'));
+    }
+}
+
+/** The same notes indexed over two columns, so one row can hold a term twice. */
+class TwoColumnNote extends TenantNote
+{
+    protected array $searchable = ['columns' => ['body' => 1, 'extra' => 1]];
 }
 
 /** A tenant-style global scope: the request sees tenant 1 only, the index holds every tenant. */

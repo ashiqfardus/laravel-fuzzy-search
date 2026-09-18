@@ -97,8 +97,10 @@ Removing these keys from your published config is safe — they had no effect.
 
 `SearchBuilder::simplePaginate()` is clamped the same way. It used to accept any page size, and
 on the index path `simplePaginate($request->per_page)` hydrated that many models. `take()`/`limit()`
-stay your explicit limit and are not clamped. `FederatedSearch::paginate()` is not clamped; the
-rows it returns are already bounded by `max_candidates` and `limitPerModel()`.
+stay your explicit limit and are not clamped: on the index path `take(n)` hydrates `n` models, while
+on the LIKE and extended paths the `max_candidates` candidate window still bounds them.
+`FederatedSearch::paginate()` is not clamped; the rows it returns are already bounded by
+`max_candidates` and `limitPerModel()`.
 
 ## Database fixes you get for free
 
@@ -234,8 +236,16 @@ through `get()`) now agree.
 - **BM25 searches are typo-tolerant by default.** `useInvertedIndex()` now expands each query term against the dictionary within `typoTolerance()` edits (2 by default). Call `->typoTolerance(0)` to restore exact-term-only matching. `_score` normalisation itself is unchanged, but rankings can now include near-miss rows that a pre-2.1.0 search would not have returned.
 - **The dictionary is read per model.** `didYouMean()` offers only terms posted under the
   searched model (it used to offer every indexed model's terms) and returns `[]` for a builder
-  with no Eloquent model unless you pass `useInvertedIndex(Model::class)`. Typo expansion draws its
-  candidates from the model's own terms too, so rankings on the typo-tolerant index path can change.
+  with no Eloquent model unless you pass `useInvertedIndex(Model::class)`. Typo expansion and
+  `asYouType()` prefix expansion draw their candidates from the model's own terms too, so rankings
+  on the typo-tolerant and as-you-type index paths can change.
+- **A plain query builder keeps its `where()`s on the index path.** `new SearchBuilder(DB::table('notes')->where(...))`
+  with `useInvertedIndex(Note::class)` used to search every row the model can see. It now runs inside
+  the model's query, so the builder's wheres and joins apply alongside the model's global scopes, and
+  the builder must select from the model's table.
+- **A `join()` that narrows the rows counts as a constraint, like a `where()`.** On the index path,
+  `count()` and `paginate()->total()` now count only rows the join lets through, and `suggest()` /
+  `didYouMean()` treat the query as constrained (see below).
 - **`didYouMean()` ranks the closest term first,** then the most common, and its reach scales with
   the term's length (1 edit for 2–3 characters, 2 for 4–5, 3 from 6) instead of a fixed 3: a short
   term gets fewer, closer alternatives.
@@ -262,7 +272,7 @@ through `get()`) now agree.
 ## `suggest()` on an indexed model now completes from the dictionary
 
 - **Completions changed for indexed models.** In v2.0, `suggest()` always scanned the table and returned column values as stored. As of v2.1.0, when the model has a `fuzzy_index_meta` row (it has been BM25-indexed), `suggest()` instead completes the last word of the term from that model's dictionary — completions are **lower-case dictionary terms**, not the column value as written, and any earlier words in a multi-word term are kept as typed (`"Bob jo"` → `"Bob john"`).
-- **Constrained queries keep the table scan.** When the base query carries a `where()`, a forwarded scope or a global scope other than `SoftDeletes`, the default `'auto'` mode uses the table scan even on an indexed model, because the dictionary is scoped to the model, not to the query. `->suggestFrom('index')` forces the dictionary and ignores those constraints.
+- **Constrained queries keep the table scan.** When the base query carries a `where()`, a `join()`, a forwarded scope or a global scope other than `SoftDeletes`, the default `'auto'` mode uses the table scan even on an indexed model, because the dictionary is scoped to the model, not to the query. `->suggestFrom('index')` forces the dictionary and ignores those constraints. With `indexing.async` (the default) a trashed row's terms leave the dictionary only when the queued index job runs.
 - **Restore v2.0 behaviour** by calling `->suggestFrom('table')`, which forces the table scan regardless of whether the model is indexed.
 - Un-indexed models are unaffected — they always used, and still use, the table scan.
 

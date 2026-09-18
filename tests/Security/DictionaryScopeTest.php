@@ -95,4 +95,18 @@ class DictionaryScopeTest extends TestCase
 
         $this->assertEqualsCanonicalizing(['Jonas speaker', 'Jonas lamp', 'Jonas desk'], $titles);
     }
+
+    public function test_as_you_type_prefix_expansion_is_not_crowded_out_by_another_models_terms(): void
+    {
+        // john, johnny and johnson exist only on users. With three prefix slots drawn from the
+        // whole dictionary they took every one, and the product's own "jonas" was never searched.
+        config(['fuzzy-search.bm25.prefix.max_expansions' => 3]);
+        Product::create(['title' => 'Jonas speaker', 'price' => 10]);
+        $this->indexAll(User::class);
+        $this->indexAll(Product::class);
+
+        $titles = Product::search('jo')->useInvertedIndex()->asYouType()->typoTolerance(0)->get()->pluck('title')->all();
+
+        $this->assertSame(['Jonas speaker'], $titles);
+    }
 }

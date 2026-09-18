@@ -161,6 +161,28 @@ class Bm25ScopedSearchTest extends TestCase
         $this->assertSame(5, $page->total());
         $this->assertCount(0, $page->items());
     }
+
+    public function test_an_ungrouped_or_where_does_not_count_rows_outside_the_ranking(): void
+    {
+        // Satisfies the first arm of the caller's where, but does not match the search.
+        $this->app['db']->table('users')->insert(['name' => 'gadget', 'email' => 'gadget@other.com', 'created_at' => now(), 'updated_at' => now()]);
+
+        $builder = fn () => (new SearchBuilder(ScopedBm25User::where('email', 'gadget@other.com')->orWhere('email', 'like', '%@keep.com'), app(FuzzySearch::class)))
+            ->search('widget')->searchIn(['name'])->useInvertedIndex();
+
+        $this->assertSame([5, 4, 3, 2, 1], $this->ks($builder()->get()));
+        $this->assertSame(5, $builder()->count(), 'the ranked-id whereIn bound tighter than the orWhere');
+        $this->assertSame(5, $builder()->paginate(10)->total());
+    }
+
+    public function test_a_plain_query_builder_keeps_its_where_on_the_index_path(): void
+    {
+        $builder = fn () => (new SearchBuilder($this->app['db']->table('users')->where('email', 'like', '%@keep.com'), app(FuzzySearch::class)))
+            ->search('widget')->searchIn(['name'])->useInvertedIndex(ScopedBm25User::class);
+
+        $this->assertSame([5, 4, 3, 2, 1], $this->ks($builder()->limit(5)->get()));
+        $this->assertSame(5, $builder()->paginate(10)->total());
+    }
 }
 
 class ScopedBm25User extends Model

@@ -458,12 +458,13 @@ User::search('joh')->searchIn(['name'])->suggest(5);
 // Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
 ```
 
-**What scopes a suggestion.** `filter()` and `filterIn()` never do: they belong to the search itself, which `suggest()` and `didYouMean()` deliberately do not run. The constraints you put on the builder's base query — `where()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — are honoured as follows:
+**What scopes a suggestion.** `filter()` and `filterIn()` never do: they belong to the search itself, which `suggest()` and `didYouMean()` deliberately do not run. The constraints you put on the builder's base query — `where()`, `join()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — are honoured as follows. What counts as a constraint is a WHERE or a JOIN clause; a `having()`, a union or a from-subquery is not detected, and the dictionary treats such a query as unconstrained.
 
 - **The table scan** (an un-indexed model, `suggestFrom('table')`, or `'auto'` under a constraint) runs on the base query, so every one of those constraints narrows it.
-- **`suggest()` in `'auto'` mode on an indexed model** completes from the dictionary only when the base query is unconstrained. A `where()`, a forwarded scope or a global scope switches it to the table scan. The `SoftDeletes` scope does not count, because the index already drops a deleted row's terms.
+- **`suggest()` in `'auto'` mode on an indexed model** completes from the dictionary only when the base query is unconstrained. A `where()`, a `join()`, a forwarded scope or a global scope switches it to the table scan. The `SoftDeletes` scope does not count, because deleting a row drops its terms from the index. With `indexing.async` (the default) that happens when the queued `IndexModelJob` runs, so until then a trashed row's terms can still be offered; a query-builder `delete()` fires no model events, so its rows' terms stay until you rebuild. Use `suggestFrom('table')` or sync indexing if that matters.
 - **`suggestFrom('index')`** always completes from the model's dictionary. It is model-wide and ignores `where()` and every scope, so use it only where every caller may see every row's terms.
-- **`didYouMean()`** always offers the model's own dictionary terms only. Under a `where()` or a global scope (again, `SoftDeletes` excepted) it keeps only terms posted for at least one row the query can see. It checks up to `max_candidates` of each term's rows, and a term whose visible rows fall outside those is dropped rather than shown. It checks at most `max($limit * 3, 10)` terms, so a narrow query can get fewer alternatives than `$limit`.
+- **`didYouMean()`** always offers the model's own dictionary terms only. Under a `where()`, a `join()` or a global scope (`SoftDeletes` excepted, with the same queue lag) it keeps only terms posted for at least one row the query can see. It checks up to `max_candidates` of each term's rows, and a term whose visible rows fall outside those is dropped rather than shown. It checks at most `max($limit * 3, 10)` terms, so a narrow query can get fewer alternatives than `$limit`.
+- **A plain query builder** given `useInvertedIndex(Model::class)` follows the same rules with its own `where()`s and joins, which its index search honours too. The model's global scopes apply to its index search and to `didYouMean()`, but not to its table scan (a query builder has no model scopes), so `'auto'` completes model-wide from the dictionary when the builder carries no constraint of its own.
 
 `suggestFrom('auto'|'index'|'table')` overrides which source `suggest()` uses; `'auto'` (the default) picks the dictionary when the model is indexed and the base query is unconstrained (see above), and the table scan otherwise:
 
@@ -477,17 +478,16 @@ User::search('joh')->suggestFrom('table')->suggest(5); // table scan only, even 
 Get alternative spellings when search has typos:
 
 ```php
-$alternatives = User::search('jonh')  // Typo
-    ->searchIn(['name'])
-    ->didYouMean(3);
+$alternatives = User::search('jonh')->didYouMean(3);  // Typo
 
-// Returns: [
+// Returns, for example with users named Jon, Jane and John: [
 //     ['term' => 'jon', 'distance' => 1, 'confidence' => 0.75],
+//     ['term' => 'jane', 'distance' => 2, 'confidence' => 0.5],
 //     ['term' => 'john', 'distance' => 2, 'confidence' => 0.5],   // a transposition is two edits
 // ]
 ```
 
-The closest term comes first, then the most common one. How far it reaches scales with the term's length: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
+The closest term comes first, then the most common one. How far it reaches scales with the term's length: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. `searchIn()` does not narrow them: like dictionary completions, they are the model's terms from every indexed column. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
 
 ### Multi-Model Federation Search
 
@@ -798,8 +798,9 @@ $users = User::search('john')->simplePaginate(15);
 // SearchBuilder::paginate() and simplePaginate() clamp perPage to max_candidates (default 1000)
 // on every search path — LIKE, extended and BM25 alike — because that is the widest window the
 // ranking is built from; a perPage below 1 becomes 1. take()/limit() are your explicit limit and
-// are not clamped. FederatedSearch::paginate() is not clamped: what it returns is already
-// bounded by max_candidates / limitPerModel().
+// are not clamped: on the index path take(n) hydrates n models, while on the LIKE and extended
+// paths the max_candidates candidate window still bounds them. FederatedSearch::paginate() is not
+// clamped: what it returns is already bounded by max_candidates / limitPerModel().
 $users = User::search('john')->paginate(2000);  // perPage() === 1000
 
 // cursorPaginate() always throws BadMethodCallException — it bypasses PHP-side

@@ -567,7 +567,8 @@ class SearchBuilder
      *
      * @param  string|bool|null $modelClass
      *   - true/null  auto-detect from Eloquent builder
-     *   - string     explicit model class (enables BM25 on DB::table() too)
+     *   - string     explicit model class (enables BM25 on DB::table() too; that builder's
+     *                wheres and joins still apply, so it must select from the model's table)
      *   - false      disable (reset to LIKE path)
      */
     public function useInvertedIndex(string|bool|null $modelClass = true): self
@@ -1182,15 +1183,12 @@ class SearchBuilder
     }
 
     /**
-     * The Eloquent query BM25 candidates are checked against: the builder's own query
-     * (including wheres the caller applied before wrapping it) or the model's default
-     * query, plus any filter()/filterIn() constraints. Always a fresh clone.
+     * The Eloquent query BM25 candidates are checked against: modelBaseQuery() plus any
+     * filter()/filterIn() constraints. Always a fresh clone.
      */
     protected function indexedBaseQuery(string $modelClass): EloquentBuilder
     {
-        $base = $this->query instanceof EloquentBuilder
-            ? clone $this->query
-            : $modelClass::query();
+        $base = $this->modelBaseQuery($modelClass);
 
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
         // highlighting on BM25 results read loaded relations instead of issuing one
@@ -1276,7 +1274,8 @@ class SearchBuilder
             if ($lastTerms !== []) {
                 $prefixed = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
                     (string) end($lastTerms),
-                    (int) config('fuzzy-search.bm25.prefix.max_expansions', 10)
+                    (int) config('fuzzy-search.bm25.prefix.max_expansions', 10),
+                    $modelClass,
                 );
 
                 // A term reached twice keeps the higher weight (a prefix hit at 1.0 beats a
@@ -1291,28 +1290,46 @@ class SearchBuilder
     }
 
     /**
-     * True when the base query carries any WHERE (filters, caller wheres, global scopes),
-     * i.e. the BM25 ranking cannot be used as-is.
+     * The builder's own query (including wheres the caller applied before wrapping it) as an
+     * Eloquent query. A plain query builder given useInvertedIndex(Model::class) runs inside the
+     * model's query, so its wheres and joins apply alongside the model's global scopes instead
+     * of being replaced by them. Always a fresh clone.
      */
-    protected function hasIndexedConstraints(EloquentBuilder $base): bool
+    protected function modelBaseQuery(string $modelClass): EloquentBuilder
     {
-        return !empty($base->toBase()->wheres);
+        return $this->query instanceof EloquentBuilder
+            ? clone $this->query
+            : $modelClass::query()->setQuery(clone $this->query);
+    }
+
+    /**
+     * True when the base query carries any WHERE or JOIN (filters, caller wheres and joins,
+     * global scopes), i.e. the BM25 ranking cannot be used as-is. A join can hide rows as
+     * surely as a where. having(), unions and a from-subquery are not detected.
+     */
+    protected function hasIndexedConstraints(Builder|EloquentBuilder $base): bool
+    {
+        $query = $base instanceof EloquentBuilder ? $base->toBase() : $base;
+
+        return !empty($query->wheres) || !empty($query->joins);
     }
 
     /**
      * True when the base query narrows the model in a way the dictionary cannot see — the
-     * caller's where()s, forwarded scopes, global scopes — so suggest() and didYouMean() must
-     * not offer model-wide terms. The SoftDeletes scope is not counted: the index already
-     * honours it (deleting a row removes its postings, and IndexModelJob loads through the
-     * scope). onlyTrashed() adds a real where and still counts; withTrashed() does not, and the
-     * dictionary then offers non-trashed terms only, which is safe. The BM25 search path keeps
-     * hasIndexedConstraints(), which also covers a trashed row the queue has not removed yet.
+     * caller's where()s and joins, forwarded scopes, global scopes — so suggest() and
+     * didYouMean() must not offer model-wide terms. The SoftDeletes scope is not counted: the
+     * index honours it (deleting a row removes its postings, and IndexModelJob loads through the
+     * scope), though with indexing.async only once the queued job has run, and never for a
+     * query-builder delete(), which fires no model events. onlyTrashed() adds a real where and
+     * still counts; withTrashed() does not, and the dictionary then offers non-trashed terms
+     * only, which is safe. The BM25 search path keeps hasIndexedConstraints(), which also covers
+     * a trashed row the queue has not removed yet.
      */
-    protected function hasSuggestionConstraints(EloquentBuilder $base): bool
+    protected function hasSuggestionConstraints(Builder|EloquentBuilder $base): bool
     {
-        return $this->hasIndexedConstraints(
-            (clone $base)->withoutGlobalScope(\Illuminate\Database\Eloquent\SoftDeletingScope::class)
-        );
+        return $this->hasIndexedConstraints($base instanceof EloquentBuilder
+            ? (clone $base)->withoutGlobalScope(\Illuminate\Database\Eloquent\SoftDeletingScope::class)
+            : $base);
     }
 
     /**
@@ -2650,11 +2667,10 @@ class SearchBuilder
             return [];
         }
 
-        // 'auto' leaves a constrained query (a where(), a tenant scope) to the table scan: the
-        // dictionary is scoped to the model, not to the query. suggestFrom('index') opts back in.
-        $constrained = $this->suggestSource === 'auto'
-            && $this->query instanceof EloquentBuilder
-            && $this->hasSuggestionConstraints($this->query);
+        // 'auto' leaves a constrained query (a where(), a join, a tenant scope) to the table scan:
+        // the dictionary is scoped to the model, not to the query. suggestFrom('index') opts back
+        // in. The check reads the query the table scan runs on, so it only switches when that helps.
+        $constrained = $this->suggestSource === 'auto' && $this->hasSuggestionConstraints($this->query);
 
         if ($this->suggestSource !== 'table' && !$constrained) {
             $fromIndex = $this->suggestFromIndex($limit);
@@ -2862,12 +2878,12 @@ class SearchBuilder
         }
 
         // Closest first, then the most common, then the most confident, then the term itself so
-        // the order is deterministic.
-        usort($alternatives, fn ($a, $b) => [$a['distance'], $b['_doc_count'], $b['confidence'], $a['term']]
-            <=> [$b['distance'], $a['_doc_count'], $a['confidence'], $b['term']]);
+        // the order is deterministic (strcmp: `<=>` would compare '19' and '100' as numbers).
+        usort($alternatives, fn ($a, $b) => ([$a['distance'], $b['_doc_count'], $b['confidence']]
+            <=> [$b['distance'], $a['_doc_count'], $a['confidence']]) ?: strcmp($a['term'], $b['term']));
 
-        if ($this->query instanceof EloquentBuilder && $this->hasSuggestionConstraints($this->query)) {
-            $alternatives = $this->visibleAlternatives($alternatives, $modelClass, $limit);
+        if ($alternatives !== [] && $this->hasSuggestionConstraints($base = $this->modelBaseQuery($modelClass))) {
+            $alternatives = $this->visibleAlternatives($alternatives, $base, $modelClass, $limit);
         }
 
         return array_slice(
@@ -2883,8 +2899,9 @@ class SearchBuilder
     /**
      * The ranked alternatives the constrained base query can see: a candidate stays when at
      * least one row it is posted for passes the query. Each check reads up to max_candidates of
-     * the candidate's model_ids from the postings and runs them through RankedCandidates::keys()
-     * — the chunked primary-key whereIn the BM25 constrained path uses — so no LIKE scan runs
+     * the candidate's distinct model_ids (which ones is up to the database's plan) from the
+     * postings and runs them through RankedCandidates::keys() — the chunked primary-key
+     * whereIn the BM25 constrained path uses — so no LIKE scan runs
      * (the JSON resource calls this on every empty page, which a caller can produce at will).
      * The ids travel as bound values, never as a subquery against the model's table: model_id
      * is a string column, and the dictionary may live on another connection than the model. A candidate whose visible rows
@@ -2893,7 +2910,7 @@ class SearchBuilder
      * @param  list<array<string, mixed>> $alternatives best first
      * @return list<array<string, mixed>>
      */
-    protected function visibleAlternatives(array $alternatives, string $modelClass, int $limit): array
+    protected function visibleAlternatives(array $alternatives, EloquentBuilder $base, string $modelClass, int $limit): array
     {
         $maxIds  = max(1, (int) config('fuzzy-search.max_candidates', 1000));
         $visible = [];
@@ -2905,11 +2922,12 @@ class SearchBuilder
                 ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
                 ->where('t.term', $alternative['term'])
                 ->where('p.model_type', $modelClass)
+                ->distinct() // one posting per column: a row holding the term twice took two slots
                 ->limit($maxIds)
                 ->pluck('p.model_id')
                 ->all();
 
-            if (\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keys($this->query, $ids, 1) !== []) {
+            if (\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keys($base, $ids, 1) !== []) {
                 $visible[] = $alternative;
 
                 if (count($visible) >= $limit) {
