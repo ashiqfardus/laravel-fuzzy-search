@@ -123,6 +123,14 @@ few affect what you get back from a search:
 - **`FederatedSearch` results are now deterministically ordered.** Ordering is score, then
   `orderByModel()` (or the `across()` order), then primary key — previously ties and
   `withRelevance(false)` results came back in database order.
+- **Models with no `$searchable['columns']` are now indexed.** A model that uses the trait and
+  declares no columns (`class User extends Model { use Searchable; }`) is now indexed — and gets
+  its `*_metaphone` shadow columns maintained — from the columns auto-detection already used for
+  `search()`; previously `getSearchableColumns()` returned `[]` and every consumer except
+  `search()` silently skipped the model. This only starts writing rows when `indexing.enabled` is
+  `true` (it defaults to `false`): if you enable indexing and have such models, their first save
+  or `fuzzy-search:rebuild` will now populate the index. Declare `$searchable['columns']` to
+  control exactly which columns are indexed.
 
 ## Relationship search
 

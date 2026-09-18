@@ -83,6 +83,7 @@ Upgrading from 2.0.x: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/m
 
 ### Fixed
 
+- **Zero-config models were never indexed.** A model that uses the `Searchable` trait without declaring `$searchable['columns']` — the README Quick Start — got `[]` from `getSearchableColumns()`, so the BM25 indexer wrote no postings, `SearchableObserver` maintained no `*_metaphone` shadow columns, `FuzzySearch::tableSearch()` added no predicate and `extended()` found no columns, while `search()` itself auto-detected them and worked. The accessor now falls back to the auto-detected columns. It also accepts the list form `['columns' => ['name', 'email']]`, which used to report the column names as `[0, 1]`. `fuzzy-search:rebuild` now warns when a model produced no index terms instead of printing "Done." alone, and reports how many records it indexed.
 - A BM25 search that matched nothing fired no FuzzySearchExecuted, so zero-result analytics never saw index-path misses.
 - A failed analytics insert (missing table, oversized value, DB blip) no longer throws out of the search; it is reported and the search returns normally.
 - simplePaginate() reported its look-ahead row in FuzzySearchExecuted::resultCount.

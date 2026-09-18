@@ -91,3 +91,33 @@ class Product extends Model
         'algorithm' => 'fuzzy',
     ];
 }
+
+/**
+ * A genuinely zero-config model: `use Searchable;` and nothing else, on the same "users"
+ * table. Every other fixture declares $searchable['columns'] — which is why the
+ * getSearchableColumns() gap (no indexing, no shadow columns, no tableSearch() predicate
+ * for a model straight out of the README Quick Start) went unnoticed.
+ */
+class ZeroConfigUser extends Model
+{
+    use Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+}
+
+/**
+ * $searchable['columns'] in list form. searchIn() accepts it — so search() has always
+ * worked — and getSearchableColumns() must read the names off the values, not return [0, 1].
+ */
+class ListColumnsUser extends Model
+{
+    use Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = [
+        'columns' => ['name', 'email'],
+    ];
+}

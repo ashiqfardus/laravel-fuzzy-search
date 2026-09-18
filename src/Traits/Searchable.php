@@ -63,16 +63,32 @@ trait Searchable
     }
 
     /**
-     * Return the configured searchable column names.
-     * Used by SearchableObserver to resolve which shadow columns to populate.
+     * Return the searchable column names — the same columns a plain search() runs on.
+     *
+     * Both declaration forms are accepted, exactly as searchIn() accepts them:
+     * `['name' => 10, 'email' => 5]` (weights) yields the keys, `['name', 'email']` (a list)
+     * yields the values. A model that declares no columns falls back to the auto-detected
+     * ones, so a zero-config model (`use Searchable;` and nothing else) is indexed, gets its
+     * shadow columns maintained and works with FuzzySearch::tableSearch() instead of being
+     * silently skipped by every consumer except search() itself.
+     *
+     * Consumers: IndexManager (postings), SearchableObserver (shadow columns),
+     * SearchableIndexingObserver (reindex on save), FuzzySearch::tableSearch(),
+     * SearchBuilder::autoDetectColumnsForExtended().
      */
     public function getSearchableColumns(): array
     {
-        if (isset($this->searchable['columns'])) {
-            return array_keys($this->searchable['columns']);
+        $columns = $this->searchable['columns'] ?? [];
+
+        if (empty($columns)) {
+            $columns = $this->getAutoDetectedColumns();
         }
 
-        return [];
+        return array_map(
+            fn ($key, $value) => is_int($key) ? (string) $value : $key,
+            array_keys($columns),
+            $columns
+        );
     }
 
     /**
