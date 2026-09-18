@@ -22,6 +22,8 @@ use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{AstNode, AndNode, OrNode, Not
 class SearchBuilder
 {
     protected Builder|EloquentBuilder $query;
+    /** The caller's untouched query while a terminal call runs — see onQueryClone(). */
+    protected Builder|EloquentBuilder|null $pristineQuery = null;
     protected FuzzySearch $fuzzySearch;
     protected string $searchTerm = '';
     protected array $searchableColumns = [];
@@ -917,30 +919,34 @@ class SearchBuilder
      */
     protected function withFallback(Closure $attempt, Closure $isEmpty): mixed
     {
-        $result = $this->onQueryClone($attempt);
-
         if (empty($this->fallbackAlgorithms)) {
-            return $result;
+            return $this->onQueryClone($attempt);
         }
 
+        // Captured before the first attempt (which may switch them off itself) and restored in
+        // finally, so a throwing retry cannot leave the builder on a fallback algorithm.
         $algorithm = $this->algorithm;
         $useIndex  = $this->useSearchIndex;
 
-        foreach ($this->fallbackAlgorithms as $fallback) {
-            if (!$isEmpty($result)) {
-                break;
+        try {
+            $result = $this->onQueryClone($attempt);
+
+            foreach ($this->fallbackAlgorithms as $fallback) {
+                if (!$isEmpty($result)) {
+                    break;
+                }
+
+                $this->algorithm      = $fallback;
+                $this->useSearchIndex = false;
+
+                $result = $this->onQueryClone($attempt);
             }
 
-            $this->algorithm      = $fallback;
-            $this->useSearchIndex = false;
-
-            $result = $this->onQueryClone($attempt);
+            return $result;
+        } finally {
+            $this->algorithm      = $algorithm;
+            $this->useSearchIndex = $useIndex;
         }
-
-        $this->algorithm      = $algorithm;
-        $this->useSearchIndex = $useIndex;
-
-        return $result;
     }
 
     /**
@@ -954,8 +960,13 @@ class SearchBuilder
      * Everything a terminal call touches ($this->query, and the clones taken from it by
      * paginateRanked(), getFacets() and indexedBaseQuery()) therefore sees the prepared
      * query, while the caller's own builder is restored untouched — so constraints added
-     * after a terminal call still take effect on the next one. Nested calls (a BM25 path
-     * falling back to LIKE) each take their own clone and restore the previous one.
+     * after a terminal call still take effect on the next one.
+     *
+     * It is re-entrant: the outermost wrap records the caller's pristine query, and a nested
+     * wrap (a BM25 path falling back to LIKE, or a FuzzySearchExecuted listener calling
+     * toSql() on the same builder) clones that pristine query rather than the prepared one it
+     * is running inside. Both are restored in finally, so an inner search cannot leak into the
+     * outer one and the outer one resumes on its own prepared query.
      *
      * @template T
      * @param  Closure(): T $work
@@ -963,13 +974,17 @@ class SearchBuilder
      */
     protected function onQueryClone(Closure $work): mixed
     {
-        $base        = $this->query;
-        $this->query = clone $base;
+        $outer            = $this->query;
+        $previousPristine = $this->pristineQuery;
+
+        $this->pristineQuery ??= $outer;
+        $this->query           = clone $this->pristineQuery;
 
         try {
             return $work();
         } finally {
-            $this->query = $base;
+            $this->query         = $outer;
+            $this->pristineQuery = $previousPristine;
         }
     }
 
@@ -1645,11 +1660,21 @@ class SearchBuilder
     }
 
     /**
-     * Get first result
+     * Get first result.
+     *
+     * The limit it sets is restored afterwards (as simplePaginate() does with its look-ahead),
+     * so first() leaves the builder exactly as it found it.
      */
     public function first(): ?Model
     {
-        return $this->take(1)->get()->first();
+        $limit       = $this->limit;
+        $this->limit = 1;
+
+        try {
+            return $this->get()->first();
+        } finally {
+            $this->limit = $limit;
+        }
     }
 
     /**

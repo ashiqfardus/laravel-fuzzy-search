@@ -133,6 +133,8 @@ class BuilderReuseTest extends TestCase
         // groups the prepared query as-is, and MySQL's only_full_group_by (and PostgreSQL)
         // reject a GROUP BY carrying an ORDER BY over ungrouped columns. That is a separate,
         // pre-existing defect — this test is about the facet call not poisoning the builder.
+        // @todo cover facet reuse on the default (relevance-on) path once getFacets() drops the
+        //       relevance ORDER BY from its aggregate.
         $builder = User::search('john')->searchIn(['name'])->withRelevance(false)->facet('email');
         $fresh   = User::search('john')->searchIn(['name'])->withRelevance(false);
 
@@ -228,5 +230,40 @@ class BuilderReuseTest extends TestCase
         $builder->get();
 
         Event::assertDispatchedTimes(FuzzySearchExecuted::class, 1);
+    }
+
+    public function test_first_leaves_the_builder_usable(): void
+    {
+        $builder  = User::search('john')->searchIn(['name']);
+        $expected = User::search('john')->searchIn(['name'])->get()->count();
+
+        $this->assertGreaterThan(1, $expected);
+        $this->assertNotNull($builder->first());
+        $this->assertCount($expected, $builder->get(), 'first() left the builder limited to one row');
+    }
+
+    public function test_first_restores_a_limit_the_caller_set(): void
+    {
+        $builder = User::search('john')->searchIn(['name'])->limit(3);
+
+        $builder->first();
+
+        $this->assertCount(3, $builder->get(), 'first() overwrote the caller\'s limit');
+    }
+
+    public function test_a_nested_terminal_call_starts_from_the_pristine_base(): void
+    {
+        $builder = User::search('john')->searchIn(['name']);
+        $fresh   = User::search('john')->searchIn(['name']);
+
+        // A listener that inspects the builder mid-search: the classic nested terminal call.
+        $observed = null;
+        Event::listen(FuzzySearchExecuted::class, function () use ($builder, &$observed) {
+            $observed = $builder->toSql();
+        });
+
+        $builder->get();
+
+        $this->assertSame($fresh->toSql(), $observed, 'the nested toSql() cloned the prepared query, not the base');
     }
 }
