@@ -114,6 +114,10 @@ Upgrading from 2.0.x: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/m
 - README Scout recipe: the dual-trait example now resolves bootSearchable() (it was a PHP fatal) and boots Scout's observers from booted() (B26).
 - MySQL/MariaDB: the dictionary column fuzzy_index_terms.term now uses utf8mb4_bin, so café/cafe (and résumé/resume) are distinct terms as on the other drivers; indexing a document containing both no longer fails with "Undefined array key" (B25). Run php artisan migrate — the migration rewrites the table. Rebuild existing indexes too (php artisan fuzzy-search:rebuild {Model}): variants that the old collation collapsed into a single dictionary row stay collapsed until the index is rebuilt.
 
+### Security
+
+- **Soundex filter bypass (present in 2.0.0 and 2.0.1).** On MySQL, MariaDB and PostgreSQL with native functions, `using('soundex')` / `preset('phonetic')` / `whereFuzzy($column, $term, 'soundex')` emitted `SOUNDEX(first word) = SOUNDEX(?) OR SOUNDEX(last word) = SOUNDEX(?)` without parentheses. `AND` binds tighter than `OR`, so a constraint chained after the search — `->where('tenant_id', $id)`, a soft-delete or tenant scope, the relation key inside a `whereHas` — only guarded the second arm and rows leaked past it. The predicate is now one parenthesised group, and a security test asserts that every driver's predicate stays self-contained on all five dialects. SQLite and SQL Server were never affected (they use the grouped pattern fallback).
+
 ### Database compatibility
 
 First release where the full test suite runs against SQLite, MySQL 8, MariaDB 11.4, PostgreSQL 14 and SQL Server 2022 in CI.

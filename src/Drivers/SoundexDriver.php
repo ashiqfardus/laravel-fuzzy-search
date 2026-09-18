@@ -29,7 +29,7 @@ class SoundexDriver extends BaseDriver
             // producing false positives. By splitting to first/last word we get accurate per-token
             // phonetic matching while supporting both first-name and last-name queries.
             return $query->$method(
-                "SOUNDEX(SUBSTRING_INDEX({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SUBSTRING_INDEX({$col}, ' ', -1)) = SOUNDEX(?)",
+                "(SOUNDEX(SUBSTRING_INDEX({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SUBSTRING_INDEX({$col}, ' ', -1)) = SOUNDEX(?))",
                 [$value, $value]
             );
         }
@@ -44,7 +44,7 @@ class SoundexDriver extends BaseDriver
             // SPLIT_PART(col, ' ', -1) requires PostgreSQL 14+. Use SUBSTRING with a
             // POSIX regex to extract the last space-delimited token — works on all versions.
             return $query->$method(
-                "SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(TRIM(SUBSTRING({$col} FROM '[^ ]+$'))) = SOUNDEX(?)",
+                "(SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(TRIM(SUBSTRING({$col} FROM '[^ ]+$'))) = SOUNDEX(?))",
                 [$value, $value]
             );
         }
