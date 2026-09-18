@@ -9,7 +9,6 @@ use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\ReindexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * Searchable Trait - Provides zero-config fluent search API
@@ -86,6 +85,16 @@ trait Searchable
         }
 
         return SearchableColumns::names($columns);
+    }
+
+    /**
+     * True when the model declared $searchable['columns'] itself, false when the list was
+     * auto-detected. IndexManager reads it to decide whether a value it cannot index as text is
+     * the caller's mistake (an informative throw) or the heuristic's (skip the column).
+     */
+    public function hasDeclaredSearchableColumns(): bool
+    {
+        return !empty($this->searchable['columns']);
     }
 
     /**
@@ -261,7 +270,12 @@ trait Searchable
      */
     protected function getAutoDetectedColumns(): array
     {
-        return SearchableColumns::detect(static::class, fn () => $this->detectSearchableColumns());
+        // Keyed by connection and table as well as class: a tenant model that switches either
+        // must not be answered from the first tenant's schema.
+        return SearchableColumns::detect(
+            static::class . '|' . $this->getConnectionName() . '|' . $this->getTable(),
+            fn () => $this->detectSearchableColumns()
+        );
     }
 
     /**
@@ -294,9 +308,10 @@ trait Searchable
         ];
 
         try {
-            // Get actual table columns, minus any the indexer could not read as text.
+            // Get actual table columns, minus any the indexer could not read as text. Read
+            // through the model's own connection, not the default one.
             $tableColumns = array_values(array_filter(
-                Schema::getColumnListing($table),
+                $this->getConnection()->getSchemaBuilder()->getColumnListing($table),
                 fn (string $column) => SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null)
             ));
 

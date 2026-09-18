@@ -154,3 +154,30 @@ class DeclaredCastTicket extends ZeroConfigTicket
         'columns' => ['status' => 1],
     ];
 }
+
+/** A value object an accessor can return — not text, and nothing the indexer can stringify. */
+class AccessorValue
+{
+    public function __construct(public string $value)
+    {
+    }
+}
+
+/**
+ * Zero-config model whose auto-detected "name" column is read through an accessor returning an
+ * object. Casts alone cannot see this: getAttribute() runs accessors too.
+ */
+class ZeroConfigAccessorUser extends \Illuminate\Database\Eloquent\Model
+{
+    use Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected function name(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return \Illuminate\Database\Eloquent\Casts\Attribute::make(
+            get: fn ($value) => new AccessorValue((string) $value)
+        );
+    }
+}

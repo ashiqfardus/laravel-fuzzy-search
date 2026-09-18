@@ -10,6 +10,7 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\ListColumnsUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TicketStatus;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Ashiqfardus\LaravelFuzzySearch\Tests\ZeroConfigAccessorUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\ZeroConfigTicket;
 use Ashiqfardus\LaravelFuzzySearch\Tests\ZeroConfigUser;
 use Closure;
@@ -232,5 +233,61 @@ class ZeroConfigSearchableTest extends TestCase
             'schema introspection scaled with the number of rows indexed'
         );
         $this->assertGreaterThan(0, DB::table('fuzzy_index_postings')->count());
+    }
+
+
+    public function test_an_auto_detected_value_that_is_not_text_is_skipped_not_thrown(): void
+    {
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+
+        // The accessor returns an object. Nobody asked for that column to be indexed — detection
+        // picked it — so the indexer must skip it rather than break the save.
+        $user = ZeroConfigAccessorUser::create(['name' => 'Ada', 'email' => 'ada@example.com']);
+
+        $indexed = DB::table('fuzzy_index_postings')
+            ->where('model_id', $user->getKey())
+            ->pluck('column_name')
+            ->unique()
+            ->values()
+            ->all();
+
+        $this->assertSame(['email'], $indexed, 'the other auto-detected column was not indexed');
+    }
+
+    public function test_an_empty_detection_is_not_cached(): void
+    {
+        Schema::dropIfExists('tickets');
+
+        $this->assertSame([], (new ZeroConfigTicket)->getSearchableColumns());
+
+        $this->createTicketsTable();
+
+        $this->assertSame(
+            ['subject_line'],
+            (new ZeroConfigTicket)->getSearchableColumns(),
+            'a detection that ran before the table existed was cached forever'
+        );
+    }
+
+    public function test_detection_reads_the_models_own_connection(): void
+    {
+        // Always SQLite, whatever the suite's default connection is: the point is that the model's
+        // own connection is used, not that a second server exists.
+        config(['database.connections.tenant' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '']]);
+
+        Schema::connection('tenant')->create('users', function ($table) {
+            $table->id();
+            $table->string('title');
+            $table->timestamps();
+        });
+
+        $model = new class extends \Illuminate\Database\Eloquent\Model {
+            use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+            protected $connection = 'tenant';
+            protected $table = 'users';
+        };
+
+        $this->assertSame(['title'], $model->getSearchableColumns());
     }
 }

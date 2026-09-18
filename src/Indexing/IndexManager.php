@@ -516,11 +516,16 @@ class IndexManager
      *
      * @return array<string, string> name => non-empty text
      * @throws \InvalidArgumentException if a hook value — or a declared column's attribute — is a
-     *         non-scalar, non-stringable object (the message names whichever it was)
+     *         non-scalar, non-stringable object (the message names whichever it was). An
+     *         auto-detected column's value is skipped instead: nobody asked for it to be indexed.
      */
     private function searchableTexts(Model $model, array $columns): array
     {
         $fromHook = method_exists($model, 'searchableText');
+        // Auto-detection is a heuristic: it can land on an accessor that returns an object, which
+        // no cast filter can see. Skip such a value rather than break the model's save. A column
+        // the caller declared (or a hook value) is their choice and still gets the throw.
+        $declared = !method_exists($model, 'hasDeclaredSearchableColumns') || $model->hasDeclaredSearchableColumns();
         $texts    = $fromHook
             ? (array) $model->searchableText()
             : array_combine($columns, array_map(fn ($c) => $model->getAttribute($c), $columns));
@@ -534,6 +539,10 @@ class IndexManager
             if (is_array($value)) {
                 $value = implode(' ', array_map('strval', array_filter($value, 'is_scalar')));
             } elseif (is_object($value) && !method_exists($value, '__toString')) {
+                if (!$fromHook && !$declared) {
+                    continue;
+                }
+
                 throw new \InvalidArgumentException(
                     'fuzzy-search: ' . ($fromHook ? 'searchableText() value for' : 'searchable column') .
                     ' "' . $name . '" on ' . get_class($model) .

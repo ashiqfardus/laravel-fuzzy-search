@@ -31,7 +31,7 @@ final class SearchableColumns
         'date', 'datetime', 'immutable_date', 'immutable_datetime', 'timestamp', 'hashed', 'encrypted',
     ];
 
-    /** @var array<class-string, array<string, int>> model class => column => weight */
+    /** @var array<string, array<string, int>> "class|connection|table" => column => weight */
     private static array $detected = [];
 
     /**
@@ -48,12 +48,22 @@ final class SearchableColumns
     }
 
     /**
+     * @param  string                        $key    model class, connection and table
      * @param  Closure(): array<string, int> $detect
      * @return array<string, int>
      */
-    public static function detect(string $modelClass, Closure $detect): array
+    public static function detect(string $key, Closure $detect): array
     {
-        return self::$detected[$modelClass] ??= $detect();
+        if (isset(self::$detected[$key])) {
+            return self::$detected[$key];
+        }
+
+        $columns = $detect();
+
+        // An empty result means the table could not be read (it does not exist yet, most
+        // likely). Caching that would make a model touched before its migration unsearchable
+        // for the life of the process.
+        return $columns === [] ? [] : self::$detected[$key] = $columns;
     }
 
     /** @param string|null $cast the model's cast for the column, or null when it has none */
@@ -63,14 +73,16 @@ final class SearchableColumns
             return true;
         }
 
+        // Laravel matches cast names case-insensitively (getCastType() lower-cases them), so
+        // every spelling must be judged the same way.
         // 'decimal:2' → 'decimal'; 'encrypted:array' (and :json/:object/:collection) is never text.
-        [$base, $argument] = array_pad(explode(':', $cast, 2), 2, null);
+        [$base, $argument] = array_pad(explode(':', strtolower($cast), 2), 2, null);
 
         if ($base === 'encrypted') {
             return $argument === null;
         }
 
-        return in_array(strtolower($base), self::TEXT_LIKE_CASTS, true);
+        return in_array($base, self::TEXT_LIKE_CASTS, true);
     }
 
     public static function reset(): void
