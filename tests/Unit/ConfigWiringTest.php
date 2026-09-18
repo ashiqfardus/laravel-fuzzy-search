@@ -93,6 +93,12 @@ class ConfigWiringTest extends TestCase
         $this->assertSame(['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50], $config['scoring']);
         $this->assertSame(['max_patterns' => 100], $config['performance']);
         $this->assertSame(false, $config['highlighting']['enabled']);
+        // The three values the README's config snippets got wrong (M10): max_candidates is a
+        // top-level key (not under performance), the cache driver defaults to the app's store,
+        // and the indexing observer is off until indexing.enabled is true.
+        $this->assertSame(1000, $config['max_candidates']);
+        $this->assertSame('default', $config['cache']['driver']);
+        $this->assertSame(false, $config['indexing']['enabled']);
     }
 
     public function test_debounce_is_deprecated(): void

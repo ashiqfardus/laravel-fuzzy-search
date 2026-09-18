@@ -628,6 +628,7 @@ foreach ($users as $user) {
 ```php
 // In config/fuzzy-search.php
 'indexing' => [
+    'enabled' => true,          // without this the indexing observer returns early
     'async' => true,
     'queue' => 'search-indexing',
     'chunk_size' => 500,
@@ -963,9 +964,11 @@ return [
     
     'cache' => [
         'enabled' => false,
-        'driver' => 'redis',
+        'driver' => 'default',  // any cache store name, or 'default' for the app's
         'ttl' => 3600,
     ],
+    
+    'max_candidates' => 1000,   // top level, not under 'performance'
     
     'performance' => [
         'max_patterns' => 100,
@@ -1199,9 +1202,7 @@ For the LIKE/Levenshtein paths, SQL candidates are fetched then re-scored in PHP
 
 ```php
 // config/fuzzy-search.php
-'performance' => [
-    'max_candidates' => 500,  // fetch fewer candidates on large tables
-],
+'max_candidates' => 500,  // top-level key; fetch fewer candidates on large tables
 ```
 
 ### Recommended Optimizations
