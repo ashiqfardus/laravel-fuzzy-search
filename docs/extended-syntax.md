@@ -86,6 +86,8 @@ $first->_matches;
 // [['column' => 'name', 'value' => 'John Doe', 'indices' => [[0, 3]]]]
 ```
 
+Each `[start, end]` pair is an inclusive **byte** range into `value` — slice it with `substr()`, not `mb_substr()`. Matching is case-insensitive per character, so `привет` marks `ПРИВЕТ` in `ПРИВЕТ мир` as `[[0, 11]]` (six two-byte letters).
+
 For safe HTML rendering, use the `@fuzzyHighlight` Blade directive:
 
 ```blade

@@ -2061,7 +2061,7 @@ class SearchBuilder
      */
     protected function calculateRelevanceScores(Collection $results, ?string $scoreTerm = null): Collection
     {
-        $term = strtolower($scoreTerm ?? $this->searchTerm);
+        $term = mb_strtolower($scoreTerm ?? $this->searchTerm, 'UTF-8');
 
         $results = $results->map(function ($item) use ($term) {
             $score = 0;
@@ -2198,11 +2198,13 @@ class SearchBuilder
 
     /**
      * Score one string against the search term: the tier constants from scoring.* times the
-     * column weight, or the similarity/Levenshtein floor for fuzzy matches.
+     * column weight, or the similarity/Levenshtein floor for fuzzy matches. $term arrives
+     * mb_strtolower()ed by calculateRelevanceScores(); the value is lowered the same way, so
+     * the exact/prefix/contains tiers are case-insensitive for every script, not only ASCII.
      */
     protected function scoreValue(string $value, string $term, float|int $weight): float
     {
-        $value = strtolower($value);
+        $value = mb_strtolower($value, 'UTF-8');
 
         if ($value === $term) {
             return $this->scoring['exact_match'] * $weight;
@@ -2297,14 +2299,25 @@ class SearchBuilder
     }
 
     /**
-     * Find all case-insensitive occurrences of $term in $value.
-     * Returns array of [startIdx, endIdx] inclusive ranges.
+     * Find all case-insensitive, non-overlapping occurrences of $term in $value.
+     * Returns [start, end] inclusive BYTE offsets into $value — the unit wrapWithTags(),
+     * `_matches` and renderHighlighted() all slice with substr().
+     *
+     * /iu compares per character with Unicode case folding ("привет" finds "ПРИВЕТ", "über"
+     * finds "ÜBER"), reports byte offsets, and each range spans the matched text's own bytes —
+     * the two cases of a letter need not be the same length (k vs the Kelvin sign). A value or
+     * term that is not valid UTF-8 keeps the byte search (ASCII case folding only).
      */
     private function findMatchOffsets(string $value, string $term): array
     {
         if ($term === '') {
             return [];
         }
+
+        if (preg_match_all('/' . preg_quote($term, '/') . '/iu', $value, $found, PREG_OFFSET_CAPTURE) !== false) {
+            return array_map(fn (array $m) => [$m[1], $m[1] + strlen($m[0]) - 1], $found[0]);
+        }
+
         $indices = [];
         $offset  = 0;
         $lower   = strtolower($value);
@@ -2568,7 +2581,7 @@ class SearchBuilder
      */
     public function suggest(int $limit = 5): array
     {
-        if (empty($this->searchTerm) || strlen($this->searchTerm) < 2) {
+        if (empty($this->searchTerm) || mb_strlen($this->searchTerm, 'UTF-8') < 2) {
             return [];
         }
 

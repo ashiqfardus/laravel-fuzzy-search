@@ -40,6 +40,36 @@ class MatchOffsetsTest extends TestCase
         }
     }
 
+    public function test_ascii_and_non_utf8_offsets_are_byte_identical_to_the_byte_search(): void
+    {
+        // The pre-2.1 algorithm, verbatim: strtolower() + strpos(), non-overlapping.
+        $byteSearch = function (string $value, string $term): array {
+            $indices = [];
+            $offset  = 0;
+            $lower   = strtolower($value);
+            $needle  = strtolower($term);
+            while (($pos = strpos($lower, $needle, $offset)) !== false) {
+                $indices[] = [$pos, $pos + strlen($term) - 1];
+                $offset    = $pos + strlen($term);
+            }
+            return $indices;
+        };
+
+        $find = new \ReflectionMethod(SearchBuilder::class, 'findMatchOffsets');
+        $builder = new SearchBuilder($this->app['db']->table('users'), app(FuzzySearch::class));
+
+        $cases = [
+            ['John Doe', 'john'], ['JOHN john JoHn', 'JOHN'], ['banana', 'an'], ['aaaa', 'aa'],
+            ['aaaa', 'aaa'], ['a.b a*b', 'a.b'], ['(x) [y] {z}', '(x)'], ['path/to/file', '/'],
+            ['back\\slash', '\\'], ['$100 ^top', '$1'], ['#hash|pipe', '|'], ['no match', 'zzz'],
+            ["caf\xE9 JOHN", 'john'], // Latin-1 é: not UTF-8, so the byte search is kept as-is
+        ];
+
+        foreach ($cases as [$value, $term]) {
+            $this->assertSame($byteSearch($value, $term), $find->invoke($builder, $value, $term), "{$value} / {$term}");
+        }
+    }
+
     public function test_highlighted_still_populated_for_backwards_compat(): void
     {
         $builder = new SearchBuilder($this->app['db']->table('users'), app(FuzzySearch::class));

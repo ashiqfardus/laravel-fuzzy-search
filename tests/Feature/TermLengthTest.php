@@ -42,6 +42,30 @@ class TermLengthTest extends TestCase
         $this->assertSame(7, (int) DB::table('fuzzy_index_terms')->where('term', 'stripes')->value('term_length'));
     }
 
+    public function test_the_255_limit_on_a_token_counts_characters_not_bytes(): void
+    {
+        // Unsaved models: the users.name column could not hold the 256-character case, and the
+        // indexer only reads attributes and the key.
+        $index = fn (int $id, string $name) => app(IndexManager::class)->indexModel(
+            (new User(['name' => $name, 'email' => "t{$id}@example.com"]))->forceFill(['id' => $id])
+        );
+
+        $bengali  = str_repeat('ক', 100); // 300 bytes
+        $cyrillic = str_repeat('я', 200); // 400 bytes
+        $tooLong  = str_repeat('ক', 256);
+
+        $index(9001, $bengali);
+        $index(9002, $cyrillic);
+        $index(9003, $tooLong . ' widget');
+
+        $lengths = array_map('intval', DB::table('fuzzy_index_terms')->whereIn('term', [$bengali, $cyrillic, $tooLong])->pluck('term_length', 'term')->all());
+        ksort($lengths);
+        $expected = [$bengali => 100, $cyrillic => 200];
+        ksort($expected);
+        $this->assertSame($expected, $lengths);
+        $this->assertTrue(DB::table('fuzzy_index_terms')->where('term', 'widget')->exists());
+    }
+
     public function test_new_config_keys_are_published_with_defaults(): void
     {
         $config = require __DIR__ . '/../../config/fuzzy-search.php';

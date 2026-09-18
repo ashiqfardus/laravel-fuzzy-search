@@ -582,8 +582,8 @@ class IndexManager
         foreach ($this->searchableTexts($model, $columns) as $name => $value) {
             $column = mb_substr((string) $name, 0, 64);
             foreach ($pipeline->tokens($value) as $stemmed) {
-                if (strlen($stemmed) > 255) {
-                    continue; // token exceeds varchar(255) — skip rather than truncate silently
+                if (mb_strlen($stemmed, 'UTF-8') > 255) {
+                    continue; // token exceeds varchar(255), which counts characters — skip rather than truncate silently
                 }
                 if (!isset($byColumn[$column][$stemmed])) {
                     $distinct++;

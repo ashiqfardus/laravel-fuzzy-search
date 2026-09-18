@@ -168,6 +168,11 @@ you get back from a search:
   an accessor returning an object — is skipped rather than thrown, so this cannot make a save
   throw. Declare `$searchable['columns']` to search or index anything else: a declared column is
   your choice, and one that cannot be indexed as text raises an error naming it.
+- **Case-insensitive scoring and highlighting now cover every script.** They folded ASCII
+  only, so a lower-case Cyrillic, Greek or accented term scored an upper-case value as a fuzzy
+  near-miss and highlighted nothing. Such results now rank as exact/prefix/contains matches and
+  are highlighted, so the order of non-ASCII results can change. ASCII-only text scores and
+  highlights exactly as before; `_matches` indices are still byte offsets.
 
 ## Relationship search
 

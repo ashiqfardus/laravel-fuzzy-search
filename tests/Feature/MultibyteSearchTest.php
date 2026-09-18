@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 require_once __DIR__ . '/../TestModels.php';
 
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 
@@ -51,5 +52,66 @@ class MultibyteSearchTest extends TestCase
 
         $this->assertTrue($results->contains('name', 'মোবাইলফোন'));
         $this->assertSame('মোবাইলফ', $results->first()->_debug['term']);
+    }
+
+    /*
+    | Case-insensitive scoring and highlighting per character. Each fixture row also carries the
+    | term in its exact case in `email`, so the candidate query finds it on every database
+    | (SQLite's LIKE folds ASCII only) and `name` exercises the PHP side alone.
+    */
+
+    private function insertUser(string $name, string $email): void
+    {
+        $this->app['db']->table('users')->insert([
+            'name' => $name, 'email' => $email, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+    }
+
+    public function test_a_lower_case_cyrillic_term_scores_an_upper_case_value_as_a_prefix_match(): void
+    {
+        $this->insertUser('ПРИВЕТ мир', 'привет@example.com');
+
+        $row = User::search('привет')->using('like')->debugScore()->get()->firstWhere('name', 'ПРИВЕТ мир');
+
+        // prefix_match (80) x the name weight (10); byte strtolower() left the value upper-case
+        // and it fell through to the fuzzy floor.
+        $this->assertEqualsWithDelta(800.0, $row->_debug['column_scores']['name'], 0.001);
+    }
+
+    public function test_mixed_case_multibyte_values_are_highlighted_per_character(): void
+    {
+        $this->insertUser('ПРИВЕТ мир', 'привет@example.com');
+        $this->insertUser('Größe ÜBER Maß', 'über@example.com');
+        $this->insertUser('GÜNEŞ ışığı', 'güneş@example.com');
+        // The Kelvin sign (3 bytes) is an upper-case k (1 byte): each match's own length counts.
+        $this->insertUser("\u{212A}ELVIN scale", 'kelvin@example.com');
+
+        $cases = [
+            'привет' => ['ПРИВЕТ мир', '<mark>ПРИВЕТ</mark> мир', [[0, 11]]],
+            'über'   => ['Größe ÜBER Maß', 'Größe <mark>ÜBER</mark> Maß', [[8, 12]]],
+            'güneş'  => ['GÜNEŞ ışığı', '<mark>GÜNEŞ</mark> ışığı', [[0, 6]]],
+            'kelvin' => ["\u{212A}ELVIN scale", "<mark>\u{212A}ELVIN</mark> scale", [[0, 7]]],
+        ];
+
+        foreach ($cases as $term => [$name, $expected, $indices]) {
+            $row = User::search($term)->using('like')->highlight('mark')->get()->firstWhere('name', $name);
+
+            $this->assertNotNull($row, $term);
+            $this->assertSame($expected, $row->_highlighted['name'], $term);
+            $this->assertSame($expected, SearchBuilder::renderHighlighted($row, 'name'), $term);
+
+            // _matches carries byte offsets — the unit substr() and wrapWithTags() slice by.
+            $match = collect($row->_matches)->firstWhere('column', 'name');
+            $this->assertSame($indices, $match['indices'], $term);
+        }
+    }
+
+    public function test_suggest_needs_two_characters_not_two_bytes(): void
+    {
+        $this->insertUser('কলম', 'pen@example.com');
+
+        // One Bengali character is three bytes: it used to pass a two-byte minimum.
+        $this->assertSame([], User::search('ক')->searchIn(['name'])->suggest());
+        $this->assertContains('কলম', User::search('কল')->searchIn(['name'])->suggest());
     }
 }
