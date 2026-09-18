@@ -11,7 +11,8 @@ use Closure;
  * are the keys) and `['name', 'email']` (a plain list, names are the values), mixed included —
  * exactly as SearchBuilder::searchIn() does, so every consumer reads the same names.
  *
- * `detect()` memoises auto-detection per model class for the life of the process: it reads the
+ * `detect()` memoises auto-detection per model class, connection and table for the life of the
+ * process (a tenant model that switches either gets its own entry): it reads the
  * table's columns, and it is called on every save (shadow columns), every indexed row and every
  * search. Declared columns never reach it. The cache is as long-lived as
  * SearchableObserver::$columnCache and FederatedSearch::$columnListings — a schema change needs

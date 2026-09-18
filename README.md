@@ -19,7 +19,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 | **Core** | Zero-config search • Fluent API • Eloquent & Query Builder support • Relationship search (dot notation) |
 | **Algorithms** | Multiple fuzzy algorithms • Typo tolerance • Multi-word token search |
 | **Scoring** | Field weighting • Relevance scoring • Prefix boosting • Partial match • Recency boost |
-| **Text Processing** | Stop-word filtering • Synonym support • Language/locale awareness |
+| **Text Processing** | Stop-word filtering • Synonym support • Per-locale stop-word lists |
 | **Internationalization** | Unicode support • Accent insensitivity • Multi-language |
 | **Results** | Highlighted results • Custom scoring hooks • Debug/explain-score mode |
 | **Performance** | BM25 inverted index • Async indexing (queue) • Redis/cache support |
@@ -364,12 +364,16 @@ User::search('john')
 
 ### Partial Match Support
 
+Substring matching is always on: every pattern-based algorithm searches for `%term%`, so a
+partial term matches without any extra call.
+
 ```php
-User::search('joh')
-    ->partialMatch()    // Matches "john", "johnny", "johanna"
-    ->minMatchLength(2) // Minimum 2 characters
-    ->get();
+User::search('joh')->get();   // matches "john", "johnny", "johanna"
 ```
+
+`partialMatch()` is kept as a no-op for API compatibility — there is nothing to switch on.
+`minMatchLength()` is deprecated since v2.1.0 and does nothing; set the minimum term length with
+the `min_search_length` config key (whole term) or `typo_tolerance.min_word_length` (per word).
 
 ### Custom Scoring Hooks
 
@@ -555,7 +559,7 @@ $analytics = User::search('john')
 
 - **Stop-word filtering** — `ignoreStopWords()` drops common words from a query; built-in lists cover eight locales, or pass a custom list or file.
 - **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms.
-- **Locale awareness** — `locale()` selects the query-time stop-word list and locale-specific handling.
+- **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
 - **Unicode & accent insensitivity** — `accentInsensitive()` and `unicodeNormalize()` match `café`/`cafe` and `naïve`/`naive`; text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
 
@@ -980,10 +984,10 @@ Post::search('laravel')->preset('blog')->get();
 | Preset | Best For | Algorithm | Typo Tolerance | Features |
 |--------|----------|-----------|----------------|----------|
 | `blog` | Blog posts, articles | fuzzy | 2 | Stop words, accent-insensitive |
-| `ecommerce` | Product search | fuzzy | 1 | Partial match, no stop words |
+| `ecommerce` | Product search | fuzzy | 1 | Weighted product columns, no stop words |
 | `users` | User/contact search | levenshtein | 2 | Accent-insensitive |
 | `phonetic` | Name pronunciation | soundex | 0 | Phonetic matching |
-| `exact` | SKUs, codes, IDs | simple | 0 | Partial match only |
+| `exact` | SKUs, codes, IDs | simple | 0 | Plain LIKE, no typo patterns |
 
 #### Preset Configuration Reference
 

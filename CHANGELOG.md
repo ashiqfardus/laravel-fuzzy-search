@@ -75,6 +75,7 @@ Upgrading from 2.0.x: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/m
 ### Deprecated
 
 - `debounce()` — a server-side debounce cannot exist; it now raises `E_USER_DEPRECATED` and will be removed in v3.0.0. Debounce on the client (`wire:model.live.debounce.300ms`, a JS timer).
+- `locale()` and `minMatchLength()` — never implemented: both values were only ever read into the cache key, so neither changed a single query. They now raise `E_USER_DEPRECATED`, stay no-ops and will be removed in v3.0.0. Select a stop-word list with `ignoreStopWords('de')` (query time) or `$searchable['locale']` (index pipeline); set a minimum term length with `min_search_length` / `typo_tolerance.min_word_length`. `partialMatch()` is documented as a no-op instead (LIKE patterns already match substrings) and is not deprecated. The README "Partial Match Support" and "Locale awareness" sections, `docs/tokenization.md`'s locale section and the `ecommerce`/`exact` preset descriptions no longer promise behaviour that never existed.
 
 ### Removed
 

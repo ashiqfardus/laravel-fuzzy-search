@@ -94,18 +94,32 @@ class SearchBuilderTest extends TestCase
         $this->assertInstanceOf(SearchBuilder::class, $result);
     }
 
-    public function test_partial_match_method_is_chainable(): void
+    public function test_partial_match_is_a_documented_no_op(): void
     {
-        $result = $this->builder->partialMatch();
-        
-        $this->assertInstanceOf(SearchBuilder::class, $result);
+        $plain   = User::search('joh')->searchIn(['name']);
+        $partial = User::search('joh')->searchIn(['name'])->partialMatch();
+
+        $this->assertInstanceOf(SearchBuilder::class, $partial);
+        // LIKE patterns already match substrings — partialMatch() has nothing left to switch on.
+        $this->assertSame($plain->toSql(), $partial->toSql());
+        $this->assertSame($plain->getBindings(), $partial->getBindings());
+        $this->assertSame([], $this->deprecationsFrom(fn () => User::search('joh')->partialMatch()));
     }
 
-    public function test_min_match_length_method_is_chainable(): void
+    public function test_min_match_length_is_deprecated_and_a_no_op(): void
     {
-        $result = $this->builder->minMatchLength(3);
-        
+        $plain = User::search('joh')->searchIn(['name']);
+
+        $deprecations = $this->deprecationsFrom(function () use (&$result) {
+            $result = User::search('joh')->searchIn(['name'])->minMatchLength(9);
+        });
+
         $this->assertInstanceOf(SearchBuilder::class, $result);
+        $this->assertCount(1, $deprecations);
+        $this->assertStringContainsString('minMatchLength() is deprecated', $deprecations[0]);
+        $this->assertStringContainsString('v3.0.0', $deprecations[0]);
+        $this->assertSame($plain->toSql(), $result->toSql());
+        $this->assertSame($plain->getBindings(), $result->getBindings());
     }
 
     public function test_custom_score_method_is_chainable(): void
@@ -136,11 +150,39 @@ class SearchBuilderTest extends TestCase
         $this->assertInstanceOf(SearchBuilder::class, $result);
     }
 
-    public function test_locale_method_is_chainable(): void
+    public function test_locale_is_deprecated_and_a_no_op(): void
     {
-        $result = $this->builder->locale('en');
-        
+        $plain = User::search('der john')->searchIn(['name']);
+
+        $deprecations = $this->deprecationsFrom(function () use (&$result) {
+            $result = User::search('der john')->searchIn(['name'])->locale('de');
+        });
+
         $this->assertInstanceOf(SearchBuilder::class, $result);
+        $this->assertCount(1, $deprecations);
+        $this->assertStringContainsString('locale() is deprecated', $deprecations[0]);
+        $this->assertStringContainsString('v3.0.0', $deprecations[0]);
+        // No stop-word list is selected by it: same bindings, and stop words stay off.
+        $this->assertSame($plain->getBindings(), $result->getBindings());
+        $this->assertFalse($result->getAnalytics()['stop_words_active']);
+    }
+
+    /** @return string[] the E_USER_DEPRECATED messages $callback raised */
+    private function deprecationsFrom(\Closure $callback): array
+    {
+        $deprecations = [];
+        set_error_handler(function (int $errno, string $message) use (&$deprecations): bool {
+            $deprecations[] = $message;
+            return true;
+        }, E_USER_DEPRECATED);
+
+        try {
+            $callback();
+        } finally {
+            restore_error_handler();
+        }
+
+        return $deprecations;
     }
 
     public function test_accent_insensitive_method_is_chainable(): void
@@ -333,15 +375,6 @@ class SearchBuilderTest extends TestCase
         $prop = new \ReflectionProperty($this->builder, 'prefixBoostMultiplier');
         $prop->setAccessible(true);
         $this->assertSame(1.0, $prop->getValue($this->builder));
-    }
-
-    public function test_min_match_length_has_minimum_of_one(): void
-    {
-        $this->builder->minMatchLength(0);
-
-        $prop = new \ReflectionProperty($this->builder, 'minMatchLength');
-        $prop->setAccessible(true);
-        $this->assertSame(1, $prop->getValue($this->builder));
     }
 
     public function test_max_patterns_floor_matches_cap_patterns_floor(): void

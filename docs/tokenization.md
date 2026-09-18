@@ -54,15 +54,33 @@ User::search('laptop')
 
 ### Language / Locale Awareness
 
-```php
-User::search('john')
-    ->locale('en')      // English
-    ->get();
+A locale selects a stop-word list — nothing else. Pass it where it is read: `ignoreStopWords()`
+at query time, `$searchable['locale']` for a model's index pipeline (see "Per-Model Pipelines"
+below).
 
-User::search('münchen')
-    ->locale('de')      // German - handles umlauts
+```php
+// Query time: drop German stop words from this search
+User::search('der schnelle fuchs')
+    ->ignoreStopWords('de')
     ->get();
 ```
+
+```php
+// Index time: this model's postings are built with the French list
+class Article extends Model
+{
+    use Searchable;
+
+    protected $searchable = [
+        'columns' => ['title' => 10, 'body' => 5],
+        'locale'  => 'fr',
+    ];
+}
+```
+
+Umlauts, accents and other marks are handled per character by every algorithm regardless of
+locale — see "Unicode & Accent Insensitivity" below. `SearchBuilder::locale()` never selected a
+list or a collation; it is deprecated since v2.1.0, does nothing, and is removed in v3.0.0.
 
 ### Unicode & Accent Insensitivity
 
@@ -143,7 +161,7 @@ class Product extends Model
 }
 ```
 
-Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline — it's independent of the query builder's `->locale()`.
+Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline — it is the only place a locale changes what is indexed (the builder's deprecated `->locale()` never did anything).
 
 The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion and `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. `didYouMean()` is a separate, unscoped lookup: it queries the whole cross-model dictionary on the raw search term without running it through any model's tokenizer, stemmer or stop-word list. Rebuild after changing any of these keys, same as the global tokenizer/stemmer:
 

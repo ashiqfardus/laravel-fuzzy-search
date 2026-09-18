@@ -374,7 +374,13 @@ class SearchBuilder
     }
 
     /**
-     * Enable partial matching
+     * A documented no-op, kept for API compatibility (and used by the `ecommerce`/`exact`
+     * presets).
+     *
+     * Every pattern-based algorithm already searches for substrings — the LIKE patterns the
+     * drivers build are `%term%` — so `search('joh')` matches "john", "johnny" and "johanna"
+     * with or without this call. There is nothing to switch on, which is also why this one is
+     * not deprecated: no caller has to stop doing anything.
      */
     public function partialMatch(): self
     {
@@ -383,10 +389,19 @@ class SearchBuilder
     }
 
     /**
-     * Set minimum match length for partial matching
+     * @deprecated since 2.1.0 — never implemented. The value was only ever read into the cache
+     *             key, never into a pattern or a predicate; the real minimum-length controls are
+     *             the `min_search_length` config key (whole term) and
+     *             `typo_tolerance.min_word_length` (per word). This method is a no-op and will
+     *             be removed in v3.0.0.
      */
     public function minMatchLength(int $length): self
     {
+        trigger_error(
+            'SearchBuilder::minMatchLength() is deprecated since 2.1.0 and does nothing — use the min_search_length config key. It will be removed in v3.0.0.',
+            E_USER_DEPRECATED
+        );
+
         $this->minMatchLength = max(1, $length);
         return $this;
     }
@@ -440,10 +455,19 @@ class SearchBuilder
     }
 
     /**
-     * Set locale for language-aware processing
+     * @deprecated since 2.1.0 — never implemented. The value was only ever read into the cache
+     *             key: no stop-word list, stemmer or collation was ever selected from it. Pass
+     *             the locale where it is actually read — `ignoreStopWords('de')` for a
+     *             query-time stop-word list, `$searchable['locale']` for a model's index
+     *             pipeline. This method is a no-op and will be removed in v3.0.0.
      */
     public function locale(string $locale): self
     {
+        trigger_error(
+            "SearchBuilder::locale() is deprecated since 2.1.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list or \$searchable['locale'] for a model's index pipeline. It will be removed in v3.0.0.",
+            E_USER_DEPRECATED
+        );
+
         $this->locale = $locale;
         return $this;
     }

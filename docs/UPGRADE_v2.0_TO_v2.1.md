@@ -70,6 +70,17 @@ Removing these keys from your published config is safe — they had no effect.
   `E_USER_DEPRECATED` and remains a no-op, as it always was. Debounce on the client instead
   (`wire:model.live.debounce.300ms` in Livewire, or a JS timer around your search input). Will
   be removed in v3.0.0.
+- **`SearchBuilder::locale()`** — never selected a stop-word list, a stemmer or a collation: the
+  value was only ever folded into the cache key. Calling it now raises `E_USER_DEPRECATED` and
+  remains the no-op it always was. Pass the locale where it is actually read —
+  `->ignoreStopWords('de')` for a query-time stop-word list, `$searchable['locale']` for a
+  model's index pipeline. Will be removed in v3.0.0.
+- **`SearchBuilder::minMatchLength()`** — likewise never read into a pattern or a predicate. Use
+  the `min_search_length` config key (whole term) or `typo_tolerance.min_word_length` (per word).
+  Raises `E_USER_DEPRECATED`, still a no-op, removed in v3.0.0.
+- **`SearchBuilder::partialMatch()`** is *not* deprecated but is documented as a no-op: every
+  pattern-based algorithm already searches `%term%`, so substring matching needs no call. The
+  `ecommerce` and `exact` presets keep their `partial_match` key; it simply never added anything.
 
 ## Database fixes you get for free
 
