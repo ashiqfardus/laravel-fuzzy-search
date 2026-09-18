@@ -10,6 +10,15 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 class Lexer
 {
     /**
+     * ASCII whitespace only. ctype_space() follows LC_CTYPE: under a UTF-8 locale on macOS/BSD it
+     * calls byte 0xA0 a space, which cut à (C3 A0), ঠ (E0 A6 A0) and 丠 (E4 B8 A0) in half.
+     */
+    private static function isSpace(string $byte): bool
+    {
+        return strspn($byte, " \t\n\r\v\f") === 1;
+    }
+
+    /**
      * Convert a query string into a stream of tokens.
      *
      * @return Token[]
@@ -31,7 +40,7 @@ class Lexer
 
         while ($i < $len) {
             // Skip whitespace
-            if (ctype_space($query[$i])) {
+            if (self::isSpace($query[$i])) {
                 $i++;
                 continue;
             }
@@ -68,7 +77,7 @@ class Lexer
                 if (preg_match('/\G([A-Za-z_][A-Za-z0-9_.]*):/', $query, $m, 0, $i) === 1) {
                     $field = $m[1];
                     $i    += strlen($m[0]);
-                    if ($i >= $len || ctype_space($query[$i]) || in_array($query[$i], ['|', '(', ')', '!'], true)) {
+                    if ($i >= $len || self::isSpace($query[$i]) || in_array($query[$i], ['|', '(', ')', '!'], true)) {
                         throw QuerySyntaxException::fieldNeedsTerm($field);
                     }
                 }
@@ -112,7 +121,7 @@ class Lexer
                 // Read bare word — stop at whitespace, grouping chars, OR '!' (prefix operator)
                 $start = $i;
                 while ($i < $len
-                    && !ctype_space($query[$i])
+                    && !self::isSpace($query[$i])
                     && $query[$i] !== '|'
                     && $query[$i] !== '('
                     && $query[$i] !== ')'

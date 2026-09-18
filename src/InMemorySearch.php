@@ -15,6 +15,8 @@ class InMemorySearch
 {
     private Collection $items;
     private string     $term          = '';
+    /** Only invalid UTF-8: cleaned to '' but not empty, so it matches nothing instead of listing everything. */
+    private bool       $invalidBytesOnly = false;
     private array      $columns       = [];
     private int        $limit         = 15;
     private int        $offset        = 0;
@@ -37,7 +39,8 @@ class InMemorySearch
 
     public function search(string $term): self
     {
-        $this->term = trim(Utf8::clean($term));
+        $this->term             = trim(Utf8::clean($term));
+        $this->invalidBytesOnly = $this->term === '' && trim($term) !== '';
         return $this;
     }
 
@@ -85,6 +88,10 @@ class InMemorySearch
 
     public function get(): Collection
     {
+        if ($this->invalidBytesOnly) {
+            return collect();
+        }
+
         $startedAt = microtime(true);
 
         if ($this->term === '' || empty($this->columns)) {

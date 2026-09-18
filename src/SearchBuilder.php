@@ -28,6 +28,8 @@ class SearchBuilder
     protected Builder|EloquentBuilder|null $pristineQuery = null;
     protected FuzzySearch $fuzzySearch;
     protected string $searchTerm = '';
+    /** The term was only invalid UTF-8 (`?q=%FF`): it cleaned to '' but was not empty, so it matches nothing. */
+    protected bool $invalidBytesOnly = false;
     protected array $searchableColumns = [];
     protected array $columnWeights = [];
 
@@ -137,7 +139,8 @@ class SearchBuilder
      */
     public function search(string $term): self
     {
-        $this->searchTerm = trim(Utf8::clean($term));
+        $this->searchTerm       = trim(Utf8::clean($term));
+        $this->invalidBytesOnly = $this->searchTerm === '' && trim($term) !== '';
 
         return $this;
     }
@@ -283,7 +286,8 @@ class SearchBuilder
     public function extended(?string $query = null): self
     {
         if ($query !== null) {
-            $this->searchTerm = Utf8::clean($query);
+            $this->searchTerm       = Utf8::clean($query);
+            $this->invalidBytesOnly = trim($this->searchTerm) === '' && trim($query) !== '';
         }
         $this->extendedQuery = $this->searchTerm;
         return $this;
@@ -902,6 +906,13 @@ class SearchBuilder
      */
     public function get(): Collection
     {
+        // Only invalid UTF-8 matches nothing, like a term below min_search_length — not '',
+        // which throws or, with allow_empty_search, lists every row. Before the cache: the
+        // key cannot tell it from ''. Covers first() and simplePaginate(), which call get().
+        if ($this->invalidBytesOnly) {
+            return collect();
+        }
+
         // Check cache
         if ($this->cacheMinutes !== null) {
             $cacheKey = $this->cacheKey ?? $this->generateCacheKey();
@@ -1037,8 +1048,9 @@ class SearchBuilder
      *
      * It also stays null (or stale from an earlier run on the same instance) whenever a run
      * never reaches dispatchExecuted(): a term shorter than min_search_length short-circuits
-     * executeSearch() and builds no event, and remember() serves get() from the cache without
-     * executing. FuzzySearchCollection then reports meta.algorithm/meta.latency_ms as null.
+     * executeSearch() and builds no event, a term made only of invalid UTF-8 returns from get()
+     * before it, and remember() serves get() from the cache without executing.
+     * FuzzySearchCollection then reports meta.algorithm/meta.latency_ms as null.
      */
     public function lastExecution(): ?\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted
     {
@@ -1466,6 +1478,13 @@ class SearchBuilder
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        if ($this->invalidBytesOnly) { // matches nothing — see get()
+            return new \Illuminate\Pagination\LengthAwarePaginator(
+                [], 0, max(1, $perPage), max(1, (int) ($page ?: request()->input($pageName, 1))),
+                ['path' => request()->url(), 'pageName' => $pageName]
+            );
+        }
+
         return $this->withFallback(
             fn () => $this->paginateOnce($perPage, $pageName, $page),
             fn (\Illuminate\Contracts\Pagination\LengthAwarePaginator $paginator) => $paginator->total() === 0
@@ -1709,6 +1728,10 @@ class SearchBuilder
      */
     public function count(): int
     {
+        if ($this->invalidBytesOnly) { // matches nothing — see get()
+            return 0;
+        }
+
         return $this->withFallback(
             function (): int {
                 // Mirror paginateOnce()/paginateRanked() so count() never disagrees with
@@ -1754,6 +1777,10 @@ class SearchBuilder
     {
         if (empty($this->facets)) {
             return [];
+        }
+
+        if ($this->invalidBytesOnly) { // matches nothing — see get()
+            return array_fill_keys($this->facets, []);
         }
 
         return $this->onQueryClone(function (): array {

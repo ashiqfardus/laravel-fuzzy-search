@@ -27,6 +27,8 @@ class FederatedSearch
 
     protected array $models = [];
     protected string $searchTerm = '';
+    /** Only invalid UTF-8 (`?q=%FF`): cleaned to '' but not empty, so it matches nothing — see SearchBuilder. */
+    protected bool $invalidBytesOnly = false;
     protected array $searchableColumns = [];
     protected array $columnWeights = [];
     protected ?string $algorithm = null;
@@ -54,7 +56,8 @@ class FederatedSearch
      */
     public function search(string $term): self
     {
-        $this->searchTerm = trim(Utf8::clean($term));
+        $this->searchTerm       = trim(Utf8::clean($term));
+        $this->invalidBytesOnly = $this->searchTerm === '' && trim($term) !== '';
         return $this;
     }
 
@@ -187,6 +190,10 @@ class FederatedSearch
      */
     protected function fetchRanked(int $perModelCeiling): Collection
     {
+        if ($this->invalidBytesOnly) {
+            return collect();
+        }
+
         if (empty($this->searchTerm) && !config('fuzzy-search.allow_empty_search', false)) {
             throw new EmptySearchTermException();
         }
@@ -348,7 +355,7 @@ class FederatedSearch
      */
     protected function countPerModel(): array
     {
-        if (empty($this->searchTerm) && !config('fuzzy-search.allow_empty_search', false)) {
+        if (empty($this->searchTerm) && !$this->invalidBytesOnly && !config('fuzzy-search.allow_empty_search', false)) {
             throw new EmptySearchTermException();
         }
 
@@ -365,7 +372,7 @@ class FederatedSearch
                 continue;
             }
 
-            $counts[$modelClass] = min(
+            $counts[$modelClass] = $this->invalidBytesOnly ? 0 : min(
                 $query->count(),
                 $this->limitPerModel ?? PHP_INT_MAX,
                 // The plain whereFuzzyMultiple() fallback has no candidate window.

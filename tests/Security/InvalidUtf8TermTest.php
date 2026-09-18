@@ -6,6 +6,7 @@ require_once __DIR__ . '/../TestModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Analytics\SearchAnalytics;
 use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
@@ -15,8 +16,10 @@ use Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer;
 use Ashiqfardus\LaravelFuzzySearch\Scout\FuzzySearchEngine;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Closure;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * A crafted `?q=jo%C3hn` is invalid UTF-8. PostgreSQL (SQLSTATE 22021) and SQL Server (IMSSP)
@@ -112,6 +115,92 @@ class InvalidUtf8TermTest extends TestCase
         $this->assertNotEmpty($search(self::CLEAN));
         $this->assertSame($search(self::CLEAN), $search(self::DIRTY));
         $this->assertSame($page(self::CLEAN), $page(self::DIRTY));
+    }
+
+    /**
+     * `?q=%FF` is not an empty request, so an app's filled('q') guard lets it through. Cleaned it
+     * is '', but it must not behave like '' (EmptySearchTermException from get(), every row from
+     * paginate()/count()): like a term below min_search_length, it matches nothing.
+     *
+     * @return array<string, array{string, Closure(object): mixed, mixed}>
+     */
+    public static function invalidBytesOnlyEntryPoints(): array
+    {
+        return [
+            'get'                      => ['builder', fn ($b) => $b->get()->all(), []],
+            'first'                    => ['builder', fn ($b) => $b->first(), null],
+            'paginate'                 => ['builder', fn ($b) => [($p = $b->paginate(5))->total(), $p->items()], [0, []]],
+            'simplePaginate'           => ['builder', fn ($b) => $b->simplePaginate(5)->items(), []],
+            'count'                    => ['builder', fn ($b) => $b->count(), 0],
+            'getFacets'                => ['builder', fn ($b) => $b->facet('email')->getFacets(), ['email' => []]],
+            'federated get'            => ['federated', fn ($f) => $f->get()->all(), []],
+            'federated paginate'       => ['federated', fn ($f) => [($p = $f->paginate(5))->total(), $p->items()], [0, []]],
+            'federated simplePaginate' => ['federated', fn ($f) => $f->simplePaginate(5)->items(), []],
+            'federated getCounts'      => ['federated', fn ($f) => $f->getCounts(), ['User' => 0]],
+            'in-memory get'            => ['in-memory', fn ($m) => $m->get()->all(), []],
+        ];
+    }
+
+    #[DataProvider('invalidBytesOnlyEntryPoints')]
+    public function test_a_term_made_only_of_invalid_bytes_matches_nothing(string $subject, Closure $run, mixed $expected): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+
+        foreach (["\xFF", "\xC3", " \xFF\xFE "] as $term) {
+            $makers = match ($subject) {
+                'builder' => [
+                    'search'          => fn () => User::search($term),
+                    'search+extended' => fn () => User::search($term)->extended(),
+                    'extended(term)'  => fn () => User::search('')->extended($term),
+                    'searchBoolean'   => fn () => User::search('')->searchBoolean($term),
+                    'inverted index'  => fn () => User::search($term)->useInvertedIndex(),
+                    'with fallback'   => fn () => User::search($term)->fallback('levenshtein'),
+                    'cached'          => fn () => User::search($term)->cache(5),
+                ],
+                'federated' => ['federated' => fn () => FederatedSearch::across([User::class])->search($term)->searchIn(['name', 'email'])],
+                'in-memory' => ['in-memory' => fn () => FuzzySearch::on([['name' => 'John Doe']])->search($term)->searchIn(['name'])],
+            };
+
+            foreach ($makers as $path => $make) {
+                $this->assertSame($expected, $run($make()), bin2hex($term) . " {$path}");
+            }
+        }
+    }
+
+    public function test_a_term_made_only_of_invalid_bytes_logs_nothing_and_is_not_the_empty_search(): void
+    {
+        $events = 0;
+        Event::listen(FuzzySearchExecuted::class, function () use (&$events) {
+            $events++;
+        });
+        $items = [['name' => 'John Doe'], ['name' => 'Jane Roe']];
+
+        User::search("\xFF")->get();
+        User::search("\xFF")->paginate(5);
+        FederatedSearch::across([User::class])->search("\xFF")->searchIn(['name'])->get();
+        FuzzySearch::on($items)->search("\xFF")->searchIn(['name'])->get();
+        $this->assertSame(0, $events, 'no search ran, so nothing reaches the analytics log');
+
+        // A genuine '' is unchanged: it throws by default and, with allow_empty_search, lists
+        // every row. The invalid-only term matches nothing either way.
+        try {
+            User::search('')->get();
+            $this->fail("'' should still throw EmptySearchTermException");
+        } catch (EmptySearchTermException) {
+        }
+        config(['fuzzy-search.allow_empty_search' => true]);
+        $this->assertSame(User::count(), User::search('')->count());
+        $this->assertSame(0, User::search("\xFF")->count());
+        $this->assertSame([], User::search("\xFF")->get()->all());
+        $this->assertNotEmpty(FederatedSearch::across([User::class])->search('')->searchIn(['name'])->get());
+        $this->assertSame([], FederatedSearch::across([User::class])->search("\xFF")->searchIn(['name'])->get()->all());
+        $this->assertCount(2, FuzzySearch::on($items)->search('')->searchIn(['name'])->get());
+
+        // A later valid term replaces it on the same builder.
+        $this->assertNotEmpty(User::search("\xFF")->search(self::CLEAN)->get());
+        $this->assertNotEmpty(User::search("\xFF")->extended("'" . self::CLEAN)->get());
+        $this->assertNotEmpty(FederatedSearch::across([User::class])->search("\xFF")->search(self::CLEAN)->searchIn(['name'])->get());
+        $this->assertNotEmpty(FuzzySearch::on($items)->search("\xFF")->search(self::CLEAN)->searchIn(['name'])->get());
     }
 
     public function test_every_executed_event_and_the_analytics_row_carry_the_cleaned_term(): void

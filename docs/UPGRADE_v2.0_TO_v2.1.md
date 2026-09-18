@@ -179,7 +179,8 @@ you get back from a search:
   engine's `raw()['total']` is also the match count now, not the size of the returned page.
 - **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
   every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
-  SQLite and MySQL); the event and the analytics log record the cleaned term.
+  SQLite and MySQL); the event and the analytics log record the cleaned term. A term made only of
+  invalid bytes (`?q=%FF`) matches nothing: no rows, a total of 0, and no `EmptySearchTermException`.
 
 ## Relationship search
 

@@ -17,6 +17,26 @@ class LexerTest extends TestCase
         $this->lexer = new Lexer();
     }
 
+    /**
+     * ctype_space() follows LC_CTYPE, and under a UTF-8 locale on macOS/BSD it calls byte 0xA0 a
+     * space. 0xA0 is inside à (C3 A0), ঠ (E0 A6 A0) and 丠 (E4 B8 A0), so those words were cut
+     * mid-character: invalid UTF-8 in the binding on PHP 8.1/8.2, a literal '?' on 8.3+. Only
+     * ASCII whitespace separates words. (Linux glibc never treats 0xA0 as a space.)
+     */
+    public function test_a_utf8_locale_does_not_split_a_character_containing_byte_0xA0(): void
+    {
+        $previous = setlocale(LC_CTYPE, '0');
+        setlocale(LC_CTYPE, 'C.UTF-8', 'en_US.UTF-8');
+
+        try {
+            $values = array_map(fn (Token $t) => $t->value, $this->lexer->tokenize("voilà ঠাকুর\t丠 name:à"));
+        } finally {
+            setlocale(LC_CTYPE, $previous);
+        }
+
+        $this->assertSame(['voilà', 'ঠাকুর', '丠', 'à'], $values);
+    }
+
     public function test_bare_word_produces_fuzzy_token(): void
     {
         $tokens = $this->lexer->tokenize('john');
