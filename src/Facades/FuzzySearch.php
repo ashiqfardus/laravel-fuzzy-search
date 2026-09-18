@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Illuminate\Database\Query\Builder applyFuzzyWhere(\Illuminate\Database\Query\Builder $query, string $column, string $value, ?string $algorithm = null, ?array $options = [], string $boolean = 'and')
  * @method static \Illuminate\Database\Query\Builder applyFuzzyWhereMultiple(\Illuminate\Database\Query\Builder $query, array $columns, string $value, ?string $algorithm = null, ?array $options = [])
  * @method static \Illuminate\Database\Query\Builder applyFuzzyOrder(\Illuminate\Database\Query\Builder $query, string $column, string $value, string $direction = 'asc')
+ * @method static \Closure tableSearch(array|string|null $columns = null, ?string $algorithm = null, array $options = [])
  * @method static int levenshteinDistance(string $str1, string $str2, array $options = [])
  * @method static float similarityPercentage(string $str1, string $str2)
  * @method static \Ashiqfardus\LaravelFuzzySearch\InMemorySearch on(iterable $items)

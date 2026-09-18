@@ -121,6 +121,34 @@ class FuzzySearch
         return $query->orderByRaw("{$expression} {$direction}", [$value]);
     }
 
+    /**
+     * A search closure for Filament tables — `TextColumn::make('name')->searchable(query:
+     * FuzzySearch::tableSearch(['name']))` or `$table->searchUsing(FuzzySearch::tableSearch())`.
+     * Filament evaluates it as (Builder $query, string $search) inside a where group; the
+     * fuzzy predicate is added to that group so it composes with Filament's other constraints.
+     * With no columns the model's $searchable columns are used (Searchable trait models only).
+     */
+    public static function tableSearch(array|string|null $columns = null, ?string $algorithm = null, array $options = []): \Closure
+    {
+        return function (\Illuminate\Database\Eloquent\Builder $query, string $search) use ($columns, $algorithm, $options): \Illuminate\Database\Eloquent\Builder {
+            $cols = match (true) {
+                is_array($columns)  => $columns,
+                is_string($columns) => [$columns],
+                default             => method_exists($query->getModel(), 'getSearchableColumns')
+                    ? $query->getModel()->getSearchableColumns()
+                    : [],
+            };
+
+            if ($cols === [] || trim($search) === '') {
+                return $query;
+            }
+
+            app(static::class)->applyFuzzyWhereMultiple($query->getQuery(), array_values($cols), $search, $algorithm, $options);
+
+            return $query;
+        };
+    }
+
     public static function levenshteinDistance(string $str1, string $str2, array $options = []): int
     {
         return levenshtein(
