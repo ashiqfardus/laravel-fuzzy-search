@@ -1186,9 +1186,9 @@ php artisan fuzzy-search:explain User --term="john"
 | **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
 | **BM25 index** | Fast at scale | Native (dictionary expansion) | Large tables, ranked results | 10K+ rows |
 
-### Measured Latency (100k-row MySQL 8.0 dataset)
+### Indicative Latency (100k-row MySQL 8.0 table)
 
-Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) (commodity VPS, warm cache). Run `php artisan demo:seed` in the demo project to seed the same dataset.
+Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a warm cache — a guide to how the paths compare, not a benchmark this repository reproduces (the [demo project](https://github.com/ashiqfardus/laravel-fuzzy-search-demo)'s `demo:seed` seeds ~150 sample rows, and `--huge` 1M users). Measure your own tables with `php artisan fuzzy-search:benchmark`.
 
 | Search path | Median latency | Notes |
 |---|---|---|
@@ -1197,7 +1197,7 @@ Numbers measured on the [live demo](https://github.com/ashiqfardus/laravel-fuzzy
 | BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
 | Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
 
-**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index returns results in the same ~12–20 ms window as the 100k baseline. Typo expansion adds one dictionary query per query term whose cost grows with dictionary size (roughly 30 ms per term, measured on SQLite at ~450k distinct terms); call `typoTolerance(0)` on latency-critical searches.
+**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index should therefore stay close to the 100k figures above. Typo expansion adds one dictionary query per query term whose cost grows with dictionary size (roughly 30 ms per term, measured on SQLite at ~450k distinct terms); call `typoTolerance(0)` on latency-critical searches.
 
 ### When to Use BM25 vs LIKE
 
