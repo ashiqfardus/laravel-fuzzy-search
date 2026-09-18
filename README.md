@@ -202,7 +202,7 @@ User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 
 The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
 
-`$searchable['columns']` must be non-empty for `SearchableIndexingObserver` to index a model at all.
+`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`.
 
 → Full guide: [docs/relationships.md](docs/relationships.md)
 
@@ -913,7 +913,7 @@ Properties:
 
 - `searchTerm` (string) — the user's query
 - `columns` (array) — columns being searched
-- `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, `bm25`, `extended` (extended-syntax searches) or `in_memory` (`FuzzySearch::on()`)
+- `algorithm` (string) — algorithm used: `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, `simple` (`using('like')` reports `simple`), `like` (from `fallback('like')` or `default_algorithm => 'like'`, which keep the name as given), `bm25`, `extended` (extended-syntax searches) or `in_memory` (`FuzzySearch::on()`)
 - `candidateCount` (int) — rows fetched from SQL before scoring
 - `latencyMs` (float) — total search time in milliseconds
 - `resultCount` (int) — rows returned to the caller; `-1` when unknown
@@ -1188,7 +1188,7 @@ php artisan fuzzy-search:explain User --term="john"
 
 ### Indicative Latency (100k-row MySQL 8.0 table)
 
-Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a warm cache — a guide to how the paths compare, not a benchmark this repository reproduces (the [demo project](https://github.com/ashiqfardus/laravel-fuzzy-search-demo)'s `demo:seed` seeds ~150 sample rows, and `--huge` 1M users). Measure your own tables with `php artisan fuzzy-search:benchmark`.
+Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a warm cache — a guide to how the paths compare, not a guaranteed result. The [demo project](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) seeds a comparable dataset, 100k rows per model, with `php artisan db:seed --class="Database\Seeders\LargeDatasetSeeder"` (its `demo:seed` seeds ~150 sample rows, and `--huge` 1M users). Measure your own tables with `php artisan fuzzy-search:benchmark`.
 
 | Search path | Median latency | Notes |
 |---|---|---|

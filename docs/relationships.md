@@ -62,5 +62,5 @@ class Author extends Model
 
 Changing a parent row (renaming an author) does **not** reindex its children automatically — that is what the `saved` hook above is for.
 
-`$searchable['columns']` must be non-empty for `SearchableIndexingObserver` to index a model at all; an empty (or missing) `columns` config is treated as "not indexed" and every save is skipped.
+`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is treated as "not indexed" and every save is skipped, even if it defines `searchableText()`.
 
