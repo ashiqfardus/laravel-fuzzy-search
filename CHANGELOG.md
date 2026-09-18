@@ -121,6 +121,7 @@ Upgrading from 2.0.x: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/m
 - stableRanking() ordered by a hard-coded "id" column and broke on UUID / custom-key models.
 - suggest() missed capitalised values on PostgreSQL (case-sensitive LIKE).
 - A searchable column holding the string "0" was skipped by the indexer.
+- A search for `"0"` (a SKU, a house number) is a real search. `empty()` read it as the empty term, so `get()`, `first()`, `simplePaginate()` and `FederatedSearch` threw `EmptySearchTermException` and `paginate()`/`count()` returned every row; `tokenize()` also dropped a `0` word. This predates 2.1.
 - FederatedSearch::searchIn() was ignored for models using the Searchable trait; columns a table does not have are now skipped instead of raising SQL errors.
 - FederatedSearch: a model without the Searchable trait whose table has none of the requested searchIn() columns is now skipped instead of raising a SQL error.
 - count() no longer carries the relevance ORDER BY into the aggregate (PostgreSQL rejected it).

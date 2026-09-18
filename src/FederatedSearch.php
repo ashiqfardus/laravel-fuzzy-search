@@ -194,7 +194,7 @@ class FederatedSearch
             return collect();
         }
 
-        if (empty($this->searchTerm) && !config('fuzzy-search.allow_empty_search', false)) {
+        if ($this->searchTerm === '' && !config('fuzzy-search.allow_empty_search', false)) {
             throw new EmptySearchTermException();
         }
 
@@ -355,7 +355,7 @@ class FederatedSearch
      */
     protected function countPerModel(): array
     {
-        if (empty($this->searchTerm) && !$this->invalidBytesOnly && !config('fuzzy-search.allow_empty_search', false)) {
+        if ($this->searchTerm === '' && !$this->invalidBytesOnly && !config('fuzzy-search.allow_empty_search', false)) {
             throw new EmptySearchTermException();
         }
 

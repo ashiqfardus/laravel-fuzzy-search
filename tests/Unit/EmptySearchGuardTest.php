@@ -2,7 +2,11 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
+require_once __DIR__ . '/../TestModels.php';
+
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
@@ -139,5 +143,29 @@ class EmptySearchGuardTest extends TestCase
 
         // 'jo' matches John, Johnny, Jon — expect at least one result
         $this->assertNotEmpty($results);
+    }
+
+    /**
+     * empty('0') is true, so a search for "0" (a SKU, a house number) was treated as the empty
+     * search: EmptySearchTermException from get()/first()/simplePaginate()/FederatedSearch, and
+     * every row from paginate()/count(). It is a one-character term like any other.
+     */
+    public function test_a_search_for_0_is_a_real_search(): void
+    {
+        config(['fuzzy-search.min_search_length' => 1]);
+        User::create(['name' => 'Room 0', 'email' => 'room@example.com']);
+        $federated = fn () => FederatedSearch::across([User::class])->search('0')->searchIn(['name', 'email']);
+
+        foreach (['like' => fn () => User::search('0'), 'tokenize' => fn () => User::search('0')->tokenize()] as $path => $make) {
+            $this->assertSame(['Room 0'], $make()->get()->pluck('name')->all(), "{$path} get");
+            $this->assertSame('Room 0', $make()->first()?->name, "{$path} first");
+            $this->assertSame(['Room 0'], collect($make()->simplePaginate(5)->items())->pluck('name')->all(), "{$path} simplePaginate");
+            $this->assertSame(1, $make()->paginate(5)->total(), "{$path} paginate");
+            $this->assertSame(1, $make()->count(), "{$path} count");
+        }
+
+        $this->assertSame(['Room 0'], $federated()->get()->pluck('name')->all());
+        $this->assertSame(1, $federated()->paginate(5)->total());
+        $this->assertSame(['User' => 1], $federated()->getCounts());
     }
 }

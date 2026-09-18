@@ -1065,7 +1065,7 @@ class SearchBuilder
     {
         // Deferred empty-search guard (moved from search() so that extended()/searchBoolean()
         // can supply their own query after an empty string was passed to search('').
-        if (empty($this->searchTerm) && $this->extendedQuery === null) {
+        if ($this->searchTerm === '' && $this->extendedQuery === null) {
             $allowEmpty = config('fuzzy-search.allow_empty_search', false);
             if (!$allowEmpty) {
                 throw new EmptySearchTermException();
@@ -1074,7 +1074,7 @@ class SearchBuilder
 
         // min_search_length / max_term_length guards — measured in characters, not bytes,
         // so multibyte terms are neither waved through nor cut mid-character.
-        if ($this->extendedQuery === null && !empty($this->searchTerm)) {
+        if ($this->extendedQuery === null && $this->searchTerm !== '') {
             $minLength = (int) config('fuzzy-search.min_search_length', 1);
             if (mb_strlen($this->searchTerm, 'UTF-8') < $minLength) {
                 return collect();
@@ -1089,7 +1089,7 @@ class SearchBuilder
         }
 
         // BM25 fast path via inverted index
-        if ($this->useSearchIndex && !empty($this->searchTerm)) {
+        if ($this->useSearchIndex && $this->searchTerm !== '') {
             return $this->executeIndexedSearch();
         }
 
@@ -1102,7 +1102,7 @@ class SearchBuilder
         $candidates = $this->query->limit($maxCandidates)->get();
 
         // Rescore ALL candidates before slicing
-        if ($this->withRelevance && !empty($this->searchTerm)) {
+        if ($this->withRelevance && $this->searchTerm !== '') {
             $candidates = $this->calculateRelevanceScores($candidates);
             // calculateRelevanceScores already sorts by _score DESC and calls values()
         }
@@ -1540,7 +1540,7 @@ class SearchBuilder
 
         // BM25 fast path via inverted index — never for extended queries, which run on the
         // LIKE path (mirrors executeSearch(); see getDebugInfo()['index_ignored']).
-        if ($this->extendedQuery === null && $this->useSearchIndex && !empty($this->searchTerm)) {
+        if ($this->extendedQuery === null && $this->useSearchIndex && $this->searchTerm !== '') {
             return $this->paginateIndexed($perPage, $pageName, $page);
         }
 
@@ -1784,7 +1784,7 @@ class SearchBuilder
                 // Mirror paginateOnce()/paginateRanked() so count() never disagrees with
                 // paginate()->total() on the same builder. Never for extended queries, which
                 // run on the LIKE path (mirrors executeSearch(); see getDebugInfo()['index_ignored']).
-                if ($this->extendedQuery === null && $this->useSearchIndex && !empty($this->searchTerm)) {
+                if ($this->extendedQuery === null && $this->useSearchIndex && $this->searchTerm !== '') {
                     $modelClass = $this->resolveIndexModelClass();
 
                     if ($modelClass !== null) {
@@ -1893,7 +1893,7 @@ class SearchBuilder
         // Process search term
         $searchTerm = $this->processSearchTerm($this->searchTerm);
 
-        if (!empty($searchTerm) && !empty($this->searchableColumns)) {
+        if ($searchTerm !== '' && !empty($this->searchableColumns)) {
             $this->applySearchConditions($searchTerm);
         }
 
@@ -1913,7 +1913,7 @@ class SearchBuilder
         }
 
         // Apply sorting
-        if (empty($this->sortBy) && $this->withRelevance && !empty($this->searchTerm)) {
+        if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '') {
             $this->applyRelevanceOrdering();
         } else {
             foreach ($this->sortBy as $sort) {
@@ -1995,8 +1995,7 @@ class SearchBuilder
     {
         // Tokenize if enabled
         if ($this->tokenizeSearch) {
-            $tokens = preg_split('/\s+/', $searchTerm);
-            $tokens = array_filter($tokens);
+            $tokens = preg_split('/\s+/', $searchTerm, -1, PREG_SPLIT_NO_EMPTY); // not array_filter(): it drops "0"
         } else {
             $tokens = [$searchTerm];
         }
@@ -2659,7 +2658,7 @@ class SearchBuilder
      */
     public function suggest(int $limit = 5): array
     {
-        if (empty($this->searchTerm) || mb_strlen($this->searchTerm, 'UTF-8') < 2) {
+        if ($this->searchTerm === '' || mb_strlen($this->searchTerm, 'UTF-8') < 2) {
             return [];
         }
 
@@ -2830,7 +2829,7 @@ class SearchBuilder
      */
     public function didYouMean(int $limit = 3): array
     {
-        if (empty($this->searchTerm) || mb_strlen($this->searchTerm) < 2) {
+        if ($this->searchTerm === '' || mb_strlen($this->searchTerm) < 2) {
             return [];
         }
 
