@@ -28,6 +28,7 @@
     },
     "suggest": {
         "laravel/scout": "Required for Scout driver integration (^10.0|^11.0|^12.0)",
+        "filament/filament": "Required for the HasFuzzyGlobalSearch trait and tableSearch() (v3.3+)",
         "wamania/php-stemmer": "Required for language stemming support (^1.2)",
         "ext-intl": "Unicode decomposition for indexing.accent_insensitive and accentInsensitive() (the built-in map is the fallback)"
     },

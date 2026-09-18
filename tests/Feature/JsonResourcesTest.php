@@ -43,7 +43,14 @@ class JsonResourcesTest extends TestCase
         $data = $this->resourceJson(new FuzzySearchResource($user));
 
         $this->assertSame('John Doe', $data['data']['name']);
-        $this->assertArrayNotHasKey('_score', array_diff_key($data['data'], array_flip(['_score', '_raw_score', '_highlighted', '_matches', '_model_type'])));
+        $this->assertSame('john@example.com', $data['data']['email']);
+        // The resource strips nothing but the package's own fields: every remaining underscore
+        // key is one of the five it promotes.
+        foreach (array_keys($data['data']) as $key) {
+            if (str_starts_with((string) $key, '_')) {
+                $this->assertContains($key, ['_score', '_raw_score', '_highlighted', '_matches', '_model_type'], $key);
+            }
+        }
         // assertIsNumeric, not assertIsFloat: John Doe ties for the top-ranked (normalized)
         // score here, so _score is PHP float 1.0 — json_encode() prints a whole-number float
         // without a decimal point ("1", not "1.0"), and json_decode() reads that back as an
@@ -111,5 +118,11 @@ class JsonResourcesTest extends TestCase
         $this->assertNotNull($user);
         $this->assertSame('&lt;b&gt;Bob&lt;/b&gt;', $user->_highlighted['name']);
         $this->assertStringContainsString('<mark>', $user->_highlighted['email']);
+    }
+
+    /** A null resource (->first() found nothing) serialises like any JsonResource: an empty object. */
+    public function test_a_null_resource_serialises_to_an_empty_object(): void
+    {
+        $this->assertSame([], $this->resourceJson(new FuzzySearchResource(null))['data']);
     }
 }

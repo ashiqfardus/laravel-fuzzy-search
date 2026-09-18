@@ -973,6 +973,11 @@ class SearchBuilder
      * run). withFallback() re-runs the same builder for each fallback algorithm; the last
      * attempt wins, which is the one whose results were actually returned. count() never
      * dispatches FuzzySearchExecuted, so it never touches this.
+     *
+     * It also stays null (or stale from an earlier run on the same instance) whenever a run
+     * never reaches dispatchExecuted(): a term shorter than min_search_length short-circuits
+     * executeSearch() and builds no event, and remember() serves get() from the cache without
+     * executing. FuzzySearchCollection then reports meta.algorithm/meta.latency_ms as null.
      */
     public function lastExecution(): ?\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted
     {

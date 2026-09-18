@@ -78,8 +78,8 @@ class MatchOffsetsTest extends TestCase
 
     public function test_non_matching_column_with_an_unclosed_angle_bracket_is_not_stripped(): void
     {
-        // _highlighted[$column] holds the raw, un-escaped value for a searched column
-        // that did not match. displayValueFor() must not strip_tags() it: PHP's
+        // _highlighted[$column] holds the escaped model value for a searched column that did
+        // not match. displayValueFor() must not strip_tags() the raw value either: PHP's
         // strip_tags() treats an unterminated "<" as an open tag and eats everything
         // after it, silently truncating content like "fits S<M<L".
         $this->app['db']->table('products')->insert([

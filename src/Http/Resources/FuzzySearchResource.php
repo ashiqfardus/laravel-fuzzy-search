@@ -12,7 +12,12 @@ class FuzzySearchResource extends JsonResource
 {
     public function toArray($request): array
     {
-        $row  = $this->resource;
+        $row = $this->resource;
+
+        if ($row === null) {
+            return []; // same as JsonResource::toArray() — nothing to shape
+        }
+
         $attr = is_object($row) && method_exists($row, 'toArray') ? $row->toArray() : (array) $row;
         $get  = fn (string $key) => is_object($row) ? ($row->{$key} ?? null) : ($row[$key] ?? null);
 
