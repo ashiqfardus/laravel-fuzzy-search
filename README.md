@@ -1480,7 +1480,7 @@ Pass `perPage` and the response also carries Laravel's usual pagination `meta` (
 
 ### `lastExecution()`
 
-`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). It also stays `null` — or stale from an earlier run on the same builder — when a run never executed: a term shorter than `min_search_length` returns an empty collection without building an event, and `remember()` serves `get()` from the cache. `FuzzySearchCollection` reports `meta.algorithm` and `meta.latency_ms` as `null` for such a run. `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms`; call it directly for anything else you want to report:
+`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). It also stays `null` — or stale from an earlier run on the same builder — when a run never executed: a term shorter than `min_search_length` returns an empty collection without building an event, and `remember()` serves `get()` from the cache. `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms` (both `null` for such a run); call it directly for anything else you want to report:
 
 ```php
 $builder = User::search('john');
