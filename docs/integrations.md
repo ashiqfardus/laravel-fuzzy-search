@@ -91,6 +91,8 @@ With `scout.soft_delete` enabled, trashed models stay in the index as Scout expe
 
 The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables, with the model's `$searchable['columns']` weights, so a Scout search and `useInvertedIndex()` rank a term the same way. Typo expansion is the one difference: the engine matches exact terms only (see [docs/bm25.md](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)).
 
+`raw()['total']` is the number of matches (after the builder's `where()`/`whereIn()`/`query()` constraints), not the size of the page returned. `scout:flush "App\Models\User"` clears that model's rows from the shared tables; `scout:delete-index users` does the same for every indexed model whose `indexableAs()` (by default `scout.prefix` + table) is `users`. `scout:index` is a no-op — the tables come from the package migrations.
+
 ---
 
 ## Filament Integration

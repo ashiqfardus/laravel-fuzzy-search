@@ -376,6 +376,55 @@ class ScoutEngineTest extends TestCase
         $this->assertSame([$lowestId], $engine->mapIds($engine->search($callback))->all());
     }
 
+    public function test_scout_search_total_is_the_match_count_not_the_page_size(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $engine = $this->makeEngine();
+        [[$lowestId, $lowest], [$middleId]] = $this->seedRankedWidgets($engine);
+
+        $unconstrained = $engine->search((new \Laravel\Scout\Builder($lowest, 'widget'))->take(1));
+        $this->assertCount(1, $unconstrained['results']);
+        $this->assertSame(3, $engine->getTotalCount($unconstrained));
+
+        $constrained = $engine->search((new \Laravel\Scout\Builder($lowest, 'widget'))->whereIn('id', [$lowestId, $middleId])->take(1));
+        $this->assertCount(1, $constrained['results']);
+        $this->assertSame(2, $engine->getTotalCount($constrained));
+    }
+
+    /**
+     * `scout:delete-index {name}` hands deleteIndex() an index NAME — the model's indexableAs()
+     * (prefix + table by default) — while the inverted index is keyed by model class.
+     */
+    public function test_delete_index_flushes_the_models_whose_scout_index_has_that_name(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        config(['scout.prefix' => 'test_']);
+        $engine = $this->makeEngine();
+
+        $engine->update(ScoutIndexedUser::all());
+        $engine->update(Product::all());
+        $postings = fn (string $class) => $this->app['db']->table('fuzzy_index_postings')->where('model_type', $class)->count();
+        $this->assertGreaterThan(0, $postings(ScoutIndexedUser::class));
+        $productPostings = $postings(Product::class);
+        $this->assertGreaterThan(0, $productPostings);
+
+        $engine->deleteIndex('test_products'); // Product has no Scout index name: untouched
+        $engine->deleteIndex('users');         // not the prefixed name Scout would pass
+        $this->assertGreaterThan(0, $postings(ScoutIndexedUser::class));
+
+        $engine->deleteIndex('test_users');
+
+        $this->assertSame(0, $postings(ScoutIndexedUser::class));
+        $this->assertSame(0, $this->app['db']->table('fuzzy_index_meta')->where('model_type', ScoutIndexedUser::class)->count());
+        $this->assertSame($productPostings, $postings(Product::class));
+    }
+
     public function test_scout_paginate_total_and_page_reflect_builder_wheres(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {
@@ -407,4 +456,18 @@ class ScoutMapTestUser extends \Illuminate\Database\Eloquent\Model
     protected $table    = 'users';
     protected $fillable = ['name', 'email', 'created_at', 'updated_at'];
     public $timestamps  = true;
+}
+
+/** Scout's trait for the index name (searchableAs()/indexableAs()), the package's for indexing. */
+class ScoutIndexedUser extends \Illuminate\Database\Eloquent\Model
+{
+    use \Laravel\Scout\Searchable, \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable {
+        \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable::search insteadof \Laravel\Scout\Searchable;
+        \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable::bootSearchable insteadof \Laravel\Scout\Searchable;
+    }
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['name' => 1]];
 }

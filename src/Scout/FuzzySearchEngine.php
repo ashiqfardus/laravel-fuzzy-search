@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Laravel\Scout\Builder;
 use Laravel\Scout\Engines\Engine;
 
@@ -48,18 +49,23 @@ class FuzzySearchEngine extends Engine
         $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
 
+        // 'total' is the match count — the ranked ids (that satisfy the constraints) — not
+        // the size of the page cut from them.
         if ($query === null || empty($ranked)) {
+            $total   = count($ranked);
             $results = $this->hydrate(array_slice($ranked, 0, $limit, true));
         } else {
             // Constraints first, then the cut — otherwise a selective where() returns a
             // short or empty page while matches exist further down the ranking.
-            $keys    = RankedCandidates::keys($query, array_keys($ranked), $limit);
+            $ids     = array_keys($ranked);
+            $total   = RankedCandidates::count($query, $ids);
+            $keys    = RankedCandidates::keys($query, $ids, $limit);
             $results = $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit)));
         }
 
         return [
             'results' => $results,
-            'total'   => $results->count(),
+            'total'   => $total,
         ];
     }
 
@@ -228,8 +234,25 @@ class FuzzySearchEngine extends Engine
         // The inverted index tables are created via migrations — no runtime creation needed.
     }
 
+    /**
+     * `scout:delete-index {name}` passes an index NAME — the model's indexableAs() (by default
+     * scout.prefix + table) — but the inverted index is keyed by model class. Flush every
+     * indexed class whose Scout index carries that name; several models on one table share
+     * it, exactly as they would share an Algolia or Meilisearch index.
+     */
     public function deleteIndex($name): void
     {
-        $this->indexManager->flush($name);
+        foreach (DB::table('fuzzy_index_meta')->pluck('model_type') as $class) {
+            if (!class_exists($class) || !method_exists($class, 'searchableAs')) {
+                continue;
+            }
+
+            $model = new $class;
+            $index = method_exists($model, 'indexableAs') ? $model->indexableAs() : $model->searchableAs();
+
+            if ($index === $name) {
+                $this->indexManager->flush($class);
+            }
+        }
     }
 }
