@@ -135,6 +135,33 @@ class EloquentTraitTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | searchFuzzy() scope (Searchable)
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_search_fuzzy_scope_uses_the_configured_column_weights(): void
+    {
+        $builder = User::searchFuzzy('john');
+
+        $this->assertSame(['name' => 10, 'email' => 5], $builder->getDebugInfo()['column_weights']);
+        $this->assertSame('John Doe', $builder->get()->first()->name);
+    }
+
+    public function test_search_fuzzy_scope_weighs_caller_columns_equally(): void
+    {
+        $this->assertSame(['name' => 1], User::searchFuzzy('john', ['name'])->getDebugInfo()['column_weights']);
+    }
+
+    public function test_search_fuzzy_scope_reads_list_form_columns(): void
+    {
+        $builder = ListColumnsUser::searchFuzzy('john');
+
+        $this->assertSame(['name' => 1, 'email' => 1], $builder->getDebugInfo()['column_weights']);
+        $this->assertGreaterThan(0, $builder->get()->count());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Collection Filtering Tests
     |--------------------------------------------------------------------------
     */

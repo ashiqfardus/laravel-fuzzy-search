@@ -315,8 +315,11 @@ class IndexManager
 
     /**
      * Bulk-index a collection of models in a single transaction.
-     * For 500 models, executes ~5 queries instead of 500 × 7.
-     * Used by RebuildCommand for fast initial builds.
+     * Postings and document rows go out in 1000-row upserts and re-indexed models are cleared
+     * with set-based statements, but the dictionary is upserted once per distinct term (each
+     * term's doc_count increment differs): a 500-model chunk with 3,000 distinct terms costs
+     * ~3,000 term upserts plus about ten other queries — not indexModel()'s per-model reads,
+     * deletes and meta updates. Used by RebuildCommand for fast initial builds.
      *
      * @param iterable<Model> $models
      */

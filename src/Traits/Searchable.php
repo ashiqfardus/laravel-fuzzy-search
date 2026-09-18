@@ -441,25 +441,18 @@ trait Searchable
     }
 
     /**
-     * Scope for simple fuzzy search (backward compatibility)
+     * Scope for simple fuzzy search (backward compatibility). Without $columns the configured
+     * $searchable['columns'] are searched with their weights (list or map form — searchIn()
+     * reads both); $columns replaces them, a plain list weighing every column 1.
      */
     public function scopeSearchFuzzy($query, string $term, ?array $columns = null, ?string $algorithm = null): mixed
     {
-        $fuzzySearch = app(FuzzySearch::class);
-        $config = $this->getSearchableConfig();
-        $columns = $columns ?? array_keys($config['columns'] ?? ['name' => 1]);
+        $config  = $this->getSearchableConfig();
+        $columns ??= empty($config['columns']) ? ['name'] : $config['columns'];
 
-        // Use configured weights from $searchable['columns'] when columns aren't overridden.
-        $configColumns = $config['columns'] ?? [];
-        $weightedColumns = $columns !== null
-            ? array_fill_keys($columns, 1)
-            : (empty($configColumns) ? array_fill_keys(['name'], 1) : $configColumns);
-
-        $builder = new SearchBuilder($query, $fuzzySearch);
-
-        return $builder
+        return (new SearchBuilder($query, app(FuzzySearch::class)))
             ->search($term)
-            ->searchIn($weightedColumns)
+            ->searchIn($columns)
             ->using($algorithm ?? ($config['algorithm'] ?? 'fuzzy'));
     }
 }
