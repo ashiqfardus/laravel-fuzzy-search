@@ -211,12 +211,20 @@ The BM25 inverted index does not join relations at query time — define `search
 ```php
 // Eloquent
 User::whereFuzzy('name', 'john')->get();
+User::whereFuzzy('name', 'john')->orWhereFuzzy('email', 'john', 'like')->get();
 User::whereFuzzyMultiple(['name', 'email'], 'john')->get();
+User::where('email', 'like', '%john%')->orderByFuzzy('email', 'john')->get();
 
 // Query Builder
 DB::table('users')->whereFuzzy('name', 'john')->get();
 DB::table('products')->fuzzySearch(['title', 'description'], 'laptop')->get();
 ```
+
+The same macros exist on the Eloquent builder and the query builder:
+
+- `whereFuzzy(string $column, string $value, ?string $algorithm = null, ?array $options = [])` — adds the algorithm's predicate (default: `default_algorithm`) with `AND`.
+- `orWhereFuzzy(string $column, string $value, ?string $algorithm = null, ?array $options = [])` — the same predicate joined with `OR`, e.g. a second column with a different algorithm.
+- `orderByFuzzy(string $column, string $value, string $direction = 'asc')` — orders by the position of `$value` in `$column` (`LOCATE()`/`POSITION()`/`INSTR()`/`CHARINDEX()`), so with `'asc'` the earliest occurrence comes first. A row that does not contain `$value` has position 0 and sorts **before** every match, so filter to rows containing the term first. The position follows the database's case rules: case-insensitive under MySQL's default collation, case-sensitive on PostgreSQL and SQLite. A direction other than `asc`/`desc` throws `InvalidArgumentException`.
 
 ---
 
@@ -905,7 +913,7 @@ Properties:
 
 - `searchTerm` (string) — the user's query
 - `columns` (array) — columns being searched
-- `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, or `bm25`
+- `algorithm` (string) — algorithm used: `simple`, `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, `bm25`, `extended` (extended-syntax searches) or `in_memory` (`FuzzySearch::on()`)
 - `candidateCount` (int) — rows fetched from SQL before scoring
 - `latencyMs` (float) — total search time in milliseconds
 - `resultCount` (int) — rows returned to the caller; `-1` when unknown
