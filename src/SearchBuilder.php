@@ -1460,6 +1460,8 @@ class SearchBuilder
      * page from that ranked set. Pages whose offset falls beyond max_candidates fall back
      * to database-level ordering for that page (see paginateRanked()). Works with
      * extended()/searchBoolean() as well as the plain LIKE-driver path.
+     *
+     * $perPage is clamped to max_candidates (default 1000) on every path — see paginateOnce().
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
@@ -1471,9 +1473,17 @@ class SearchBuilder
 
     /**
      * One pagination attempt with the current algorithm (see withFallback()).
+     *
+     * perPage is clamped to `max_candidates` on both paths. The BM25 path used to clamp at a
+     * hard-coded 100 (a page-size DoS guard) and the LIKE path at nothing, so the same
+     * paginate(200) call returned a different page size depending on useInvertedIndex(). One
+     * rule now: a page can never exceed the candidate window the ranking is built from — which
+     * is also the most rows either path can rank.
      */
     protected function paginateOnce(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
+        $perPage = max(1, min($perPage, (int) config('fuzzy-search.max_candidates', 1000)));
+
         // BM25 fast path via inverted index — never for extended queries, which run on the
         // LIKE path (mirrors executeSearch(); see getDebugInfo()['index_ignored']).
         if ($this->extendedQuery === null && $this->useSearchIndex && !empty($this->searchTerm)) {
@@ -1547,7 +1557,6 @@ class SearchBuilder
      */
     protected function paginateIndexed(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        $perPage    = min((int) $perPage, 100);
         $startedAt  = microtime(true);
         $modelClass = $this->resolveIndexModelClass();
 

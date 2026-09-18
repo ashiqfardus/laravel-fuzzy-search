@@ -82,6 +82,16 @@ Removing these keys from your published config is safe — they had no effect.
   pattern-based algorithm already searches `%term%`, so substring matching needs no call. The
   `ecommerce` and `exact` presets keep their `partial_match` key; it simply never added anything.
 
+## `paginate()` page sizes
+
+`perPage` is now clamped to `max_candidates` (default 1000) on every path. Two call sites change:
+
+- `paginate($n)` with `useInvertedIndex()` and `$n` between 101 and `max_candidates` returns `$n`
+  rows per page instead of the 100 the BM25 path silently clamped to.
+- `paginate($n)` with `$n` greater than `max_candidates` returns `max_candidates` rows per page
+  on the LIKE and extended paths, which used to accept any page size while ranking at most
+  `max_candidates` rows. Raise `max_candidates` if you really page in bigger slices.
+
 ## Database fixes you get for free
 
 No code changes required — these are bug fixes in the package itself:

@@ -59,6 +59,28 @@ class CountMatchesPaginateTest extends TestCase
         $this->assertSame($make()->count(), $make()->paginate(2)->total());
     }
 
+    /**
+     * M8: paginateIndexed() clamped perPage to a hard-coded 100 while the LIKE path did not, so
+     * the same paginate(200) call returned a 200-row page on LIKE and a 100-row page with
+     * useInvertedIndex(). Both paths now clamp at max_candidates and nowhere else.
+     */
+    public function test_paginate_per_page_is_the_same_on_the_like_and_bm25_paths(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+
+        $this->assertSame(200, User::search('john')->paginate(200)->perPage());
+        $this->assertSame(200, User::search('john')->useInvertedIndex()->paginate(200)->perPage());
+    }
+
+    public function test_paginate_per_page_is_capped_at_max_candidates_on_both_paths(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        config(['fuzzy-search.max_candidates' => 50]);
+
+        $this->assertSame(50, User::search('john')->paginate(200)->perPage());
+        $this->assertSame(50, User::search('john')->useInvertedIndex()->paginate(200)->perPage());
+    }
+
     public function test_bm25_path_with_filter_count_matches_paginate_total_and_get_count(): void
     {
         app(IndexManager::class)->indexBatch(User::all());

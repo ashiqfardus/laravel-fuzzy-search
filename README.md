@@ -775,6 +775,10 @@ $users = User::search('john')->paginate(15);
 // Simple pagination (no total count - faster; best for infinite scroll)
 $users = User::search('john')->simplePaginate(15);
 
+// paginate() clamps perPage to max_candidates (default 1000) on every path — LIKE, extended
+// and BM25 alike — because that is the widest window the ranking is built from.
+$users = User::search('john')->paginate(2000);  // perPage() === 1000
+
 // cursorPaginate() always throws BadMethodCallException — it bypasses PHP-side
 // relevance scoring. Use simplePaginate() above instead.
 
