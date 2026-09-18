@@ -62,6 +62,12 @@ class SearchableIndexingObserver
      */
     protected function needsReindex(Model $model, array $columns): bool
     {
+        // restore() saves the model: a soft delete removed it from the index, so put it back.
+        // Ask the model for the column — DELETED_AT can be renamed.
+        if (method_exists($model, 'getDeletedAtColumn') && $model->wasChanged($model->getDeletedAtColumn())) {
+            return true;
+        }
+
         $triggers   = method_exists($model, 'getReindexTriggers') ? $model->getReindexTriggers() : [];
         $attributes = $model->getAttributes();
 
