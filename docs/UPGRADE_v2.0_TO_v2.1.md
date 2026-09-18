@@ -173,6 +173,10 @@ you get back from a search:
   near-miss and highlighted nothing. Such results now rank as exact/prefix/contains matches and
   are highlighted, so the order of non-ASCII results can change. ASCII-only text scores and
   highlights exactly as before; `_matches` indices are still byte offsets.
+- **Scout: `scout:delete-index` now deletes.** It passed the index name where a model class was
+  expected and removed nothing; it now clears every indexed model whose `indexableAs()` is that
+  name. A deploy script that runs it before `scout:import` now really starts from empty. The
+  engine's `raw()['total']` is also the match count now, not the size of the returned page.
 
 ## Relationship search
 
