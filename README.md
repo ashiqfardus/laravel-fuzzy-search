@@ -450,6 +450,8 @@ User::search('joh')->searchIn(['name'])->suggest(5);
 // Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
 ```
 
+**What scopes a suggestion.** The table scan runs on the builder's base query, so constraints you put there — `where()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — narrow the suggestions. `filter()` and `filterIn()` do not: they belong to the search itself, which `suggest()` deliberately does not run. Dictionary completions are scoped to the model only, as above.
+
 `suggestFrom('auto'|'index'|'table')` overrides which source `suggest()` uses; `'auto'` (the default) picks the dictionary when the model is indexed and falls back to the table scan otherwise:
 
 ```php

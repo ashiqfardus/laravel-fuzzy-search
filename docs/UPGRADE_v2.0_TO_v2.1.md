@@ -109,10 +109,10 @@ No code changes required — these are bug fixes in the package itself:
   `SOUNDEX()`, the Levenshtein UDF path, quoted identifiers and the MySQL flush branch —
   previously every MySQL-only branch silently fell back to generic SQL on MariaDB.
 
-## Behaviour changes from the 2026-09-16 fix batch
+## Behaviour changes
 
-A batch of fixes landed alongside the config wiring above. None require code changes, but a
-few affect what you get back from a search:
+These land alongside the config wiring above. None require code changes, but a few affect what
+you get back from a search:
 
 - **Rebuild your index if you search non-Latin or accented text.** The BM25 tokenizer now keeps
   combining marks (`\p{M}`) attached to their base character instead of stripping them. Indexes
