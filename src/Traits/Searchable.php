@@ -443,12 +443,13 @@ trait Searchable
     /**
      * Scope for simple fuzzy search (backward compatibility). Without $columns the configured
      * $searchable['columns'] are searched with their weights (list or map form — searchIn()
-     * reads both); $columns replaces them, a plain list weighing every column 1.
+     * reads both); $columns replaces them, a plain list weighing every column 1. A model with
+     * no detectable columns gets none, exactly as searchOn() gives it.
      */
     public function scopeSearchFuzzy($query, string $term, ?array $columns = null, ?string $algorithm = null): mixed
     {
         $config  = $this->getSearchableConfig();
-        $columns ??= empty($config['columns']) ? ['name'] : $config['columns'];
+        $columns ??= $config['columns'] ?? [];
 
         return (new SearchBuilder($query, app(FuzzySearch::class)))
             ->search($term)
