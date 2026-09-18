@@ -1361,7 +1361,9 @@ class UserResource extends Resource
 
     protected static ?string $model = User::class;
 
-    // Optional — each defaults to the value shown when the property is omitted.
+    // All three are optional. Omit $fuzzyTypoTolerance and the builder's own default (2)
+    // applies; $fuzzySearchAlgorithm and $fuzzyHighlightTag default to null and 'mark'
+    // inside the trait (null = the model's $searchable['algorithm'], then the config default).
     protected static ?int $fuzzyTypoTolerance = 2;
     protected static ?string $fuzzySearchAlgorithm = null; // e.g. 'levenshtein'
     protected static string $fuzzyHighlightTag = 'mark';
@@ -1373,11 +1375,13 @@ class UserResource extends Resource
 }
 ```
 
-Filament's own global search applies a `LIKE %term%` constraint per attribute in `getGloballySearchableAttributes()`. The trait replaces just that matching step with the package's `SearchBuilder`, so a typo ("jonh") still finds "John Doe" and results come back ordered by relevance instead of insertion order. The model's own `$searchable` configuration (algorithm, typo tolerance, as-you-type, stop words, synonyms, accents, options) is applied to that search, and the resource's static knobs above override it; the resource's attributes replace `$searchable['columns']` (nested attribute groups are flattened). The trait gets that builder from `Model::searchOn($query, $term, $columns)` — `Searchable`'s public way to start a configured search from an existing Eloquent query, with `$columns` replacing the configured column list rather than adding to it. `getGlobalSearchEloquentQuery()`, `modifyGlobalSearchQuery()` (tenant scopes), `getGlobalSearchResultTitle()`, `getGlobalSearchResultUrl()`, `getGlobalSearchResultActions()` and `getGlobalSearchResultsLimit()` are all still called exactly as Filament defines them.
-
 For each searchable attribute that matched, a highlighted entry is added to `details`, keyed by `Str::headline()` of the attribute (`email` → `Email`). Only attributes listed in the record's `_matches` are promoted — a column that did not match is never sniffed for the highlight tag, so a record's own literal `<mark>…</mark>` text is never rendered as HTML just because a *different* column matched (ruling P8-R10 — see [Highlighted Results](#highlighted-results)).
 
 > A promoted highlighted attribute replaces a plain `details` entry with the same label. If `getGlobalSearchResultDetails()` already returns `'Email' => $record->email` and `email` is both searchable and a match, the highlighted version overwrites it — pick a different label, or a different searchable attribute, to keep both.
+
+### How It Works
+
+Filament's own global search applies a `LIKE %term%` constraint per attribute in `getGloballySearchableAttributes()`. The trait replaces just that matching step with the package's `SearchBuilder`, so a typo ("jonh") still finds "John Doe" and results come back ordered by relevance instead of insertion order. The model's own `$searchable` configuration (algorithm, typo tolerance, as-you-type, stop words, synonyms, accents, options) is applied to that search, and the resource's static knobs above override it; the resource's attributes replace `$searchable['columns']` (nested attribute groups are flattened). The trait gets that builder from `Model::searchOn($query, $term, $columns)` — `Searchable`'s public way to start a configured search from an existing Eloquent query, with `$columns` replacing the configured column list rather than adding to it. `getGlobalSearchEloquentQuery()`, `modifyGlobalSearchQuery()` (tenant scopes), `getGlobalSearchResultTitle()`, `getGlobalSearchResultUrl()`, `getGlobalSearchResultActions()` and `getGlobalSearchResultsLimit()` are all still called exactly as Filament defines them.
 
 ### Tables
 
@@ -1385,9 +1389,11 @@ For each searchable attribute that matched, a highlighted entry is added to `det
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Filament\Tables\Columns\TextColumn;
 
+// Per column — the v3-compatible way, and still the way to do it on v4/v5:
 TextColumn::make('name')->searchable(query: FuzzySearch::tableSearch(['name']));
 
-// Or fuzzy-search the whole table at once:
+// Or fuzzy-search the whole table at once. Table::searchUsing() is Filament v4+; on v3 use
+// the per-column form above on every column you want searched fuzzily:
 $table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
 
 // With no columns, it falls back to the model's Searchable::getSearchableColumns()
@@ -1395,7 +1401,7 @@ $table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
 $table->searchUsing(FuzzySearch::tableSearch());
 ```
 
-`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` and `Table::searchUsing()` expect.
+`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` (v3, v4, v5) and `Table::searchUsing()` (**Filament v4+ only** — the method does not exist in v3) expect. The columns are SQL columns of the table being queried: each one is qualified with the table name so the predicate survives a join, which means `author.name` becomes `author`.`name` and not a `whereHas` — keep Filament's built-in `searchable()` for relation columns. The typed term is trimmed and capped at `query.max_term_length` before it reaches a driver.
 
 ### Versions
 
@@ -1419,7 +1425,8 @@ Wraps one result row (Eloquent model or array) and adds the package's underscore
 use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchResource;
 
 Route::get('/search', function (Request $request) {
-    $user = User::search($request->query('q'))->highlight('mark')->first();
+    $user = User::search($request->query('q', ''))->highlight('mark')->first();
+    abort_unless($user, 404); // ->first() can return null; the resource would render {} for it
 
     return new FuzzySearchResource($user);
 });
@@ -1434,7 +1441,7 @@ use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
 
 Route::get('/search', function (Request $request) {
     return FuzzySearchCollection::fromBuilder(
-        User::search($request->query('q'))->highlight('mark'),
+        User::search($request->query('q', ''))->highlight('mark'),
         perPage: 20,
     );
 });
@@ -1473,7 +1480,7 @@ Pass `perPage` and the response also carries Laravel's usual pagination `meta` (
 
 ### `lastExecution()`
 
-`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms`; call it directly for anything else you want to report:
+`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). It also stays `null` — or stale from an earlier run on the same builder — when a run never executed: a term shorter than `min_search_length` returns an empty collection without building an event, and `remember()` serves `get()` from the cache. `FuzzySearchCollection` reports `meta.algorithm` and `meta.latency_ms` as `null` for such a run. `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms`; call it directly for anything else you want to report:
 
 ```php
 $builder = User::search('john');

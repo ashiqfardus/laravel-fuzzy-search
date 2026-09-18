@@ -3,6 +3,16 @@
 This guide covers behaviour changes that can affect an existing v2.0 install. It grows as
 Phase 1 tasks land — each section below was added by the task that introduced the change.
 
+## `_highlighted` is now escaped for every column
+
+- **Every value in `_highlighted` is HTML-escaped as of 2.1.0** (ruling P8-R10). In v2.0 only the
+  columns that actually matched were escaped and wrapped in the highlight tag; a searched column
+  that did not match carried the raw model value. The array is now uniformly safe to render as HTML.
+- **A non-matching value echoed with `{{ }}` is now escaped twice.** `{{ $user->_highlighted['name'] }}`
+  on a value containing `&`, `<` or `>` renders the literal text `&amp;`, `&lt;`, `&gt;` instead of the
+  characters themselves. Render the array with `{!! !!}`, or use `@fuzzyHighlight($model, 'column')`
+  for every column — matched or not — which handles both branches for you.
+
 ## Config keys that now take effect
 
 Earlier releases documented several config keys as "reserved for future use" — the values
@@ -196,5 +206,4 @@ through `get()`) now agree.
 - **The JSON resources are new, not a behaviour change.** `_score`, `_raw_score`, `_highlighted`, `_matches` and `_model_type` were always plain attributes on the model or array a search returns — a bare `Model::search()->get()` call is unaffected. `FuzzySearchResource` and `FuzzySearchCollection::fromBuilder()` are simply the tidy way to shape that into an API response; adopting them is optional.
 - **Two new namespaces:** `Ashiqfardus\LaravelFuzzySearch\Integrations\Filament` (the `HasFuzzyGlobalSearch` trait) and `Ashiqfardus\LaravelFuzzySearch\Http\Resources` (`FuzzySearchResource`, `FuzzySearchCollection`).
 - **`SearchBuilder::lastExecution(): ?FuzzySearchExecuted`** returns the event built by the most recent `get()`/`paginate()` call on that builder instance — `null` before either runs, and `count()` never sets it.
-- Ruling P8-R10: `_highlighted` values for columns that did not match are now HTML-escaped too (matched values were always escaped and wrapped), so the whole array is safe to render as HTML.
 - See [Filament Integration](../README.md#filament-integration), [JSON API Resources](../README.md#json-api-resources) and [Livewire Recipe](../README.md#livewire-recipe) in the README.

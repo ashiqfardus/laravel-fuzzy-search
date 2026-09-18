@@ -123,9 +123,13 @@ class FuzzySearch
 
     /**
      * A search closure for Filament tables — `TextColumn::make('name')->searchable(query:
-     * FuzzySearch::tableSearch(['name']))` or `$table->searchUsing(FuzzySearch::tableSearch())`.
-     * Filament evaluates it as (Builder $query, string $search) inside a where group; the
-     * fuzzy predicate is added to that group so it composes with Filament's other constraints.
+     * FuzzySearch::tableSearch(['name']))` on v3, v4 and v5, or
+     * `$table->searchUsing(FuzzySearch::tableSearch())` on Filament v4+ (Table::searchUsing()
+     * does not exist in v3). Filament calls it as (Builder $query, string $search):
+     * `searchable(query:)` evaluates it inside its own where/orWhere group, while v4+
+     * `searchUsing()` calls it bare with the whole term — either way the predicate is added as
+     * its own group (applyFuzzyWhereMultiple() wraps itself), so it composes with Filament's
+     * other constraints.
      * With no columns the model's $searchable columns are used (Searchable trait models only).
      *
      * The columns are SQL columns of the table being queried (or already-qualified `table.column`
