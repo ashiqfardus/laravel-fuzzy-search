@@ -1497,7 +1497,7 @@ class SearchBuilder
     {
         if ($this->invalidBytesOnly) { // matches nothing — see get()
             return new \Illuminate\Pagination\LengthAwarePaginator(
-                [], 0, max(1, $perPage), max(1, (int) ($page ?: request()->input($pageName, 1))),
+                [], 0, $this->clampPerPage($perPage), max(1, (int) ($page ?: request()->input($pageName, 1))),
                 ['path' => request()->url(), 'pageName' => $pageName]
             );
         }
@@ -1519,7 +1519,7 @@ class SearchBuilder
      */
     protected function paginateOnce(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        $perPage = max(1, min($perPage, (int) config('fuzzy-search.max_candidates', 1000)));
+        $perPage = $this->clampPerPage($perPage);
 
         // BM25 fast path via inverted index — never for extended queries, which run on the
         // LIKE path (mirrors executeSearch(); see getDebugInfo()['index_ignored']).
@@ -1528,6 +1528,17 @@ class SearchBuilder
         }
 
         return $this->paginateRanked($perPage, $pageName, $page);
+    }
+
+    /**
+     * The page-size rule paginate() and simplePaginate() share: [1, max_candidates]. A page can
+     * never exceed the candidate window the ranking is built from, and a caller-supplied
+     * per_page cannot make the index path hydrate an unbounded number of models. take()/limit()
+     * stay the caller's explicit limit and are not clamped.
+     */
+    protected function clampPerPage(int $perPage): int
+    {
+        return max(1, min($perPage, (int) config('fuzzy-search.max_candidates', 1000)));
     }
 
     /**
@@ -1677,11 +1688,13 @@ class SearchBuilder
     /**
      * Simple pagination (offset-based, no total count).
      * Routes through the same search path as get() so extended-syntax and BM25 are honoured.
+     * perPage is clamped like paginate()'s — see clampPerPage().
      */
     public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\Paginator
     {
-        $page   = $page ?: (int) request()->input($pageName, 1);
-        $offset = ($page - 1) * $perPage;
+        $perPage = $this->clampPerPage($perPage);
+        $page    = $page ?: (int) request()->input($pageName, 1);
+        $offset  = ($page - 1) * $perPage;
 
         // Fetch one extra item so Paginator::setItems() can detect whether a next
         // page exists (it sets hasMore = count($items) > $perPage, then trims internally).

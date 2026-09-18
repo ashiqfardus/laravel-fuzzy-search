@@ -91,6 +91,31 @@ class CountMatchesPaginateTest extends TestCase
         ]);
     }
 
+    /**
+     * N6: simplePaginate($request->per_page) hydrated up to perPage + 1 models on the index path
+     * — bounded only by max_postings_per_term. It clamps like paginate() now.
+     */
+    public function test_simple_paginate_per_page_is_capped_at_max_candidates_on_both_paths(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        config(['fuzzy-search.max_candidates' => 2]);
+
+        $like = User::search('john')->simplePaginate(5000);
+        $bm25 = User::search('john')->useInvertedIndex()->simplePaginate(5000);
+
+        $this->assertCount(2, $bm25->items(), 'the index path matches more than two users');
+        $this->assertLessThanOrEqual(2, count($like->items()));
+        $this->assertSame([2, 2], [$like->perPage(), $bm25->perPage()]);
+    }
+
+    public function test_simple_paginate_per_page_below_one_is_a_one_row_page(): void
+    {
+        $page = User::search('john')->simplePaginate(0);
+
+        $this->assertSame(1, $page->perPage());
+        $this->assertCount(1, $page->items());
+    }
+
     public function test_bm25_path_with_filter_count_matches_paginate_total_and_get_count(): void
     {
         app(IndexManager::class)->indexBatch(User::all());

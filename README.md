@@ -795,10 +795,11 @@ $users = User::search('john')->paginate(15);
 // Simple pagination (no total count - faster; best for infinite scroll)
 $users = User::search('john')->simplePaginate(15);
 
-// SearchBuilder::paginate() clamps perPage to max_candidates (default 1000) on every search
-// path — LIKE, extended and BM25 alike — because that is the widest window the ranking is
-// built from; a perPage below 1 becomes 1. simplePaginate() and FederatedSearch::paginate()
-// are not clamped: what they return is already bounded by max_candidates / limitPerModel().
+// SearchBuilder::paginate() and simplePaginate() clamp perPage to max_candidates (default 1000)
+// on every search path — LIKE, extended and BM25 alike — because that is the widest window the
+// ranking is built from; a perPage below 1 becomes 1. take()/limit() are your explicit limit and
+// are not clamped. FederatedSearch::paginate() is not clamped: what it returns is already
+// bounded by max_candidates / limitPerModel().
 $users = User::search('john')->paginate(2000);  // perPage() === 1000
 
 // cursorPaginate() always throws BadMethodCallException — it bypasses PHP-side

@@ -95,8 +95,10 @@ Removing these keys from your published config is safe — they had no effect.
 - `paginate(0)` or a negative `$n` returns a one-row page. It used to reach the paginator
   unmodified — `paginate(0)` threw `DivisionByZeroError`.
 
-`simplePaginate()` and `FederatedSearch::paginate()` are not clamped; the rows they return are
-already bounded by `max_candidates` (and `limitPerModel()` for the federated one).
+`SearchBuilder::simplePaginate()` is clamped the same way. It used to accept any page size, and
+on the index path `simplePaginate($request->per_page)` hydrated that many models. `take()`/`limit()`
+stay your explicit limit and are not clamped. `FederatedSearch::paginate()` is not clamped; the
+rows it returns are already bounded by `max_candidates` and `limitPerModel()`.
 
 ## Database fixes you get for free
 
