@@ -156,6 +156,23 @@ class SearchEnhancementsTest extends TestCase
         $this->assertGreaterThan(0, $results->count());
     }
 
+    public function test_boost_recent_decays_linearly_across_the_window(): void
+    {
+        // README "Recency Boost": 1 + (multiplier - 1) x (1 - age_in_days / days) — the full
+        // multiplier at age 0, none at the end of the window. It is not a flat multiplier for
+        // everything inside the window.
+        $builder = User::search('john')->boostRecent(1.5, 'created_at', 30);
+        $boost   = new \ReflectionMethod($builder, 'calculateRecencyBoost');
+        $boost->setAccessible(true);
+
+        $aged = fn (int $days) => (object) ['created_at' => now()->subDays($days)->toDateTimeString()];
+
+        $this->assertSame(1.5, round($boost->invoke($builder, $aged(0)), 4));
+        $this->assertSame(1.25, round($boost->invoke($builder, $aged(15)), 4));
+        $this->assertSame(1.0167, round($boost->invoke($builder, $aged(29)), 4));
+        $this->assertSame(1.0, round($boost->invoke($builder, $aged(60)), 4));
+    }
+
     public function test_boost_recent_affects_relevance_scores(): void
     {
         // Add a very recent user

@@ -395,15 +395,24 @@ User::search('john')
 
 ### Recency Boost
 
-Boost newer records in search results:
+Boost newer records in search results. The boost decays linearly across the window: a row
+created this instant gets the full multiplier, one at the end of the window gets none, and the
+multiplier in between is
+
+```
+1 + (multiplier - 1) x (1 - age_in_days / days)
+```
+
+so with `boostRecent(1.5, 'created_at', 30)` a row created today scores x1.5, a 15-day-old row
+x1.25 and a 29-day-old row x1.0167. Rows older than the window are untouched (x1.0).
 
 ```php
-// Recent records (within 30 days) get 1.5x score boost
+// Newest rows get 1.5x, decaying to 1.0x at 30 days old
 User::search('john')
     ->boostRecent(1.5, 'created_at', 30)
     ->get();
 
-// With defaults: 1.5x boost, created_at column, 30 days
+// With defaults: 1.5x at age 0, created_at column, 30-day window
 User::search('john')
     ->boostRecent()
     ->get();
