@@ -163,7 +163,8 @@ you get back from a search:
   or `fuzzy-search:rebuild` will now populate the index. Auto-detection selects string-like
   attributes only, and that applies to what a zero-config model **searches** as well as what it
   indexes: a column cast to an enum, `array`, `json`, `object`, `collection` or a custom cast class
-  is no longer auto-selected, so such a model can search a different set of columns than in v2.0
+  is no longer auto-selected, and neither is an `encrypted` or `hashed` column (its decrypted text
+  or hash would otherwise be written to the index and served by `suggest()`), so such a model can search a different set of columns than in v2.0
   (a later string column may take the freed slot). A value that still turns out not to be text —
   an accessor returning an object — is skipped rather than thrown, so this cannot make a save
   throw. Declare `$searchable['columns']` to search or index anything else: a declared column is

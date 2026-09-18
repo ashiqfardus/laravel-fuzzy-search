@@ -62,5 +62,5 @@ class Author extends Model
 
 Changing a parent row (renaming an author) does **not** reindex its children automatically — that is what the `saved` hook above is for.
 
-`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is treated as "not indexed" and every save is skipped, even if it defines `searchableText()`.
+`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is treated as "not indexed" and every save is skipped, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
 

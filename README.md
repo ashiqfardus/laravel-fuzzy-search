@@ -202,7 +202,7 @@ User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 
 The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
 
-`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`.
+`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
 
 → Full guide: [docs/relationships.md](docs/relationships.md)
 

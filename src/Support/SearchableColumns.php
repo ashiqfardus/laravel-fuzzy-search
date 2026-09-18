@@ -26,10 +26,14 @@ final class SearchableColumns
      * so auto-detection must not pick that column: it is a heuristic, and the indexer rightly
      * refuses a value it cannot turn into a string. A column the caller declared is their choice
      * and still raises that error.
+     *
+     * `encrypted` and `hashed` are text but never auto-detected: the indexer reads through
+     * getAttribute(), which decrypts, so the plaintext (or the hash) would land in the dictionary
+     * that suggest() serves. Declaring such a column is the caller's explicit choice.
      */
     private const TEXT_LIKE_CASTS = [
         'string', 'int', 'integer', 'float', 'double', 'real', 'bool', 'boolean', 'decimal',
-        'date', 'datetime', 'immutable_date', 'immutable_datetime', 'timestamp', 'hashed', 'encrypted',
+        'date', 'datetime', 'immutable_date', 'immutable_datetime', 'timestamp',
     ];
 
     /** @var array<string, array<string, int>> "class|connection|table" => column => weight */
@@ -96,14 +100,8 @@ final class SearchableColumns
 
         // Laravel matches cast names case-insensitively (getCastType() lower-cases them), so
         // every spelling must be judged the same way.
-        // 'decimal:2' → 'decimal'; 'encrypted:array' (and :json/:object/:collection) is never text.
-        [$base, $argument] = array_pad(explode(':', strtolower($cast), 2), 2, null);
-
-        if ($base === 'encrypted') {
-            return $argument === null;
-        }
-
-        return in_array($base, self::TEXT_LIKE_CASTS, true);
+        // 'decimal:2' → 'decimal'; 'encrypted' in any form is never selected (see TEXT_LIKE_CASTS).
+        return in_array(explode(':', strtolower($cast), 2)[0], self::TEXT_LIKE_CASTS, true);
     }
 
     public static function reset(): void

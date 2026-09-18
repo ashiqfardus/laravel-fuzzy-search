@@ -31,10 +31,14 @@ class SearchableColumnsTest extends TestCase
             'datetime'                => true,
             'immutable_datetime'      => true,
             'timestamp'               => true,
-            'hashed'                  => true,
-            'encrypted'               => true,
             'STRING'                  => true,
             'Decimal:2'               => true,
+
+            // never auto-detected: the indexer would write a decrypted value (or a hash) to the dictionary
+            'encrypted'               => false,
+            'Encrypted'               => false,
+            'hashed'                  => false,
+            'HASHED'                  => false,
 
             // not text: the indexer cannot turn these into a string
             'array'                   => false,
