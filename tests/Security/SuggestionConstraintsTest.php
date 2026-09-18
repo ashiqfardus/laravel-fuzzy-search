@@ -275,8 +275,13 @@ class SuggestionConstraintsTest extends TestCase
         $this->assertCount(2, $search()->get(), 'precondition: two models match');
         $this->assertSame(2, $search()->count());
         $this->assertSame(2, $search()->paginate(10)->total());
-        // The usual way to de-duplicate a join still counts its groups, not one per chunk.
-        $this->assertSame(2, $search()->groupBy('tenant_notes.id')->count());
+        // The usual way to de-duplicate a join still counts its groups, not one per chunk. Only
+        // where that query is valid at all: MariaDB and SQL Server reject `select notes.* …
+        // group by notes.id` themselves (neither infers the other columns from the key), so
+        // TeamNote::groupBy('tenant_notes.id')->get() fails there with or without the package.
+        if (!in_array(strtolower((string) env('DB_TEST_DRIVER', 'sqlite')), ['mariadb', 'sqlsrv'], true)) {
+            $this->assertSame(2, $search()->groupBy('tenant_notes.id')->count());
+        }
     }
 
     public function test_a_joined_table_sharing_a_searched_column_does_not_break_the_suggestion_scan(): void
