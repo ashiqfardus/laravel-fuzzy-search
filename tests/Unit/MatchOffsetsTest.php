@@ -63,6 +63,8 @@ class MatchOffsetsTest extends TestCase
             ['aaaa', 'aaa'], ['a.b a*b', 'a.b'], ['(x) [y] {z}', '(x)'], ['path/to/file', '/'],
             ['back\\slash', '\\'], ['$100 ^top', '$1'], ['#hash|pipe', '|'], ['no match', 'zzz'],
             ["caf\xE9 JOHN", 'john'], // Latin-1 é: not UTF-8, so the byte search is kept as-is
+            ['John Doe', "jo\xC3"],    // an invalid TERM must not reach the /u regex (it cannot compile)
+            ["jo\xC3hn JO\xC3HN", "jo\xC3h"], // invalid mid-string term, found by the byte search
         ];
 
         foreach ($cases as [$value, $term]) {

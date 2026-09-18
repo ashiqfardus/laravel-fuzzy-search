@@ -2314,7 +2314,10 @@ class SearchBuilder
             return [];
         }
 
-        if (preg_match_all('/' . preg_quote($term, '/') . '/iu', $value, $found, PREG_OFFSET_CAPTURE) !== false) {
+        // An invalid term cannot even compile under /u (E_WARNING, not false), so check it first;
+        // an invalid value fails at match time and returns false.
+        if (mb_check_encoding($term, 'UTF-8')
+            && preg_match_all('/' . preg_quote($term, '/') . '/iu', $value, $found, PREG_OFFSET_CAPTURE) !== false) {
             return array_map(fn (array $m) => [$m[1], $m[1] + strlen($m[0]) - 1], $found[0]);
         }
 

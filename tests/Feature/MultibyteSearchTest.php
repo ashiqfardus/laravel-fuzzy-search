@@ -106,6 +106,28 @@ class MultibyteSearchTest extends TestCase
         }
     }
 
+    public function test_an_invalid_utf8_term_is_highlighted_by_the_byte_search_instead_of_throwing(): void
+    {
+        $terms = ["john\xC3", "jo\xC3hn", "doe\xFF"]; // e.g. ?q=john%C3
+
+        if ($this->app['db']->connection()->getDriverName() === 'pgsql') {
+            // PostgreSQL rejects the bytes in the bind parameter (SQLSTATE 22021), before any row
+            // can reach highlighting — there is nothing to highlight there.
+            $this->expectException(\Illuminate\Database\QueryException::class);
+            User::search($terms[0])->using('fuzzy')->highlight('mark')->get();
+        }
+
+        foreach ($terms as $term) {
+            foreach (['fuzzy', 'levenshtein'] as $algorithm) {
+                $rows = User::search($term)->using($algorithm)->highlight('mark')->get();
+                $this->assertNotEmpty($rows, bin2hex($term) . " / {$algorithm}");
+                $this->assertArrayHasKey('name', $rows->first()->_highlighted);
+            }
+
+            $this->assertNotEmpty(User::search($term)->highlight('mark')->paginate(5)->items(), bin2hex($term) . ' / paginate');
+        }
+    }
+
     public function test_suggest_needs_two_characters_not_two_bytes(): void
     {
         $this->insertUser('কলম', 'pen@example.com');
