@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Console;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 
 class IndexCommand extends Command
 {
@@ -26,6 +27,15 @@ class IndexCommand extends Command
 
         // Create index table if it doesn't exist
         if (!Schema::hasTable($table)) {
+            // Its FULLTEXT index is only built by Laravel on MySQL/MariaDB and PostgreSQL;
+            // elsewhere Schema::create() throws a grammar exception. Say so instead.
+            $driver = DB::connection()->getDriverName();
+            if (!DbDialect::isMySqlFamily($driver) && $driver !== DbDialect::PGSQL) {
+                $this->error("fuzzy-search:index needs a FULLTEXT index on its {$table} table, which Laravel only creates on MySQL, MariaDB and PostgreSQL (this connection is {$driver}).");
+                $this->error('Use fuzzy-search:rebuild instead — the BM25 inverted index works on every database.');
+                return 1;
+            }
+
             $this->createIndexTable($table);
             $this->info("Created search index table: {$table}");
         }
