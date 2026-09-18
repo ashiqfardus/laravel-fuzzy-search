@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md)
+**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md) • [Upgrade v2.0→v2.1](docs/UPGRADE_v2.0_TO_v2.1.md)
 
 ## Features
 
@@ -90,6 +90,12 @@ php artisan migrate
 > ```
 >
 > → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md)
+
+> **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
+> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`) to pick up
+> weighted BM25 ranking.
+>
+> → [Upgrade v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md)
 
 ---
 
@@ -651,8 +657,11 @@ User::search('john')
 
 A real inverted index for large tables, across four tables: `fuzzy_index_terms`, `fuzzy_index_postings`, `fuzzy_index_documents`, `fuzzy_index_meta`.
 
+```bash
+php artisan fuzzy-search:rebuild "App\Models\Post"    # build once, then stays in sync automatically
+```
+
 ```php
-php artisan fuzzy-search:rebuild "App\Models\Post"    // build once, then stays in sync automatically
 Post::search('tolkien')->useInvertedIndex()->get();
 ```
 
@@ -778,7 +787,7 @@ User::search('jonh')
     ->fallback('soundex')    // tried only if fuzzy also finds nothing
     ->get();
 
-// BM25 has no typo tolerance yet — give it a safety net:
+// A term the dictionary cannot reach (bm25.fuzzy.candidate_pool) still gets a safety net:
 Product::search('smartwach')
     ->useInvertedIndex()
     ->fallback('fuzzy')
@@ -1141,7 +1150,7 @@ php artisan fuzzy-search:explain User --term="john"
 | **soundex** | Very Fast | Phonetic | Name searches | < 100K rows |
 | **trigram** | Fast | Very High | Similarity matching | < 50K rows |
 | **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
-| **BM25 index** | Fast at scale | Via LIKE fallback | Large tables, ranked results | 10K+ rows |
+| **BM25 index** | Fast at scale | Native (dictionary expansion) | Large tables, ranked results | 10K+ rows |
 
 ### Measured Latency (100k-row MySQL 8.0 dataset)
 
@@ -1215,7 +1224,7 @@ Key tips:
 
 This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns.
 
-| Algorithm | MySQL 8 | MariaDB 10.6 / 11.4 | PostgreSQL 14 | SQLite | SQL Server |
+| Algorithm | MySQL 8 | MariaDB 11.4 (CI); 10.6+ expected | PostgreSQL 14 | SQLite | SQL Server |
 |---|---|---|---|---|---|
 | **simple** / **like** | `LIKE '%term%'` | `LIKE '%term%'` | `ILIKE '%term%'` | `LIKE '%term%'` | `LOWER() LIKE` |
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
@@ -1270,7 +1279,7 @@ composer benchmark
 
 - PHP 8.1 or higher
 - Laravel 10.x, 11.x, 12.x, or 13.x
-- Any supported database — MySQL 8+, MariaDB 10.6+ / 11.x, PostgreSQL 14+, SQLite, or SQL Server 2022
+- Any supported database — MySQL 8+, MariaDB 11.4 (CI); 10.6+ expected, PostgreSQL 14+, SQLite, or SQL Server 2022
 
 ---
 

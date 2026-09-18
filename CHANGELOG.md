@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.0] — 2026-MM-DD
 
+Upgrading from 2.0.x: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/main/docs/UPGRADE_v2.0_TO_v2.1.md
+
 ### Added
 
 - `fallback()` now runs: when the primary algorithm (LIKE-pattern or BM25) returns no rows, the search is retried with each fallback in order. Applies to `get()`, `first()`, `paginate()`, `simplePaginate()` and `count()`; filters and prior `where()` constraints carry over, and one `FuzzySearchExecuted` event fires per attempt.
@@ -123,7 +125,7 @@ First release where the full test suite runs against SQLite, MySQL 8, MariaDB 11
 | `2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table` | Adds `term_length` (unsigned smallint) + index to `fuzzy_index_terms` so `didYouMean()` filters by length without `LENGTH()` SQL. |
 | `2026_09_17_000002_binary_collation_on_fuzzy_index_terms_term` | MySQL/MariaDB only: rewrites `fuzzy_index_terms.term` to `utf8mb4_bin` so `café` and `cafe` are distinct dictionary terms. |
 | `2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table` | Adds `column_name` (varchar 64, default `''`) to `fuzzy_index_postings` and moves the unique key to `(term_id, model_type, model_id, column_name)` — weighted BM25. Existing rows keep `''` and keep working; rebuild with `--fresh` for weighted ranking. |
-| `2026_09_19_000001_create_fuzzy_search_logs_table` | Creates `fuzzy_search_logs` (`term`, `normalized_term`, `model_type`, `algorithm`, `path`, `created_at`, index on `normalized_term`) for the opt-in persisted analytics. |
+| `2026_09_19_000001_create_fuzzy_search_logs_table` | Creates `fuzzy_search_logs` (`id`, `term`, `normalized_term`, `model_type`, `algorithm`, `path`, `result_count`, `latency_ms`, `day`, `created_at`; indexed on `normalized_term`, `created_at`, `result_count`, `day`) for the opt-in persisted analytics. |
 
 ## [2.0.1] — 2026-09-16
 

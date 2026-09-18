@@ -118,7 +118,7 @@ Either way, rebuild after changing it — existing postings were tokenized the o
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
 ```
 
-On the index path, `highlight()` marks whatever the query actually matched (see *Typo tolerance, as-you-type, synonyms and stop words on the index* above); for a CJK term tokenized into n-grams, that is the matching n-gram fragment, which may be shorter than the whole word.
+On the index path, `highlight()` marks whatever the query actually matched (see [the BM25 guide](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)); for a CJK term tokenized into n-grams, that is the matching n-gram fragment, which may be shorter than the whole word.
 
 ### Per-Model Pipelines
 
