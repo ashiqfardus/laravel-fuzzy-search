@@ -138,7 +138,7 @@ In `.env`:
 SCOUT_DRIVER=fuzzy-search
 ```
 
-The Scout engine adapter is bundled — no separate package. See the [Scout Driver section](../README.md#scout-driver) in the README.
+The Scout engine adapter is bundled — no separate package. See the [Scout Driver section](integrations.md#scout-driver) in the README.
 
 ### Performance notes
 

@@ -56,6 +56,8 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 - [Testing](#testing)
 - [Requirements](#requirements)
 
+**Deep dives:** [BM25 index](docs/bm25.md) • [Extended syntax](docs/extended-syntax.md) • [Relationships](docs/relationships.md) • [Text processing & tokenization](docs/tokenization.md) • [Integrations](docs/integrations.md) • [Analytics](docs/analytics.md)
+
 ---
 
 ## Installation
@@ -186,63 +188,17 @@ Executing methods that would bypass the search conditions (`delete()`, `exists()
 
 ### Searching Relationships
 
-Dotted column names search through Eloquent relations — `belongsTo`, `hasMany`, `belongsToMany`, and nested paths — on the LIKE and extended paths; the BM25 index stores related text through `searchableText()` instead (see below):
+Dotted column names — `posts.title`, `author.name`, nested paths — search through Eloquent relations (`belongsTo`, `hasMany`, `belongsToMany`) on the LIKE and extended paths, compiling to `whereHas()` (a portable `EXISTS` subquery):
 
 ```php
-Post::search('tolkien')
-    ->searchIn(['title' => 10, 'author.name' => 5, 'tags.name' => 3, 'comments.author.name' => 1])
-    ->highlight('mark')
-    ->paginate(15);
-
-$post->_highlighted['author.name'];            // "<mark>Tolk</mark>ien"
-@fuzzyHighlight($post, 'tags.name')            // the related row that matched
+User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 ```
 
-- **Filtering** compiles to `whereHas()` (a portable `EXISTS` subquery); nested paths use the same `whereHas('comments.author', …)` Eloquent supports.
-- **Scoring** uses the column's `searchIn()` weight; a to-many relation counts its best related row.
-- **Highlighting**, `_matches` and `suggest()` include relation columns under the dotted key.
-- **Extended syntax** (`'include`, `^prefix`, `=exact`, `!not`, `|`, `~word`, `field:word`) works on relation columns; `!tolkien` excludes rows with any matching related row, and `author.name:tolkien` scopes a term to that one relation column.
-- A dotted name is treated as a relation only when its first segment is a relation method on the model. `posts.title` on a model whose table is `posts` stays a table-qualified column, exactly as in v2.0. Relation paths need `Model::search()`; a Query Builder source throws.
-- Touched relations are eager-loaded on the results.
-- `searchIn()` on a `Model::search()` builder *adds* the listed columns to the model's configured `$searchable['columns']` (it has never replaced them); to search only the listed columns, list them all in `searchIn()` or build the query from `new SearchBuilder(Model::query(), app(FuzzySearch::class))`.
-- Relation columns are not part of the SQL relevance `ORDER BY`, so when more than `max_candidates` rows match, rows that match only through a relation may fall outside the rescored window.
-- Polymorphic (`morphTo`) relation paths are not supported.
+The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
 
-**BM25 index:** relations are not joined at query time. Define `searchableText()` to put related text into the index, eager-load it during rebuilds with `searchIndexQuery()`, declare the foreign key in `reindex_on`, and reindex the children when the parent changes:
+`$searchable['columns']` must be non-empty for `SearchableIndexingObserver` to index a model at all.
 
-```php
-class Post extends Model
-{
-    use Searchable;
-
-    protected array $searchable = [
-        'columns'    => ['title' => 10, 'author.name' => 5],
-        'reindex_on' => ['author_id'],
-    ];
-
-    public function searchableText(): array
-    {
-        return ['title' => $this->title, 'author' => $this->author?->name, 'tags' => $this->tags->pluck('name')->implode(' ')];
-    }
-
-    public function searchIndexQuery(Builder $query): Builder
-    {
-        return $query->with(['author', 'tags']);
-    }
-}
-
-class Author extends Model
-{
-    protected static function booted(): void
-    {
-        static::saved(fn (Author $author) => Post::reindexRelated('author_id', $author->id));
-    }
-}
-```
-
-Changing a parent row (renaming an author) does **not** reindex its children automatically — that is what the `saved` hook above is for.
-
-`$searchable['columns']` must be non-empty for `SearchableIndexingObserver` to index a model at all; an empty (or missing) `columns` config is treated as "not indexed" and every save is skipped.
+→ Full guide: [docs/relationships.md](docs/relationships.md)
 
 ### Eloquent & Query Builder Support
 
@@ -591,79 +547,13 @@ $analytics = User::search('john')
 
 ## Text Processing
 
-### Stop-Word Filtering
+- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query; built-in lists cover eight locales, or pass a custom list or file.
+- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms.
+- **Locale awareness** — `locale()` selects the query-time stop-word list and locale-specific handling.
+- **Unicode & accent insensitivity** — `accentInsensitive()` and `unicodeNormalize()` match `café`/`cafe` and `naïve`/`naive`; text is handled per character, not per byte, so combining marks stay attached to their base letters.
+- Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
 
-```php
-// Use default stop words
-User::search('the quick brown fox')
-    ->ignoreStopWords()
-    ->get();
-
-// Custom stop words
-User::search('the quick brown fox')
-    ->ignoreStopWords(['the', 'a', 'an', 'and', 'or', 'but'])
-    ->get();
-
-// Language-specific stop words
-User::search('der schnelle braune fuchs')
-    ->ignoreStopWords('de')  // German stop words
-    ->get();
-```
-
-Built-in lists cover eight locales — `en`, `de`, `fr`, `es`, `it`, `pt`, `nl`, `ru` — configured under `stop_words` in `config/fuzzy-search.php`. Any entry may instead be an absolute path to a text file, one word per line (`#` starts a comment, blank lines are ignored); a missing file throws `InvalidArgumentException` naming the path:
-
-```php
-// config/fuzzy-search.php
-'stop_words' => [
-    'en' => storage_path('fuzzy-search/stop-words-en.txt'),
-],
-```
-
-`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's smaller built-in en/de/fr/es lists when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list.
-
-### Synonym Support
-
-```php
-User::search('laptop')
-    ->withSynonyms([
-        'laptop' => ['notebook', 'computer', 'macbook'],
-        'phone' => ['mobile', 'cell', 'smartphone'],
-    ])
-    ->get();
-
-// Or use synonym groups
-User::search('laptop')
-    ->synonymGroup(['laptop', 'notebook', 'computer'])
-    ->get();
-```
-
-### Language / Locale Awareness
-
-```php
-User::search('john')
-    ->locale('en')      // English
-    ->get();
-
-User::search('münchen')
-    ->locale('de')      // German - handles umlauts
-    ->get();
-```
-
-### Unicode & Accent Insensitivity
-
-```php
-// Matches "café", "cafe", "Café"
-User::search('cafe')
-    ->accentInsensitive()
-    ->get();
-
-// Matches "naïve", "naive"
-User::search('naive')
-    ->unicodeNormalize()
-    ->get();
-```
-
-Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm, and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 2.1.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
+→ Full guide: [docs/tokenization.md](docs/tokenization.md)
 
 ---
 
@@ -759,800 +649,88 @@ User::search('john')
 
 ## BM25 Inverted Index
 
-For large tables (10k+ rows), the BM25 inverted index provides ranked, fast results without scanning the full table.
-
-### How It Works
-
-The indexing system has two parts:
-
-**Part 1 — One-time initial build.** Run once after install (or after a schema change):
-
-```bash
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh
-```
-
-**Part 2 — Automatic incremental updates.** After the initial build, every time a model is saved or deleted, the package dispatches a small queue job that re-indexes just that one row. No cron jobs or manual work needed.
-
-The flow when a record is saved:
-
-```
-User::create(['name' => 'John'])
-  → Eloquent fires 'saved' event
-  → SearchableIndexingObserver dispatches IndexModelJob to queue
-  → queue worker indexes the row (3 SQL queries)
-  → 'john' is now in the index
-```
-
-**Constraints are honoured on the index path.** Filters, `where()` constraints applied before the search, and global scopes are checked against the ranking in chunks (`bm25.candidate_chunk`, default 200) until the page is full, and `paginate()` totals reflect them:
+A real inverted index for large tables, across four tables: `fuzzy_index_terms`, `fuzzy_index_postings`, `fuzzy_index_documents`, `fuzzy_index_meta`.
 
 ```php
-Product::search('watch')
-    ->useInvertedIndex()
-    ->filter('published', true)
-    ->paginate(20);   // total = published matches only, pages never come back short
-
-// Equivalent — filter()/filterIn() still work, but constraints can also be chained
-// straight onto the builder (see "Chaining Eloquent" above):
-Product::search('watch')
-    ->useInvertedIndex()
-    ->where('published', true)
-    ->paginate(20);
+php artisan fuzzy-search:rebuild "App\Models\Post"    // build once, then stays in sync automatically
+Post::search('tolkien')->useInvertedIndex()->get();
 ```
 
-### Database Tables
-
-| Table | Purpose |
-| --- | --- |
-| `fuzzy_index_terms` | Term dictionary: unique terms + document frequency (used for `didYouMean()`) |
-| `fuzzy_index_postings` | Postings: term → model mapping with term frequency, one row per `(term, column)` |
-| `fuzzy_index_meta` | BM25 normalization: total docs + avg document length per model |
-| `fuzzy_index_documents` | Per-document length cache for O(1) BM25 scoring |
-
-### Production Setup
-
-**Step 1 — Run migrations:**
-
-```bash
-php artisan migrate
-```
-
-**Step 2 — Enable indexing in config:**
-
-```php
-// config/fuzzy-search.php
-'indexing' => [
-    'enabled'          => true,       // must be true or saves are never indexed
-    'async'            => true,       // true = queued (recommended for production)
-    'queue'            => 'indexing', // dedicated queue keeps indexing isolated
-    'chunk_size'       => 500,
-    'max_tokens_per_doc' => 5000,     // security cap: prevents index poisoning
-],
-```
-
-**Step 3 — Declare searchable columns on your model:**
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
-
-class User extends Model
-{
-    use Searchable;
-
-    protected array $searchable = [
-        'columns' => [
-            'name'  => 10,
-            'email' => 5,
-            'bio'   => 2,
-        ],
-    ];
-}
-```
-
-**Step 4 — Build the initial index:**
-
-```bash
-# For small tables (< 50k rows)
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh
-
-# For large tables (50k+ rows), dispatch batch queue jobs
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
-```
-
-**Step 5 — Start a queue worker:**
-
-```bash
-# Development
-php artisan queue:work --queue=indexing,default
-
-# Production (Supervisor)
-```
-
-Supervisor config (`/etc/supervisor/conf.d/fuzzy-search-worker.conf`):
-
-```ini
-[program:fuzzy-search-worker]
-process_name=%(program_name)s_%(process_num)02d
-command=php /var/www/html/artisan queue:work database --queue=indexing,default --sleep=3 --tries=3 --max-time=3600
-autostart=true
-autorestart=true
-user=www-data
-numprocs=2
-redirect_stderr=true
-stdout_logfile=/var/log/fuzzy-search-worker.log
-```
-
-For **Laravel Horizon** (Redis):
-
-```php
-// config/horizon.php
-'environments' => [
-    'production' => [
-        'supervisor-1' => [
-            'connection' => 'redis',
-            'queue'      => ['indexing', 'default'],
-            'balance'    => 'auto',
-            'processes'  => 4,
-        ],
-    ],
-],
-```
-
-### Usage
-
-```php
-// BM25 search — faster + better relevance on large tables
-$users = User::search('john')->useInvertedIndex()->get();
-
-// didYouMean() reads from the term dictionary — O(1) at any dataset size
-$suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
-```
-
-> **Note:** `useIndex()` is an alias for `useInvertedIndex()`. The deprecated legacy `search_index` table from v1 is no longer used.
-
-> **Primary keys:** Integer, UUID and ULID primary keys are supported (`model_id` is stored as a 36-character string).
-
-### Column weights on the index (BM25F-lite)
-
-`searchIn()` weights (and `$searchable['columns']` weights) now scale ranking on `useInvertedIndex()` too, not just the LIKE/Levenshtein paths:
-
-```php
-Product::search('watch')
-    ->useInvertedIndex()
-    ->searchIn(['title' => 10, 'description' => 1])
-    ->get();
-```
-
-- Each column's term frequency is scaled by its weight and summed per document and term before BM25 saturation runs once (BM25F-lite) — heavier columns win ties and near-ties, but a 10:1 weight does not multiply the final score by 10.
-- A weight of `0` removes that column from scoring entirely. Weights are integers `>= 1`: a fractional weight is truncated to an integer (`0.5` becomes `0`, i.e. removed).
-- The list form `searchIn(['title'])` sets that column to weight **1** and leaves the model's other weights in place — pass explicit weights (`searchIn(['title' => 10, 'description' => 1])`) when you mean to re-rank.
-- Hook models (`searchableText()`) are weighted by the hook's returned keys when a key matches a searchable column name; any other key weighs 1.
-- Postings are stored per `(term, column)`, but the scorer sums them in SQL first: `bm25.max_postings_per_term` is one shared cap over the query's matched terms applied to `(document, term)` rows ordered by weighted frequency (highest first), so a document is never partially cut across its columns — raise the cap if your corpus reaches it.
-- Requires `php artisan migrate` and `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh` per model — rows indexed before this feature rank at weight 1 until rebuilt, and `php artisan fuzzy-search:status` lists them.
-
-### Typo tolerance, as-you-type, synonyms and stop words on the index
-
-The inverted index expands your query through its own term dictionary, so it no longer needs an exact token to match:
-
-```php
-User::search('jonh')->useInvertedIndex()->get();                 // finds "john" (typoTolerance() = 2 by default)
-User::search('jonh')->useInvertedIndex()->typoTolerance(0)->get(); // exact terms only
-User::search('joh')->useInvertedIndex()->asYouType()->get();      // last token is a prefix: john, johnny …
-User::search('laptop')->useInvertedIndex()->withSynonyms(['laptop' => ['notebook']])->get();
-User::search('the pro')->useInvertedIndex()->ignoreStopWords(['pro'])->get(); // added to the configured list for this query
-```
-
-- Each query term of at least `typo_tolerance.min_word_length` characters is expanded with up to `bm25.fuzzy.max_expansions` dictionary terms within `typoTolerance()` edits, closest first. With `bm25.fuzzy.damping` (default on) an expansion contributes `1 − distance / length` of what the exact term would, so it always counts for less — but it is not outranked automatically: BM25 weighs rarity (idf), so a rare expansion can still outscore a common exact term. `typo_tolerance.enabled = false` turns expansion off globally.
-- Expansions are picked from the `bm25.fuzzy.candidate_pool` (default 500) most common dictionary terms of a similar length — a term outside that window is **never** reached, however close it is. Rare surnames, SKUs and part numbers live in that tail, so raise the pool for such catalogs.
-- `asYouType()` (or `$searchable['as_you_type' => true]`) expands the **last** token by prefix, capped at `bm25.prefix.max_expansions`.
-- Synonyms score at full weight (they are alternatives, not typos). On the inverted index `ignoreStopWords()` **adds** its list to the configured locale list for that query — a term dropped at index time cannot match anyway, so a configured stop word cannot be restored, and `ignoreStopWords([])` cannot bring one back. On the LIKE path it still replaces the configured list.
-- `highlight()` marks every term that matched, including expansions. `getDebugInfo()['index_terms']` lists the weighted terms that ran.
-- The Scout engine keeps exact-term matching; use the builder for typo-tolerant index searches.
-- Upgrading from v2.0: the dictionary gained a `term_length` column — run `php artisan migrate` (existing rows are backfilled).
-
-### Artisan Commands
-
-```bash
-# Show index statistics (total docs, tokens, avg length per model) and list postings that predate column weighting
-php artisan fuzzy-search:status
-
-# Rebuild synchronously (good for < 50k rows)
-php artisan fuzzy-search:rebuild "App\Models\User"
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh
-
-# Rebuild asynchronously via queue (recommended for large tables)
-php artisan fuzzy-search:rebuild "App\Models\User" --async
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
-
-# Delete all index entries for a model
-php artisan fuzzy-search:flush "App\Models\User"
-```
-
-Rebuilds load rows through the model's optional `searchIndexQuery()` hook (see *Searchable fields backed by accessors*), so relation-backed columns can be eager-loaded instead of queried once per row.
-
-### BM25 Tuning
-
-```php
-// config/fuzzy-search.php
-'bm25' => [
-    'k1' => 1.5,   // Term-frequency saturation (1.2–2.0). Higher = more weight to repeated terms.
-    'b'  => 0.75,  // Length normalisation (0–1). 0 = ignore doc length. 1 = full normalisation.
-    'fuzzy' => [
-        'candidate_pool' => 500,  // Dictionary terms (most common first) considered per query term for typo expansion.
-        'max_expansions' => 5,    // Max dictionary terms added per query term within typoTolerance() edits.
-        'damping'        => true, // An expansion contributes 1 - distance/length of what the exact term would.
-    ],
-    'prefix' => [
-        'max_expansions' => 10,   // Max dictionary terms added by asYouType() for the last token's prefix.
-    ],
-],
-```
-
-### Tokenizers
-
-The index splits each column's text into tokens before storing it. The default, `WhitespaceTokenizer`, splits on anything that isn't a letter, mark or digit and drops single-character tokens — it works for Latin, Cyrillic, Greek, Bengali, Hindi and every other script that separates words with spaces. Thai does not: a Thai phrase stays one token under the whitespace rule (and under `ScriptAwareTokenizer`, which only n-grams CJK), so use `NgramTokenizer` for Thai-only columns.
-
-Chinese, Japanese and Korean don't use spaces between words, so `WhitespaceTokenizer` keeps a whole CJK run as one token — searching for part of it won't match. Two opt-in tokenizers cut character n-grams instead:
-
-- **`NgramTokenizer(int $n = 2)`** — cuts every run of letters/marks/digits into `n`-character windows (a run of `n` characters or fewer is kept whole). It n-grams *everything*, Latin included — pick it only when a column is entirely CJK.
-- **`ScriptAwareTokenizer(int $n = 2)`** — n-grams only the Han/Hiragana/Katakana/Hangul runs and applies the whitespace rule to everything else, so mixed text tokenizes correctly in one pass:
-
-  ```php
-  (new \Ashiqfardus\LaravelFuzzySearch\Indexing\ScriptAwareTokenizer())->tokenize('Tokyo 東京 tower');
-  // ['tokyo', '東京', 'tower'] — WhitespaceTokenizer would keep a longer CJK run
-  // (e.g. "東京都心タワー") as a single token instead of overlapping bigrams.
-  ```
-
-  Pick this whenever a column can contain both CJK and non-CJK text.
-
-Both tokenizers cut windows per Unicode code point, not per grapheme: on scripts that write accents as combining marks (decomposed Latin, Vietnamese, Indic, Thai) a window can separate a base letter from its mark. `ScriptAwareTokenizer` sidesteps this outside CJK runs by falling back to the whitespace rule, which keeps marks attached.
-
-With an n-gram tokenizer `suggest()` completes only prefixes of up to `n` characters (the dictionary holds n-grams, so `東` completes to `東京` but `東京タ` finds nothing) — call `suggestFrom('table')` on such models when you need longer completions.
-
-Enable a tokenizer globally, or per model (see **Per-Model Pipelines** below):
-
-```php
-// config/fuzzy-search.php
-'indexing' => [
-    'tokenizer' => \Ashiqfardus\LaravelFuzzySearch\Indexing\ScriptAwareTokenizer::class,
-],
-```
-
-Either way, rebuild after changing it — existing postings were tokenized the old way:
-
-```bash
-php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
-```
-
-On the index path, `highlight()` marks whatever the query actually matched (see *Typo tolerance, as-you-type, synonyms and stop words on the index* above); for a CJK term tokenized into n-grams, that is the matching n-gram fragment, which may be shorter than the whole word.
-
-### Per-Model Pipelines
-
-Every model shares the global `indexing.*` config by default. Override the tokenizer, stemmer (and its language) or stop-word locale for one model with `$searchable`:
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
-use Ashiqfardus\LaravelFuzzySearch\Indexing\ScriptAwareTokenizer;
-use Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer;
-
-class Product extends Model
-{
-    use Searchable;
-
-    protected array $searchable = [
-        'columns'          => ['name' => 10, 'description' => 5],
-        'tokenizer'        => ScriptAwareTokenizer::class,
-        'stemmer'          => PorterStemmer::class,
-        'stemmer_language' => 'French',
-        'locale'           => 'fr',
-    ];
-}
-```
-
-Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline — it's independent of the query builder's `->locale()`.
-
-The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion and `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. `didYouMean()` is a separate, unscoped lookup: it queries the whole cross-model dictionary on the raw search term without running it through any model's tokenizer, stemmer or stop-word list. Rebuild after changing any of these keys, same as the global tokenizer/stemmer:
-
-```bash
-php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
-```
-
-### Accent Folding on the Index
-
-Off by default. Turn it on to fold accents at both index time and query time on the BM25 path, so `café` and `cafe` land in the same dictionary term:
-
-```php
-// config/fuzzy-search.php
-'indexing' => [
-    'accent_insensitive' => true,
-],
-```
-
-With `ext-intl` installed, folding decomposes the string (`Normalizer::FORM_D`), strips the combining-diacritical-mark blocks, then recomposes (`FORM_C`) — that handles most accented Latin/Greek/Cyrillic — before a built-in map runs for characters a decomposition doesn't cover (`ß` → `ss`, `ø` → `o`). Without `ext-intl`, only the map runs, which is the same coverage v2.0 had. This is a global setting — it applies to every model's index, there's no per-model override.
-
-Rebuild after flipping it, same as the tokenizer and stemmer:
-
-```bash
-php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
-```
-
-The LIKE path's `->accentInsensitive()` (see *Unicode & Accent Insensitivity* above) folds with the exact same `Accents::fold()`, so turning both on gives one consistent behaviour across paths. `suggest()` also folds the typed prefix, but only when the model's index pipeline itself folds.
-
-### Stemming (Optional)
-
-Default: no stemming (`NullStemmer`). With `NullStemmer`, `running` only matches `running`, not `run` or `ran`.
-
-To enable Porter stemming:
-
-```bash
-composer require wamania/php-stemmer
-```
-
-```php
-// config/fuzzy-search.php
-'indexing' => [
-    'stemmer' => \Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer::class,
-],
-```
-
-Supported languages: English, French, German, Spanish, Italian, Russian, Romanian, Dutch, Portuguese, Swedish, Danish, Norwegian. You must rebuild the index after changing the stemmer.
-
-### Observer Auto-Attach
-
-Adding the `Searchable` trait automatically registers observers via `bootSearchable()`:
-
-- **`SearchableIndexingObserver`** — listens to `saved` and `deleted` events. Queues an `IndexModelJob` to update the BM25 index. This is a no-op when `indexing.enabled` is `false`.
-- **`SearchableObserver`** — listens to `saved` events and writes metaphone shadow columns if they exist. Safe when no shadow columns are configured — the observer silently exits.
-
-No configuration is required for either observer until you enable those features.
-
-#### Searchable fields backed by accessors
-
-A searchable column does not have to be a real column. An accessor that reads a relation works too, but the observer cannot see it change, so declare the real columns that should trigger a reindex:
-
-```php
-use Illuminate\Database\Eloquent\Builder;
-
-class Product extends Model
-{
-    use Searchable;
-
-    protected array $searchable = [
-        'columns'    => ['name' => 10, 'brand_name' => 5],
-        'reindex_on' => ['brand_id'],   // real columns that invalidate brand_name
-    ];
-
-    public function getBrandNameAttribute(): ?string
-    {
-        return $this->brand?->name;
-    }
-
-    // Optional: the query fuzzy-search:rebuild loads rows through — eager-load here
-    public function searchIndexQuery(Builder $query): Builder
-    {
-        return $query->with('brand');
-    }
-}
-```
-
-Without `reindex_on`, a model with an accessor-backed column is reindexed on **every** save (correct, but wasteful on hot paths such as stock updates). With it, only changes to the searchable columns or the listed triggers reindex. Indexing always reloads the row from the database first, so a relation that was already loaded on the instance before the change is never written to the index.
-
-Changing the *related* row (renaming the brand) does not reindex the products that reference it — handle that with an observer on the related model or a `fuzzy-search:rebuild`.
-
-### Sync vs Async
-
-| | `async = true` (default) | `async = false` |
-| --- | --- | --- |
-| **How it works** | Dispatches `IndexModelJob` to queue | Indexes in the same request, no queue |
-| **Request latency** | Unaffected | +~10ms per save |
-| **Requires queue worker** | Yes | No |
-| **Best for** | Production apps | Tests, local dev, low-traffic apps |
-
-For **tests**, set `indexing.async = false` so indexing happens synchronously:
-
-```php
-// In your test setUp
-config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
-```
+- **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
+- **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
+- BM25 tends to beat LIKE once a table passes roughly 500k+ rows; below that, LIKE is simpler to operate.
+
+→ Full guide: [docs/bm25.md](docs/bm25.md)
 
 ---
 
 ## Extended Search Syntax
 
-Use Fuse.js-style operators inside your search string for precise control over matching.
-
-### Operators
-
-| Token | Meaning | Example |
-| --- | --- | --- |
-| `word` | Substring match (default) | `john` |
-| `'word` | Explicit substring include | `'admin` |
-| `=word` | Exact equality | `=John` |
-| `^word` | Prefix match | `^Doe` |
-| `word$` | Suffix match | `Sr$` |
-| `!word` | Exclude (NOT) | `!banned` |
-| `!^word` | Inverse prefix | `!^test` |
-| `!word$` | Inverse suffix | `!@spam.com$` |
-| `\|` | OR | `john \| jane` |
-| ` ` (whitespace) | AND (implicit) | `=John ^Doe` |
-| `( ... )` | Grouping | `admin (john \| jane)` |
-| `"phrase"` | Quoted single token | `"hello world"` |
-| `~word` | Typo-tolerant match (uses typoTolerance()) | `~jonh` |
-| `field:word` | Limit a term to one column (any operator after the colon) | `email:^admin`, `author.name:smith`, `!name:bob` |
-
-### Typo-tolerant and field-scoped terms
-
-`~word` runs the term through the same typo-tolerant matching as the rest of the package — the level set by `->typoTolerance()` (default 2), or a plain substring when the level is `0` or `config('fuzzy-search.typo_tolerance.enabled')` is `false`. `~` can't combine with `'`, `=`, `^`, a quoted phrase, or a trailing `$`; `~word` stands on its own (a field scope in front is fine — `name:~jonh`).
-
-`field:word` limits a term to one searchable column: a direct column, a table-qualified column matched by its bare name (`users.name` answers to `name:`), or a relation column declared in `searchIn()` / `$searchable['columns']` (`author.name:smith`). Any operator can follow the colon — `email:^admin`, `name:~jonh`, `!name:bob`, `name:"john doe"`. An unknown field throws `QuerySyntaxException` listing the searchable fields (by their bare names); `field:` with nothing after the colon throws too, and so does a bare name that matches two searchable columns (`users.name` and `profiles.name`) — qualify it, `users.name:john`.
-
-Both operators are only recognised at the start of a token (after an optional `!`), so `12:30` and `jo~hn` stay literal — and so does a quoted phrase. Quote a token of the form `word:…`, or one starting with `~`, to keep it literal (`"name:john"`, `"~x"`). The everyday casualties are URLs and mail addresses at the start of a token (`http://example.com`, `mailto:bob@example.com` — `http:` and `mailto:` are read as field scopes) and `Re:` / `Fwd:` subject prefixes (nothing follows the colon, so they throw); quote them — `"http://example.com"`, `"mailto:bob@example.com"`, `"Re:" meeting`.
-
-The extended syntax always runs on the LIKE path; `->useInvertedIndex()` is ignored for it — `getDebugInfo()` reports `index_ignored => true` when both are set.
-
-### Usage
+`->extended()` opts a search string into Fuse.js-style query operators for precise matching, instead of a plain substring search.
 
 ```php
-// Exact first name + prefix last name + exclude banned
-$users = User::search('=John ^Doe !banned')->extended()->get();
-
-// OR semantics with grouping
-$users = User::search('admin (john | jane)')->extended()->get();
-
-// More examples
-'Sr$ | Jr$'              // Names ending in Sr OR Jr
-"'manager !@temp.com$"   // Substring 'manager' but not @temp.com emails
+User::search('=John ^Doe !banned')->extended()->get();
 ```
 
-### Limits
+Operators: `'include`, `=exact`, `^prefix`, `suffix$`, `!exclude`, `|` (OR), `( )` (grouping), `~typo`, `field:term`, and quoted `"phrases"`.
 
-| Limit | Default | Config key |
-| --- | --- | --- |
-| Maximum tokens per query | 32 | `query.max_tokens` |
-| Maximum nesting depth | 16 | `query.max_depth` |
-| Maximum characters per term | 128 | `query.max_term_length` |
+Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it.
 
-`query.max_term_length` applies to the LIKE path and to every extended-syntax token: a longer
-term is silently truncated before the driver generates its LIKE patterns.
-
-### Pagination with Extended Syntax
-
-`paginate()`, `simplePaginate()` and `get()` all work with `extended()` / `searchBoolean()`. `cursorPaginate()` is still unsupported.
-
-```php
-// ✓ Works
-User::search('=John ^Doe')->extended()->paginate(15);
-User::search('=John ^Doe')->extended()->simplePaginate(15);
-User::search('=John ^Doe')->extended()->get();
-
-// ✗ Throws BadMethodCallException
-User::search('=John ^Doe')->extended()->cursorPaginate(15);
-```
-
-### Match Offsets & Blade Directive
-
-Results with `->highlight()` enabled include a `_matches` array:
-
-```php
-$first = $results->first();
-$first->_matches;
-// [['column' => 'name', 'value' => 'John Doe', 'indices' => [[0, 3]]]]
-```
-
-For safe HTML rendering, use the `@fuzzyHighlight` Blade directive:
-
-```blade
-@fuzzyHighlight($user, 'name')
-```
-
-The directive automatically escapes user-supplied content and wraps matches in `<mark>` tags.
+→ Full guide: [docs/extended-syntax.md](docs/extended-syntax.md)
 
 ---
 
 ## Scout Driver
 
-The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed. No separate driver package is required.
-
-### Setup
-
-```bash
-composer require laravel/scout
-php artisan vendor:publish --provider="Laravel\Scout\ScoutServiceProvider"
-```
-
-In `.env`:
+The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed — no separate driver package needed.
 
 ```
 SCOUT_DRIVER=fuzzy-search
 ```
 
-Build the index:
+It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync.
 
-```bash
-php artisan fuzzy-search:rebuild "App\Models\User"
-```
-
-### Usage
-
-Add both traits to your model. Both traits declare `bootSearchable()`, so the conflict
-resolution below aliases the package's copy and runs Scout's from `booted()`:
-
-```php
-use Laravel\Scout\Searchable;
-use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable as FuzzySearchable;
-
-class User extends Model
-{
-    use Searchable, FuzzySearchable {
-        // FuzzySearchable::search() wins — it returns the fluent SearchBuilder.
-        // Scout's search() stays reachable as scoutSearch().
-        FuzzySearchable::search insteadof Searchable;
-        Searchable::search as scoutSearch;
-
-        // Both traits boot through bootSearchable() and Laravel calls that name only
-        // once, so keep the package's and run Scout's from booted().
-        FuzzySearchable::bootSearchable insteadof Searchable;
-        Searchable::bootSearchable as bootScoutSearchable;
-    }
-
-    protected static function booted(): void
-    {
-        static::bootScoutSearchable();
-    }
-
-    public function toSearchableArray(): array
-    {
-        return ['name' => $this->name, 'email' => $this->email];
-    }
-}
-
-$users = User::search('john')->get();       // fluent package builder
-$users = User::scoutSearch('john')->get();  // Scout's builder, when you need it
-```
-
-### Relevance Scores
-
-Results include `_score` (BM25 relevance, higher = more relevant):
-
-```php
-foreach (User::search('laravel')->get() as $user) {
-    echo $user->name . ': ' . $user->_score;
-}
-```
-
-### Authorization
-
-Scout's default behavior bypasses Eloquent global scopes. Apply them explicitly:
-
-```php
-User::search('john')
-    ->query(fn($q) => $q->withoutTrashed()->where('tenant_id', auth()->user()->tenant_id))
-    ->get();
-```
-
-With `scout.soft_delete` enabled, trashed models stay in the index as Scout expects; the engine filters them at query time through Scout's `__soft_deleted` constraint.
-
-### How It Works
-
-The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables.
+→ Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
 
 ---
 
 ## Filament Integration
 
-`HasFuzzyGlobalSearch` replaces a Filament Resource's LIKE-based global search with the package's fuzzy search — typo tolerance, relevance ordering and highlighted details — while everything else about the Resource (its Eloquent query, title, URL, actions, results limit) stays exactly as you defined it. `FuzzySearch::tableSearch()` does the same for individual table columns and table-wide search. Filament is not a dependency of this package; both only work once the class already extends Filament's `Resource` / applies to a Filament `Table`.
-
-### Setup
-
-```bash
-composer require filament/filament
-```
-
-Nothing else to install or publish — the trait and `tableSearch()` ship with this package.
-
-### Usage
+`HasFuzzyGlobalSearch` swaps a Filament Resource's LIKE-based global search for fuzzy search — typo tolerance, relevance ordering, highlighted details — while everything else about the Resource stays as defined.
 
 ```php
-use Ashiqfardus\LaravelFuzzySearch\Integrations\Filament\HasFuzzyGlobalSearch;
-use Filament\Resources\Resource;
+use HasFuzzyGlobalSearch; // on the Resource, for global search
 
-class UserResource extends Resource
-{
-    use HasFuzzyGlobalSearch;
-
-    protected static ?string $model = User::class;
-
-    // All three are optional. Omit $fuzzyTypoTolerance and the builder's own default (2)
-    // applies; $fuzzySearchAlgorithm and $fuzzyHighlightTag default to null and 'mark'
-    // inside the trait (null = the model's $searchable['algorithm'], then the config default).
-    protected static ?int $fuzzyTypoTolerance = 2;
-    protected static ?string $fuzzySearchAlgorithm = null; // e.g. 'levenshtein'
-    protected static string $fuzzyHighlightTag = 'mark';
-
-    public static function getGloballySearchableAttributes(): array
-    {
-        return ['name', 'email'];
-    }
-}
+FuzzySearch::tableSearch(['name']); // for individual table columns
 ```
 
-For each searchable attribute that matched, a highlighted entry is added to `details`, keyed by `Str::headline()` of the attribute (`email` → `Email`). Only attributes listed in the record's `_matches` are promoted — a column that did not match is never sniffed for the highlight tag, so a record's own literal `<mark>…</mark>` text is never rendered as HTML just because a *different* column matched (ruling P8-R10 — see [Highlighted Results](#highlighted-results)).
+Supports Filament v3, v4 and v5. Filament is a soft dependency — nothing in this package requires it unless you use the trait or helper.
 
-> A promoted highlighted attribute replaces a plain `details` entry with the same label. If `getGlobalSearchResultDetails()` already returns `'Email' => $record->email` and `email` is both searchable and a match, the highlighted version overwrites it — pick a different label, or a different searchable attribute, to keep both.
-
-### How It Works
-
-Filament's own global search applies a `LIKE %term%` constraint per attribute in `getGloballySearchableAttributes()`. The trait replaces just that matching step with the package's `SearchBuilder`, so a typo ("jonh") still finds "John Doe" and results come back ordered by relevance instead of insertion order. The model's own `$searchable` configuration (algorithm, typo tolerance, as-you-type, stop words, synonyms, accents, options) is applied to that search, and the resource's static knobs above override it; the resource's attributes replace `$searchable['columns']` (nested attribute groups are flattened). The trait gets that builder from `Model::searchOn($query, $term, $columns)` — `Searchable`'s public way to start a configured search from an existing Eloquent query, with `$columns` replacing the configured column list rather than adding to it. `getGlobalSearchEloquentQuery()`, `modifyGlobalSearchQuery()` (tenant scopes), `getGlobalSearchResultTitle()`, `getGlobalSearchResultUrl()`, `getGlobalSearchResultActions()` and `getGlobalSearchResultsLimit()` are all still called exactly as Filament defines them.
-
-### Tables
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
-use Filament\Tables\Columns\TextColumn;
-
-// Per column — the v3-compatible way, and still the way to do it on v4/v5:
-TextColumn::make('name')->searchable(query: FuzzySearch::tableSearch(['name']));
-
-// Or fuzzy-search the whole table at once. Table::searchUsing() is Filament v4+; on v3 use
-// the per-column form above on every column you want searched fuzzily:
-$table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
-
-// With no columns, it falls back to the model's Searchable::getSearchableColumns()
-// (a no-op for a model without the trait, or for a blank search):
-$table->searchUsing(FuzzySearch::tableSearch());
-```
-
-`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` (v3, v4, v5) and `Table::searchUsing()` (**Filament v4+ only** — the method does not exist in v3) expect. The columns are SQL columns of the table being queried: each one is qualified with the table name so the predicate survives a join, which means `author.name` becomes `author`.`name` and not a `whereHas` — keep Filament's built-in `searchable()` for relation columns. The typed term is trimmed and capped at `query.max_term_length` before it reaches a driver.
-
-### Versions
-
-| Filament | PHP | Laravel |
-|---|---|---|
-| v3.3 | ^8.1 | ^10.45\|^11\|^12\|^13 |
-| v4 | ^8.2 | ^11.28\|^12\|^13 |
-| v5 | ^8.2 | ^11.28\|^12\|^13 |
+→ Full guide: [docs/integrations.md](docs/integrations.md#filament-integration)
 
 ---
 
 ## JSON API Resources
 
-`FuzzySearchResource` and `FuzzySearchCollection` turn a search into a normal Laravel API response.
-
-### `FuzzySearchResource`
-
-Wraps one result row (Eloquent model or array) and adds the package's underscore-prefixed fields alongside the plain attributes:
+`FuzzySearchResource` wraps one result row, and `FuzzySearchCollection::fromBuilder()` wraps a paginated search, into normal Laravel API responses with the package's underscore-prefixed fields alongside the plain attributes.
 
 ```php
-use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchResource;
-
-Route::get('/search', function (Request $request) {
-    $user = User::search($request->query('q', ''))->highlight('mark')->first();
-    abort_unless($user, 404); // ->first() can return null; the resource would render {} for it
-
-    return new FuzzySearchResource($user);
-});
+return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
 ```
 
-### `FuzzySearchCollection`
+The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestions` (populated only when the page is empty). `_highlighted` values are already HTML-escaped — render them directly, don't escape again.
 
-Build it from a builder instead of a collection — pass a `$perPage` to paginate:
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
-
-Route::get('/search', function (Request $request) {
-    return FuzzySearchCollection::fromBuilder(
-        User::search($request->query('q', ''))->highlight('mark'),
-        perPage: 20,
-    );
-});
-```
-
-A non-paginated response looks like:
-
-```json
-{
-    "data": [
-        {
-            "name": "John Doe",
-            "email": "john@example.com",
-            "_score": 1,
-            "_raw_score": 92.5,
-            "_highlighted": {
-                "name": "<mark>John</mark> Doe",
-                "email": "john@example.com"
-            },
-            "_matches": [
-                {"column": "name", "value": "John Doe", "indices": [[0, 3]]}
-            ],
-            "_model_type": "User"
-        }
-    ],
-    "meta": {
-        "query": "john",
-        "algorithm": "fuzzy",
-        "latency_ms": 3.21,
-        "suggestions": []
-    }
-}
-```
-
-Pass `perPage` and the response also carries Laravel's usual pagination `meta` (`current_page`, `per_page`, `total`, …) and `links`, with the fields above merged into that same `meta` object. `suggestions` — `didYouMean()` terms — is only populated when the page is empty; otherwise it stays `[]`.
-
-### `lastExecution()`
-
-`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). It also stays `null` — or stale from an earlier run on the same builder — when a run never executed: a term shorter than `min_search_length` returns an empty collection without building an event, and `remember()` serves `get()` from the cache. `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms` (both `null` for such a run); call it directly for anything else you want to report:
-
-```php
-$builder = User::search('john');
-$builder->get();
-
-$builder->lastExecution()->algorithm;  // 'fuzzy'
-$builder->lastExecution()->latencyMs;  // e.g. 3.21
-```
+→ Full guide: [docs/integrations.md](docs/integrations.md#json-api-resources)
 
 ---
 
 ## Livewire Recipe
 
-A search-as-you-type box as a Livewire v3 component. This is documentation only — no such component ships with the package or the demo app.
+A search-as-you-type box needs only a client-side debounce — `wire:model.live.debounce.300ms` — plus `->asYouType()` and `->suggest()` on the builder. This replaces `SearchBuilder::debounce()`, deprecated since v2.1.0: by the time the builder runs server-side, the request has already arrived, so a server-side debounce can't do anything.
 
-```php
-<?php
+This is documentation only — no such component ships with the package or the demo app.
 
-namespace App\Livewire;
-
-use App\Models\Product;
-use Livewire\Component;
-
-class ProductSearch extends Component
-{
-    public string $query = '';
-    public array $results = [];
-    public array $suggestions = [];
-
-    public function updatedQuery(): void
-    {
-        if ($this->query === '') {
-            $this->results     = [];
-            $this->suggestions = [];
-            return;
-        }
-
-        $builder = Product::search($this->query)
-            ->asYouType()
-            ->highlight('mark')
-            ->limit(10);
-
-        $this->results     = $builder->get()->toArray();
-        $this->suggestions = $this->results === [] ? $builder->suggest(5) : [];
-    }
-
-    public function render()
-    {
-        return view('livewire.product-search');
-    }
-}
-```
-
-```blade
-<div>
-    <input type="text" wire:model.live.debounce.300ms="query" placeholder="Search products…">
-
-    @if ($suggestions !== [])
-        <p>Did you mean: {{ implode(', ', $suggestions) }}?</p>
-    @endif
-
-    <ul>
-        @foreach ($results as $result)
-            <li wire:key="product-{{ $result['id'] }}">
-                {!! $result['_highlighted']['name'] ?? e($result['name']) !!}
-            </li>
-        @endforeach
-    </ul>
-</div>
-```
-
-`updatedQuery()` is a Livewire lifecycle hook: it fires automatically whenever `$query` changes, so no separate search action or button is needed. `wire:model.live.debounce.300ms` debounces on the client, before a request is even sent — `SearchBuilder::debounce()` is deprecated since v2.1.0 for the same reason: by the time the builder runs, the request has already arrived, so a server-side debounce cannot do anything, and the call is now a no-op (removed in v3.0.0). `->asYouType()` only affects the inverted index (`useInvertedIndex()`) — it widens the last typed token to dictionary terms that start with it; it has no effect on the LIKE path used above. `->suggest(5)` returns up to 5 plain completion strings; this recipe only shows them once the page comes back empty.
+→ Full guide: [docs/integrations.md](docs/integrations.md#livewire-recipe)
 
 ---
 
@@ -1705,92 +883,16 @@ Properties:
 
 ## Persisted Search Analytics
 
-Opt-in, DB-backed search analytics: every `FuzzySearchExecuted` event can be written to a `fuzzy_search_logs` table for later reporting, instead of (or alongside) the live event listener above.
+Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and every executed search writes one row to `fuzzy_search_logs`.
 
 ```php
-// config/fuzzy-search.php
-'analytics' => [
-    'enabled'        => false,              // off by default — enable deliberately
-    'queue'          => null,               // null = insert inline; a queue name dispatches RecordSearchLogJob there instead
-    'sample_rate'    => 1.0,                // 0.0–1.0 share of searches recorded
-    'retention_days' => 30,                 // what `fuzzy-search:analytics:prune` deletes beyond
-    'hash_terms'     => false,              // true stores only a keyed SHA-256 (HMAC with APP_KEY), never the term itself
-    'table'          => 'fuzzy_search_logs',
-],
-```
-
-Run `php artisan migrate` to create the table — it has no effect until `analytics.enabled` is `true`.
-
-Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its keyed SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms`, `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
-
-### What counts as one row
-
-One row per executed search **attempt**, which is not always one row per user query:
-
-- `fallback()` writes one row per algorithm it tries — a query that misses on `fuzzy` and then matches on `soundex` is two rows (two `popular()` searches, and the miss's latency is mixed into `averageLatency()`).
-- `FederatedSearch` writes one row per inner model — "laptop" across three models is three rows.
-- Nothing is recorded for a `cache()` hit (the search never runs), for `count()` or `exists`-style calls (only `get()`, `paginate()` and `simplePaginate()` fire the event), for terms shorter than `min_search_length`, or for an in-memory search with an empty term or no `searchIn()` columns (on a single-model search; `FederatedSearch::simplePaginate()` records each inner model's own fetch).
-- `simplePaginate($n)` records the page size, not the `$n + 1` rows it fetches to look ahead for a next page.
-
-### Querying the log
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Facades\SearchAnalytics;
-
 SearchAnalytics::popular(7, 5);
-// [['term' => 'laptop', 'searches' => 42, 'avg_results' => 6.3], ...] — last 7 days, top 5
-
 SearchAnalytics::zeroResults(7, 5);
-// [['term' => 'asdfgh', 'searches' => 3], ...] — terms whose every search in the window returned nothing
-
-SearchAnalytics::averageLatency(7);
-// ['bm25' => 2.7, 'like' => 4.1] — average latency in ms, grouped by path
-
-SearchAnalytics::volume(7);
-// ['2026-09-11' => 120, '2026-09-12' => 98, ...] — searches per day, ascending
-
-SearchAnalytics::prune(); // deletes rows older than analytics.retention_days, returns the number deleted
-SearchAnalytics::prune(14); // or override the window explicitly
 ```
 
-### Artisan commands
+The `SearchAnalytics` facade also reports `averageLatency()` by path and `volume()` per day; `php artisan fuzzy-search:analytics` prints a report and `fuzzy-search:analytics:prune` deletes rows past `retention_days`. Terms are stored (or hashed via `hash_terms`) — no user identity is recorded.
 
-```bash
-# Popular / zero-result / latency / volume report for the last 30 days
-php artisan fuzzy-search:analytics
-
-# Same report over a different window and row cap
-php artisan fuzzy-search:analytics --days=7 --limit=5
-
-# Only the zero-result table
-php artisan fuzzy-search:analytics --zero-results
-
-# Delete rows older than analytics.retention_days (or --days)
-php artisan fuzzy-search:analytics:prune
-php artisan fuzzy-search:analytics:prune --days=14
-```
-
-Schedule the prune so the log doesn't grow unbounded:
-
-```php
-// routes/console.php (Laravel 11+)
-use Illuminate\Support\Facades\Schedule;
-
-Schedule::command('fuzzy-search:analytics:prune')->daily();
-```
-
-```php
-// app/Console/Kernel.php::schedule() (Laravel 10, or an app that still has a console kernel)
-$schedule->command('fuzzy-search:analytics:prune')->daily();
-```
-
-### Privacy
-
-Search terms are user input — treat this table accordingly. Recording is **off by default**; you opt in per environment. The default `retention_days` is 30, enforced by running `fuzzy-search:analytics:prune` on a schedule (it isn't automatic). On high-traffic endpoints, `sample_rate` (`0.0`–`1.0`) records only a fraction of searches instead of every one.
-
-Set `hash_terms` to `true` to store a **keyed SHA-256** (an HMAC with your `APP_KEY`) of the normalized term instead of the term itself, with `term` left empty. `popular()` and `zeroResults()` still group and count correctly, since two equal terms hash equally — it is a pseudonym, not an encryption. Because the digest is keyed, someone holding only the table cannot brute-force it by hashing guessed terms; conversely, rotating `APP_KEY` changes every future digest, so history splits at the rotation and terms recorded before and after it no longer group together. With `APP_KEY` unset the digest is unkeyed and offers no protection against guessing.
-
-With `hash_terms` off and `analytics.queue` set, a job that exhausts its retries leaves the raw term in the serialized payload in `failed_jobs`, outside `prune()`'s reach — prune that table too (`php artisan queue:flush`) if retention matters.
+→ Full guide: [docs/analytics.md](docs/analytics.md)
 
 ---
 
