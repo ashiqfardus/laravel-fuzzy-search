@@ -17,7 +17,7 @@ class SearchableColumnsTest extends TestCase
     {
         $cases = [
             // text-like: auto-detection may pick these
-            null                      => true,
+            ''                        => true, // no cast (null) — see the loop
             'string'                  => true,
             'int'                     => true,
             'integer'                 => true,
@@ -58,7 +58,7 @@ class SearchableColumnsTest extends TestCase
         ];
 
         foreach ($cases as $cast => $expected) {
-            // PHP array keys: the null case arrives as the empty string.
+            // A null key is deprecated since PHP 8.5, so the no-cast case is keyed '' and mapped back.
             $cast = $cast === '' ? null : (string) $cast;
 
             $this->assertSame(
