@@ -84,6 +84,10 @@ class ConfigWiringTest extends TestCase
      * tests/TestCase.php forces unicode.accent_insensitive to false, but the shipped default is
      * true (M11) — so the setting every user actually gets was never exercised. A search under
      * it must fold the accents off the term and still find the row.
+     *
+     * typoTolerance(0) is what makes this a guard rather than a formality: with typo patterns on,
+     * the one-character difference between "café" and "cafe" is covered whether accents are
+     * folded or not, so the search passes even with the key off.
      */
     public function test_a_search_runs_under_the_shipped_accent_insensitive_default(): void
     {
@@ -97,7 +101,7 @@ class ConfigWiringTest extends TestCase
             'created_at' => now(), 'updated_at' => now(),
         ]);
 
-        $builder = User::search('café')->searchIn(['name']);
+        $builder = User::search('café')->searchIn(['name'])->typoTolerance(0);
 
         $this->assertTrue($builder->getDebugInfo()['accent_insensitive'], 'the default did not reach the builder');
         $this->assertContains('cafe owner', $builder->get()->pluck('name')->all());

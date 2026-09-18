@@ -84,13 +84,19 @@ Removing these keys from your published config is safe — they had no effect.
 
 ## `paginate()` page sizes
 
-`perPage` is now clamped to `max_candidates` (default 1000) on every path. Two call sites change:
+`SearchBuilder::paginate()` now clamps `perPage` to between 1 and `max_candidates` (default
+1000) on every search path. Three call sites change:
 
 - `paginate($n)` with `useInvertedIndex()` and `$n` between 101 and `max_candidates` returns `$n`
   rows per page instead of the 100 the BM25 path silently clamped to.
 - `paginate($n)` with `$n` greater than `max_candidates` returns `max_candidates` rows per page
   on the LIKE and extended paths, which used to accept any page size while ranking at most
   `max_candidates` rows. Raise `max_candidates` if you really page in bigger slices.
+- `paginate(0)` or a negative `$n` returns a one-row page. It used to reach the paginator
+  unmodified — `paginate(0)` threw `DivisionByZeroError`.
+
+`simplePaginate()` and `FederatedSearch::paginate()` are not clamped; the rows they return are
+already bounded by `max_candidates` (and `limitPerModel()` for the federated one).
 
 ## Database fixes you get for free
 

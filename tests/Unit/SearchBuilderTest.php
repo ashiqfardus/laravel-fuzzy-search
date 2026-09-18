@@ -10,6 +10,7 @@ use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Illuminate\Support\Facades\DB;
 
+require_once __DIR__ . '/../TestModels.php';
 require_once __DIR__ . '/../RelationModels.php';
 
 /**
@@ -165,24 +166,6 @@ class SearchBuilderTest extends TestCase
         // No stop-word list is selected by it: same bindings, and stop words stay off.
         $this->assertSame($plain->getBindings(), $result->getBindings());
         $this->assertFalse($result->getAnalytics()['stop_words_active']);
-    }
-
-    /** @return string[] the E_USER_DEPRECATED messages $callback raised */
-    private function deprecationsFrom(\Closure $callback): array
-    {
-        $deprecations = [];
-        set_error_handler(function (int $errno, string $message) use (&$deprecations): bool {
-            $deprecations[] = $message;
-            return true;
-        }, E_USER_DEPRECATED);
-
-        try {
-            $callback();
-        } finally {
-            restore_error_handler();
-        }
-
-        return $deprecations;
     }
 
     public function test_accent_insensitive_method_is_chainable(): void
@@ -563,5 +546,23 @@ class SearchBuilderTest extends TestCase
 
         $this->assertSame(['name'], $debug['searchable_columns']); // not name + the configured email
         $this->assertSame('fuzzy', $debug['algorithm']);           // the rest of $searchable still applies
+    }
+
+    /** @return string[] the E_USER_DEPRECATED messages $callback raised */
+    private function deprecationsFrom(\Closure $callback): array
+    {
+        $deprecations = [];
+        set_error_handler(function (int $errno, string $message) use (&$deprecations): bool {
+            $deprecations[] = $message;
+            return true;
+        }, E_USER_DEPRECATED);
+
+        try {
+            $callback();
+        } finally {
+            restore_error_handler();
+        }
+
+        return $deprecations;
     }
 }

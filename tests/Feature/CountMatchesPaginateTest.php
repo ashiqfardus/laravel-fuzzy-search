@@ -81,6 +81,16 @@ class CountMatchesPaginateTest extends TestCase
         $this->assertSame(50, User::search('john')->useInvertedIndex()->paginate(200)->perPage());
     }
 
+    public function test_a_per_page_below_one_is_a_one_row_page(): void
+    {
+        // The clamp's lower bound: paginate(0) used to reach LengthAwarePaginator as 0 and
+        // throw DivisionByZeroError when it computed lastPage().
+        $this->assertSame([1, 1], [
+            User::search('john')->paginate(0)->perPage(),
+            User::search('john')->paginate(-5)->perPage(),
+        ]);
+    }
+
     public function test_bm25_path_with_filter_count_matches_paginate_total_and_get_count(): void
     {
         app(IndexManager::class)->indexBatch(User::all());

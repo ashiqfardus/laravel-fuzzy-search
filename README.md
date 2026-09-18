@@ -497,8 +497,9 @@ $grouped = FederatedSearch::across([User::class, Product::class])
     ->search('test')
     ->getGrouped();
 
-// Get counts per model — match counts, not page sizes: limit() does not shrink them, and
-// they add up to exactly what paginate()->total() reports (see the note below)
+// Get counts per model — match counts, not page sizes: limit() does not shrink them
+// (limitPerModel() and max_candidates do, see the note below), and they add up to exactly
+// what paginate()->total() reports
 $counts = FederatedSearch::across([User::class, Product::class])
     ->search('test')
     ->getCounts();  // ['User' => 5, 'Product' => 3]
@@ -779,8 +780,10 @@ $users = User::search('john')->paginate(15);
 // Simple pagination (no total count - faster; best for infinite scroll)
 $users = User::search('john')->simplePaginate(15);
 
-// paginate() clamps perPage to max_candidates (default 1000) on every path — LIKE, extended
-// and BM25 alike — because that is the widest window the ranking is built from.
+// SearchBuilder::paginate() clamps perPage to max_candidates (default 1000) on every search
+// path — LIKE, extended and BM25 alike — because that is the widest window the ranking is
+// built from; a perPage below 1 becomes 1. simplePaginate() and FederatedSearch::paginate()
+// are not clamped: what they return is already bounded by max_candidates / limitPerModel().
 $users = User::search('john')->paginate(2000);  // perPage() === 1000
 
 // cursorPaginate() always throws BadMethodCallException — it bypasses PHP-side
