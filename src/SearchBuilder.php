@@ -917,32 +917,60 @@ class SearchBuilder
      */
     protected function withFallback(Closure $attempt, Closure $isEmpty): mixed
     {
+        $result = $this->onQueryClone($attempt);
+
         if (empty($this->fallbackAlgorithms)) {
-            return $attempt();
+            return $result;
         }
 
-        $baseQuery = clone $this->query;
         $algorithm = $this->algorithm;
         $useIndex  = $this->useSearchIndex;
-
-        $result = $attempt();
 
         foreach ($this->fallbackAlgorithms as $fallback) {
             if (!$isEmpty($result)) {
                 break;
             }
 
-            $this->query          = clone $baseQuery;
             $this->algorithm      = $fallback;
             $this->useSearchIndex = false;
 
-            $result = $attempt();
+            $result = $this->onQueryClone($attempt);
         }
 
         $this->algorithm      = $algorithm;
         $this->useSearchIndex = $useIndex;
 
         return $result;
+    }
+
+    /**
+     * Run one terminal operation against a clone of the caller's query.
+     *
+     * buildQuery()/compileExtendedQuery() append the search's WHEREs and ORDER BYs to
+     * $this->query. Without this, they landed on the very builder the caller keeps holding,
+     * so `toSql()` then `get()` executed the search twice over, a second `get()` four times,
+     * and `suggest()` — which clones the base query — ran inside the previous search.
+     *
+     * Everything a terminal call touches ($this->query, and the clones taken from it by
+     * paginateRanked(), getFacets() and indexedBaseQuery()) therefore sees the prepared
+     * query, while the caller's own builder is restored untouched — so constraints added
+     * after a terminal call still take effect on the next one. Nested calls (a BM25 path
+     * falling back to LIKE) each take their own clone and restore the previous one.
+     *
+     * @template T
+     * @param  Closure(): T $work
+     * @return T
+     */
+    protected function onQueryClone(Closure $work): mixed
+    {
+        $base        = $this->query;
+        $this->query = clone $base;
+
+        try {
+            return $work();
+        } finally {
+            $this->query = $base;
+        }
     }
 
     /**
@@ -1670,19 +1698,21 @@ class SearchBuilder
             return [];
         }
 
-        $this->prepareQuery();
-        $facetResults = [];
+        return $this->onQueryClone(function (): array {
+            $this->prepareQuery();
+            $facetResults = [];
 
-        foreach ($this->facets as $facet) {
-            $facetResults[$facet] = $this->query
-                ->clone()
-                ->select($facet, DB::raw('COUNT(*) as count'))
-                ->groupBy($facet)
-                ->pluck('count', $facet)
-                ->toArray();
-        }
+            foreach ($this->facets as $facet) {
+                $facetResults[$facet] = $this->query
+                    ->clone()
+                    ->select($facet, DB::raw('COUNT(*) as count'))
+                    ->groupBy($facet)
+                    ->pluck('count', $facet)
+                    ->toArray();
+            }
 
-        return $facetResults;
+            return $facetResults;
+        });
     }
 
     /**
@@ -2430,8 +2460,10 @@ class SearchBuilder
      */
     public function toSql(): string
     {
-        $this->prepareQuery();
-        return $this->query->toSql();
+        return $this->onQueryClone(function (): string {
+            $this->prepareQuery();
+            return $this->query->toSql();
+        });
     }
 
     /**
@@ -2439,8 +2471,10 @@ class SearchBuilder
      */
     public function getBindings(): array
     {
-        $this->prepareQuery();
-        return $this->query->getBindings();
+        return $this->onQueryClone(function (): array {
+            $this->prepareQuery();
+            return $this->query->getBindings();
+        });
     }
 
     protected bool $recencyBoostEnabled = false;
@@ -2738,7 +2772,9 @@ class SearchBuilder
      */
     public function getAnalytics(): array
     {
-        $this->prepareQuery();
+        // prepareQuery() is what resolves an extended query's columns; the query it builds is
+        // thrown away with the clone.
+        $this->onQueryClone(fn () => $this->prepareQuery());
 
         return [
             'search_term' => $this->searchTerm,
