@@ -8,6 +8,8 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
+require_once __DIR__ . '/../TestModels.php';
+
 class SearchAnalyticsTest extends TestCase
 {
     protected function setUp(): void
@@ -34,6 +36,16 @@ class SearchAnalyticsTest extends TestCase
             'algorithm' => 'fuzzy', 'path' => $path, 'result_count' => $results, 'latency_ms' => $latency,
             'day' => $at->toDateString(), 'created_at' => $at,
         ]);
+    }
+
+    public function test_enabling_analytics_after_boot_records_searches(): void
+    {
+        // TestCase boots with analytics.enabled = false; the listener must still be there.
+        config(['fuzzy-search.analytics.enabled' => true]);
+
+        \Ashiqfardus\LaravelFuzzySearch\Tests\User::search('john')->get();
+
+        $this->assertSame('john', DB::table('fuzzy_search_logs')->value('term'));
     }
 
     public function test_popular_groups_by_normalized_term_and_orders_by_count(): void

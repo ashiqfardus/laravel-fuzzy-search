@@ -20,9 +20,9 @@ Opt-in, DB-backed search analytics: every `FuzzySearchExecuted` event can be wri
 ],
 ```
 
-Run `php artisan migrate` to create the table — it has no effect until `analytics.enabled` is `true`.
+Run `php artisan migrate` to create the table — it has no effect until `analytics.enabled` is `true`. The flag is read on every search, so `config(['fuzzy-search.analytics.enabled' => true])` at runtime starts recording without a reboot.
 
-Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its keyed SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms`, `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
+Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `normalized_term` (lower-cased, whitespace-collapsed — or its keyed SHA-256 when `hash_terms` is on), `model_type` (the Eloquent class searched, `null` for query-builder/in-memory searches), `algorithm`, `path` (`like`, `bm25`, `extended`, or `in_memory`), `result_count`, `latency_ms` (capped at 999999.99, the column's maximum), `day` (the date `created_at` falls on, used by `volume()`) and `created_at`.
 
 ### What counts as one row
 

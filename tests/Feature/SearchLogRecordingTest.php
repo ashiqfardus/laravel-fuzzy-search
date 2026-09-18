@@ -141,6 +141,15 @@ class SearchLogRecordingTest extends TestCase
         $this->assertSame(str_repeat('p', 16), DB::table('fuzzy_search_logs')->value('path'));
     }
 
+    public function test_a_latency_beyond_the_column_is_clamped_to_its_maximum(): void
+    {
+        // latency_ms is decimal(8,2): 999999.99 is the largest value it holds, and anything
+        // above it fails the insert under MySQL strict mode and on PostgreSQL.
+        event(new FuzzySearchExecuted('slow', [], 'fuzzy', 0, 5_000_000.0, 0, 'like', User::class));
+
+        $this->assertEqualsWithDelta(999999.99, (float) DB::table('fuzzy_search_logs')->value('latency_ms'), 0.001);
+    }
+
     public function test_zero_result_and_extended_searches_are_logged_with_their_path(): void
     {
         User::search('zzzz')->get();

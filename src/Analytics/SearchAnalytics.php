@@ -43,7 +43,8 @@ class SearchAnalytics
             'algorithm'       => mb_substr($event->algorithm, 0, 32),
             'path'            => mb_substr($event->path, 0, 16),
             'result_count'    => max(0, $event->resultCount),
-            'latency_ms'      => $event->latencyMs,
+            // decimal(8,2): a larger value fails the insert (MySQL strict mode, PostgreSQL).
+            'latency_ms'      => min($event->latencyMs, 999999.99),
             'day'             => $now->toDateString(),
             'created_at'      => $now,
         ];
