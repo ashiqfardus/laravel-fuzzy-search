@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 // Load shared models
 require_once __DIR__ . '/../TestModels.php';
+require_once __DIR__ . '/../SameNameModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
@@ -416,6 +417,24 @@ class FederatedSearchTest extends TestCase
         $this->assertSame(2, $page->total(), 'User matches twice but only one row is reachable');
         $this->assertSame(['User' => 1, 'Product' => 1], $federated->getCounts());
         $this->assertCount(0, $federated->paginate(1, 'page', 3)->items());
+    }
+
+    public function test_models_sharing_a_class_basename_are_counted_separately(): void
+    {
+        // Two Searchable "User" models in different namespaces, both on the users table: the
+        // per-model counts must be keyed by class, or one overwrites the other and total()
+        // promises half the rows the search returns. getCounts() still reports basenames, so
+        // there the two must be added together.
+        $federated = fn () => FederatedSearch::across([
+            \Ashiqfardus\LaravelFuzzySearch\Tests\SameNameA\User::class,
+            \Ashiqfardus\LaravelFuzzySearch\Tests\SameNameB\User::class,
+        ])->search('john')->searchIn(['name'])->using('like');
+
+        $rows = $federated()->limit(100)->get()->count();
+
+        $this->assertGreaterThan(0, $rows);
+        $this->assertSame($rows, $federated()->paginate(2, 'page', 1)->total());
+        $this->assertSame(['User' => $rows], $federated()->getCounts());
     }
 
     public function test_paginate_is_stable_and_gapless_across_pages(): void

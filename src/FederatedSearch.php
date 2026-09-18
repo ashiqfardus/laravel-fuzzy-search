@@ -340,7 +340,10 @@ class FederatedSearch
      * can ever hand over more). getCounts() reports these numbers and paginate()'s total() is
      * their sum, so the two can never disagree and no page is promised that cannot be filled.
      *
-     * @return array<string, int> model basename => reachable count
+     * Keyed by class, not by basename: across([A\User::class, B\User::class]) is two models
+     * and must be counted twice.
+     *
+     * @return array<class-string, int> model class => reachable count
      */
     protected function countPerModel(): array
     {
@@ -361,7 +364,7 @@ class FederatedSearch
                 continue;
             }
 
-            $counts[class_basename($modelClass)] = min(
+            $counts[$modelClass] = min(
                 $query->count(),
                 $this->limitPerModel ?? PHP_INT_MAX,
                 // The plain whereFuzzyMultiple() fallback has no candidate window.
@@ -463,10 +466,20 @@ class FederatedSearch
      * capped where the search itself is — see countPerModel(). A model that matches nothing
      * reports 0; one that has no searchable column here is left out entirely.
      *
+     * Keys are class basenames, like `_model_type` and getGrouped(): two models sharing a short
+     * name report one combined count here, while total() still counts them separately.
+     *
      * @return array ['User' => 5, 'Product' => 3, ...]
      */
     public function getCounts(): array
     {
-        return $this->countPerModel();
+        $counts = [];
+
+        foreach ($this->countPerModel() as $modelClass => $count) {
+            $name = class_basename($modelClass);
+            $counts[$name] = ($counts[$name] ?? 0) + $count;
+        }
+
+        return $counts;
     }
 }
