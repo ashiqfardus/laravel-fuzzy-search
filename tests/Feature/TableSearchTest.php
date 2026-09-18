@@ -48,4 +48,29 @@ class TableSearchTest extends TestCase
         $this->assertContains('John Doe', $names);
         $this->assertInstanceOf(\Illuminate\Database\Eloquent\Builder::class, $closure(User::query(), 'x'));
     }
+
+    /** Ruling P8-R18: Filament's search box is unbounded user input, so the closure caps it. */
+    public function test_a_long_search_is_capped_at_max_term_length(): void
+    {
+        config(['fuzzy-search.query.max_term_length' => 5]);
+
+        $query = User::query();
+        (FuzzySearch::tableSearch(['name']))($query, str_repeat('a', 40));
+
+        $strings = array_filter($query->getQuery()->getBindings(), 'is_string');
+        $this->assertNotEmpty($strings);
+        foreach ($strings as $binding) {
+            // 5 + 1: a typo pattern may carry one extra wildcard character ('%aaaa_a%') for the
+            // inserted edit. Uncapped, every one of these bindings would be 40 characters wide.
+            $this->assertLessThanOrEqual(6, mb_strlen(trim($binding, '%')), $binding);
+        }
+    }
+
+    public function test_the_columns_are_qualified_with_the_table(): void
+    {
+        $query = User::query();
+        (FuzzySearch::tableSearch(['name']))($query, 'jonh');
+
+        $this->assertStringContainsString($query->getQuery()->getGrammar()->wrap('users.name'), $query->toSql());
+    }
 }

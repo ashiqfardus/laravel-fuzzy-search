@@ -127,6 +127,13 @@ class FuzzySearch
      * Filament evaluates it as (Builder $query, string $search) inside a where group; the
      * fuzzy predicate is added to that group so it composes with Filament's other constraints.
      * With no columns the model's $searchable columns are used (Searchable trait models only).
+     *
+     * The columns are SQL columns of the table being queried (or already-qualified `table.column`
+     * names), not relation paths: each one is passed through qualifyColumn() so the predicate
+     * survives a join. For a relation column keep Filament's own `searchable()`.
+     *
+     * The term is trimmed and capped at query.max_term_length before it reaches a driver — the
+     * table search box is unbounded user input (see SearchBuilder::capSearchTerm()).
      */
     public static function tableSearch(array|string|null $columns = null, ?string $algorithm = null, array $options = []): \Closure
     {
@@ -139,11 +146,15 @@ class FuzzySearch
                     : [],
             };
 
-            if ($cols === [] || trim($search) === '') {
+            $search = mb_substr(trim($search), 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+
+            if ($cols === [] || $search === '') {
                 return $query;
             }
 
-            app(static::class)->applyFuzzyWhereMultiple($query->getQuery(), array_values($cols), $search, $algorithm, $options);
+            $cols = array_map(fn ($c) => $query->qualifyColumn($c), array_values($cols));
+
+            app(static::class)->applyFuzzyWhereMultiple($query->getQuery(), $cols, $search, $algorithm, $options);
 
             return $query;
         };
