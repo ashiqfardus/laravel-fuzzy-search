@@ -1300,6 +1300,22 @@ class SearchBuilder
     }
 
     /**
+     * True when the base query narrows the model in a way the dictionary cannot see — the
+     * caller's where()s, forwarded scopes, global scopes — so suggest() and didYouMean() must
+     * not offer model-wide terms. The SoftDeletes scope is not counted: the index already
+     * honours it (deleting a row removes its postings, and IndexModelJob loads through the
+     * scope). onlyTrashed() adds a real where and still counts; withTrashed() does not, and the
+     * dictionary then offers non-trashed terms only, which is safe. The BM25 search path keeps
+     * hasIndexedConstraints(), which also covers a trashed row the queue has not removed yet.
+     */
+    protected function hasSuggestionConstraints(EloquentBuilder $base): bool
+    {
+        return $this->hasIndexedConstraints(
+            (clone $base)->withoutGlobalScope(\Illuminate\Database\Eloquent\SoftDeletingScope::class)
+        );
+    }
+
+    /**
      * Set _raw_score / _score on a page of models. Normalised against the corpus-wide
      * maximum (the first entry of $ranked), so scores stay comparable across pages.
      *
@@ -2621,7 +2637,13 @@ class SearchBuilder
             return [];
         }
 
-        if ($this->suggestSource !== 'table') {
+        // 'auto' leaves a constrained query (a where(), a tenant scope) to the table scan: the
+        // dictionary is scoped to the model, not to the query. suggestFrom('index') opts back in.
+        $constrained = $this->suggestSource === 'auto'
+            && $this->query instanceof EloquentBuilder
+            && $this->hasSuggestionConstraints($this->query);
+
+        if ($this->suggestSource !== 'table' && !$constrained) {
             $fromIndex = $this->suggestFromIndex($limit);
             if ($fromIndex !== null || $this->suggestSource === 'index') {
                 return $fromIndex ?? [];
@@ -2832,6 +2854,10 @@ class SearchBuilder
             return $b['confidence'] <=> $a['confidence'];
         });
 
+        if ($this->query instanceof EloquentBuilder && $this->hasSuggestionConstraints($this->query)) {
+            $alternatives = $this->visibleAlternatives($alternatives, $modelClass, $limit);
+        }
+
         return array_slice(
             array_map(
                 fn($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
@@ -2840,6 +2866,47 @@ class SearchBuilder
             0,
             $limit
         );
+    }
+
+    /**
+     * The ranked alternatives the constrained base query can see: a candidate stays when at
+     * least one row it is posted for passes the query. Each check reads up to max_candidates of
+     * the candidate's model_ids from the postings and runs them through RankedCandidates::keys()
+     * — the chunked primary-key whereIn the BM25 constrained path uses — so no LIKE scan runs
+     * (the JSON resource calls this on every empty page, which a caller can produce at will).
+     * The ids travel as bound values, never as a subquery against the model's table: model_id
+     * is a string column, and the dictionary may live on another connection than the model. A candidate whose visible rows
+     * all fall outside the capped id list is dropped — the safe direction.
+     *
+     * @param  list<array<string, mixed>> $alternatives best first
+     * @return list<array<string, mixed>>
+     */
+    protected function visibleAlternatives(array $alternatives, string $modelClass, int $limit): array
+    {
+        $maxIds  = max(1, (int) config('fuzzy-search.max_candidates', 1000));
+        $visible = [];
+
+        // ponytail: checks at most max($limit * 3, 10) candidates, so a query that sees few of
+        // the model's rows can get fewer than $limit alternatives; raise the cap if that matters.
+        foreach (array_slice($alternatives, 0, max($limit * 3, 10)) as $alternative) {
+            $ids = DB::table('fuzzy_index_postings as p')
+                ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+                ->where('t.term', $alternative['term'])
+                ->where('p.model_type', $modelClass)
+                ->limit($maxIds)
+                ->pluck('p.model_id')
+                ->all();
+
+            if (\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keys($this->query, $ids, 1) !== []) {
+                $visible[] = $alternative;
+
+                if (count($visible) >= $limit) {
+                    break;
+                }
+            }
+        }
+
+        return $visible;
     }
 
     /**

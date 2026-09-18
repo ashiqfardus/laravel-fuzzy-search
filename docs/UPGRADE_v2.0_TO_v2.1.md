@@ -257,6 +257,7 @@ through `get()`) now agree.
 ## `suggest()` on an indexed model now completes from the dictionary
 
 - **Completions changed for indexed models.** In v2.0, `suggest()` always scanned the table and returned column values as stored. As of v2.1.0, when the model has a `fuzzy_index_meta` row (it has been BM25-indexed), `suggest()` instead completes the last word of the term from that model's dictionary — completions are **lower-case dictionary terms**, not the column value as written, and any earlier words in a multi-word term are kept as typed (`"Bob jo"` → `"Bob john"`).
+- **Constrained queries keep the table scan.** When the base query carries a `where()`, a forwarded scope or a global scope other than `SoftDeletes`, the default `'auto'` mode uses the table scan even on an indexed model, because the dictionary is scoped to the model, not to the query. `->suggestFrom('index')` forces the dictionary and ignores those constraints.
 - **Restore v2.0 behaviour** by calling `->suggestFrom('table')`, which forces the table scan regardless of whether the model is indexed.
 - Un-indexed models are unaffected — they always used, and still use, the table scan.
 

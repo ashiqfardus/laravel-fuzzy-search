@@ -458,12 +458,17 @@ User::search('joh')->searchIn(['name'])->suggest(5);
 // Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
 ```
 
-**What scopes a suggestion.** The table scan runs on the builder's base query, so constraints you put there — `where()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — narrow the suggestions. `filter()` and `filterIn()` do not: they belong to the search itself, which `suggest()` deliberately does not run. Dictionary completions are scoped to the model only, as above.
+**What scopes a suggestion.** `filter()` and `filterIn()` never do: they belong to the search itself, which `suggest()` and `didYouMean()` deliberately do not run. The constraints you put on the builder's base query — `where()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — are honoured as follows:
 
-`suggestFrom('auto'|'index'|'table')` overrides which source `suggest()` uses; `'auto'` (the default) picks the dictionary when the model is indexed and falls back to the table scan otherwise:
+- **The table scan** (an un-indexed model, `suggestFrom('table')`, or `'auto'` under a constraint) runs on the base query, so every one of those constraints narrows it.
+- **`suggest()` in `'auto'` mode on an indexed model** completes from the dictionary only when the base query is unconstrained. A `where()`, a forwarded scope or a global scope switches it to the table scan. The `SoftDeletes` scope does not count, because the index already drops a deleted row's terms.
+- **`suggestFrom('index')`** always completes from the model's dictionary. It is model-wide and ignores `where()` and every scope, so use it only where every caller may see every row's terms.
+- **`didYouMean()`** always offers the model's own dictionary terms only. Under a `where()` or a global scope (again, `SoftDeletes` excepted) it keeps only terms posted for at least one row the query can see. It checks up to `max_candidates` of each term's rows, and a term whose visible rows fall outside those is dropped rather than shown. It checks at most `max($limit * 3, 10)` terms, so a narrow query can get fewer alternatives than `$limit`.
+
+`suggestFrom('auto'|'index'|'table')` overrides which source `suggest()` uses; `'auto'` (the default) picks the dictionary when the model is indexed and the base query is unconstrained (see above), and the table scan otherwise:
 
 ```php
-User::search('joh')->suggestFrom('index')->suggest(5); // dictionary only — [] if the model isn't indexed
+User::search('joh')->suggestFrom('index')->suggest(5); // dictionary only, model-wide (ignores where() and scopes) — [] if the model isn't indexed
 User::search('joh')->suggestFrom('table')->suggest(5); // table scan only, even on an indexed model
 ```
 
