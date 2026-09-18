@@ -7,6 +7,7 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 /**
  * The builder's length guards (min_search_length, query.max_term_length) counted bytes.
@@ -145,7 +146,11 @@ class MultibyteSearchTest extends TestCase
      * words) or a value into words (suggest()) cut them in half; a half made only of invalid
      * bytes cleaned to '' and bound LIKE '%%', which matched every row. (Linux glibc never
      * treats 0xA0 as a space.)
+     *
+     * In its own process: restoring the saved locale name does not restore PCRE's built-in
+     * character tables, so later tests in the same process would still see 0xA0 as a space.
      */
+    #[RunInSeparateProcess]
     public function test_a_utf8_locale_does_not_split_a_character_containing_byte_0xA0(): void
     {
         $this->insertUser('voilà', 'v1@example.com');

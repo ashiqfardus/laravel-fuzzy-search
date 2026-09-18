@@ -183,18 +183,22 @@ you get back from a search:
   name. A deploy script that runs it before `scout:import` now really starts from empty. The
   engine's `raw()['total']` is also the match count now, not the size of the returned page.
 - **`min_search_length` now applies to every search, not only `get()`.** A plain term shorter
-  than `min_search_length` characters (default 2) matches nothing on `paginate()` (an empty page,
-  total 0), `simplePaginate()`, `count()` (0), `getFacets()`, `FederatedSearch`,
-  `FuzzySearch::on()` and the Scout engine, as it always did on `get()`, and fires no
-  `FuzzySearchExecuted`. In v2.0 those searched a one-letter term normally, so
-  `User::search('j')->paginate()` listed every name containing a "j" while `->get()` returned
-  nothing. Set `min_search_length` to `1` if you want one-character searches everywhere.
+  than `min_search_length` characters (default 2) now matches nothing on `paginate()` (an empty
+  page, total 0), `count()` (0), `getFacets()`, `FuzzySearch::on()`, the Scout engine and
+  `FederatedSearch` models without the `Searchable` trait, as it always did on `get()`,
+  `simplePaginate()` and `Searchable` models in `FederatedSearch`, and fires no
+  `FuzzySearchExecuted`. In v2.0 `User::search('j')->paginate()` returned every row (the fuzzy
+  patterns for a one-letter term match everything) while `->get()` returned nothing. Set
+  `min_search_length` to `1` to search one-character terms again; the inverted index and the
+  Scout engine still never match them, because they do not index one-character tokens.
   `extended()`/`searchBoolean()` queries, the `whereFuzzy`-style macros, the `Fuzzy` scopes and
   `tableSearch()` are unaffected.
 - **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
   every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
   SQLite and MySQL); the event and the analytics log record the cleaned term. A term made only of
-  invalid bytes (`?q=%FF`) matches nothing: no rows, a total of 0, and no `EmptySearchTermException`.
+  invalid bytes (`?q=%FF`) matches nothing on `search()`, `FederatedSearch` and `FuzzySearch::on()`:
+  no rows, a total of 0, and no `EmptySearchTermException`. The query-builder helpers (the
+  `whereFuzzy`-style macros, the `Fuzzy` scopes and `tableSearch()`) treat it as `''`.
 
 ## Relationship search
 

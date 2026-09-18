@@ -95,7 +95,7 @@ class TrigramDriver extends BaseDriver
 
         foreach ($trigrams as $trigram) {
             $trigram = trim($trigram);
-            if ($trigram !== '') {
+            if (!empty($trigram)) {
                 $patterns[] = '%' . $this->escapeLike($trigram) . '%';
             }
         }
@@ -123,7 +123,7 @@ class TrigramDriver extends BaseDriver
 
         foreach ($trigrams as $i => $trigram) {
             $trigram = trim($trigram);
-            if ($trigram !== '') {
+            if (!empty($trigram)) {
                 $expressions[] = match ($this->driver) {
                     'mysql' => "IF(LOWER({$col}) LIKE ?, 20, 0)",
                     default => "CASE WHEN {$col} LIKE ? THEN 20 ELSE 0 END",
@@ -145,7 +145,7 @@ class TrigramDriver extends BaseDriver
 
         foreach ($trigrams as $trigram) {
             $trigram = trim($trigram);
-            if ($trigram !== '') {
+            if (!empty($trigram)) {
                 $bindings[] = '%' . $trigram . '%';
             }
         }

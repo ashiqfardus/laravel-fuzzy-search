@@ -386,7 +386,8 @@ A plain term shorter than `min_search_length` characters (default 2) matches not
 search API — `get()`, `first()`, `paginate()` (total 0), `simplePaginate()`, `count()`,
 `getFacets()`, `FederatedSearch`, `FuzzySearch::on()` and the Scout engine — and fires no event.
 `extended()`/`searchBoolean()` queries are not measured, and neither are the query-builder
-helpers (the `whereFuzzy`-style macros, the `Fuzzy` scopes and `tableSearch()`).
+helpers (the `whereFuzzy`-style macros, the `Fuzzy` scopes and `tableSearch()`). `suggest()` and
+`didYouMean()` keep their own two-character floor.
 
 ### Custom Scoring Hooks
 

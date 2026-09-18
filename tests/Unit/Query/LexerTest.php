@@ -6,6 +6,7 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Query\Lexer;
 use Ashiqfardus\LaravelFuzzySearch\Query\Token;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 class LexerTest extends TestCase
 {
@@ -22,7 +23,11 @@ class LexerTest extends TestCase
      * space. 0xA0 is inside à (C3 A0), ঠ (E0 A6 A0) and 丠 (E4 B8 A0), so those words were cut
      * mid-character: invalid UTF-8 in the binding on PHP 8.1/8.2, a literal '?' on 8.3+. Only
      * ASCII whitespace separates words. (Linux glibc never treats 0xA0 as a space.)
+     *
+     * In its own process: restoring the saved locale name does not restore PCRE's built-in
+     * character tables, so later tests in the same process would still see 0xA0 as a space.
      */
+    #[RunInSeparateProcess]
     public function test_a_utf8_locale_does_not_split_a_character_containing_byte_0xA0(): void
     {
         $previous = setlocale(LC_CTYPE, '0');
