@@ -11,7 +11,7 @@ Thank you for considering contributing to Laravel Fuzzy Search! This guide will 
 - [Coding Standards](#coding-standards)
 - [Testing Guidelines](#testing-guidelines)
 - [Pull Request Process](#pull-request-process)
-
+- [Releasing (maintainers)](#releasing-maintainers)
 ## Code of Conduct
 
 - Be respectful and inclusive
@@ -486,6 +486,31 @@ Brief description of changes
 ### After Merge
 
 Your contribution will be included in the next release. Thank you! 🎉
+
+## Releasing (maintainers)
+
+The package carries no version string — Packagist versions come from git tags, so a release
+is a tag plus release notes, not a file edit.
+
+1. **CI green on the release commit.** Every row of `test-sqlite`, `test-mysql`, `test-pgsql`,
+   `test-mariadb`, `test-sqlsrv` and both `test-filament` legs.
+2. **CHANGELOG.** Give `[x.y.z]` its date (`## [2.1.0] — 2026-09-18`, em-dash), keep the
+   subsection order Added / Changed / Deprecated / Removed / Fixed / Security, and add the
+   compare link at the bottom: `[x.y.z]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v<prev>...v<new>`.
+3. **Commit** `chore: release x.y.z`.
+4. **Annotated tag** (v2.0.0's precedent, not v2.0.1's lightweight tag):
+   `git tag -a vX.Y.Z -m "vX.Y.Z — <one-line summary>"`.
+5. **Push** the branch and the tag: `git push origin <branch> && git push origin vX.Y.Z`.
+6. **GitHub release** — `gh` is not installed here; use the REST API with the token from the
+   credential helper and the CHANGELOG section as the body:
+   `POST /repos/ashiqfardus/laravel-fuzzy-search/releases` with `tag_name`, `name`, `body`.
+7. **Packagist** — confirm the new version appears in
+   `https://repo.packagist.org/p2/ashiqfardus/laravel-fuzzy-search.json`. If auto-update is not
+   wired to the GitHub webhook, trigger it from the Packagist package page.
+8. **Merge into `main`** (the default branch) once the tag is published.
+9. **Demo repo** — bump the `ashiqfardus/laravel-fuzzy-search` constraint and the version
+   strings in its README, then push. Refresh the demo lock first:
+   `composer update ashiqfardus/laravel-fuzzy-search --no-install`.
 
 ## Questions?
 
