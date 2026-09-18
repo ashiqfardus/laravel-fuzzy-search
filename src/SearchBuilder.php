@@ -15,6 +15,7 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidConfigException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
 use Ashiqfardus\LaravelFuzzySearch\Support\Accents;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{AstNode, AndNode, OrNode, NotNode, FieldTerm};
 
 /**
@@ -136,7 +137,7 @@ class SearchBuilder
      */
     public function search(string $term): self
     {
-        $this->searchTerm = trim($term);
+        $this->searchTerm = trim(Utf8::clean($term));
 
         return $this;
     }
@@ -282,7 +283,7 @@ class SearchBuilder
     public function extended(?string $query = null): self
     {
         if ($query !== null) {
-            $this->searchTerm = $query;
+            $this->searchTerm = Utf8::clean($query);
         }
         $this->extendedQuery = $this->searchTerm;
         return $this;

@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch;
 
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -53,7 +54,7 @@ class FederatedSearch
      */
     public function search(string $term): self
     {
-        $this->searchTerm = trim($term);
+        $this->searchTerm = trim(Utf8::clean($term));
         return $this;
     }
 

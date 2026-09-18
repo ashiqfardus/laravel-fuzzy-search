@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Integrations\Filament;
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Filament\GlobalSearch\GlobalSearchResult;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
@@ -33,6 +34,8 @@ trait HasFuzzyGlobalSearch
 {
     public static function getGlobalSearchResults(string $search): Collection
     {
+        $search = Utf8::clean($search); // before the empty check and modifyGlobalSearchQuery()
+
         if (trim($search) === '' || !static::canGloballySearch()) {
             return collect();
         }

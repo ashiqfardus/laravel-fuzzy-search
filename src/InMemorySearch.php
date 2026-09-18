@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Collection;
 
 /**
@@ -36,7 +37,7 @@ class InMemorySearch
 
     public function search(string $term): self
     {
-        $this->term = trim($term);
+        $this->term = trim(Utf8::clean($term));
         return $this;
     }
 

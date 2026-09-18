@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Scout;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -43,7 +44,7 @@ class FuzzySearchEngine extends Engine
     public function search(Builder $builder)
     {
         $modelType = $builder->model::class;
-        $terms     = $this->indexManager->processTerms($builder->query, null, $modelType);
+        $terms     = $this->indexManager->processTerms(Utf8::clean($builder->query), null, $modelType);
         $limit     = $builder->limit ?? 15;
 
         $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
@@ -72,7 +73,7 @@ class FuzzySearchEngine extends Engine
     public function paginate(Builder $builder, $perPage, $page)
     {
         $modelType = $builder->model::class;
-        $terms     = $this->indexManager->processTerms($builder->query, null, $modelType);
+        $terms     = $this->indexManager->processTerms(Utf8::clean($builder->query), null, $modelType);
         $offset    = ($page - 1) * $perPage;
         $weights   = $this->columnWeights($builder);
 

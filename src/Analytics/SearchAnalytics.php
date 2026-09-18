@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Analytics;
 
 use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -27,12 +28,14 @@ class SearchAnalytics
     /** The row a FuzzySearchExecuted event becomes (hashing applied here, once). */
     public static function rowFor(FuzzySearchExecuted $event): array
     {
-        $normalized = static::normalize($event->searchTerm);
+        // The package's own events carry a cleaned term; a third-party dispatcher's may not.
+        $term       = Utf8::clean($event->searchTerm);
+        $normalized = static::normalize($term);
         $hash       = (bool) config('fuzzy-search.analytics.hash_terms', false);
         $now        = now();
 
         return [
-            'term'            => $hash ? '' : DbDialect::truncateToVarchar($event->searchTerm, 255),
+            'term'            => $hash ? '' : DbDialect::truncateToVarchar($term, 255),
             // Keyed, not a bare sha256: search terms are low-entropy (names, product words),
             // so an unsalted digest can be confirmed by anyone who guesses the term. Equal
             // terms still hash equally, so popular()/zeroResults() group as before.

@@ -65,6 +65,15 @@ class GlobalSearchTest extends FilamentTestCase
         $this->assertCount(0, UserResource::getGlobalSearchResults(''));
     }
 
+    public function test_an_invalid_utf8_search_finds_what_the_cleaned_search_finds(): void
+    {
+        $titles = fn (string $search) => UserResource::getGlobalSearchResults($search)->map(fn (GlobalSearchResult $r) => (string) $r->title)->all();
+
+        $this->assertNotEmpty($titles('john'));
+        $this->assertSame($titles('john'), $titles("jo\xC3hn")); // e.g. ?q=jo%C3hn
+        $this->assertCount(0, UserResource::getGlobalSearchResults("\xFF")); // nothing valid left: an empty search
+    }
+
     public function test_records_without_a_url_are_skipped(): void
     {
         $resource = new class extends UserResource {

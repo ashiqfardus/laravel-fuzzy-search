@@ -6,6 +6,7 @@ use Illuminate\Database\Query\Builder;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\BaseDriver;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
 use Ashiqfardus\LaravelFuzzySearch\InMemorySearch;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 
 class FuzzySearch
 {
@@ -67,6 +68,8 @@ class FuzzySearch
             throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
         }
 
+        $value = Utf8::clean($value); // every macro and Fuzzy scope binds its term here or in applyFuzzyOrder()
+
         $algorithm = $algorithm ?? $this->currentConfig()['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
 
@@ -118,7 +121,7 @@ class FuzzySearch
             default                         => "CASE WHEN {$col} LIKE ? THEN 0 ELSE 1 END",
         };
 
-        return $query->orderByRaw("{$expression} {$direction}", [$value]);
+        return $query->orderByRaw("{$expression} {$direction}", [Utf8::clean($value)]);
     }
 
     /**
@@ -150,7 +153,7 @@ class FuzzySearch
                     : [],
             };
 
-            $search = mb_substr(trim($search), 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+            $search = mb_substr(trim(Utf8::clean($search)), 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
 
             if ($cols === [] || $search === '') {
                 return $query;

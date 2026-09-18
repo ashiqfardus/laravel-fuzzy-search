@@ -177,6 +177,9 @@ you get back from a search:
   expected and removed nothing; it now clears every indexed model whose `indexableAs()` is that
   name. A deploy script that runs it before `scout:import` now really starts from empty. The
   engine's `raw()['total']` is also the match count now, not the size of the returned page.
+- **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
+  every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
+  SQLite and MySQL); the event and the analytics log record the cleaned term.
 
 ## Relationship search
 

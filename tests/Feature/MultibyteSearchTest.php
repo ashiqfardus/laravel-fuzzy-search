@@ -106,22 +106,24 @@ class MultibyteSearchTest extends TestCase
         }
     }
 
-    public function test_an_invalid_utf8_term_is_highlighted_by_the_byte_search_instead_of_throwing(): void
+    /**
+     * A crafted `?q=john%C3` used to reach the bind parameters as-is: PostgreSQL (SQLSTATE 22021)
+     * and SQL Server (IMSSP, "translating string ... to UCS-2") rejected it, a 500 on every
+     * search. The invalid bytes are dropped where the term enters, so every database searches
+     * the cleaned term.
+     */
+    public function test_an_invalid_utf8_term_searches_the_cleaned_term_on_every_database(): void
     {
-        $terms = ["john\xC3", "jo\xC3hn", "doe\xFF"]; // e.g. ?q=john%C3
-
-        if ($this->app['db']->connection()->getDriverName() === 'pgsql') {
-            // PostgreSQL rejects the bytes in the bind parameter (SQLSTATE 22021), before any row
-            // can reach highlighting — there is nothing to highlight there.
-            $this->expectException(\Illuminate\Database\QueryException::class);
-            User::search($terms[0])->using('fuzzy')->highlight('mark')->get();
-        }
-
-        foreach ($terms as $term) {
+        foreach (["john\xC3" => 'john', "jo\xC3hn" => 'john', "doe\xFF" => 'doe'] as $term => $clean) {
             foreach (['fuzzy', 'levenshtein'] as $algorithm) {
                 $rows = User::search($term)->using($algorithm)->highlight('mark')->get();
                 $this->assertNotEmpty($rows, bin2hex($term) . " / {$algorithm}");
                 $this->assertArrayHasKey('name', $rows->first()->_highlighted);
+                $this->assertSame(
+                    User::search($clean)->using($algorithm)->get()->pluck('id')->all(),
+                    $rows->pluck('id')->all(),
+                    bin2hex($term) . " / {$algorithm}",
+                );
             }
 
             $this->assertNotEmpty(User::search($term)->highlight('mark')->paginate(5)->items(), bin2hex($term) . ' / paginate');
