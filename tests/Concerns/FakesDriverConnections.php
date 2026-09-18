@@ -35,14 +35,15 @@ trait FakesDriverConnections
      * work without a real server. Skips (aborting the whole test method — see
      * fakeDriverAvailable() above) when Laravel lacks the driver (mariadb on Laravel 10);
      * fine for a test that only asks for one driver, wrong for a per-driver loop.
+     * A $prefix is the connection's table prefix; that connection gets its own name.
      */
-    protected function fakeConnectionTable(string $driver, string $table): \Illuminate\Database\Query\Builder
+    protected function fakeConnectionTable(string $driver, string $table, string $prefix = ''): \Illuminate\Database\Query\Builder
     {
         if (!$this->fakeDriverAvailable($driver)) {
             $this->markTestSkipped('Laravel < 11 has no mariadb driver.');
         }
 
-        $name = 'fake_' . $driver;
+        $name = 'fake_' . $driver . ($prefix === '' ? '' : '_' . $prefix);
         config(["database.connections.{$name}" => [
             'driver'   => $driver,
             'host'     => '127.0.0.1',
@@ -50,7 +51,7 @@ trait FakesDriverConnections
             'database' => $driver === 'sqlite' ? ':memory:' : 'fake',
             'username' => 'fake',
             'password' => 'fake',
-            'prefix'   => '',
+            'prefix'   => $prefix,
         ]]);
 
         return $this->app['db']->connection($name)->table($table);

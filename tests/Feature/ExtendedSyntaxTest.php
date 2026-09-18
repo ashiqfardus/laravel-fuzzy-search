@@ -33,6 +33,21 @@ class ExtendedSyntaxTest extends TestCase
         $this->assertSame(count($names), $builder()->count());
     }
 
+    public function test_an_empty_quoted_phrase_does_not_match_every_row(): void
+    {
+        // "\xFF" cleans to "", name:"" is a field scope with no term, and "" | zzzz reads as | zzzz.
+        foreach (['""', "\"\xFF\"", 'name:""', '"" | zzzz'] as $query) {
+            try {
+                User::search('')->extended($query)->get();
+                $this->fail('Expected QuerySyntaxException for ' . bin2hex($query));
+            } catch (QuerySyntaxException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+
+        $this->assertSame(0, User::search('')->extended('"" zzzz')->count());
+    }
+
     public function test_unknown_field_throws_a_query_syntax_exception(): void
     {
         $this->expectException(QuerySyntaxException::class);

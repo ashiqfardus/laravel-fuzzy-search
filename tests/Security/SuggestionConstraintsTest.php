@@ -58,6 +58,7 @@ class SuggestionConstraintsTest extends TestCase
         Schema::dropIfExists('tenant_notes');
         Schema::dropIfExists('tenant_members');
         Schema::dropIfExists('tenant_tags');
+        Schema::dropIfExists('tenant_note_texts');
 
         parent::tearDown();
     }
@@ -290,6 +291,58 @@ class SuggestionConstraintsTest extends TestCase
         // The join makes 'auto' take the table scan, whose LIKE named a bare "body" that both
         // tables have.
         $this->assertSame(['jonah', 'jonah headphones'], TaggedNote::search('jon')->suggest(5));
+
+        // The FROM's alias names the column, not the model's table.
+        $aliased = TenantNote::query()->from('tenant_notes as n')
+            ->join('tenant_tags', 'tenant_tags.tenant_id', '=', 'n.tenant_id')->select('n.*')
+            ->searchFuzzy('jon')->suggest(5);
+        $this->assertSame(['jonah', 'jonah headphones'], $aliased);
+
+        // A plain query builder: the join also sends 'auto' to the table scan.
+        $plain = (new SearchBuilder(
+            DB::table('tenant_notes')->join('tenant_tags', 'tenant_tags.tenant_id', '=', 'tenant_notes.tenant_id')->select('tenant_notes.*'),
+            app(FuzzySearch::class)
+        ))->search('jon')->searchIn(['body'])->useInvertedIndex(TenantNote::class);
+        $this->assertSame(['jonah', 'jonah headphones'], $plain->suggest(5));
+    }
+
+    public function test_a_searched_column_of_a_joined_table_is_not_named_as_the_models_own(): void
+    {
+        // A translations join: "title" is a column of tenant_note_texts, not of tenant_notes.
+        Schema::create('tenant_note_texts', function ($table) {
+            $table->unsignedInteger('note_id');
+            $table->string('title');
+        });
+        foreach (TenantNote::all() as $note) {
+            DB::table('tenant_note_texts')->insert(['note_id' => $note->id, 'title' => ucfirst($note->body)]);
+        }
+        $expected = ['Jonah', 'Jonas', 'Jonas speaker', 'Jonah headphones'];
+
+        $this->assertSame($expected, TranslatedNote::search('jon')->suggest(5));
+        $this->assertSame($expected, TranslatedNote::search('jon')->suggestFrom('table')->suggest(5));
+
+        $callerJoin = TenantNote::search('jon')
+            ->join('tenant_note_texts', 'tenant_note_texts.note_id', '=', 'tenant_notes.id')
+            ->select('tenant_notes.*', 'tenant_note_texts.title')
+            ->searchIn(['title']);
+        $this->assertSame($expected, $callerJoin->suggest(5));
+
+        // An aliased FROM with no join names the column bare, as the search does.
+        $this->assertSame(['jonah', 'jonas', 'jonas speaker', 'jonah headphones'],
+            TenantNote::query()->from('tenant_notes as n')->searchFuzzy('jon')->suggestFrom('table')->suggest(5));
+    }
+
+    public function test_scores_are_normalised_against_the_best_row_the_query_can_see(): void
+    {
+        // Tenant 2's "jonas speaker" matches two of the words and outranks tenant 1's note. Had
+        // it set the scale, tenant 1's _score would drop and tell tenant 1 that those words exist.
+        $scores = fn (string $term) => [
+            TenantOneNote::search($term)->useInvertedIndex()->typoTolerance(0)->get()->pluck('_score', 'body')->all(),
+            collect(TenantOneNote::search($term)->useInvertedIndex()->typoTolerance(0)->paginate(5)->items())->pluck('_score', 'body')->all(),
+        ];
+
+        $this->assertSame([['jonah headphones' => 1.0], ['jonah headphones' => 1.0]], $scores('jonah qqqqqq'));
+        $this->assertSame([['jonah headphones' => 1.0], ['jonah headphones' => 1.0]], $scores('jonah jonas speaker'));
     }
 
     // ---- a plain query builder with an explicit model -------------------------------------
@@ -355,6 +408,19 @@ class TaggedNote extends TenantNote
         static::addGlobalScope('tagged', fn ($query) => $query
             ->join('tenant_tags', 'tenant_tags.tenant_id', '=', 'tenant_notes.tenant_id')
             ->select('tenant_notes.*'));
+    }
+}
+
+/** A translations join: the searched "title" comes from the joined table. */
+class TranslatedNote extends TenantNote
+{
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('en', fn ($query) => $query
+            ->join('tenant_note_texts', 'tenant_note_texts.note_id', '=', 'tenant_notes.id')
+            ->select('tenant_notes.*', 'tenant_note_texts.title'));
     }
 }
 

@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch;
 
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
@@ -22,9 +23,6 @@ use Illuminate\Support\Collection;
  */
 class FederatedSearch
 {
-    /** @var array<string, array<int, string>> Schema column listings cached per "connection.table". */
-    protected static array $columnListings = [];
-
     protected array $models = [];
     protected string $searchTerm = '';
     /** Only invalid UTF-8 (`?q=%FF`): cleaned to '' but not empty, so it matches nothing — see SearchBuilder. */
@@ -393,8 +391,8 @@ class FederatedSearch
      * searchIn() columns that actually exist on the model's table, with their weights.
      * Callers pass one column list for many models (e.g. ['name', 'title']); a column a
      * table lacks would otherwise raise a SQL error. Schema listing is cached per
-     * connection+table; call resetColumnCache() between tests to avoid stale listings
-     * leaking across databases/schemas.
+     * connection+table (SearchableColumns::onTable()); call resetColumnCache() between tests
+     * to avoid stale listings leaking across databases/schemas.
      */
     protected function weightedColumnsExistingOn(Model $instance): array
     {
@@ -402,20 +400,11 @@ class FederatedSearch
             return [];
         }
 
-        $table = $instance->getTable();
-        $cacheKey = ($instance->getConnectionName() ?? $instance->getConnection()->getName()) . '.' . $table;
-
-        if (!isset(static::$columnListings[$cacheKey])) {
-            try {
-                static::$columnListings[$cacheKey] = $instance->getConnection()->getSchemaBuilder()->getColumnListing($table);
-            } catch (\Throwable) {
-                static::$columnListings[$cacheKey] = [];
-            }
-        }
+        $listing = SearchableColumns::onTable($instance->getConnection(), $instance->getTable());
 
         return array_filter(
             $this->columnWeights,
-            fn ($weight, $column) => in_array($column, static::$columnListings[$cacheKey], true),
+            fn ($weight, $column) => in_array($column, $listing, true),
             ARRAY_FILTER_USE_BOTH
         );
     }
@@ -423,7 +412,7 @@ class FederatedSearch
     /** Reset the schema-column cache (call between test cases to prevent cross-test contamination). */
     public static function resetColumnCache(): void
     {
-        static::$columnListings = [];
+        SearchableColumns::reset();
     }
 
     /**

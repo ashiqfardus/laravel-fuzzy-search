@@ -927,14 +927,16 @@ class SearchBuilder
 
     /**
      * The search matches nothing, on every terminal and without dispatching an event: a plain
-     * term below min_search_length, or one made only of invalid UTF-8. Not '', which throws or,
-     * with allow_empty_search, lists every row. An extended()/searchBoolean() query is a query,
-     * not a term, and is never measured.
+     * term below min_search_length, one made only of invalid UTF-8, or one made only of stop
+     * words (the index path has no term left either). Not '', which throws or, with
+     * allow_empty_search, lists every row. An extended()/searchBoolean() query is a query, not a
+     * term, and is never measured.
      */
     protected function matchesNothing(): bool
     {
         return $this->invalidBytesOnly
-            || ($this->extendedQuery === null && self::belowMinSearchLength($this->searchTerm));
+            || ($this->extendedQuery === null && $this->searchTerm !== ''
+                && (self::belowMinSearchLength($this->searchTerm) || $this->processSearchTerm($this->searchTerm) === ''));
     }
 
     /**
@@ -1192,7 +1194,8 @@ class SearchBuilder
 
             $sorted = $this->attachBm25Scores(
                 $models->slice($this->offset, $this->limit)->values(),
-                $ranked
+                $ranked,
+                $models->first()
             );
         }
 
@@ -1360,14 +1363,16 @@ class SearchBuilder
     }
 
     /**
-     * Set _raw_score / _score on a page of models. Normalised against the corpus-wide
-     * maximum (the first entry of $ranked), so scores stay comparable across pages.
+     * Set _raw_score / _score on a page of models. Normalised against $top, the best row the
+     * query can see (the ranking walk always starts at rank 1, so it is the same on every page
+     * and scores stay comparable across pages). Not the first entry of $ranked: a row the query
+     * hides, such as another tenant's, would set the scale and reveal what it contains.
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
-    protected function attachBm25Scores(Collection $models, array $ranked): Collection
+    protected function attachBm25Scores(Collection $models, array $ranked, ?Model $top): Collection
     {
-        $bm25Max = (float) (reset($ranked) ?: 0);
+        $bm25Max = $top === null ? 0.0 : (float) ($ranked[$top->getKey()] ?? 0);
 
         return $models->map(function ($item) use ($ranked, $bm25Max) {
             $raw = round((float) ($ranked[$item->getKey()] ?? 0), 6);
@@ -1678,7 +1683,7 @@ class SearchBuilder
                 $base, $ids, $offset + $perPage
             );
 
-            $sorted = $this->attachBm25Scores($models->slice($offset, $perPage)->values(), $ranked);
+            $sorted = $this->attachBm25Scores($models->slice($offset, $perPage)->values(), $ranked, $models->first());
         }
 
         if ($this->highlightTagOpen) {
@@ -1976,7 +1981,7 @@ class SearchBuilder
         if (!empty($this->stopWords)) {
             $words = preg_split(self::WHITESPACE, $term);
             $words = array_filter($words, function ($word) {
-                return !in_array(strtolower($word), $this->stopWords);
+                return !in_array(Utf8::lowerAscii($word), $this->stopWords);
             });
             $term = implode(' ', $words);
         }
@@ -1998,7 +2003,7 @@ class SearchBuilder
     protected function expandWithSynonyms(string $term): array
     {
         $terms = [$term];
-        $lowerTerm = strtolower($term);
+        $lowerTerm = Utf8::lowerAscii($term);
 
         // Check direct synonyms
         if (isset($this->synonyms[$lowerTerm])) {
@@ -2711,7 +2716,7 @@ class SearchBuilder
         // Never swap these: passing $safeTerm to str_starts_with would miss values
         // containing literal '%' or '_', and passing $rawTerm to LIKE would treat
         // those characters as wildcards.
-        $rawTerm  = strtolower($this->searchTerm);
+        $rawTerm  = Utf8::lowerAscii($this->searchTerm);
         $safeTerm = addcslashes($rawTerm, '%_');
 
         $results = $this->suggestCandidateQuery($safeTerm)->limit($limit * 3)->get();
@@ -2723,14 +2728,14 @@ class SearchBuilder
                     // Extract the matching word/phrase
                     $words = preg_split(self::WHITESPACE, $value);
                     foreach ($words as $word) {
-                        $wordLower = strtolower($word);
+                        $wordLower = Utf8::lowerAscii($word);
                         if (str_starts_with($wordLower, $rawTerm) && strlen($word) > strlen($rawTerm)) {
                             $suggestions[$wordLower] = $word;
                         }
                     }
 
                     // Also add full column value if it starts with the raw search term
-                    $valueLower = strtolower($value);
+                    $valueLower = Utf8::lowerAscii($value);
                     if (str_starts_with($valueLower, $rawTerm)) {
                         $suggestions[$valueLower] = $value;
                     }
@@ -2818,21 +2823,29 @@ class SearchBuilder
         $prefixWhere = function ($q, string $column, string $boolean) use ($safeTerm, $driver) {
             if ($driver === 'pgsql') {
                 // PostgreSQL's LIKE is case-sensitive; ILIKE matches capitalised values too.
-                $q->{$boolean === 'or' ? 'orWhereRaw' : 'whereRaw'}($this->quoteColumn($column, $driver) . ' ILIKE ?', [$safeTerm . '%']);
+                // wrap() is the query's own grammar, so a table prefix applies as it does to the FROM.
+                $q->{$boolean === 'or' ? 'orWhereRaw' : 'whereRaw'}($q->getGrammar()->wrap($column) . ' ILIKE ?', [$safeTerm . '%']);
             } else {
                 $q->{$boolean === 'or' ? 'orWhere' : 'where'}($column, 'LIKE', $safeTerm . '%');
             }
         };
 
-        // A direct column is table-qualified on an Eloquent query, so a joined table with a column
-        // of the same name cannot make it ambiguous (a join sends 'auto' suggestions here).
-        $model = $suggestQuery instanceof EloquentBuilder ? $suggestQuery->getModel() : null;
+        // Under a join (which sends 'auto' suggestions here), a direct column of the FROM table is
+        // qualified with that table or its alias, so a joined table with a column of the same
+        // name cannot make it ambiguous. Any other column stays bare, as on the search path: it
+        // may live on the joined table (a translations join).
+        $base = $suggestQuery instanceof EloquentBuilder ? $suggestQuery->toBase() : $suggestQuery;
+        $own  = [];
+        if (!empty($base->joins) && is_string($base->from)) {
+            [$table, $alias] = array_pad(preg_split('/\s+as\s+/i', $base->from), 2, null);
+            $own = array_fill_keys(SearchableColumns::onTable($base->getConnection(), $table), ($alias ?? $table) . '.');
+        }
 
-        $suggestQuery->where(function ($q) use ($targets, $prefixWhere, $model) {
+        $suggestQuery->where(function ($q) use ($targets, $prefixWhere, $own) {
             $first = true;
             foreach ($targets as $target) {
                 if ($target['relation'] === null) {
-                    $prefixWhere($q, $model?->qualifyColumn($target['column']) ?? $target['column'], $first ? 'and' : 'or');
+                    $prefixWhere($q, ($own[$target['column']] ?? '') . $target['column'], $first ? 'and' : 'or');
                 } else {
                     $q->{$first ? 'whereHas' : 'orWhereHas'}($target['relation'], function ($related) use ($target, $prefixWhere) {
                         $prefixWhere($related, $target['column'], 'and');

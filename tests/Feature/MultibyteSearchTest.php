@@ -155,6 +155,7 @@ class MultibyteSearchTest extends TestCase
     {
         $this->insertUser('voilà', 'v1@example.com');
         $this->insertUser('voile', 'v2@example.com');
+        $this->insertUser('Élan', 'e1@example.com');
         $names = fn ($builder) => $builder->get()->pluck('name')->all();
 
         $previous = setlocale(LC_CTYPE, '0');
@@ -166,6 +167,13 @@ class MultibyteSearchTest extends TestCase
                 'tokenize voilà'   => $names(User::search('voilà')->using('like')->tokenize()),
                 'stop words voilà' => $names(User::search('voilà')->using('like')->ignoreStopWords(['le'])),
                 'suggest voi'      => array_map('bin2hex', User::search('voi')->searchIn(['name'])->suggestFrom('table')->suggest()),
+                // PHP 8.1's strtolower() follows LC_CTYPE too: on macOS/BSD it turned É (C3 89) into
+                // invalid UTF-8, which PostgreSQL and SQL Server reject as a binding.
+                'suggest Éla'      => User::search('Éla')->searchIn(['name'])->suggestFrom('table')->suggest(),
+                'bindings Élan'    => array_map(
+                    fn (string $algorithm) => mb_check_encoding(User::search('Élan')->searchIn(['name'])->using($algorithm)->getBindings(), 'UTF-8'),
+                    ['fuzzy', 'levenshtein', 'similar_text']
+                ),
             ];
         } finally {
             setlocale(LC_CTYPE, $previous);
@@ -176,6 +184,8 @@ class MultibyteSearchTest extends TestCase
             'tokenize voilà'   => ['voilà'],
             'stop words voilà' => ['voilà'],
             'suggest voi'      => array_map('bin2hex', ['voile', 'voilà']),
+            'suggest Éla'      => ['Élan'],
+            'bindings Élan'    => [true, true, true],
         ], $actual);
     }
 }

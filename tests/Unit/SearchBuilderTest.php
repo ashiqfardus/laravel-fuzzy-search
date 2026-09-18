@@ -526,6 +526,18 @@ class SearchBuilderTest extends TestCase
         $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlite and sqlsrv must be asserted');
     }
 
+    public function test_the_postgresql_suggestion_scan_names_a_qualified_column_with_the_table_prefix(): void
+    {
+        // The raw ILIKE is the one place the column is not wrapped by the query's own grammar:
+        // quoted by hand, "users"."name" named a table the FROM ("app_users") does not have.
+        $builder = new SearchBuilder($this->fakeConnectionTable('pgsql', 'users', 'app_'), app(FuzzySearch::class));
+        $builder->search('joh')->searchIn(['users.name']);
+
+        $sql = \Closure::bind(fn () => $this->suggestCandidateQuery('joh')->toSql(), $builder, SearchBuilder::class)();
+
+        $this->assertStringContainsString('"app_users"."name" ILIKE ?', $sql);
+    }
+
     /**
      * searchOn() is the builder search() itself uses (Ruling P8-R16): the Filament trait and any
      * other caller that already has an Eloquent query gets the model's $searchable configuration.

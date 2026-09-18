@@ -144,6 +144,13 @@ class LexerTest extends TestCase
         $this->assertEquals([], $this->lexer->tokenize('   '));
     }
 
+    public function test_an_empty_quoted_phrase_is_skipped_like_an_empty_word(): void
+    {
+        // Compiled, "" was LIKE '%%': every row.
+        $this->assertSame([], $this->lexer->tokenize('""'));
+        $this->assertSame(['zzzz'], array_map(fn (Token $t) => $t->value, $this->lexer->tokenize('"" zzzz !""')));
+    }
+
     public function test_token_count_limit_throws(): void
     {
         config(['fuzzy-search.query.max_tokens' => 5]);
@@ -251,7 +258,7 @@ class LexerTest extends TestCase
 
     public function test_field_without_a_term_is_rejected(): void
     {
-        foreach (['name:', 'name: john', 'name:|'] as $query) {
+        foreach (['name:', 'name: john', 'name:|', 'name:""', '!name:""'] as $query) {
             try {
                 (new Lexer())->tokenize($query);
                 $this->fail("Expected QuerySyntaxException for {$query}");

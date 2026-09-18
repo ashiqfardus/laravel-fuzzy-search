@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Support;
 
 use Closure;
+use Illuminate\Database\Connection;
 
 /**
  * Shared handling of a model's searchable column list.
@@ -15,7 +16,7 @@ use Closure;
  * process (a tenant model that switches either gets its own entry): it reads the
  * table's columns, and it is called on every save (shadow columns), every indexed row and every
  * search. Declared columns never reach it. The cache is as long-lived as
- * SearchableObserver::$columnCache and FederatedSearch::$columnListings — a schema change needs
+ * SearchableObserver::$columnCache and onTable()'s listings — a schema change needs
  * a fresh process (or reset(), which the test suite calls between cases).
  */
 final class SearchableColumns
@@ -38,6 +39,9 @@ final class SearchableColumns
 
     /** @var array<string, array<string, int>> "class|connection|table" => column => weight */
     private static array $detected = [];
+
+    /** @var array<string, string[]> "connection|table" => column names */
+    private static array $listings = [];
 
     /**
      * @param  array<string|int, string|int> $columns
@@ -91,6 +95,29 @@ final class SearchableColumns
         return $columns === [] ? [] : self::$detected[$key] = $columns;
     }
 
+    /**
+     * The table's column names, memoised per connection and table like detect(). A table that
+     * cannot be read gives [] and is not cached.
+     *
+     * @return string[]
+     */
+    public static function onTable(Connection $connection, string $table): array
+    {
+        $key = $connection->getName() . '|' . $table;
+
+        if (isset(self::$listings[$key])) {
+            return self::$listings[$key];
+        }
+
+        try {
+            $columns = $connection->getSchemaBuilder()->getColumnListing($table);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        return $columns === [] ? [] : self::$listings[$key] = $columns;
+    }
+
     /** @param string|null $cast the model's cast for the column, or null when it has none */
     public static function isTextLikeCast(?string $cast): bool
     {
@@ -107,5 +134,6 @@ final class SearchableColumns
     public static function reset(): void
     {
         self::$detected = [];
+        self::$listings = [];
     }
 }

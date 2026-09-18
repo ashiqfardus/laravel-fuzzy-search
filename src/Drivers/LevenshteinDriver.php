@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Query\Builder;
 
 /**
@@ -147,7 +148,7 @@ class LevenshteinDriver extends BaseDriver
     public function getRelevanceExpression(string $column, string $value): string
     {
         $col = $this->quoteColumn($column);
-        $value = strtolower(trim($value));
+        $value = Utf8::lowerAscii(trim($value));
         $len = strlen($value);
 
         // Generate patterns for different distances
@@ -176,7 +177,7 @@ class LevenshteinDriver extends BaseDriver
 
     public function getRelevanceBindings(string $value): array
     {
-        $value = strtolower(trim($value));
+        $value = Utf8::lowerAscii(trim($value));
 
         return [
             '%' . $value . '%',

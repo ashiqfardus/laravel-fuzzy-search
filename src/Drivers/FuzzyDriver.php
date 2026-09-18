@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Query\Builder;
 
 /**
@@ -105,7 +106,7 @@ class FuzzyDriver extends BaseDriver
     public function getRelevanceExpression(string $column, string $value): string
     {
         $col = $this->quoteColumn($column);
-        $value = strtolower(trim($value));
+        $value = Utf8::lowerAscii(trim($value));
 
         $expression = match ($this->driver) {
             'mysql' => "
@@ -136,7 +137,7 @@ class FuzzyDriver extends BaseDriver
 
     public function getRelevanceBindings(string $value): array
     {
-        $value = strtolower(trim($value));
+        $value = Utf8::lowerAscii(trim($value));
 
         return [
             $value,              // Exact

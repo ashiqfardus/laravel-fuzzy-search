@@ -234,6 +234,8 @@ A non-paginated response looks like:
 }
 ```
 
+`_score` is scaled against the best row the query can see; `_raw_score` counts every row in the model's index, other tenants' included (see [docs/bm25.md](bm25.md#how-it-works)).
+
 Pass `perPage` and the response also carries Laravel's usual pagination `meta` (`current_page`, `per_page`, `total`, …) and `links`, with the fields above merged into that same `meta` object. `suggestions` — `didYouMean()` terms — is only populated when the page is empty; otherwise it stays `[]`. They are the searched model's own dictionary terms. Under a `where()`, a `join()` or a global scope, only terms posted for a row that query can see are kept. `SoftDeletes` is not checked: the index drops a trashed row's terms, which with `indexing.async` (the default) happens once the queued index job has run. `filter()` does not narrow them. See "What scopes a suggestion" in the README.
 
 ### `lastExecution()`

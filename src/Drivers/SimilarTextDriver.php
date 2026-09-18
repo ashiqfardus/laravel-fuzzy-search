@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Query\Builder;
 
 /**
@@ -21,10 +22,10 @@ class SimilarTextDriver extends BaseDriver
 
         if ($this->driver === 'pgsql') {
             $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-            return $query->$rawMethod("{$col} ILIKE ?", ['%' . $this->escapeLike(strtolower($value)) . '%']);
+            return $query->$rawMethod("{$col} ILIKE ?", ['%' . $this->escapeLike(Utf8::lowerAscii($value)) . '%']);
         }
 
-        return $query->$method($column, 'LIKE', '%' . $this->escapeLike(strtolower($value)) . '%');
+        return $query->$method($column, 'LIKE', '%' . $this->escapeLike(Utf8::lowerAscii($value)) . '%');
     }
 
     public function getRelevanceExpression(string $column, string $value): string
@@ -40,6 +41,6 @@ class SimilarTextDriver extends BaseDriver
 
     public function getRelevanceBindings(string $value): array
     {
-        return ['%' . strtolower($value) . '%'];
+        return ['%' . Utf8::lowerAscii($value) . '%'];
     }
 }

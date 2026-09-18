@@ -71,6 +71,18 @@ class IndexPathSynonymsStopWordsTest extends TestCase
         $this->assertCount(0, Product::search('the pro')->useInvertedIndex()->typoTolerance(0)->ignoreStopWords(['pro'])->get());
     }
 
+    public function test_a_term_made_only_of_stop_words_matches_nothing_on_every_path(): void
+    {
+        foreach (['the', 'the of'] as $term) {
+            $like = fn () => Product::search($term)->ignoreStopWords('en');
+
+            $this->assertCount(0, $like()->get(), $term);
+            $this->assertSame(0, $like()->count(), $term);
+            $this->assertSame(0, $like()->paginate(5)->total(), $term);
+            $this->assertSame(0, $like()->useInvertedIndex()->paginate(5)->total(), $term);
+        }
+    }
+
     public function test_process_terms_keeps_its_one_argument_behaviour(): void
     {
         $manager = app(IndexManager::class);

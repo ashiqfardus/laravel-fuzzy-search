@@ -111,13 +111,19 @@ class Bm25ScopedSearchTest extends TestCase
         $this->assertSame([30, 29, 28], $this->ks(ScopedBm25User::search('widget')->useInvertedIndex()->limit(3)->get()));
     }
 
-    public function test_scores_are_normalised_against_the_corpus_wide_maximum(): void
+    public function test_scores_are_normalised_against_the_best_row_the_query_can_see(): void
     {
-        $best = $this->keepFilter()->limit(1)->get()->first();
+        [$best, $next] = $this->keepFilter()->limit(2)->get()->all();
+        $corpusBest    = ScopedBm25User::search('widget')->useInvertedIndex()->limit(1)->get()->first();
 
-        // k = 5 is not the best match in the corpus (k = 30 is), so its normalised score is below 1.
-        $this->assertGreaterThan(0, $best->_raw_score);
-        $this->assertLessThan(1.0, $best->_score);
+        // k = 5 is not the best match in the corpus (k = 30 is), but it is the best the filter
+        // lets through: a row the query hides does not set the scale.
+        $this->assertLessThan($corpusBest->_raw_score, $best->_raw_score);
+        $this->assertSame(1.0, $best->_score);
+        $this->assertLessThan(1.0, $next->_score);
+
+        // The same scale on every page.
+        $this->assertSame($next->_score, $this->keepFilter()->paginate(1, 'page', 2)->items()[0]->_score);
     }
 
     // -------------------------------------------------------------------------

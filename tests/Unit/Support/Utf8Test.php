@@ -37,4 +37,20 @@ class Utf8Test extends TestCase
             $this->assertTrue(mb_check_encoding(Utf8::clean($dirty), 'UTF-8'), bin2hex($dirty));
         }
     }
+
+    /** PHP 8.2+'s strtolower() on every version: PHP 8.1's follows LC_CTYPE (see MultibyteSearchTest). */
+    #[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+    public function test_lower_ascii_lowercases_ascii_letters_only_under_a_utf8_locale(): void
+    {
+        $previous = setlocale(LC_CTYPE, '0');
+        setlocale(LC_CTYPE, 'C.UTF-8', 'en_US.UTF-8');
+
+        try {
+            $lower = Utf8::lowerAscii('JOHN Äpfel À é Д 丠');
+        } finally {
+            setlocale(LC_CTYPE, $previous);
+        }
+
+        $this->assertSame('john Äpfel À é Д 丠', $lower);
+    }
 }

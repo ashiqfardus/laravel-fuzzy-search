@@ -89,8 +89,16 @@ class Lexer
                     if ($end === false) {
                         throw QuerySyntaxException::unterminatedQuote();
                     }
-                    $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, mb_substr(substr($query, $i + 1, $end - $i - 1), 0, $maxTermLen, 'UTF-8'), $field);
-                    $i        = $end + 1;
+                    $phrase = substr($query, $i + 1, $end - $i - 1);
+                    $i      = $end + 1;
+                    // "" is skipped like an empty word: compiled, it was LIKE '%%' (every row).
+                    if ($phrase === '') {
+                        if ($field !== null) {
+                            throw QuerySyntaxException::fieldNeedsTerm($field);
+                        }
+                        continue;
+                    }
+                    $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, mb_substr($phrase, 0, $maxTermLen, 'UTF-8'), $field);
                     if (count($tokens) >= $maxTokens) {
                         throw QuerySyntaxException::tokenLimitExceeded(count($tokens), $maxTokens);
                     }

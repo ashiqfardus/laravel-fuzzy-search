@@ -28,4 +28,14 @@ final class Utf8
             $value,
         ) ?? '';
     }
+
+    /**
+     * strtolower() as PHP 8.2+ has it: ASCII letters only. On PHP 8.1 strtolower() follows
+     * LC_CTYPE, and after setlocale(LC_CTYPE, '*.UTF-8') on macOS/BSD it lowercases the lead
+     * byte of à, É or д into invalid UTF-8, which PostgreSQL and SQL Server reject as a binding.
+     */
+    public static function lowerAscii(string $value): string
+    {
+        return strtr($value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz');
+    }
 }

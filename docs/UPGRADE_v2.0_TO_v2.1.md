@@ -128,9 +128,11 @@ you get back from a search:
   combining marks (`\p{M}`) attached to their base character instead of stripping them. Indexes
   built from Bengali, Hindi, Thai, or decomposed-accent Latin text before this fix are stale —
   run `fuzzy-search:rebuild "App\Models\YourModel" --fresh` once.
-- **Paginated BM25 `_score` is now corpus-wide.** `_score` on a paginated BM25 page is normalised
-  against the corpus-wide maximum (as `get()` already did), not the page's own maximum — so page
-  2's top row is no longer always `1.0`. The LIKE and extended paths changed too: `paginate()`
+- **Paginated BM25 `_score` now shares one scale across pages.** `_score` on a BM25 result is
+  normalised against the best-ranked row the query can see — the same row on every page — not the
+  page's own maximum, so page 2's top row is no longer always `1.0`. Under a `where()`, a join, a
+  scope or `filter()`, that is the best match the query lets through, so the top result scores
+  `1.0` (v2.0's `get()` scaled against the best match in the whole index, other tenants' included). The LIKE and extended paths changed too: `paginate()`
   now normalises `_score` across the whole `max_candidates` candidate window instead of within
   the current page (v2.0 behaviour); pages whose offset falls beyond that window still normalise
   within the page, same as before.
@@ -172,7 +174,9 @@ you get back from a search:
   (a later string column may take the freed slot). A value that still turns out not to be text —
   an accessor returning an object — is skipped rather than thrown, so this cannot make a save
   throw. Declare `$searchable['columns']` to search or index anything else: a declared column is
-  your choice, and one that cannot be indexed as text raises an error naming it.
+  your choice, and one that cannot be indexed as text raises an error naming it. Detection reads
+  casts, not accessors: a column that a get accessor decrypts or unmasks is still selected and
+  indexed as the accessor returns it, so declare `$searchable['columns']` to keep it out.
 - **Case-insensitive scoring and highlighting now cover every script.** They folded ASCII
   only, so a lower-case Cyrillic, Greek or accented term scored an upper-case value as a fuzzy
   near-miss and highlighted nothing. Such results now rank as exact/prefix/contains matches and
@@ -193,6 +197,9 @@ you get back from a search:
   Scout engine still never match them, because they do not index one-character tokens.
   `extended()`/`searchBoolean()` queries, the `whereFuzzy`-style macros, the `Fuzzy` scopes and
   `tableSearch()` are unaffected.
+- **A term made only of stop words matches nothing.** With `ignoreStopWords()`, `search('the')`
+  applied no condition on the LIKE path and returned every row (the index path returned none); it
+  now returns no rows and a total of 0 everywhere.
 - **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
   every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
   SQLite and MySQL); the event and the analytics log record the cleaned term. A term made only of
@@ -221,8 +228,10 @@ you get back from a search:
   column matched by its bare name (`users.name` answers to `name:`), or a relation column declared
   in `searchIn()` / `$searchable['columns']` (`author.name:smith`). Any operator can follow the
   colon (`email:^admin`, `name:~jonh`, `!name:bob`, `name:"john doe"`). `field:` with nothing after
-  it, or a field that isn't searchable, now throws `QuerySyntaxException` (the second lists the
-  searchable fields).
+  it (`name:""` included), or a field that isn't searchable, now throws `QuerySyntaxException` (the
+  second lists the searchable fields).
+- **An empty quoted phrase `""` is skipped** like an empty word. In v2.0 it compiled to
+  `LIKE '%%'` and matched every row; a query with nothing else now throws `QuerySyntaxException`.
 
 **If an existing v2.0 query started a token with `~` or `identifier:`, it now parses differently.**
 Both operators are recognised only at the start of a token (after an optional `!`), so `12:30` and
