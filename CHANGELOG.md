@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1.0] — Unreleased
+## [2.1.0] — 2026-MM-DD
 
 ### Added
 
@@ -67,9 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - didYouMean() reads the dictionary through the new term_length index (no LENGTH() SQL), uses character-based distances, and only returns [] when the fuzzy_index_terms table is missing — other database errors now surface.
 - The FuzzySearch singleton reads config('fuzzy-search') live, so runtime config overrides (tests, multi-tenant setups) reach the drivers.
 - The inverted index stores one posting per (term, column) — fuzzy_index_postings gained column_name (migration; existing rows keep '' and keep working). Run fuzzy-search:rebuild {Model} --fresh to get weighted ranking.
-- getDebugInfo() reports algorithm "extended" for extended-syntax searches and index_ignored when useInvertedIndex() was combined with extended() (the extended syntax runs on the LIKE path).
 - IndexManager::processTerms() accepts an optional model class (third argument) so query-time processing can use that model's pipeline; the two-argument form is unchanged.
 - `ignoreStopWords('xx')` now reads `stop_words.{xx}` from config first and falls back to the builder's built-in en/de/fr/es lists only when that key is absent — previously it always used the built-in list regardless of config. An untouched config is unaffected only for locales whose built-in and configured lists happen to match; `en` differs (config ships the 14-word list, the builder's built-in `en` list has 36 words), so `ignoreStopWords('en')` now filters fewer words than in v2.0. Pass an array (`ignoreStopWords([...])`) for a custom list, unaffected by this change. Configured lists are now lower-cased before use (a capitalised config stop word used to match nothing).
+
+### Deprecated
+
+- `debounce()` — a server-side debounce cannot exist; it now raises `E_USER_DEPRECATED` and will be removed in v3.0.0. Debounce on the client (`wire:model.live.debounce.300ms`, a JS timer).
 
 ### Removed
 
@@ -85,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `query.max_term_length` now caps every extended-syntax token (a `~word` of thousands of characters could exhaust memory in the fuzzy driver) and applies to `count()`/`paginate()` on the LIKE path, not only `get()`.
 - `paginate()` totals on the LIKE and extended paths now apply Eloquent global scopes (SoftDeletes, tenant scopes) — they overcounted since the Phase 1 pagination rewrite.
 - `count()` now agrees with `paginate()->total()` on the extended and BM25 paths.
-- extended() + useInvertedIndex(): count() and paginate() took the BM25 index path on the plain search term while get() ran the extended query. count(), paginate(), getFacets(), toSql(), getBindings() and getAnalytics() now run the extended query on the LIKE path (see getDebugInfo()["index_ignored"]); getFacets() in particular used to LIKE-match the raw query string and return empty facets.
+- extended() + useInvertedIndex(): count() and paginate() took the BM25 index path on the plain search term while get() ran the extended query. count(), paginate(), getFacets(), toSql(), getBindings() and getAnalytics() now run the extended query on the LIKE path; getDebugInfo() reports algorithm "extended" for extended-syntax searches and index_ignored when useInvertedIndex() was combined with extended(). getFacets() in particular used to LIKE-match the raw query string and return empty facets.
 - **Multibyte terms:** `FuzzyDriver`, `LevenshteinDriver`, `TrigramDriver` and `SoundexDriver` sliced the search term by byte, producing invalid UTF-8 LIKE patterns for Bengali, Hindi, Thai and accented Latin (PostgreSQL rejected them; other databases never matched). `min_search_length` and `query.max_term_length` also counted bytes. All now work per character.
 - Accessor-backed searchable fields never reindexed on update (`wasChanged()` cannot see them), so a product moved to another brand stayed findable under the old brand.
 - `fallback()` stored its algorithms and never ran them.
@@ -113,9 +116,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First release where the full test suite runs against SQLite, MySQL 8, MariaDB 11.4, PostgreSQL 14 and SQL Server 2022 in CI.
 
-### Deprecated
+### Database migrations (run automatically on `php artisan migrate`)
 
-- `debounce()` — a server-side debounce cannot exist; it now raises `E_USER_DEPRECATED` and will be removed in v3.0.0. Debounce on the client (`wire:model.live.debounce.300ms`, a JS timer).
+| Migration | What it does |
+| --------- | ------------ |
+| `2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table` | Adds `term_length` (unsigned smallint) + index to `fuzzy_index_terms` so `didYouMean()` filters by length without `LENGTH()` SQL. |
+| `2026_09_17_000002_binary_collation_on_fuzzy_index_terms_term` | MySQL/MariaDB only: rewrites `fuzzy_index_terms.term` to `utf8mb4_bin` so `café` and `cafe` are distinct dictionary terms. |
+| `2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table` | Adds `column_name` (varchar 64, default `''`) to `fuzzy_index_postings` and moves the unique key to `(term_id, model_type, model_id, column_name)` — weighted BM25. Existing rows keep `''` and keep working; rebuild with `--fresh` for weighted ranking. |
+| `2026_09_19_000001_create_fuzzy_search_logs_table` | Creates `fuzzy_search_logs` (`term`, `normalized_term`, `model_type`, `algorithm`, `path`, `created_at`, index on `normalized_term`) for the opt-in persisted analytics. |
 
 ## [2.0.1] — 2026-09-16
 
@@ -322,6 +330,7 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
 
+[2.1.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v2.0.0
 [1.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.0...v1.0.1
