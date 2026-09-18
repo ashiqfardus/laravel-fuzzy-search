@@ -326,17 +326,29 @@ class FederatedSearch
     }
 
     /**
-     * Sum of per-model match counts, each capped at limitPerModel() when set — the true
-     * reachable total for paginate(), since fetchRanked() never returns more than
-     * limitPerModel() rows from any one model.
+     * Sum of the per-model reachable counts — the true total for paginate().
      */
     protected function countAll(): int
+    {
+        return array_sum($this->countPerModel());
+    }
+
+    /**
+     * How many rows each model can actually contribute to this search: its match count, capped
+     * at limitPerModel() when set and at max_candidates on the SearchBuilder path (a ranked
+     * search reads at most that many candidates and slices the page out of them, so no model
+     * can ever hand over more). getCounts() reports these numbers and paginate()'s total() is
+     * their sum, so the two can never disagree and no page is promised that cannot be filled.
+     *
+     * @return array<string, int> model basename => reachable count
+     */
+    protected function countPerModel(): array
     {
         if (empty($this->searchTerm) && !config('fuzzy-search.allow_empty_search', false)) {
             throw new EmptySearchTermException();
         }
 
-        $total = 0;
+        $counts = [];
 
         foreach ($this->models as $modelClass) {
             if (!class_exists($modelClass)) {
@@ -349,11 +361,15 @@ class FederatedSearch
                 continue;
             }
 
-            $count = $query->count();
-            $total += $this->limitPerModel !== null ? min($count, $this->limitPerModel) : $count;
+            $counts[class_basename($modelClass)] = min(
+                $query->count(),
+                $this->limitPerModel ?? PHP_INT_MAX,
+                // The plain whereFuzzyMultiple() fallback has no candidate window.
+                $query instanceof SearchBuilder ? (int) config('fuzzy-search.max_candidates', 1000) : PHP_INT_MAX
+            );
         }
 
-        return $total;
+        return $counts;
     }
 
     /**
@@ -440,12 +456,17 @@ class FederatedSearch
     }
 
     /**
-     * Get count per model type
+     * Get count per model type.
+     *
+     * These are match counts, not page sizes: a model that matches 40 rows reports 40 even when
+     * limit() asked for 10. They are the same numbers paginate()'s total() adds up, so they are
+     * capped where the search itself is — see countPerModel(). A model that matches nothing
+     * reports 0; one that has no searchable column here is left out entirely.
      *
      * @return array ['User' => 5, 'Product' => 3, ...]
      */
     public function getCounts(): array
     {
-        return $this->get()->groupBy('_model_type')->map->count()->toArray();
+        return $this->countPerModel();
     }
 }

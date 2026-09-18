@@ -373,6 +373,51 @@ class FederatedSearchTest extends TestCase
         $this->assertCount(0, $page3->items());
     }
 
+    public function test_get_counts_reports_matches_not_the_page(): void
+    {
+        // "Jon Snow" and "Bob Johnson" both match; limit(1) returns one row. getCounts() used
+        // to group the returned page, so it reported 1 where 2 rows match.
+        $counts = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like')
+            ->limit(1)
+            ->getCounts();
+
+        $this->assertSame(2, $counts['User']);
+        $this->assertSame(1, $counts['Product']);
+    }
+
+    public function test_get_counts_sums_to_the_paginate_total(): void
+    {
+        $federated = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like')
+            ->limitPerModel(1);
+
+        $this->assertSame([1, 1], array_values($federated->getCounts()));
+        $this->assertSame(array_sum($federated->getCounts()), $federated->paginate(1, 'page', 1)->total());
+    }
+
+    public function test_max_candidates_caps_a_models_share_of_the_total(): void
+    {
+        // A model can never contribute more rows than max_candidates: the LIKE path ranks that
+        // many candidates and slices the page out of them. total() must not promise more.
+        config(['fuzzy-search.max_candidates' => 1]);
+
+        $federated = FederatedSearch::across([User::class, Product::class])
+            ->search('on')
+            ->searchIn(['name', 'title'])
+            ->using('like');
+
+        $page = $federated->paginate(1, 'page', 1);
+
+        $this->assertSame(2, $page->total(), 'User matches twice but only one row is reachable');
+        $this->assertSame(['User' => 1, 'Product' => 1], $federated->getCounts());
+        $this->assertCount(0, $federated->paginate(1, 'page', 3)->items());
+    }
+
     public function test_paginate_is_stable_and_gapless_across_pages(): void
     {
         // Walking every paginate() page must reproduce exactly the same order as a single

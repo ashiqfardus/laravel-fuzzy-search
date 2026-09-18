@@ -495,7 +495,8 @@ $grouped = FederatedSearch::across([User::class, Product::class])
     ->search('test')
     ->getGrouped();
 
-// Get counts per model
+// Get counts per model — match counts, not page sizes: limit() does not shrink them, and
+// they add up to exactly what paginate()->total() reports (see the note below)
 $counts = FederatedSearch::across([User::class, Product::class])
     ->search('test')
     ->getCounts();  // ['User' => 5, 'Product' => 3]
@@ -518,11 +519,11 @@ $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->paginate(15);
 
-// paginate()'s total() counts only reachable rows: when limitPerModel() caps a model's
-// contribution, that model's share of the total is capped the same way, so the page
-// count never promises more rows than the search can actually return. Each model's share
-// is also bounded by max_candidates (default 1000, see "max_candidates Tuning" below) —
-// a model with more matches than that never contributes more than max_candidates rows.
+// paginate()'s total() counts only reachable rows. One rule: each model contributes the
+// smaller of its match count, limitPerModel() and max_candidates (default 1000, see
+// "max_candidates Tuning" below — a ranked search reads at most that many candidates per
+// model). So the page count never promises more rows than the search can return, and
+// getCounts() reports the same per-model numbers total() adds up.
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->limitPerModel(5)
