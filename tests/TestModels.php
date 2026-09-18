@@ -54,6 +54,24 @@ class SoftDeletedUser extends Model
 }
 
 /**
+ * Same "users" table as User, but $searchable['algorithm'] is the exact-substring 'like'
+ * driver. Used by the Filament global-search tests to prove the trait applies the model's
+ * own $searchable configuration (a typo must NOT match) instead of the global default.
+ */
+class LikeUser extends Model
+{
+    use Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = [
+        'columns'   => ['name' => 10, 'email' => 5],
+        'algorithm' => 'like',
+    ];
+}
+
+/**
  * Test Product Model with Fuzzy and Searchable traits
  */
 class Product extends Model

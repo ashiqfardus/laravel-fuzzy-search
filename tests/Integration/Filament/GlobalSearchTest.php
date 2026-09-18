@@ -35,19 +35,16 @@ class GlobalSearchTest extends FilamentTestCase
 
     public function test_a_non_matching_column_is_never_promoted_to_html(): void
     {
-        // SearchBuilder stores the RAW value in _highlighted for columns that did not match, so a
-        // record carrying its own "<mark>" must not be rendered as HTML just because another column
-        // matched. Only columns listed in _matches went through wrapWithTags() (which escapes).
+        // _highlighted is uniformly escaped since 2.1, but only columns listed in _matches were
+        // actually wrapped in the tag — so a record carrying its own "<mark>" must not be promoted
+        // to HtmlString just because a *different* column matched.
         $trap = User::create(['name' => '<mark><img src=x onerror=1></mark>', 'email' => 'trap@example.com']);
 
         $result = UserResource::getGlobalSearchResults('trap')
             ->first(fn (GlobalSearchResult $r) => $r->url === '/admin/users/' . $trap->getKey());
 
         $this->assertNotNull($result);
-        if (array_key_exists('Name', $result->details)) {
-            $this->assertIsString($result->details['Name']);
-            $this->assertStringNotContainsString('<img', $result->details['Name']);
-        }
+        $this->assertArrayNotHasKey('Name', $result->details); // 'name' is not in _matches, so it is never promoted
         $this->assertInstanceOf(HtmlString::class, $result->details['Email']);
         $this->assertStringContainsString('<mark>trap</mark>', (string) $result->details['Email']);
     }
@@ -75,5 +72,39 @@ class GlobalSearchTest extends FilamentTestCase
         };
 
         $this->assertCount(0, $resource::getGlobalSearchResults('john'));
+    }
+
+    public function test_the_models_searchable_algorithm_is_applied_and_the_resource_knob_overrides_it(): void
+    {
+        // LikeUser's $searchable['algorithm'] is 'like' (exact substring): the typo must not match.
+        $titles = fn ($resource) => $resource::getGlobalSearchResults('jonh')->map(fn (GlobalSearchResult $r) => (string) $r->title)->all();
+
+        $this->assertNotContains('John Doe', $titles(LikeUserResource::class));
+
+        $override = new class extends LikeUserResource {
+            protected static ?string $fuzzySearchAlgorithm = 'fuzzy';
+        };
+
+        $this->assertContains('John Doe', $titles($override));
+    }
+
+    public function test_the_resource_attributes_replace_the_models_configured_columns(): void
+    {
+        // LikeUser configures name + email; the resource lists only name. searchIn() accumulates,
+        // so the configured list must not be applied on top: a term that only occurs in an email
+        // finds nothing.
+        $this->assertCount(0, LikeUserResource::getGlobalSearchResults('bob@'));
+    }
+
+    public function test_nested_globally_searchable_attribute_groups_are_flattened(): void
+    {
+        // Filament allows groups: ['name', ['email']]. Unflattened, searchIn() preg_match()es an array.
+        $resource = new class extends UserResource {
+            public static function getGloballySearchableAttributes(): array { return ['name', ['email']]; }
+        };
+
+        $titles = $resource::getGlobalSearchResults('bob@')->map(fn (GlobalSearchResult $r) => (string) $r->title)->all();
+
+        $this->assertContains('Bob Johnson', $titles);
     }
 }

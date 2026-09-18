@@ -509,4 +509,26 @@ class SearchBuilderTest extends TestCase
 
         $this->assertGreaterThanOrEqual(4, $checked, 'at least mysql, pgsql, sqlite and sqlsrv must be asserted');
     }
+
+    /**
+     * searchOn() is the builder search() itself uses (Ruling P8-R16): the Filament trait and any
+     * other caller that already has an Eloquent query gets the model's $searchable configuration.
+     */
+    public function test_search_on_builds_the_same_builder_as_search(): void
+    {
+        $expected = User::search('jonh')->getDebugInfo();
+        $actual   = User::searchOn(User::query(), 'jonh')->getDebugInfo();
+
+        foreach (['search_term', 'searchable_columns', 'column_weights', 'algorithm', 'typo_tolerance', 'stop_words', 'synonyms', 'accent_insensitive', 'as_you_type', 'options'] as $key) {
+            $this->assertSame($expected[$key], $actual[$key], $key);
+        }
+    }
+
+    public function test_search_on_with_explicit_columns_replaces_the_configured_columns(): void
+    {
+        $debug = User::searchOn(User::query(), 'jonh', ['name'])->getDebugInfo();
+
+        $this->assertSame(['name'], $debug['searchable_columns']); // not name + the configured email
+        $this->assertSame('fuzzy', $debug['algorithm']);           // the rest of $searchable still applies
+    }
 }

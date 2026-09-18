@@ -7,6 +7,7 @@ use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\ReindexModelJob;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -123,17 +124,29 @@ trait Searchable
      */
     public static function search(string $term): SearchBuilder
     {
-        $instance = new static;
-        $fuzzySearch = app(FuzzySearch::class);
-        $query = $instance->newQuery();
+        return static::searchOn((new static)->newQuery(), $term);
+    }
 
-        $builder = new SearchBuilder($query, $fuzzySearch);
+    /**
+     * Build a SearchBuilder on an existing Eloquent query, applying this model's $searchable
+     * configuration. $columns, when given, replaces the configured column list (searchIn()
+     * accumulates, so the configured columns are NOT applied when $columns is passed) — that is
+     * what the Filament trait needs for getGloballySearchableAttributes().
+     */
+    public static function searchOn(EloquentBuilder $query, string $term, ?array $columns = null): SearchBuilder
+    {
+        $instance = $query->getModel();
+        $builder  = new SearchBuilder($query, app(FuzzySearch::class));
         $builder->search($term);
 
         // Apply searchable configuration if available
         $config = $instance->getSearchableConfig();
 
-        if (!empty($config['columns'])) {
+        if ($columns !== null) {
+            if ($columns !== []) {
+                $builder->searchIn($columns);
+            }
+        } elseif (!empty($config['columns'])) {
             $builder->searchIn($config['columns']);
         }
 

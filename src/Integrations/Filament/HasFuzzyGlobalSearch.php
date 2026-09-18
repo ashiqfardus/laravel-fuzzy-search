@@ -6,6 +6,7 @@ use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Filament\GlobalSearch\GlobalSearchResult;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
@@ -37,7 +38,8 @@ trait HasFuzzyGlobalSearch
         }
 
         $query   = static::getGlobalSearchEloquentQuery();
-        $columns = array_values(static::getGloballySearchableAttributes());
+        // Filament allows nested groups: ['name', ['street', 'city']].
+        $columns = array_values(Arr::flatten(static::getGloballySearchableAttributes()));
 
         if ($columns === []) {
             return collect();
@@ -45,10 +47,14 @@ trait HasFuzzyGlobalSearch
 
         static::modifyGlobalSearchQuery($query, $search);
 
-        $builder = (new SearchBuilder($query, app(FuzzySearch::class)))
-            ->search($search)
-            ->searchIn($columns)
-            ->highlight(static::fuzzyHighlightTag())
+        // A Searchable model brings its own $searchable config (algorithm, typo tolerance,
+        // stop words, synonyms, …); the resource's attributes replace its column list.
+        $model   = $query->getModel();
+        $builder = method_exists($model, 'searchOn')
+            ? $model::searchOn($query, $search, $columns)
+            : (new SearchBuilder($query, app(FuzzySearch::class)))->search($search)->searchIn($columns);
+
+        $builder->highlight(static::fuzzyHighlightTag())
             ->limit(static::getGlobalSearchResultsLimit());
 
         if (($algorithm = static::fuzzySearchAlgorithm()) !== null) {
@@ -79,10 +85,10 @@ trait HasFuzzyGlobalSearch
     /**
      * The resource's details plus one highlighted entry per searchable attribute that matched.
      *
-     * Only columns listed in `_matches` are promoted to HtmlString. SearchBuilder stores the RAW
-     * model value in `_highlighted` for columns that did not match and only escapes the ones it
-     * wrapped, so sniffing the tag string would render a record's own `<mark>…</mark>` payload
-     * unescaped whenever a *different* column was the one that matched.
+     * Only columns listed in `_matches` are promoted to HtmlString. `_highlighted` is uniformly
+     * escaped since 2.1, but the `_matches` guard is kept so that only the columns the search
+     * actually hit become details — sniffing for the tag string would promote a record's own
+     * `<mark>…</mark>` payload whenever a *different* column was the one that matched.
      */
     protected static function fuzzyDetails(Model $record, array $columns): array
     {
