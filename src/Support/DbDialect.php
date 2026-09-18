@@ -47,6 +47,28 @@ final class DbDialect
         return implode('.', $quoted);
     }
 
+    /**
+     * A string's length as the strictest supported column counts it. VARCHAR(n) holds n
+     * characters on MySQL, MariaDB, PostgreSQL and SQLite, but SQL Server's nvarchar(n) holds n
+     * UTF-16 code units, and a character outside the BMP (emoji, CJK Extension B, Gothic) is two.
+     */
+    public static function varcharLength(string $value): int
+    {
+        return mb_strlen($value, 'UTF-8') + (int) preg_match_all('/[\x{10000}-\x{10FFFF}]/u', $value);
+    }
+
+    /** Cut $value to at most $max varcharLength() units without splitting a character. */
+    public static function truncateToVarchar(string $value, int $max): string
+    {
+        $value = mb_substr($value, 0, $max, 'UTF-8');
+
+        while (self::varcharLength($value) > $max) {
+            $value = mb_substr($value, 0, -1, 'UTF-8');
+        }
+
+        return $value;
+    }
+
     /** Character-length function name (not byte length). */
     public static function lengthFunction(string $driver): string
     {

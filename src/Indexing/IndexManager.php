@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Ashiqfardus\LaravelFuzzySearch\Support\StopWords;
 
 /**
@@ -582,8 +583,8 @@ class IndexManager
         foreach ($this->searchableTexts($model, $columns) as $name => $value) {
             $column = mb_substr((string) $name, 0, 64);
             foreach ($pipeline->tokens($value) as $stemmed) {
-                if (mb_strlen($stemmed, 'UTF-8') > 255) {
-                    continue; // token exceeds varchar(255), which counts characters — skip rather than truncate silently
+                if (DbDialect::varcharLength($stemmed) > 255) {
+                    continue; // token exceeds term VARCHAR(255) on some driver — skip rather than truncate silently
                 }
                 if (!isset($byColumn[$column][$stemmed])) {
                     $distinct++;

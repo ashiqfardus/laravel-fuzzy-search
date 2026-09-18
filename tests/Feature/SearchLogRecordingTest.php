@@ -150,6 +150,23 @@ class SearchLogRecordingTest extends TestCase
         $this->assertEqualsWithDelta(999999.99, (float) DB::table('fuzzy_search_logs')->value('latency_ms'), 0.001);
     }
 
+    public function test_logged_terms_fit_255_utf16_units_without_splitting_a_character(): void
+    {
+        // The search caps the term at 128 characters — 256 UTF-16 units of emoji, one more than
+        // SQL Server's nvarchar(255) holds. The in-memory path passes its term uncapped.
+        $emoji = str_repeat("\u{1F600}", 200);
+        User::search($emoji)->get();
+        event(new FuzzySearchExecuted($emoji, [], 'in_memory', 0, 1.0, 0, 'in_memory'));
+
+        foreach (DB::table('fuzzy_search_logs')->get(['term', 'normalized_term']) as $row) {
+            foreach ([$row->term, $row->normalized_term] as $logged) {
+                $this->assertTrue(mb_check_encoding($logged, 'UTF-8'));
+                $this->assertSame(str_repeat("\u{1F600}", 127), $logged); // 254 units: the most that fits
+            }
+        }
+        $this->assertSame(2, DB::table('fuzzy_search_logs')->count());
+    }
+
     public function test_zero_result_and_extended_searches_are_logged_with_their_path(): void
     {
         User::search('zzzz')->get();

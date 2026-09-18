@@ -66,6 +66,23 @@ class TermLengthTest extends TestCase
         $this->assertTrue(DB::table('fuzzy_index_terms')->where('term', 'widget')->exists());
     }
 
+    public function test_the_255_limit_counts_utf16_units_so_sql_server_can_store_every_term(): void
+    {
+        // nvarchar(255) holds 255 UTF-16 code units; a letter outside the BMP (Gothic 𐌰,
+        // U+10330) is two. 130 of them = 260 units: skipped. 250 Cyrillic letters = 250: kept.
+        $gothic   = str_repeat("\u{10330}", 130);
+        $cyrillic = str_repeat('ж', 250);
+
+        foreach ([9101 => $gothic, 9102 => $cyrillic] as $id => $token) {
+            app(IndexManager::class)->indexModel(
+                (new User(['name' => $token . ' widget', 'email' => "u{$id}@example.com"]))->forceFill(['id' => $id])
+            );
+        }
+
+        $this->assertFalse(DB::table('fuzzy_index_terms')->where('term', $gothic)->exists());
+        $this->assertSame(250, (int) DB::table('fuzzy_index_terms')->where('term', $cyrillic)->value('term_length'));
+    }
+
     public function test_new_config_keys_are_published_with_defaults(): void
     {
         $config = require __DIR__ . '/../../config/fuzzy-search.php';

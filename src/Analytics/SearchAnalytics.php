@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Analytics;
 
 use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -31,17 +32,17 @@ class SearchAnalytics
         $now        = now();
 
         return [
-            'term'            => $hash ? '' : mb_substr($event->searchTerm, 0, 255),
+            'term'            => $hash ? '' : DbDialect::truncateToVarchar($event->searchTerm, 255),
             // Keyed, not a bare sha256: search terms are low-entropy (names, product words),
             // so an unsalted digest can be confirmed by anyone who guesses the term. Equal
             // terms still hash equally, so popular()/zeroResults() group as before.
-            'normalized_term' => $hash ? hash_hmac('sha256', $normalized, (string) config('app.key')) : mb_substr($normalized, 0, 255),
-            // Every string is cut to its column width: the event is public API, so a
-            // third-party dispatcher may pass a longer path or model class than the
-            // migration's columns hold.
-            'model_type'      => $event->modelClass === null ? null : mb_substr($event->modelClass, 0, 191),
-            'algorithm'       => mb_substr($event->algorithm, 0, 32),
-            'path'            => mb_substr($event->path, 0, 16),
+            'normalized_term' => $hash ? hash_hmac('sha256', $normalized, (string) config('app.key')) : DbDialect::truncateToVarchar($normalized, 255),
+            // Every string is cut to its column width, counted the way SQL Server's nvarchar
+            // counts it (UTF-16 units): the event is public API, so a third-party dispatcher
+            // may pass a longer path or model class than the migration's columns hold.
+            'model_type'      => $event->modelClass === null ? null : DbDialect::truncateToVarchar($event->modelClass, 191),
+            'algorithm'       => DbDialect::truncateToVarchar($event->algorithm, 32),
+            'path'            => DbDialect::truncateToVarchar($event->path, 16),
             'result_count'    => max(0, $event->resultCount),
             // decimal(8,2): a larger value fails the insert (MySQL strict mode, PostgreSQL).
             'latency_ms'      => min($event->latencyMs, 999999.99),
