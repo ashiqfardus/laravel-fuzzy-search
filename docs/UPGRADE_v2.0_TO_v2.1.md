@@ -234,6 +234,9 @@ through `get()`) now agree.
   searched model (it used to offer every indexed model's terms) and returns `[]` for a builder
   with no Eloquent model unless you pass `useInvertedIndex(Model::class)`. Typo expansion draws its
   candidates from the model's own terms too, so rankings on the typo-tolerant index path can change.
+- **`didYouMean()` ranks the closest term first,** then the most common, and its reach scales with
+  the term's length (1 edit for 2–3 characters, 2 for 4–5, 3 from 6) instead of a fixed 3: a short
+  term gets fewer, closer alternatives.
 - **`didYouMean()` now throws on real database errors** instead of swallowing them — it still returns `[]` only when the `fuzzy_index_terms` table itself is missing (e.g. migrations not yet run).
 - **MySQL/MariaDB: a second new migration rewrites `fuzzy_index_terms`.** The `term` column moves to `utf8mb4_bin`, so `café`/`cafe` (and `résumé`/`resume`) are distinct dictionary terms as they always were on the other drivers — indexing a document containing both previously failed with "Undefined array key" (B25). The dictionary becomes accent- and case-sensitive on MySQL/MariaDB; the tokenizer lowercases every term, so searches are unaffected. Run `php artisan migrate`, then rebuild any existing index — `php artisan fuzzy-search:rebuild "App\Models\YourModel"` — because variants the old collation collapsed into one dictionary row stay collapsed until the index is rebuilt.
 

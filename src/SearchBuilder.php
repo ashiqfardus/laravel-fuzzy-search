@@ -2816,11 +2816,15 @@ class SearchBuilder
         $term    = mb_strtolower(trim($this->searchTerm));
         $termLen = mb_strlen($term);
 
+        // The reach grows with the term: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Three
+        // edits from a 4-letter term reaches almost any short word.
+        $maxDistance = min(3, max(1, intdiv($termLen, 2)));
+
         // The schema is only inspected when the dictionary query actually fails, so the happy
         // path costs one query instead of two. A missing table (migrations not run) means
         // "nothing to suggest"; anything else is a real SQL error and must surface.
         try {
-            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, 3, 300, $modelClass);
+            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, $modelClass);
         } catch (\Illuminate\Database\QueryException $e) {
             if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
                 throw $e; // a real database error — surface it
@@ -2844,15 +2848,10 @@ class SearchBuilder
             ];
         }
 
-        usort($alternatives, function ($a, $b) {
-            if ($a['_doc_count'] !== $b['_doc_count']) {
-                return $b['_doc_count'] - $a['_doc_count'];
-            }
-            if ($a['distance'] !== $b['distance']) {
-                return $a['distance'] - $b['distance'];
-            }
-            return $b['confidence'] <=> $a['confidence'];
-        });
+        // Closest first, then the most common, then the most confident, then the term itself so
+        // the order is deterministic.
+        usort($alternatives, fn ($a, $b) => [$a['distance'], $b['_doc_count'], $b['confidence'], $a['term']]
+            <=> [$b['distance'], $a['_doc_count'], $a['confidence'], $b['term']]);
 
         if ($this->query instanceof EloquentBuilder && $this->hasSuggestionConstraints($this->query)) {
             $alternatives = $this->visibleAlternatives($alternatives, $modelClass, $limit);

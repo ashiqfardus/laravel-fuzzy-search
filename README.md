@@ -482,12 +482,12 @@ $alternatives = User::search('jonh')  // Typo
     ->didYouMean(3);
 
 // Returns: [
-//     ['term' => 'john', 'distance' => 1, 'confidence' => 0.8],
-//     ['term' => 'jon', 'distance' => 2, 'confidence' => 0.6],
+//     ['term' => 'jon', 'distance' => 1, 'confidence' => 0.75],
+//     ['term' => 'john', 'distance' => 2, 'confidence' => 0.5],   // a transposition is two edits
 // ]
 ```
 
-Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
+The closest term comes first, then the most common one. How far it reaches scales with the term's length: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
 
 ### Multi-Model Federation Search
 

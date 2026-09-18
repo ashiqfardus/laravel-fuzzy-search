@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
 require_once __DIR__ . '/../TestModels.php';
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
@@ -70,18 +71,51 @@ class DidYouMeanTest extends TestCase
 
     public function test_did_you_mean_sorts_by_distance_then_doc_count(): void
     {
-        $this->seedTerm('john',  100);
-        $this->seedTerm('jone',    5);
+        $this->seedTerm('john',  100); // two edits from "jonh" (a transposition)
+        $this->seedTerm('jone',    5); // one edit
+        $this->seedTerm('jonk',   50); // one edit, more common than jone
+
+        $terms = array_column($this->makeBuilder('jonh')->didYouMean(5), 'term');
+
+        $this->assertSame(['jonk', 'jone', 'john'], $terms);
+    }
+
+    public function test_the_closest_term_ranks_first(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all()); // "com" and "example" sit on every user
+
+        $first = User::search('jonh')->didYouMean(3)[0]['term'] ?? null;
+
+        $this->assertSame('jon', $first, "'jonh' suggested '{$first}' first over 'jon' (distance 1)");
+    }
+
+    public function test_a_four_letter_term_never_gets_a_distance_three_suggestion(): void
+    {
+        $this->seedTerm('john', 10); // two edits from "jonh"
+        $this->seedTerm('jabc', 90); // three edits from "jonh", and more common
 
         $suggestions = $this->makeBuilder('jonh')->didYouMean(5);
-        $terms = array_column($suggestions, 'term');
 
-        $this->assertNotEmpty($suggestions);
-        if (in_array('john', $terms) && in_array('jone', $terms)) {
-            $johnPos = array_search('john', $terms);
-            $jonePos = array_search('jone', $terms);
-            $this->assertLessThan($jonePos, $johnPos);
-        }
+        $this->assertSame(['john'], array_column($suggestions, 'term'));
+        $this->assertLessThanOrEqual(2, max(array_column($suggestions, 'distance')));
+    }
+
+    public function test_a_term_of_six_or_more_characters_still_gets_a_distance_three_suggestion(): void
+    {
+        $this->seedTerm('laravel', 10);
+
+        $suggestion = $this->makeBuilder('laraxyz')->didYouMean(1)[0] ?? null; // three substitutions
+
+        $this->assertSame('laravel', $suggestion['term'] ?? null);
+        $this->assertSame(3, $suggestion['distance']);
+    }
+
+    public function test_equal_distance_and_popularity_fall_back_to_the_term(): void
+    {
+        $this->seedTerm('jonb', 5);
+        $this->seedTerm('jona', 5);
+
+        $this->assertSame(['jona', 'jonb'], array_column($this->makeBuilder('jonh')->didYouMean(5), 'term'));
     }
 
     public function test_did_you_mean_filters_the_dictionary_by_term_length(): void
