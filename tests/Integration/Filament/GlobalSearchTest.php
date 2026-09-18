@@ -33,6 +33,25 @@ class GlobalSearchTest extends FilamentTestCase
         $this->assertStringContainsString('<mark>john</mark>', (string) $john->details['Email']);
     }
 
+    public function test_a_non_matching_column_is_never_promoted_to_html(): void
+    {
+        // SearchBuilder stores the RAW value in _highlighted for columns that did not match, so a
+        // record carrying its own "<mark>" must not be rendered as HTML just because another column
+        // matched. Only columns listed in _matches went through wrapWithTags() (which escapes).
+        $trap = User::create(['name' => '<mark><img src=x onerror=1></mark>', 'email' => 'trap@example.com']);
+
+        $result = UserResource::getGlobalSearchResults('trap')
+            ->first(fn (GlobalSearchResult $r) => $r->url === '/admin/users/' . $trap->getKey());
+
+        $this->assertNotNull($result);
+        if (array_key_exists('Name', $result->details)) {
+            $this->assertIsString($result->details['Name']);
+            $this->assertStringNotContainsString('<img', $result->details['Name']);
+        }
+        $this->assertInstanceOf(HtmlString::class, $result->details['Email']);
+        $this->assertStringContainsString('<mark>trap</mark>', (string) $result->details['Email']);
+    }
+
     public function test_the_resource_eloquent_query_is_honoured(): void
     {
         User::create(['name' => 'Jonh Outsider', 'email' => 'jonh@elsewhere.org']);

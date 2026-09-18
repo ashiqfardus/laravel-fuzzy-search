@@ -76,15 +76,23 @@ trait HasFuzzyGlobalSearch
             ->values();
     }
 
-    /** The resource's details plus one highlighted entry per searchable attribute that matched. */
+    /**
+     * The resource's details plus one highlighted entry per searchable attribute that matched.
+     *
+     * Only columns listed in `_matches` are promoted to HtmlString. SearchBuilder stores the RAW
+     * model value in `_highlighted` for columns that did not match and only escapes the ones it
+     * wrapped, so sniffing the tag string would render a record's own `<mark>…</mark>` payload
+     * unescaped whenever a *different* column was the one that matched.
+     */
     protected static function fuzzyDetails(Model $record, array $columns): array
     {
         $details     = static::getGlobalSearchResultDetails($record);
         $highlighted = (array) ($record->_highlighted ?? []);
+        $matched     = array_column((array) ($record->_matches ?? []), 'column');
 
         foreach ($columns as $column) {
             $html = $highlighted[$column] ?? null;
-            if (is_string($html) && str_contains($html, '<' . static::fuzzyHighlightTag() . '>')) {
+            if (is_string($html) && in_array($column, $matched, true)) {
                 $details[Str::headline(str_replace('.', ' ', $column))] = new HtmlString($html);
             }
         }
