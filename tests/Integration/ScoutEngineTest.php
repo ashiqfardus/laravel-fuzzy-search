@@ -2,6 +2,9 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Integration;
 
+require_once __DIR__ . '/../TestModels.php';
+
+use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer;
@@ -83,6 +86,38 @@ class ScoutEngineTest extends TestCase
         };
 
         return [$id, $model::find($id)];
+    }
+
+    // -------------------------------------------------------------------------
+    // Column weights (M7): Scout must rank exactly like useInvertedIndex()
+    // -------------------------------------------------------------------------
+
+    public function test_scout_search_and_paginate_rank_with_the_model_column_weights(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        // Product weights: title 10, description 5. One hit each and identical unweighted
+        // scores, so only the weight decides — and the description hit is inserted first, so
+        // an unweighted ranking returns the rows the other way round.
+        Product::create(['title' => 'Plain device', 'description' => 'A quantum gadget.', 'price' => 10]);
+        Product::create(['title' => 'Quantum widget', 'description' => 'A small device.', 'price' => 10]);
+        app(IndexManager::class)->indexBatch(Product::all());
+
+        $expected = Product::search('quantum')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all();
+        $this->assertSame(['Quantum widget', 'Plain device'], $expected, 'baseline: the heavier column wins');
+
+        $engine  = $this->makeEngine();
+        $builder = new \Laravel\Scout\Builder(new Product(), 'quantum');
+
+        $byId   = Product::all()->keyBy(fn ($p) => (string) $p->getKey());
+        $titles = fn (array $results) => $engine->mapIds($results)
+            ->map(fn ($id) => $byId[(string) $id]->title)
+            ->all();
+
+        $this->assertSame($expected, $titles($engine->search($builder)), 'Scout search() ignored the column weights');
+        $this->assertSame($expected, $titles($engine->paginate($builder, 10, 1)), 'Scout paginate() ignored the column weights');
     }
 
     // -------------------------------------------------------------------------

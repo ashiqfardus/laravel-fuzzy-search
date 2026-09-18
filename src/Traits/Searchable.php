@@ -88,6 +88,18 @@ trait Searchable
     }
 
     /**
+     * The searchable columns with their BM25F weights — the map `Model::search()` hands to
+     * SearchBuilder::searchIn(), so anything that ranks this model's index outside the builder
+     * (the Scout engine) can weigh the columns exactly as `useInvertedIndex()` does.
+     *
+     * @return array<string, int>
+     */
+    public function getSearchableColumnWeights(): array
+    {
+        return SearchableColumns::weights($this->getSearchableConfig()['columns'] ?? []);
+    }
+
+    /**
      * True when the model declared $searchable['columns'] itself, false when the list was
      * auto-detected. IndexManager reads it to decide whether a value it cannot index as text is
      * the caller's mistake (an informative throw) or the heuristic's (skip the column).

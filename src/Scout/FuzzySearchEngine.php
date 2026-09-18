@@ -45,7 +45,7 @@ class FuzzySearchEngine extends Engine
         $terms     = $this->indexManager->processTerms($builder->query, null, $modelType);
         $limit     = $builder->limit ?? 15;
 
-        $ranked = $this->scorer->rank($terms, $modelType);
+        $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
 
         if ($query === null || empty($ranked)) {
@@ -68,13 +68,14 @@ class FuzzySearchEngine extends Engine
         $modelType = $builder->model::class;
         $terms     = $this->indexManager->processTerms($builder->query, null, $modelType);
         $offset    = ($page - 1) * $perPage;
+        $weights   = $this->columnWeights($builder);
 
-        $ranked = $this->scorer->rank($terms, $modelType);
+        $ranked = $this->scorer->rank($terms, $modelType, $weights);
         $query  = $this->constrainedQuery($builder);
 
         if ($query === null || empty($ranked)) {
             // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
-            $total   = $this->scorer->count($terms, $modelType);
+            $total   = $this->scorer->count($terms, $modelType, $weights);
             $results = $this->hydrate(array_slice($ranked, $offset, $perPage, true));
         } else {
             $ids     = array_keys($ranked);
@@ -87,6 +88,20 @@ class FuzzySearchEngine extends Engine
             'results' => $results,
             'total'   => $total,
         ];
+    }
+
+    /**
+     * The model's BM25F column weights, resolved exactly as Model::search() resolves them, so a
+     * Scout search ranks identically to Model::search()->useInvertedIndex(). Empty for a model
+     * that does not use the package's Searchable trait — rank() then weighs every column 1.
+     *
+     * @return array<string, int>
+     */
+    private function columnWeights(Builder $builder): array
+    {
+        return method_exists($builder->model, 'getSearchableColumnWeights')
+            ? $builder->model->getSearchableColumnWeights()
+            : [];
     }
 
     /**

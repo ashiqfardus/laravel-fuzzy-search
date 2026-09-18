@@ -49,6 +49,26 @@ final class SearchableColumns
     }
 
     /**
+     * The same two declaration forms as names(), read as weights: a string key keeps its value
+     * (cast to int), a list entry weighs 1. This is what SearchBuilder::searchIn() records and
+     * what BM25F ranking multiplies a column's contribution by, so every path that ranks — the
+     * builder, the Scout engine — can resolve a model's weights the same way.
+     *
+     * @param  array<string|int, string|int> $columns
+     * @return array<string, int>
+     */
+    public static function weights(array $columns): array
+    {
+        $weights = [];
+
+        foreach ($columns as $key => $value) {
+            is_int($key) ? $weights[(string) $value] = 1 : $weights[$key] = (int) $value;
+        }
+
+        return $weights;
+    }
+
+    /**
      * @param  string                        $key    model class, connection and table
      * @param  Closure(): array<string, int> $detect
      * @return array<string, int>

@@ -14,6 +14,7 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidConfigException;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException;
 use Ashiqfardus\LaravelFuzzySearch\Support\Accents;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{AstNode, AndNode, OrNode, NotNode, FieldTerm};
 
 /**
@@ -145,22 +146,14 @@ class SearchBuilder
      */
     public function searchIn(array $columns): self
     {
-        foreach ($columns as $key => $value) {
-            $col = is_string($key) ? $key : $value;
+        foreach (SearchableColumns::weights($columns) as $col => $weight) {
             if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $col)) {
                 throw new \InvalidArgumentException("Invalid column name [{$col}]: only letters, digits, underscores, and dots allowed.");
             }
-            if (is_string($key)) {
-                if (!in_array($key, $this->searchableColumns, true)) {
-                    $this->searchableColumns[] = $key;
-                }
-                $this->columnWeights[$key] = (int) $value;
-            } else {
-                if (!in_array($value, $this->searchableColumns, true)) {
-                    $this->searchableColumns[] = $value;
-                }
-                $this->columnWeights[$value] = 1;
+            if (!in_array($col, $this->searchableColumns, true)) {
+                $this->searchableColumns[] = $col;
             }
+            $this->columnWeights[$col] = $weight;
         }
         $this->columnTargets = [];
         return $this;
