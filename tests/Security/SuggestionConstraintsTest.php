@@ -57,6 +57,7 @@ class SuggestionConstraintsTest extends TestCase
     {
         Schema::dropIfExists('tenant_notes');
         Schema::dropIfExists('tenant_members');
+        Schema::dropIfExists('tenant_tags');
 
         parent::tearDown();
     }
@@ -261,6 +262,36 @@ class SuggestionConstraintsTest extends TestCase
         $this->assertSame(0, $search()->paginate(10)->total());
     }
 
+    public function test_a_one_to_many_join_counts_models_not_joined_rows(): void
+    {
+        // Three members of tenant 1: TeamNote's join repeats each tenant-1 note three times.
+        DB::table('tenant_members')->insert([['tenant_id' => 1, 'user_id' => 2], ['tenant_id' => 1, 'user_id' => 3]]);
+        TenantNote::create(['tenant_id' => 1, 'body' => 'jonah cable']);
+        $this->index(TeamNote::withoutGlobalScopes()->get());
+
+        $search = fn () => TeamNote::search('jonah')->useInvertedIndex()->typoTolerance(0);
+
+        $this->assertCount(2, $search()->get(), 'precondition: two models match');
+        $this->assertSame(2, $search()->count());
+        $this->assertSame(2, $search()->paginate(10)->total());
+        // The usual way to de-duplicate a join still counts its groups, not one per chunk.
+        $this->assertSame(2, $search()->groupBy('tenant_notes.id')->count());
+    }
+
+    public function test_a_joined_table_sharing_a_searched_column_does_not_break_the_suggestion_scan(): void
+    {
+        Schema::create('tenant_tags', function ($table) {
+            $table->unsignedInteger('tenant_id');
+            $table->string('body');
+        });
+        DB::table('tenant_tags')->insert(['tenant_id' => 1, 'body' => 'jonas tag']);
+        $this->index(TaggedNote::withoutGlobalScopes()->get());
+
+        // The join makes 'auto' take the table scan, whose LIKE named a bare "body" that both
+        // tables have.
+        $this->assertSame(['jonah', 'jonah headphones'], TaggedNote::search('jon')->suggest(5));
+    }
+
     // ---- a plain query builder with an explicit model -------------------------------------
 
     public function test_a_plain_query_builder_with_an_explicit_model_keeps_its_where(): void
@@ -301,6 +332,28 @@ class MemberNote extends TenantNote
     {
         static::addGlobalScope('member', fn ($query) => $query
             ->join('tenant_members as m', fn ($join) => $join->on('m.tenant_id', '=', 'tenant_notes.tenant_id')->where('m.user_id', '=', 1))
+            ->select('tenant_notes.*'));
+    }
+}
+
+/** A one-to-many join: every member of a note's tenant repeats the note once. */
+class TeamNote extends TenantNote
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('team', fn ($query) => $query
+            ->join('tenant_members as m', 'm.tenant_id', '=', 'tenant_notes.tenant_id')
+            ->select('tenant_notes.*'));
+    }
+}
+
+/** A join to a table that also has a "body" column, the column the notes are searched on. */
+class TaggedNote extends TenantNote
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('tagged', fn ($query) => $query
+            ->join('tenant_tags', 'tenant_tags.tenant_id', '=', 'tenant_notes.tenant_id')
             ->select('tenant_notes.*'));
     }
 }

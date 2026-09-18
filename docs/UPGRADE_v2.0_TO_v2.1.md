@@ -254,11 +254,15 @@ through `get()`) now agree.
   on the typo-tolerant and as-you-type index paths can change.
 - **A plain query builder keeps its `where()`s on the index path.** `new SearchBuilder(DB::table('notes')->where(...))`
   with `useInvertedIndex(Note::class)` used to search every row the model can see. It now runs inside
-  the model's query, so the builder's wheres and joins apply alongside the model's global scopes, and
-  the builder must select from the model's table.
+  the model's query, so the builder's wheres and joins apply alongside the model's global scopes.
+  The builder must select from the model's table, unaliased (`DB::table('notes as n')` is a SQL
+  error), and a narrowed `select()` must include the primary key: the ranked rows are matched back
+  by it, so without it the search returns no rows while `count()` and `paginate()->total()` still
+  count them.
 - **A `join()` that narrows the rows counts as a constraint, like a `where()`.** On the index path,
-  `count()` and `paginate()->total()` now count only rows the join lets through, and `suggest()` /
-  `didYouMean()` treat the query as constrained (see below).
+  `count()` and `paginate()->total()` now count only the models the join lets through (each once,
+  however many rows it joins), and `suggest()` / `didYouMean()` treat the query as constrained
+  (see below).
 - **`didYouMean()` ranks the closest term first,** then the most common, and its reach scales with
   the term's length (1 edit for 2–3 characters, 2 for 4–5, 3 from 6) instead of a fixed 3: a short
   term gets fewer, closer alternatives.

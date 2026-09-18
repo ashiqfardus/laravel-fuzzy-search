@@ -75,8 +75,11 @@ final class RankedCandidates
     }
 
     /**
-     * How many of the ranked ids satisfy $base. ORDER BY / LIMIT on the base query are
-     * dropped for the count (PostgreSQL rejects an ORDER BY on a bare aggregate).
+     * How many of the ranked ids satisfy $base: models, not rows — a one-to-many join repeats a
+     * model once per joined row, so an ungrouped query counts its distinct keys
+     * (COUNT(DISTINCT key) on every driver). A grouped query is counted as a subquery, where
+     * the key is out of scope and its groups are the rows. ORDER BY / LIMIT on the base query
+     * are dropped for the count (PostgreSQL rejects an ORDER BY on a bare aggregate).
      *
      * @param  array<int|string> $rankedIds
      */
@@ -86,7 +89,10 @@ final class RankedCandidates
         $total = 0;
 
         foreach (array_chunk($rankedIds, self::COUNT_CHUNK) as $chunk) {
-            $total += (int) self::among($base, $key, $chunk)->toBase()->getCountForPagination();
+            $query  = self::among($base, $key, $chunk)->toBase();
+            $total += (int) ($query->groups || $query->havings
+                ? $query->getCountForPagination()
+                : $query->distinct()->getCountForPagination([$key]));
         }
 
         return $total;

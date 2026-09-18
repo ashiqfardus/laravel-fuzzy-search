@@ -568,7 +568,9 @@ class SearchBuilder
      * @param  string|bool|null $modelClass
      *   - true/null  auto-detect from Eloquent builder
      *   - string     explicit model class (enables BM25 on DB::table() too; that builder's
-     *                wheres and joins still apply, so it must select from the model's table)
+     *                wheres and joins still apply, so it must select from the model's table,
+     *                unaliased, and a narrowed select() must include the primary key, which
+     *                the ranked rows are matched back by)
      *   - false      disable (reset to LIKE path)
      */
     public function useInvertedIndex(string|bool|null $modelClass = true): self
@@ -2822,11 +2824,15 @@ class SearchBuilder
             }
         };
 
-        $suggestQuery->where(function ($q) use ($targets, $prefixWhere) {
+        // A direct column is table-qualified on an Eloquent query, so a joined table with a column
+        // of the same name cannot make it ambiguous (a join sends 'auto' suggestions here).
+        $model = $suggestQuery instanceof EloquentBuilder ? $suggestQuery->getModel() : null;
+
+        $suggestQuery->where(function ($q) use ($targets, $prefixWhere, $model) {
             $first = true;
             foreach ($targets as $target) {
                 if ($target['relation'] === null) {
-                    $prefixWhere($q, $target['column'], $first ? 'and' : 'or');
+                    $prefixWhere($q, $model?->qualifyColumn($target['column']) ?? $target['column'], $first ? 'and' : 'or');
                 } else {
                     $q->{$first ? 'whereHas' : 'orWhereHas'}($target['relation'], function ($related) use ($target, $prefixWhere) {
                         $prefixWhere($related, $target['column'], 'and');
