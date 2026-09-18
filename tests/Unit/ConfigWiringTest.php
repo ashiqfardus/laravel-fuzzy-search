@@ -81,6 +81,29 @@ class ConfigWiringTest extends TestCase
     }
 
     /**
+     * tests/TestCase.php forces unicode.accent_insensitive to false, but the shipped default is
+     * true (M11) — so the setting every user actually gets was never exercised. A search under
+     * it must fold the accents off the term and still find the row.
+     */
+    public function test_a_search_runs_under_the_shipped_accent_insensitive_default(): void
+    {
+        $shipped = require __DIR__ . '/../../config/fuzzy-search.php';
+        $this->assertTrue($shipped['unicode']['accent_insensitive'], 'the shipped default changed');
+
+        config(['fuzzy-search.unicode.accent_insensitive' => $shipped['unicode']['accent_insensitive']]);
+
+        \Illuminate\Support\Facades\DB::table('users')->insert([
+            'name' => 'cafe owner', 'email' => 'cafe@example.com',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $builder = User::search('café')->searchIn(['name']);
+
+        $this->assertTrue($builder->getDebugInfo()['accent_insensitive'], 'the default did not reach the builder');
+        $this->assertContains('cafe owner', $builder->get()->pluck('name')->all());
+    }
+
+    /**
      * Pins the shipped config/fuzzy-search.php defaults independently of TestCase's mirror,
      * so a regression like shipping 'normalize' => true (the inert v2.0 value, now live) is
      * caught even though tests/TestCase.php hardcodes its own defaults.

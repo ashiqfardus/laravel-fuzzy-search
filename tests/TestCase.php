@@ -25,7 +25,13 @@ abstract class TestCase extends BaseTestCase
 
         // Fuzzy search config — mirrors config/fuzzy-search.php defaults so tests exercise
         // the published values rather than silently falling back to config() null returns.
+        // `presets` is taken from the published file itself, never copied: preset() reads
+        // config('fuzzy-search.presets'), so a mirror without that key made every preset throw
+        // InvalidConfigException, and a copy would test the copy instead of what ships.
+        $shipped = require __DIR__ . '/../config/fuzzy-search.php';
+
         $app['config']->set('fuzzy-search', [
+            'presets'            => $shipped['presets'],
             'default_algorithm'  => 'levenshtein',
             'allow_empty_search' => false,
             'min_search_length'  => 2, // matches config/fuzzy-search.php default
