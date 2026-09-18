@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Scout;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -44,7 +45,7 @@ class FuzzySearchEngine extends Engine
     public function search(Builder $builder)
     {
         $modelType = $builder->model::class;
-        $terms     = $this->indexManager->processTerms(Utf8::clean($builder->query), null, $modelType);
+        $terms     = $this->terms($builder);
         $limit     = $builder->limit ?? 15;
 
         $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
@@ -73,7 +74,7 @@ class FuzzySearchEngine extends Engine
     public function paginate(Builder $builder, $perPage, $page)
     {
         $modelType = $builder->model::class;
-        $terms     = $this->indexManager->processTerms(Utf8::clean($builder->query), null, $modelType);
+        $terms     = $this->terms($builder);
         $offset    = ($page - 1) * $perPage;
         $weights   = $this->columnWeights($builder);
 
@@ -95,6 +96,21 @@ class FuzzySearchEngine extends Engine
             'results' => $results,
             'total'   => $total,
         ];
+    }
+
+    /**
+     * The query's index terms. A query below min_search_length has none, so it matches nothing
+     * (a total of 0), as Model::search() does — see SearchBuilder::belowMinSearchLength().
+     *
+     * @return string[]
+     */
+    private function terms(Builder $builder): array
+    {
+        $query = Utf8::clean($builder->query);
+
+        return SearchBuilder::belowMinSearchLength(trim($query))
+            ? []
+            : $this->indexManager->processTerms($query, null, $builder->model::class);
     }
 
     /**

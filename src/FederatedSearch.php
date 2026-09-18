@@ -184,13 +184,19 @@ class FederatedSearch
         );
     }
 
+    /** A term below min_search_length or made only of invalid UTF-8 matches nothing — see SearchBuilder::matchesNothing(). */
+    protected function matchesNothing(): bool
+    {
+        return $this->invalidBytesOnly || SearchBuilder::belowMinSearchLength($this->searchTerm);
+    }
+
     /**
      * Fetch up to $perModelCeiling rows from every model, tag them, and return the merged,
      * ranked collection (score DESC, then orderByModel() rank, then model type, then key).
      */
     protected function fetchRanked(int $perModelCeiling): Collection
     {
-        if ($this->invalidBytesOnly) {
+        if ($this->matchesNothing()) {
             return collect();
         }
 
@@ -372,7 +378,7 @@ class FederatedSearch
                 continue;
             }
 
-            $counts[$modelClass] = $this->invalidBytesOnly ? 0 : min(
+            $counts[$modelClass] = $this->matchesNothing() ? 0 : min(
                 $query->count(),
                 $this->limitPerModel ?? PHP_INT_MAX,
                 // The plain whereFuzzyMultiple() fallback has no candidate window.

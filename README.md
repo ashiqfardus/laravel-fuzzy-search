@@ -382,6 +382,11 @@ User::search('joh')->get();   // matches "john", "johnny", "johanna"
 `partialMatch()` is kept as a no-op for API compatibility — there is nothing to switch on.
 `minMatchLength()` is deprecated since v2.1.0 and does nothing; set the minimum term length with
 the `min_search_length` config key (whole term) or `typo_tolerance.min_word_length` (per word).
+A plain term shorter than `min_search_length` characters (default 2) matches nothing on every
+search API — `get()`, `first()`, `paginate()` (total 0), `simplePaginate()`, `count()`,
+`getFacets()`, `FederatedSearch`, `FuzzySearch::on()` and the Scout engine — and fires no event.
+`extended()`/`searchBoolean()` queries are not measured, and neither are the query-builder
+helpers (the `whereFuzzy`-style macros, the `Fuzzy` scopes and `tableSearch()`).
 
 ### Custom Scoring Hooks
 
@@ -899,7 +904,7 @@ try {
 
 Fired after every `->get()` or `->paginate()` call, and — since v2.1 — after every in-memory search too (`FuzzySearch::on($items)->search(...)->get()`). Useful for monitoring search latency and volume in production.
 
-An in-memory search called with an empty term or no `searchIn()` columns returns early and fires no event: nothing was searched, so there's nothing to log — the same rule the query-builder path already applies via its minimum search-length guard.
+An in-memory search called with an empty term or no `searchIn()` columns returns early and fires no event: nothing was searched, so there's nothing to log. A term shorter than `min_search_length` fires none on any search API, in memory or not.
 
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;

@@ -75,11 +75,11 @@ class FuzzySearchExecutedTest extends TestCase
 
     public function test_paginate_reports_the_page_size_as_results_and_the_total_as_candidates(): void
     {
-        $events = $this->capture(fn () => User::search('o')->paginate(2));
+        $events = $this->capture(fn () => User::search('jo')->paginate(2));
 
         $this->assertSame('like', $events[0]->path);
         $this->assertSame(2, $events[0]->resultCount);
-        $this->assertSame(User::search('o')->count(), $events[0]->candidateCount);
+        $this->assertSame(User::search('jo')->count(), $events[0]->candidateCount);
     }
 
     public function test_simple_paginate_reports_the_page_size_not_the_look_ahead_row(): void

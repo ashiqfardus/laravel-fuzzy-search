@@ -97,12 +97,12 @@ class JsonResourcesTest extends TestCase
 
     public function test_the_collection_can_paginate(): void
     {
-        $data = $this->resourceJson(FuzzySearchCollection::fromBuilder(User::search('o'), 2));
+        $data = $this->resourceJson(FuzzySearchCollection::fromBuilder(User::search('jo'), 2));
 
         $this->assertCount(2, $data['data']);
         $this->assertSame(2, $data['meta']['per_page']);
         $this->assertArrayHasKey('links', $data);
-        $this->assertSame('o', $data['meta']['query']);
+        $this->assertSame('jo', $data['meta']['query']);
     }
 
     /**

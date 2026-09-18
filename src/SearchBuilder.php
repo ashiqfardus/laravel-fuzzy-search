@@ -903,14 +903,38 @@ class SearchBuilder
     }
 
     /**
+     * True when $term (already cleaned and trimmed) is non-empty but shorter than
+     * min_search_length characters — never bytes, so a 2-character Bengali term is 2.
+     * The one length rule behind every search API: this builder, FederatedSearch,
+     * FuzzySearch::on() and the Scout engine.
+     *
+     * @internal
+     */
+    public static function belowMinSearchLength(string $term): bool
+    {
+        return $term !== '' && mb_strlen($term, 'UTF-8') < (int) config('fuzzy-search.min_search_length', 1);
+    }
+
+    /**
+     * The search matches nothing, on every terminal and without dispatching an event: a plain
+     * term below min_search_length, or one made only of invalid UTF-8. Not '', which throws or,
+     * with allow_empty_search, lists every row. An extended()/searchBoolean() query is a query,
+     * not a term, and is never measured.
+     */
+    protected function matchesNothing(): bool
+    {
+        return $this->invalidBytesOnly
+            || ($this->extendedQuery === null && self::belowMinSearchLength($this->searchTerm));
+    }
+
+    /**
      * Execute search and get results
      */
     public function get(): Collection
     {
-        // Only invalid UTF-8 matches nothing, like a term below min_search_length — not '',
-        // which throws or, with allow_empty_search, lists every row. Before the cache: the
-        // key cannot tell it from ''. Covers first() and simplePaginate(), which call get().
-        if ($this->invalidBytesOnly) {
+        // Before the cache: the key cannot tell an invalid-bytes term from ''.
+        // Covers first() and simplePaginate(), which call get().
+        if ($this->matchesNothing()) {
             return collect();
         }
 
@@ -1048,9 +1072,9 @@ class SearchBuilder
      * dispatches FuzzySearchExecuted, so it never touches this.
      *
      * It also stays null (or stale from an earlier run on the same instance) whenever a run
-     * never reaches dispatchExecuted(): a term shorter than min_search_length short-circuits
-     * executeSearch() and builds no event, a term made only of invalid UTF-8 returns from get()
-     * before it, and remember() serves get() from the cache without executing.
+     * never reaches dispatchExecuted(): a term shorter than min_search_length or made only of
+     * invalid UTF-8 returns from get()/paginate() before any query (see matchesNothing()), and
+     * remember() serves get() from the cache without executing.
      * FuzzySearchCollection then reports meta.algorithm/meta.latency_ms as null.
      */
     public function lastExecution(): ?\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted
@@ -1072,16 +1096,9 @@ class SearchBuilder
             }
         }
 
-        // min_search_length / max_term_length guards — measured in characters, not bytes,
-        // so multibyte terms are neither waved through nor cut mid-character.
-        if ($this->extendedQuery === null && $this->searchTerm !== '') {
-            $minLength = (int) config('fuzzy-search.min_search_length', 1);
-            if (mb_strlen($this->searchTerm, 'UTF-8') < $minLength) {
-                return collect();
-            }
-            // Here as well as in buildQuery() so the BM25 fast path below inherits the cap.
-            $this->capSearchTerm();
-        }
+        // Only get() reaches this, after matchesNothing() has applied min_search_length.
+        // The length cap is here as well as in buildQuery() so the BM25 fast path below inherits it.
+        $this->capSearchTerm();
 
         // Extended-search path (Fuse-style operators)
         if ($this->extendedQuery !== null) {
@@ -1512,7 +1529,7 @@ class SearchBuilder
      */
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
-        if ($this->invalidBytesOnly) { // matches nothing — see get()
+        if ($this->matchesNothing()) {
             return new \Illuminate\Pagination\LengthAwarePaginator(
                 [], 0, $this->clampPerPage($perPage), max(1, (int) ($page ?: request()->input($pageName, 1))),
                 ['path' => request()->url(), 'pageName' => $pageName]
@@ -1775,7 +1792,7 @@ class SearchBuilder
      */
     public function count(): int
     {
-        if ($this->invalidBytesOnly) { // matches nothing — see get()
+        if ($this->matchesNothing()) {
             return 0;
         }
 
@@ -1826,7 +1843,7 @@ class SearchBuilder
             return [];
         }
 
-        if ($this->invalidBytesOnly) { // matches nothing — see get()
+        if ($this->matchesNothing()) {
             return array_fill_keys($this->facets, []);
         }
 

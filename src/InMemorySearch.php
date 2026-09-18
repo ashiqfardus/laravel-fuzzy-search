@@ -88,7 +88,8 @@ class InMemorySearch
 
     public function get(): Collection
     {
-        if ($this->invalidBytesOnly) {
+        // Like SearchBuilder::matchesNothing(): only invalid UTF-8, or below min_search_length.
+        if ($this->invalidBytesOnly || SearchBuilder::belowMinSearchLength($this->term)) {
             return collect();
         }
 

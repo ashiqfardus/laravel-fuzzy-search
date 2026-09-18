@@ -182,6 +182,15 @@ you get back from a search:
   expected and removed nothing; it now clears every indexed model whose `indexableAs()` is that
   name. A deploy script that runs it before `scout:import` now really starts from empty. The
   engine's `raw()['total']` is also the match count now, not the size of the returned page.
+- **`min_search_length` now applies to every search, not only `get()`.** A plain term shorter
+  than `min_search_length` characters (default 2) matches nothing on `paginate()` (an empty page,
+  total 0), `simplePaginate()`, `count()` (0), `getFacets()`, `FederatedSearch`,
+  `FuzzySearch::on()` and the Scout engine, as it always did on `get()`, and fires no
+  `FuzzySearchExecuted`. In v2.0 those searched a one-letter term normally, so
+  `User::search('j')->paginate()` listed every name containing a "j" while `->get()` returned
+  nothing. Set `min_search_length` to `1` if you want one-character searches everywhere.
+  `extended()`/`searchBoolean()` queries, the `whereFuzzy`-style macros, the `Fuzzy` scopes and
+  `tableSearch()` are unaffected.
 - **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
   every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
   SQLite and MySQL); the event and the analytics log record the cleaned term. A term made only of
