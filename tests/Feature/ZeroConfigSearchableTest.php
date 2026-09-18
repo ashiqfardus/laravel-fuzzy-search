@@ -240,18 +240,26 @@ class ZeroConfigSearchableTest extends TestCase
     {
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
 
-        // The accessor returns an object. Nobody asked for that column to be indexed — detection
-        // picked it — so the indexer must skip it rather than break the save.
+        // The accessor returns an object, but an auto-detected column is read as stored (ER-32),
+        // so the accessor never runs: both columns are indexed and the save does not throw.
         $user = ZeroConfigAccessorUser::create(['name' => 'Ada', 'email' => 'ada@example.com']);
 
         $indexed = DB::table('fuzzy_index_postings')
             ->where('model_id', $user->getKey())
             ->pluck('column_name')
             ->unique()
+            ->sort()
             ->values()
             ->all();
 
-        $this->assertSame(['email'], $indexed, 'the other auto-detected column was not indexed');
+        $this->assertSame(['email', 'name'], $indexed);
+
+        // A stored value that is still not text is skipped, never thrown: nobody asked for that
+        // column to be indexed — detection picked it.
+        $user->setRawAttributes(['id' => $user->getKey(), 'name' => new \stdClass, 'email' => 'ada@example.com']);
+        app(IndexManager::class)->indexModel($user);
+
+        $this->assertSame(['email'], DB::table('fuzzy_index_postings')->where('model_id', $user->getKey())->distinct()->pluck('column_name')->all());
     }
 
     public function test_an_empty_detection_is_not_cached(): void

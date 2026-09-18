@@ -124,7 +124,7 @@ $users = User::search('john')->get();
 - `bio`, `summary`, `excerpt` (weight: 3)
 - `slug`, `sku`, `code` (weight: 2-6)
 
-If none of these exist, it falls back to the model's `$fillable` columns.
+If none of these exist, it falls back to the model's `$fillable` columns, then to the first remaining column. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes`, `api_token`, `id` or the timestamps.
 
 ### Manual Column Configuration
 
@@ -202,7 +202,7 @@ User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 
 The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
 
-`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. Detection reads casts, not accessors: a column that a get accessor decrypts or unmasks is still selected, and the indexer writes what the accessor returns — declare `$searchable['columns']` to keep such a column out. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
+`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. Nor does it select a column the model hides from serialization (`$hidden`, or any column outside a non-empty `$visible`), or `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`. An auto-detected column is indexed as its stored value — the value the LIKE search matches — so a get accessor that decrypts or reformats it never reaches the index or its `*_metaphone` shadow column. Declaring a column in `$searchable['columns']` is what opts into its accessor. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
 
 → Full guide: [docs/relationships.md](docs/relationships.md)
 

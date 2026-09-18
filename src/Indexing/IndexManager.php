@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\StopWords;
 
 /**
@@ -511,7 +512,8 @@ class IndexManager
 
     /**
      * The texts to index for a model: the searchableText() hook when the model defines one
-     * (any keys, related data allowed), otherwise the searchable columns' attributes.
+     * (any keys, related data allowed), otherwise the searchable columns' values — through
+     * accessors for declared columns, as stored for auto-detected ones (SearchableColumns::value()).
      *
      * A hook value may be a Collection or array (e.g. `$this->tags->pluck('name')`) — its
      * scalar items are joined with a space so callers don't have to implode() themselves.
@@ -526,13 +528,13 @@ class IndexManager
     private function searchableTexts(Model $model, array $columns): array
     {
         $fromHook = method_exists($model, 'searchableText');
-        // Auto-detection is a heuristic: it can land on an accessor that returns an object, which
-        // no cast filter can see. Skip such a value rather than break the model's save. A column
-        // the caller declared (or a hook value) is their choice and still gets the throw.
+        // Auto-detection is a heuristic: a value it lands on may still not be text. Skip such a
+        // value rather than break the model's save. A column the caller declared (or a hook
+        // value) is their choice and still gets the throw.
         $declared = !method_exists($model, 'hasDeclaredSearchableColumns') || $model->hasDeclaredSearchableColumns();
         $texts    = $fromHook
             ? (array) $model->searchableText()
-            : array_combine($columns, array_map(fn ($c) => $model->getAttribute($c), $columns));
+            : array_combine($columns, array_map(fn ($c) => SearchableColumns::value($model, $c), $columns));
 
         $clean = [];
         foreach ($texts as $name => $value) {

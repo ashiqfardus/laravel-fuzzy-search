@@ -293,12 +293,24 @@ trait Searchable
     /**
      * The uncached auto-detection itself — see getAutoDetectedColumns(). Columns whose cast is
      * not text (an enum, an array, a custom cast class) are never selected: detection is a
-     * heuristic, and the indexer cannot turn such a value into text.
+     * heuristic, and the indexer cannot turn such a value into text. Nor is a column the model
+     * hides from serialization ($hidden, or outside a non-empty $visible) or a secret by name:
+     * the index and suggest() would publish it. Declaring any of them is the caller's choice.
      */
     private function detectSearchableColumns(): array
     {
         $table = $this->getTable();
         $columns = [];
+
+        // Hidden/visible come from a fresh instance: detection is memoised per class, so one
+        // instance's makeVisible() must not decide it for the rest of the process.
+        $defaults = new static;
+        $hidden   = $defaults->getHidden();
+        $visible  = $defaults->getVisible();
+        $pickable = fn (string $column) => !in_array($column, [
+            'id', 'password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes', 'api_token',
+            'created_at', 'updated_at', 'deleted_at',
+        ], true) && !in_array($column, $hidden, true) && ($visible === [] || in_array($column, $visible, true));
 
         // Priority columns to check
         $priorityColumns = [
@@ -320,11 +332,12 @@ trait Searchable
         ];
 
         try {
-            // Get actual table columns, minus any the indexer could not read as text. Read
-            // through the model's own connection, not the default one.
+            // Get actual table columns, minus any the indexer could not read as text and any
+            // that must never be picked (every branch below reads this list). Read through the
+            // model's own connection, not the default one.
             $tableColumns = array_values(array_filter(
                 $this->getConnection()->getSchemaBuilder()->getColumnListing($table),
-                fn (string $column) => SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null)
+                fn (string $column) => $pickable($column) && SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null)
             ));
 
             // Check which priority columns exist
@@ -336,11 +349,7 @@ trait Searchable
 
             // If no priority columns found, use fillable
             if (empty($columns) && !empty($this->fillable)) {
-                $stringColumns = array_filter($this->fillable, function ($col) use ($tableColumns) {
-                    // Only include if column exists and is likely a string column
-                    return in_array($col, $tableColumns) &&
-                           !in_array($col, ['id', 'password', 'remember_token', 'created_at', 'updated_at', 'deleted_at']);
-                });
+                $stringColumns = array_filter($this->fillable, fn ($col) => in_array($col, $tableColumns));
 
                 foreach (array_slice($stringColumns, 0, 5) as $col) {
                     $columns[$col] = 1;
@@ -355,17 +364,14 @@ trait Searchable
                     $columns['title'] = 1;
                 } else {
                     // Just use first string-like column
-                    foreach ($tableColumns as $col) {
-                        if (!in_array($col, ['id', 'created_at', 'updated_at', 'deleted_at'])) {
-                            $columns[$col] = 1;
-                            break;
-                        }
+                    if ($tableColumns !== []) {
+                        $columns[$tableColumns[0]] = 1;
                     }
                 }
             }
         } catch (\Exception $e) {
             // Fallback if schema check fails
-            $columns = ['name' => 1];
+            $columns = $pickable('name') ? ['name' => 1] : [];
         }
 
         return $columns;
@@ -424,7 +430,7 @@ trait Searchable
             foreach ($models as $model) {
                 $content = '';
                 foreach ($columns as $column) {
-                    $content .= ' ' . ($model->$column ?? '');
+                    $content .= ' ' . (SearchableColumns::value($model, $column) ?? '');
                 }
 
                 $records[] = [

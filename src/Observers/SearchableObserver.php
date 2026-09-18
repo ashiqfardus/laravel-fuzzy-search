@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Observers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Model;
 
 class SearchableObserver
@@ -50,7 +51,7 @@ class SearchableObserver
             }
 
             if (static::$columnCache[$cacheKey]) {
-                $value               = $model->getAttribute($column);
+                $value               = SearchableColumns::value($model, $column);
                 $updates[$metaphoneCol] = $value !== null ? metaphone((string) $value) : null;
             }
         }

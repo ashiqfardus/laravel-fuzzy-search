@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Support;
 
 use Closure;
 use Illuminate\Database\Connection;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * Shared handling of a model's searchable column list.
@@ -28,9 +29,10 @@ final class SearchableColumns
      * refuses a value it cannot turn into a string. A column the caller declared is their choice
      * and still raises that error.
      *
-     * `encrypted` and `hashed` are text but never auto-detected: the indexer reads through
-     * getAttribute(), which decrypts, so the plaintext (or the hash) would land in the dictionary
-     * that suggest() serves. Declaring such a column is the caller's explicit choice.
+     * `encrypted` and `hashed` are text but never auto-detected: an auto-detected column is
+     * indexed as stored (value()), so the dictionary would fill with ciphertext or hashes, and a
+     * declared column is read through getAttribute(), which decrypts. Declaring such a column is
+     * the caller's explicit choice.
      */
     private const TEXT_LIKE_CASTS = [
         'string', 'int', 'integer', 'float', 'double', 'real', 'bool', 'boolean', 'decimal',
@@ -116,6 +118,21 @@ final class SearchableColumns
         }
 
         return $columns === [] ? [] : self::$listings[$key] = $columns;
+    }
+
+    /**
+     * What the indexer and the shadow columns read for a searchable column. A column the model
+     * declared goes through getAttribute() — accessors and casts, a documented feature. An
+     * auto-detected one is read as stored, the value the LIKE path searches: nobody chose to
+     * expose it, and a get accessor may decrypt it into the dictionary that suggest() serves.
+     */
+    public static function value(Model $model, string $column): mixed
+    {
+        if (method_exists($model, 'hasDeclaredSearchableColumns') && !$model->hasDeclaredSearchableColumns()) {
+            return $model->getAttributes()[$column] ?? null;
+        }
+
+        return $model->getAttribute($column);
     }
 
     /** @param string|null $cast the model's cast for the column, or null when it has none */

@@ -164,8 +164,8 @@ class AccessorValue
 }
 
 /**
- * Zero-config model whose auto-detected "name" column is read through an accessor returning an
- * object. Casts alone cannot see this: getAttribute() runs accessors too.
+ * Zero-config model whose auto-detected "name" column has an accessor returning an object. The
+ * indexer reads an auto-detected column as stored, so that accessor never reaches the index.
  */
 class ZeroConfigAccessorUser extends \Illuminate\Database\Eloquent\Model
 {

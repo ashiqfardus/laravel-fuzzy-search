@@ -171,12 +171,19 @@ you get back from a search:
   indexes: a column cast to an enum, `array`, `json`, `object`, `collection` or a custom cast class
   is no longer auto-selected, and neither is an `encrypted` or `hashed` column (its decrypted text
   or hash would otherwise be written to the index and served by `suggest()`), so such a model can search a different set of columns than in v2.0
-  (a later string column may take the freed slot). A value that still turns out not to be text —
-  an accessor returning an object — is skipped rather than thrown, so this cannot make a save
-  throw. Declare `$searchable['columns']` to search or index anything else: a declared column is
-  your choice, and one that cannot be indexed as text raises an error naming it. Detection reads
-  casts, not accessors: a column that a get accessor decrypts or unmasks is still selected and
-  indexed as the accessor returns it, so declare `$searchable['columns']` to keep it out.
+  (a later string column may take the freed slot). A value that still turns out not to be text is
+  skipped rather than thrown, so this cannot make a save throw. Declare `$searchable['columns']`
+  to search or index anything else: a declared column is your choice, and one that cannot be
+  indexed as text raises an error naming it. An auto-detected column is indexed as its stored
+  value, the value the LIKE search matches, so a get accessor that decrypts or reformats it never
+  reaches the index; declaring the column is what opts into its accessor.
+- **Auto-detection skips hidden and secret columns.** A model with no `$searchable['columns']`
+  no longer auto-selects a column in `$hidden`, a column outside a non-empty `$visible`, or
+  `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`,
+  on the LIKE path as well as the index path. A zero-config model whose only priority column was
+  hidden (a hidden `name`, say) now picks another column, or none. With none, `search()` adds no
+  constraint and returns every row, as it already did for a model with no detectable column.
+  Declare `$searchable['columns']` to keep searching a hidden column.
 - **Case-insensitive scoring and highlighting now cover every script.** They folded ASCII
   only, so a lower-case Cyrillic, Greek or accented term scored an upper-case value as a fuzzy
   near-miss and highlighted nothing. Such results now rank as exact/prefix/contains matches and
