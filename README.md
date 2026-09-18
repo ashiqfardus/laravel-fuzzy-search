@@ -658,7 +658,7 @@ Post::search('tolkien')->useInvertedIndex()->get();
 
 - **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
-- BM25 tends to beat LIKE once a table passes roughly 500k+ rows; below that, LIKE is simpler to operate.
+- BM25 tends to beat LIKE once a table passes roughly 10k+ rows; below that, LIKE is simpler to operate.
 
 → Full guide: [docs/bm25.md](docs/bm25.md)
 
