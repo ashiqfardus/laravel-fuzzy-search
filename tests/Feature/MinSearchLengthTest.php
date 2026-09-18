@@ -109,6 +109,17 @@ class MinSearchLengthTest extends TestCase
         $this->assertCount(2, FuzzySearch::on([['name' => 'John Doe'], ['name' => 'Jane Doe']])->search('doe')->searchIn(['name'])->get());
     }
 
+    /** The short-circuit's empty paginator used max(1, $perPage), not paginate()'s max_candidates clamp. */
+    public function test_paginate_clamps_the_page_size_when_the_search_matches_nothing(): void
+    {
+        config(['fuzzy-search.max_candidates' => 10]);
+
+        foreach (['doe' => 'a real search', 'jo' => 'below the minimum', "\xFF" => 'invalid bytes only'] as $term => $case) {
+            $this->assertSame(10, User::search($term)->paginate(50)->perPage(), $case);
+            $this->assertSame(1, User::search($term)->paginate(0)->perPage(), $case);
+        }
+    }
+
     public function test_the_scout_engine_matches_nothing_below_the_minimum(): void
     {
         if (!class_exists(\Laravel\Scout\Builder::class)) {

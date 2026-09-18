@@ -138,4 +138,39 @@ class MultibyteSearchTest extends TestCase
         $this->assertSame([], User::search('ক')->searchIn(['name'])->suggest());
         $this->assertContains('কলম', User::search('কল')->searchIn(['name'])->suggest());
     }
+
+    /**
+     * `\s` without /u follows LC_CTYPE: under a UTF-8 locale on macOS/BSD byte 0xA0 is a space,
+     * and it is inside à (C3 A0) and ঠ (E0 A6 A0). Splitting a term into words (tokenize(), stop
+     * words) or a value into words (suggest()) cut them in half; a half made only of invalid
+     * bytes cleaned to '' and bound LIKE '%%', which matched every row. (Linux glibc never
+     * treats 0xA0 as a space.)
+     */
+    public function test_a_utf8_locale_does_not_split_a_character_containing_byte_0xA0(): void
+    {
+        $this->insertUser('voilà', 'v1@example.com');
+        $this->insertUser('voile', 'v2@example.com');
+        $names = fn ($builder) => $builder->get()->pluck('name')->all();
+
+        $previous = setlocale(LC_CTYPE, '0');
+        setlocale(LC_CTYPE, 'C.UTF-8', 'en_US.UTF-8');
+
+        try {
+            $actual = [
+                'tokenize ঠাকুর'   => $names(User::search('ঠাকুর')->tokenize()),
+                'tokenize voilà'   => $names(User::search('voilà')->using('like')->tokenize()),
+                'stop words voilà' => $names(User::search('voilà')->using('like')->ignoreStopWords(['le'])),
+                'suggest voi'      => array_map('bin2hex', User::search('voi')->searchIn(['name'])->suggestFrom('table')->suggest()),
+            ];
+        } finally {
+            setlocale(LC_CTYPE, $previous);
+        }
+
+        $this->assertSame([
+            'tokenize ঠাকুর'   => [],
+            'tokenize voilà'   => ['voilà'],
+            'stop words voilà' => ['voilà'],
+            'suggest voi'      => array_map('bin2hex', ['voile', 'voilà']),
+        ], $actual);
+    }
 }

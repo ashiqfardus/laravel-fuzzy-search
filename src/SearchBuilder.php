@@ -858,6 +858,14 @@ class SearchBuilder
         'toRawSql', 'dd', 'dump', 'sole',
     ];
 
+    /**
+     * ASCII whitespace, byte by byte — what `\s` means on Linux, on every platform (the Lexer's
+     * rule too). A plain `\s` follows LC_CTYPE: under a UTF-8 locale on macOS/BSD byte 0xA0 is a
+     * space, and it is inside à (C3 A0), ঠ (E0 A6 A0) and 丠 (E4 B8 A0). `\s` with /u is Unicode
+     * whitespace and would change what Linux splits.
+     */
+    private const WHITESPACE = '/[ \t\n\r\x0B\f]+/';
+
     /** Fluent builder methods safe to forward (prefix match: "where" covers whereIn, whereHas, ...). */
     private const FORWARDABLE_PREFIXES = [
         'where', 'orWhere', 'with', 'without', 'join', 'leftJoin', 'rightJoin', 'crossJoin',
@@ -1964,7 +1972,7 @@ class SearchBuilder
 
         // Remove stop words
         if (!empty($this->stopWords)) {
-            $words = preg_split('/\s+/', $term);
+            $words = preg_split(self::WHITESPACE, $term);
             $words = array_filter($words, function ($word) {
                 return !in_array(strtolower($word), $this->stopWords);
             });
@@ -2012,7 +2020,7 @@ class SearchBuilder
     {
         // Tokenize if enabled
         if ($this->tokenizeSearch) {
-            $tokens = preg_split('/\s+/', $searchTerm, -1, PREG_SPLIT_NO_EMPTY); // not array_filter(): it drops "0"
+            $tokens = preg_split(self::WHITESPACE, $searchTerm, -1, PREG_SPLIT_NO_EMPTY); // not array_filter(): it drops "0"
         } else {
             $tokens = [$searchTerm];
         }
@@ -2711,7 +2719,7 @@ class SearchBuilder
             foreach ($this->resolveColumnTargets() as $column => $target) {
                 foreach ($this->columnValues($result, $column, $target) as $value) {
                     // Extract the matching word/phrase
-                    $words = preg_split('/\s+/', $value);
+                    $words = preg_split(self::WHITESPACE, $value);
                     foreach ($words as $word) {
                         $wordLower = strtolower($word);
                         if (str_starts_with($wordLower, $rawTerm) && strlen($word) > strlen($rawTerm)) {
