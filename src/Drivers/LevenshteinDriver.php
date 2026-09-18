@@ -40,7 +40,7 @@ class LevenshteinDriver extends BaseDriver
     protected function applyNativeMySQL(Builder $query, string $column, string $value, string $boolean): Builder
     {
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         return $query->$method("LEVENSHTEIN({$col}, ?) <= ?", [$value, $this->maxDistance]);
     }
@@ -51,7 +51,7 @@ class LevenshteinDriver extends BaseDriver
     protected function applyNativePostgres(Builder $query, string $column, string $value, string $boolean): Builder
     {
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
         $minSimilarity = 1 - ($this->maxDistance / max(mb_strlen($value, 'UTF-8'), 1));
 
         return $query->$method("similarity({$col}, ?) > ?", [$value, max(0.3, $minSimilarity)]);
@@ -64,7 +64,7 @@ class LevenshteinDriver extends BaseDriver
     {
         $patterns = $this->generateLevenshteinPatterns($value);
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         return $query->$method(function ($q) use ($col, $column, $patterns) {
             foreach ($patterns as $index => $pattern) {

@@ -26,7 +26,7 @@ class FuzzyDriver extends BaseDriver
     {
         $patterns = $this->generatePatterns($value);
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         return $query->$method(function ($q) use ($col, $column, $patterns) {
             foreach ($patterns as $index => $pattern) {

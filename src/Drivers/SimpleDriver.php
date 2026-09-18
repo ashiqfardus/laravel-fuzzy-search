@@ -13,7 +13,7 @@ class SimpleDriver extends BaseDriver
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         if ($this->driver === 'pgsql') {
             $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';

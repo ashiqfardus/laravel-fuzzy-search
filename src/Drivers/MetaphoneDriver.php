@@ -49,7 +49,17 @@ class MetaphoneDriver extends BaseDriver
         $table = $query->from;
         $schema = $query->getConnection()->getSchemaBuilder();
 
-        if (!$schema->hasColumn($table, $shadowColumn)) {
+        // A qualified column (the search path qualifies the FROM table's own under a join) names
+        // its table, or the FROM's alias: check the column itself on that table.
+        $parts     = explode('.', $shadowColumn);
+        $column    = array_pop($parts);
+        $qualifier = implode('.', $parts);
+        if ($qualifier !== '' && is_string($table)) {
+            $from  = preg_split('/\s+as\s+/i', $table);
+            $table = in_array($qualifier, $from, true) ? $from[0] : $qualifier;
+        }
+
+        if (!$schema->hasColumn($table, $column)) {
             throw new \RuntimeException(
                 "MetaphoneDriver: column [{$originalColumn}] on table [{$table}] requires a shadow column " .
                 "[{$shadowColumn}] to be populated at write time. " .

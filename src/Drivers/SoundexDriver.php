@@ -12,7 +12,7 @@ class SoundexDriver extends BaseDriver
 {
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         // MySQL and PostgreSQL support native SOUNDEX.
         // IMPORTANT: SOUNDEX() on multi-word strings (e.g. "Jake Jackson") ignores spaces
@@ -60,7 +60,7 @@ class SoundexDriver extends BaseDriver
     {
         $patterns = $this->generatePhoneticPatterns($value);
         $method   = $boolean === 'or' ? 'orWhere' : 'where';
-        $col      = $this->quoteColumn($column);
+        $col      = $this->quoteColumn($column, $query);
         $isPgsql  = $this->driver === 'pgsql';
 
         return $query->$method(function ($q) use ($col, $column, $patterns, $isPgsql) {

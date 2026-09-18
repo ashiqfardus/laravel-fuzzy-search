@@ -111,7 +111,7 @@ class FuzzySearch
         }
 
         $driver = $this->getDriver($query);
-        $col = $this->quoteColumnForDriver($column, $driver);
+        $col = $this->quoteColumnForDriver($column, $driver, $query);
 
         $expression = match (true) {
             \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver) => "LOCATE(?, {$col})",
@@ -220,14 +220,17 @@ class FuzzySearch
         return $query->getConnection()->getDriverName();
     }
 
-    protected function quoteColumnForDriver(string $column, string $driver): string
+    /** $query supplies the table prefix a qualified column's table is written with. */
+    protected function quoteColumnForDriver(string $column, string $driver, ?Builder $query = null): string
     {
-        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $driver);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier(
+            $column, $driver, $query?->getGrammar()->getTablePrefix() ?? ''
+        );
     }
 
     protected function applyWithUnaccent(Builder $query, string $column, string $value, string $boolean): Builder
     {
-        $col = $this->quoteColumnForDriver($column, 'pgsql');
+        $col = $this->quoteColumnForDriver($column, 'pgsql', $query);
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
         return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . addcslashes($value, '%_') . '%']);

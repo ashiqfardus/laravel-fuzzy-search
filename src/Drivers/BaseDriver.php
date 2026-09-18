@@ -84,11 +84,14 @@ abstract class BaseDriver
     }
 
     /**
-     * Quote column name based on driver
+     * Quote column name based on driver. Pass the query the SQL is for, so a qualified column's
+     * table carries the connection's table prefix (see DbDialect::quoteIdentifier()).
      */
-    protected function quoteColumn(string $column): string
+    protected function quoteColumn(string $column, ?Builder $query = null): string
     {
-        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $this->driver);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier(
+            $column, $this->driver, $query?->getGrammar()->getTablePrefix() ?? ''
+        );
     }
 
     /** True for MySQL and MariaDB (Laravel 11+ reports MariaDB as "mariadb"). */

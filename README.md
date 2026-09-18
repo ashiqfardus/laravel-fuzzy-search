@@ -192,6 +192,8 @@ Executing methods that would bypass the search conditions (`delete()`, `exists()
 
 `latest()`, `oldest()`, `inRandomOrder()` and `reorder()` are forwarded the same way as `orderBy()`: they only shape which rows make it into the candidate window, since the relevance `ORDER BY` is appended after them and PHP-side rescoring re-sorts by `_score` whenever `withRelevance` is on (the default) — call `withRelevance(false)` if you want the forwarded order to stick. The closure passed to `when()`, `unless()` or `tap()` receives the underlying Eloquent builder, not the `SearchBuilder`.
 
+Under a join (a forwarded `join()`, one inside `query()`, or a global scope's), the model's own searched columns are qualified with its table (or the FROM alias) automatically, so a joined table with a column of the same name is not ambiguous; to search the joined table's column, write it dotted: `searchIn(['teams.name'])`.
+
 ### Searching Relationships
 
 Dotted column names — `posts.title`, `author.name`, nested paths — search through Eloquent relations (`belongsTo`, `hasMany`, `belongsToMany`) on the LIKE and extended paths, compiling to `whereHas()` (a portable `EXISTS` subquery):

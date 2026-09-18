@@ -123,6 +123,7 @@ Upgrading from 2.0.x: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/m
 - stableRanking() ordered by a hard-coded "id" column and broke on UUID / custom-key models.
 - suggest() missed capitalised values on PostgreSQL (case-sensitive LIKE).
 - suggest()'s table scan named its columns bare, so a joined table with a column of the same name made the query ambiguous (a SQL error). Under a join, a column of the query's own table is now qualified with that table (or its alias), on an Eloquent and a plain query builder; a column only a joined table has (a translations join) stays bare. On PostgreSQL the `ILIKE` column is quoted by the query's grammar, so a connection's table prefix applies to a table-qualified `searchIn()` column.
+- Searching a model whose query joins a table with a column of the same name as a searched column no longer fails with an ambiguous-column error (since 2.0).
 - `extended()`/`searchBoolean()`: an empty quoted phrase `""` compiled to `LIKE '%%'` and matched every row, and `name:""` and `"%FF"` (which cleans to `""`) did the same. An empty phrase is now skipped like an empty word, `name:""` raises the missing-term `QuerySyntaxException`, and a query with nothing else raises "no searchable terms".
 - A term made only of stop words (`search('the')->ignoreStopWords('en')`) matches nothing on every path. The LIKE path applied no condition and returned every row from `get()`, `count()` and `paginate()`, while the index path returned none.
 - A searchable column holding the string "0" was skipped by the indexer.

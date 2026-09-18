@@ -270,6 +270,31 @@ class SearchBuilder
     }
 
     /**
+     * Under a join, every column of the FROM table => the FROM table's name, or its alias, and a
+     * dot: the prefix a searched column is written with in SQL, so a joined table with a column
+     * of the same name cannot make it ambiguous. A column on both tables is therefore the FROM
+     * table's (the model's own); a caller who means the joined one writes it dotted, and a dotted
+     * column is never in this map. Any other column (a translations join's "title") stays bare:
+     * it may live on the joined table. [] with no join — the SQL is then unchanged — or when FROM
+     * is not a plain table (fromSub()). Only SQL is qualified: scoring, highlighting, _score,
+     * facet keys and events keep the logical name. toBase() so a global scope's join counts.
+     *
+     * @return array<string, string> column => "table." or "alias."
+     */
+    protected function qualifiedColumnMap(Builder|EloquentBuilder $query): array
+    {
+        $base = $query instanceof EloquentBuilder ? $query->toBase() : $query;
+
+        if (empty($base->joins) || !is_string($base->from)) {
+            return [];
+        }
+
+        [$table, $alias] = array_pad(preg_split('/\s+as\s+/i', $base->from), 2, null);
+
+        return array_fill_keys(SearchableColumns::onTable($base->getConnection(), $table), ($alias ?? $table) . '.');
+    }
+
+    /**
      * Use Fuse-style extended search syntax.
      *
      *   ' word     — substring include
@@ -1418,7 +1443,7 @@ class SearchBuilder
 
         $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options))
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query)))
             ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
@@ -1865,16 +1890,19 @@ class SearchBuilder
         return $this->onQueryClone(function (): array {
             $this->prepareQuery();
             $facetResults = [];
+            $own          = $this->qualifiedColumnMap($this->query);
 
             foreach ($this->facets as $facet) {
+                $column = ($own[$facet] ?? '') . $facet; // the result stays keyed by $facet; pluck() strips the table
+
                 $facetResults[$facet] = $this->query
                     ->clone()
                     ->reorder()
-                    ->select($facet, DB::raw('COUNT(*) as count'))
-                    ->groupBy($facet)
+                    ->select($column, DB::raw('COUNT(*) as count'))
+                    ->groupBy($column)
                     ->orderByDesc('count')
-                    ->orderBy($facet)
-                    ->pluck('count', $facet)
+                    ->orderBy($column)
+                    ->pluck('count', $column)
                     ->toArray();
             }
 
@@ -2039,7 +2067,13 @@ class SearchBuilder
         }
         $allTerms = array_unique($allTerms);
 
-        $targets = $this->resolveColumnTargets();
+        // The SQL names a direct column qualified under a join; the targets themselves (scoring,
+        // highlighting) keep the logical name.
+        $own     = $this->qualifiedColumnMap($this->query);
+        $targets = array_map(
+            fn (array $t) => $t['relation'] === null ? ['relation' => null, 'column' => ($own[$t['column']] ?? '') . $t['column']] : $t,
+            $this->resolveColumnTargets()
+        );
 
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
             // Every token must match at least one column
@@ -2107,11 +2141,12 @@ class SearchBuilder
 
         $scoreExpressions = [];
         $bindings = [];
+        $own      = $this->qualifiedColumnMap($this->query);
 
         foreach ($this->directTargets() as $column => $directColumn) {
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
-            $col = $this->quoteColumn($directColumn, $driver);
+            $col = $this->quoteColumn(($own[$directColumn] ?? '') . $directColumn, $driver);
 
             switch ($driver) {
                 case 'mysql':
@@ -2155,11 +2190,12 @@ class SearchBuilder
     }
 
     /**
-     * Quote column based on database driver
+     * Quote column based on database driver; a qualified column's table gets the connection's
+     * table prefix, as the grammar writes the FROM table
      */
     protected function quoteColumn(string $column, string $driver): string
     {
-        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $driver);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $driver, $this->query->getGrammar()->getTablePrefix());
     }
 
     /**
@@ -2830,16 +2866,8 @@ class SearchBuilder
             }
         };
 
-        // Under a join (which sends 'auto' suggestions here), a direct column of the FROM table is
-        // qualified with that table or its alias, so a joined table with a column of the same
-        // name cannot make it ambiguous. Any other column stays bare, as on the search path: it
-        // may live on the joined table (a translations join).
-        $base = $suggestQuery instanceof EloquentBuilder ? $suggestQuery->toBase() : $suggestQuery;
-        $own  = [];
-        if (!empty($base->joins) && is_string($base->from)) {
-            [$table, $alias] = array_pad(preg_split('/\s+as\s+/i', $base->from), 2, null);
-            $own = array_fill_keys(SearchableColumns::onTable($base->getConnection(), $table), ($alias ?? $table) . '.');
-        }
+        // Under a join (which sends 'auto' suggestions here), qualified as the search path is.
+        $own = $this->qualifiedColumnMap($suggestQuery);
 
         $suggestQuery->where(function ($q) use ($targets, $prefixWhere, $own) {
             $first = true;

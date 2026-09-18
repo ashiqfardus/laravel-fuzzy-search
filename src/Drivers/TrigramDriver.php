@@ -36,7 +36,7 @@ class TrigramDriver extends BaseDriver
     protected function applyNativePostgres(Builder $query, string $column, string $value, string $boolean): Builder
     {
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         return $query->$method("similarity({$col}, ?) > ?", [$value, $this->minSimilarity]);
     }
@@ -49,7 +49,7 @@ class TrigramDriver extends BaseDriver
         $trigrams = $this->generateTrigrams($value);
         $patterns = $this->trigramsToPatterns($trigrams, $this->normalizeTerm($value));
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $col = $this->quoteColumn($column);
+        $col = $this->quoteColumn($column, $query);
 
         return $query->$method(function ($q) use ($col, $column, $patterns) {
             foreach ($patterns as $index => $pattern) {

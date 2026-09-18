@@ -27,10 +27,16 @@ final class DbDialect
     /**
      * Quote a (possibly table-qualified) column for the given driver.
      * Splits on "." so `users.name` becomes `users`.`name`, not a single identifier.
+     * $tablePrefix is the connection's table prefix: the grammar writes the FROM table (and its
+     * alias) with it, so the table part of a qualified column carries it too, as wrap() does.
      */
-    public static function quoteIdentifier(string $column, string $driver): string
+    public static function quoteIdentifier(string $column, string $driver, string $tablePrefix = ''): string
     {
         $parts = explode('.', $column);
+
+        if (count($parts) > 1) {
+            $parts[0] = $tablePrefix . $parts[0];
+        }
 
         $quoted = array_map(static function (string $part) use ($driver): string {
             if (self::isMySqlFamily($driver)) {

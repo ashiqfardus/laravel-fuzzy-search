@@ -19,13 +19,17 @@ use Illuminate\Contracts\Database\Query\Builder;
 class AstCompiler
 {
     /**
-     * @param array<string, mixed> $fuzzyOptions the builder's driver options (max_patterns, ...),
-     *                                           forwarded to applyFuzzyWhere() for ~ terms
+     * @param array<string, mixed>  $fuzzyOptions the builder's driver options (max_patterns, ...),
+     *                                            forwarded to applyFuzzyWhere() for ~ terms
+     * @param array<string, string> $qualified    direct column => "table." prefix it is written
+     *                                            with in SQL (SearchBuilder::qualifiedColumnMap());
+     *                                            field scopes still resolve against the bare names
      */
     public function __construct(
         private readonly string $dbDriver = 'mysql',
         private readonly int $typoDistance = 0,
         private readonly array $fuzzyOptions = [],
+        private readonly array $qualified = [],
     ) {}
 
     /**
@@ -83,7 +87,7 @@ class AstCompiler
         $builder->$method(function (Builder $q) use ($columns, $relations, $node, $pattern, $term) {
             $first = true;
             foreach ($columns as $column) {
-                $this->leafCondition($q, $column, $node, $pattern, $term, $first ? 'and' : 'or');
+                $this->leafCondition($q, ($this->qualified[$column] ?? '') . $column, $node, $pattern, $term, $first ? 'and' : 'or');
                 $first = false;
             }
             foreach ($relations as $relation => $leafColumns) {
@@ -173,17 +177,17 @@ class AstCompiler
 
         if ($node instanceof ExactTerm) {
             // Case-insensitive exact: LOWER(quoted_col) = LOWER(?) on all drivers
-            $q->$rawMethod('LOWER(' . $this->quoteColumn($column) . ') = LOWER(?)', [$term]);
+            $q->$rawMethod('LOWER(' . $this->quoteColumn($column, $q) . ') = LOWER(?)', [$term]);
         } elseif ($this->dbDriver === 'pgsql') {
-            $q->$rawMethod($this->quoteColumn($column) . ' ILIKE ?', [$pattern]);
+            $q->$rawMethod($this->quoteColumn($column, $q) . ' ILIKE ?', [$pattern]);
         } else {
             $q->$colMethod($column, 'LIKE', $pattern);
         }
     }
 
-    private function quoteColumn(string $column): string
+    private function quoteColumn(string $column, Builder $q): string
     {
-        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $this->dbDriver);
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $this->dbDriver, $q->getGrammar()->getTablePrefix());
     }
 
     private function extractTerm(AstNode $node): string
