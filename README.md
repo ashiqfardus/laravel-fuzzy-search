@@ -28,6 +28,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 | **Configuration** | Config file support • Per-model customization |
 | **Developer Tools** | CLI indexing • Benchmark tools • Built-in test suite • Performance utilities |
 | **Smart Search** | Autocomplete suggestions (dictionary-backed on indexed models) • "Did you mean" spell correction • Multi-model federation • Persisted search analytics |
+| **Integrations** | Filament global search & table search • Scout driver • JSON API resources |
 
 ## Table of Contents
 
@@ -41,6 +42,9 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 - [BM25 Inverted Index](#bm25-inverted-index)
 - [Extended Search Syntax](#extended-search-syntax)
 - [Scout Driver](#scout-driver)
+- [Filament Integration](#filament-integration)
+- [JSON API Resources](#json-api-resources)
+- [Livewire Recipe](#livewire-recipe)
 - [Pagination](#pagination)
 - [Reliability & Safety](#reliability--safety)
 - [Events](#events)
@@ -683,6 +687,8 @@ $users = User::search('john')
 ```
 
 Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`.
+
+Every value in `_highlighted` is safe to render as HTML: a matched column is wrapped in the highlight tag (and escaped first), and — since v2.1.0 — a column that did not match is HTML-escaped too, so the whole array can be echoed with `{!! !!}` without an extra `e()` call.
 
 ### Debug / Explain-Score Mode
 
@@ -1328,6 +1334,218 @@ With `scout.soft_delete` enabled, trashed models stay in the index as Scout expe
 ### How It Works
 
 The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables.
+
+---
+
+## Filament Integration
+
+`HasFuzzyGlobalSearch` replaces a Filament Resource's LIKE-based global search with the package's fuzzy search — typo tolerance, relevance ordering and highlighted details — while everything else about the Resource (its Eloquent query, title, URL, actions, results limit) stays exactly as you defined it. `FuzzySearch::tableSearch()` does the same for individual table columns and table-wide search. Filament is not a dependency of this package; both only work once the class already extends Filament's `Resource` / applies to a Filament `Table`.
+
+### Setup
+
+```bash
+composer require filament/filament
+```
+
+Nothing else to install or publish — the trait and `tableSearch()` ship with this package.
+
+### Usage
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Integrations\Filament\HasFuzzyGlobalSearch;
+use Filament\Resources\Resource;
+
+class UserResource extends Resource
+{
+    use HasFuzzyGlobalSearch;
+
+    protected static ?string $model = User::class;
+
+    // Optional — each defaults to the value shown when the property is omitted.
+    protected static ?int $fuzzyTypoTolerance = 2;
+    protected static ?string $fuzzySearchAlgorithm = null; // e.g. 'levenshtein'
+    protected static string $fuzzyHighlightTag = 'mark';
+
+    public static function getGloballySearchableAttributes(): array
+    {
+        return ['name', 'email'];
+    }
+}
+```
+
+Filament's own global search applies a `LIKE %term%` constraint per attribute in `getGloballySearchableAttributes()`. The trait replaces just that matching step with the package's `SearchBuilder`, so a typo ("jonh") still finds "John Doe" and results come back ordered by relevance instead of insertion order. `getGlobalSearchEloquentQuery()`, `modifyGlobalSearchQuery()` (tenant scopes), `getGlobalSearchResultTitle()`, `getGlobalSearchResultUrl()`, `getGlobalSearchResultActions()` and `getGlobalSearchResultsLimit()` are all still called exactly as Filament defines them.
+
+For each searchable attribute that matched, a highlighted entry is added to `details`, keyed by `Str::headline()` of the attribute (`email` → `Email`). Only attributes listed in the record's `_matches` are promoted — a column that did not match is never sniffed for the highlight tag, so a record's own literal `<mark>…</mark>` text is never rendered as HTML just because a *different* column matched (ruling P8-R10 — see [Highlighted Results](#highlighted-results)).
+
+> A promoted highlighted attribute replaces a plain `details` entry with the same label. If `getGlobalSearchResultDetails()` already returns `'Email' => $record->email` and `email` is both searchable and a match, the highlighted version overwrites it — pick a different label, or a different searchable attribute, to keep both.
+
+### Tables
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Filament\Tables\Columns\TextColumn;
+
+TextColumn::make('name')->searchable(query: FuzzySearch::tableSearch(['name']));
+
+// Or fuzzy-search the whole table at once:
+$table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
+
+// With no columns, it falls back to the model's Searchable::getSearchableColumns()
+// (a no-op for a model without the trait, or for a blank search):
+$table->searchUsing(FuzzySearch::tableSearch());
+```
+
+`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` and `Table::searchUsing()` expect.
+
+### Versions
+
+| Filament | PHP | Laravel |
+|---|---|---|
+| v3.3 | ^8.1 | ^10.45\|^11\|^12\|^13 |
+| v4 | ^8.2 | ^11.28\|^12\|^13 |
+| v5 | ^8.2 | ^11.28\|^12\|^13 |
+
+---
+
+## JSON API Resources
+
+`FuzzySearchResource` and `FuzzySearchCollection` turn a search into a normal Laravel API response.
+
+### `FuzzySearchResource`
+
+Wraps one result row (Eloquent model or array) and adds the package's underscore-prefixed fields alongside the plain attributes:
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchResource;
+
+Route::get('/search', function (Request $request) {
+    $user = User::search($request->query('q'))->highlight('mark')->first();
+
+    return new FuzzySearchResource($user);
+});
+```
+
+### `FuzzySearchCollection`
+
+Build it from a builder instead of a collection — pass a `$perPage` to paginate:
+
+```php
+use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
+
+Route::get('/search', function (Request $request) {
+    return FuzzySearchCollection::fromBuilder(
+        User::search($request->query('q'))->highlight('mark'),
+        perPage: 20,
+    );
+});
+```
+
+A non-paginated response looks like:
+
+```json
+{
+    "data": [
+        {
+            "name": "John Doe",
+            "email": "john@example.com",
+            "_score": 1,
+            "_raw_score": 92.5,
+            "_highlighted": {
+                "name": "<mark>John</mark> Doe",
+                "email": "john@example.com"
+            },
+            "_matches": [
+                {"column": "name", "value": "John Doe", "indices": [[0, 3]]}
+            ],
+            "_model_type": "User"
+        }
+    ],
+    "meta": {
+        "query": "john",
+        "algorithm": "fuzzy",
+        "latency_ms": 3.21,
+        "suggestions": []
+    }
+}
+```
+
+Pass `perPage` and the response also carries Laravel's usual pagination `meta` (`current_page`, `per_page`, `total`, …) and `links`, with the fields above merged into that same `meta` object. `suggestions` — `didYouMean()` terms — is only populated when the page is empty; otherwise it stays `[]`.
+
+### `lastExecution()`
+
+`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms`; call it directly for anything else you want to report:
+
+```php
+$builder = User::search('john');
+$builder->get();
+
+$builder->lastExecution()->algorithm;  // 'fuzzy'
+$builder->lastExecution()->latencyMs;  // e.g. 3.21
+```
+
+---
+
+## Livewire Recipe
+
+A search-as-you-type box as a Livewire v3 component. This is documentation only — no such component ships with the package or the demo app.
+
+```php
+<?php
+
+namespace App\Livewire;
+
+use App\Models\Product;
+use Livewire\Component;
+
+class ProductSearch extends Component
+{
+    public string $query = '';
+    public array $results = [];
+    public array $suggestions = [];
+
+    public function updatedQuery(): void
+    {
+        if ($this->query === '') {
+            $this->results     = [];
+            $this->suggestions = [];
+            return;
+        }
+
+        $builder = Product::search($this->query)
+            ->asYouType()
+            ->highlight('mark')
+            ->limit(10);
+
+        $this->results     = $builder->get()->toArray();
+        $this->suggestions = $this->results === [] ? $builder->suggest(5) : [];
+    }
+
+    public function render()
+    {
+        return view('livewire.product-search');
+    }
+}
+```
+
+```blade
+<div>
+    <input type="text" wire:model.live.debounce.300ms="query" placeholder="Search products…">
+
+    @if ($suggestions !== [])
+        <p>Did you mean: {{ implode(', ', $suggestions) }}?</p>
+    @endif
+
+    <ul>
+        @foreach ($results as $result)
+            <li wire:key="product-{{ $result['id'] }}">
+                {!! $result['_highlighted']['name'] ?? e($result['name']) !!}
+            </li>
+        @endforeach
+    </ul>
+</div>
+```
+
+`updatedQuery()` is a Livewire lifecycle hook: it fires automatically whenever `$query` changes, so no separate search action or button is needed. `wire:model.live.debounce.300ms` debounces on the client, before a request is even sent — `SearchBuilder::debounce()` is deprecated since v2.1.0 for the same reason: by the time the builder runs, the request has already arrived, so a server-side debounce cannot do anything, and the call is now a no-op (removed in v3.0.0). `->asYouType()` only affects the inverted index (`useInvertedIndex()`) — it widens the last typed token to dictionary terms that start with it; it has no effect on the LIKE path used above. `->suggest(5)` returns up to 5 plain completion strings; this recipe only shows them once the page comes back empty.
 
 ---
 
