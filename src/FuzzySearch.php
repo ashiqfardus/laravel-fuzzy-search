@@ -70,19 +70,25 @@ class FuzzySearch
 
         $algorithm = $algorithm ?? $this->currentConfig()['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
+        $driver = $this->resolveDriver($algorithm, $query, $mergedConfig);
 
-        // accent_insensitive is a per-call flag, not a global config key.
-        // The global config/fuzzy-search.php 'unicode.accent_insensitive' key
-        // has no effect here by design — the Postgres unaccent path requires
-        // explicit opt-in via ->accentInsensitive() at the query level.
+        // $options['accent_insensitive'] is the explicit opt-in: ->accentInsensitive(), the model's
+        // $searchable['accent_insensitive'], a preset, or a macro's own option. SearchBuilder never
+        // passes the global unicode.accent_insensitive default here — that one only adds the term's
+        // folded form as a variant. On PostgreSQL with use_native_functions the opt-in ORs
+        // unaccent(col) ILIKE unaccent(?) beside the algorithm's predicate, in one group so an
+        // outer AND still binds both; the algorithm (and its typo tolerance) stays. It needs the
+        // unaccent extension.
         if (($options['accent_insensitive'] ?? false)
             && $this->getDriver($query) === self::DRIVER_PGSQL
             && ($this->currentConfig()['use_native_functions'] ?? false)
         ) {
-            return $this->applyWithUnaccent($query, $column, $value, $boolean);
+            return $query->{$boolean === 'or' ? 'orWhere' : 'where'}(function (Builder $group) use ($driver, $column, $value) {
+                $driver->apply($group, $column, $value);
+                $this->applyWithUnaccent($group, $column, $value, 'or');
+            });
         }
 
-        $driver = $this->resolveDriver($algorithm, $query, $mergedConfig);
         return $driver->apply($query, $column, $value, $boolean);
     }
 

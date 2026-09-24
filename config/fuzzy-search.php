@@ -412,7 +412,11 @@ return [
     | normalize: NFC-normalise search terms (requires ext-intl); opt-in — off
     | by default so an untouched config keeps v2.0 behaviour. Enable per query
     | with ->unicodeNormalize(), or flip this to true to enable it globally.
-    | accent_insensitive: fold accents in search terms by default.
+    | accent_insensitive: also search the accent-folded form of a term by default,
+    | beside the typed form ("Müller" finds "Zoë Müller" and "Muller"). It never
+    | runs PostgreSQL's unaccent(): that needs an explicit ->accentInsensitive(),
+    | $searchable['accent_insensitive'] or a preset, use_native_functions, and
+    | the unaccent extension (CREATE EXTENSION unaccent).
     |
     */
     'unicode' => [

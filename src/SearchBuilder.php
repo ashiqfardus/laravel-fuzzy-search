@@ -74,7 +74,10 @@ class SearchBuilder
     protected array $synonyms = [];
     protected array $synonymGroups = [];
     protected ?string $locale = null;
+    /** Explicitly asked for: accentInsensitive(), the model's $searchable or a preset — see foldsAccents(). */
     protected bool $accentInsensitiveEnabled = false;
+    /** The global unicode.accent_insensitive default: it folds the term into a variant, never more. */
+    protected bool $accentFoldingDefault = false;
     protected bool $unicodeNormalizeEnabled = false;
     protected bool $debugMode = false;
     protected bool $useSearchIndex = false;
@@ -107,7 +110,7 @@ class SearchBuilder
     {
         $this->query = $query;
         $this->fuzzySearch = $fuzzySearch;
-        $this->accentInsensitiveEnabled = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
+        $this->accentFoldingDefault     = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
         $this->unicodeNormalizeEnabled  = (bool) config('fuzzy-search.unicode.normalize', false);
         $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
         $this->maxPatterns = (int) config('fuzzy-search.performance.max_patterns', 100);
@@ -505,7 +508,11 @@ class SearchBuilder
     }
 
     /**
-     * Enable accent-insensitive search
+     * Enable accent-insensitive search: the term's folded form is searched beside it (as the global
+     * unicode.accent_insensitive default does), and on PostgreSQL with use_native_functions
+     * unaccent(column) ILIKE unaccent(term) is OR'd beside the algorithm, which needs the unaccent
+     * extension (CREATE EXTENSION unaccent). The model's $searchable['accent_insensitive'] and a
+     * preset's opt in the same way; the global key alone never runs unaccent().
      */
     public function accentInsensitive(): self
     {
@@ -580,7 +587,7 @@ class SearchBuilder
             'token_match_mode' => $this->tokenMatchMode,
             'stop_words' => $this->stopWords,
             'synonyms' => $this->synonyms,
-            'accent_insensitive' => $this->accentInsensitiveEnabled,
+            'accent_insensitive' => $this->foldsAccents(),
             'unicode_normalize' => $this->unicodeNormalizeEnabled,
             'prefix_boost' => $this->prefixBoostMultiplier,
             'partial_match' => $this->partialMatchEnabled,
@@ -1463,7 +1470,7 @@ class SearchBuilder
         }
 
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
-        $ast    = (new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens);
+        $ast    = $this->withTermVariants((new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens));
 
         $this->extendedLeafTerms = array_values(array_unique($this->positiveLeafTerms($ast)));
 
@@ -2044,18 +2051,14 @@ class SearchBuilder
     }
 
     /**
-     * Process search term (stop words, accents, etc.)
+     * Process search term (normalization, stop words). Accents are not folded here: the folded
+     * form is searched beside the typed term (termVariants()), never instead of it.
      */
     protected function processSearchTerm(string $term): string
     {
         // Unicode normalization
         if ($this->unicodeNormalizeEnabled && function_exists('normalizer_normalize')) {
             $term = normalizer_normalize($term, \Normalizer::FORM_C);
-        }
-
-        // Accent insensitivity
-        if ($this->accentInsensitiveEnabled) {
-            $term = $this->removeAccents($term);
         }
 
         // Remove stop words
@@ -2076,6 +2079,73 @@ class SearchBuilder
     protected function removeAccents(string $string): string
     {
         return Accents::fold($string);
+    }
+
+    /** Whether the term's accent-folded form is searched too: the global default, or an explicit opt-in. */
+    protected function foldsAccents(): bool
+    {
+        return $this->accentInsensitiveEnabled || $this->accentFoldingDefault;
+    }
+
+    /**
+     * The forms a term is searched in: the term, plus its accent-folded form when folding is on
+     * and changes it. The folded form is an added variant, like a synonym — "Müller" finds
+     * "Zoë Müller" and "Muller" — never a replacement. An ASCII term has one variant, so its SQL is
+     * byte-identical to a search with folding off. The LIKE conditions, the relevance ORDER BY,
+     * PHP scoring, highlighting and extended() leaves all read it.
+     *
+     * @return string[]
+     */
+    protected function termVariants(string $term): array
+    {
+        $folded = $this->foldsAccents() ? trim($this->removeAccents($term)) : $term;
+
+        return $folded === $term || $folded === '' ? [$term] : [$term, $folded];
+    }
+
+    /**
+     * A token's alternatives on the LIKE path: each of its variants and that variant's synonyms.
+     *
+     * @return string[]
+     */
+    protected function termAlternatives(string $token): array
+    {
+        return array_values(array_unique(array_merge(...array_map(
+            fn (string $variant) => $this->expandWithSynonyms($variant),
+            $this->termVariants($token)
+        ))));
+    }
+
+    /**
+     * An extended query searches both forms too: a leaf whose term folding changes becomes
+     * (leaf | folded leaf), field scope kept. A NOT keeps wrapping one leaf, the shape the parser
+     * builds: !term becomes !term !folded. A query with nothing to fold comes back as it was.
+     */
+    private function withTermVariants(AstNode $node): AstNode
+    {
+        if ($node instanceof AndNode || $node instanceof OrNode) {
+            return new ($node::class)(array_map(fn (AstNode $child) => $this->withTermVariants($child), $node->children));
+        }
+
+        if ($node instanceof NotNode) {
+            $child = $this->withTermVariants($node->child);
+
+            return $child instanceof OrNode
+                ? new AndNode(array_map(fn (AstNode $variant) => new NotNode($variant), $child->children))
+                : $node;
+        }
+
+        $leaf     = $node instanceof FieldTerm ? $node->term : $node;
+        $variants = $this->termVariants($leaf->term);
+        if (count($variants) === 1) {
+            return $node;
+        }
+
+        return new OrNode(array_map(function (string $term) use ($node, $leaf): AstNode {
+            $variant = new ($leaf::class)($term);
+
+            return $node instanceof FieldTerm ? new FieldTerm($node->field, $variant) : $variant;
+        }, $variants));
     }
 
     /**
@@ -2113,10 +2183,10 @@ class SearchBuilder
             $tokens = [$searchTerm];
         }
 
-        // Expand with synonyms
+        // Expand with the folded variant and synonyms
         $allTerms = [];
         foreach ($tokens as $token) {
-            $allTerms = array_merge($allTerms, $this->expandWithSynonyms($token));
+            $allTerms = array_merge($allTerms, $this->termAlternatives($token));
         }
         $allTerms = array_unique($allTerms);
 
@@ -2139,7 +2209,7 @@ class SearchBuilder
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
             // Every token must match at least one column
             foreach ($tokens as $token) {
-                $tokenTerms = $this->expandWithSynonyms($token);
+                $tokenTerms = $this->termAlternatives($token);
                 $group->where(function ($q) use ($tokenTerms, $targets) {
                     $first = true;
                     foreach ($tokenTerms as $term) {
@@ -2195,10 +2265,12 @@ class SearchBuilder
     protected function applyRelevanceOrdering(): void
     {
         $driver = $this->query->getConnection()->getDriverName();
-        $term   = $this->searchTerm;
+        // Each tier matches any form the term is searched in (termVariants()), so a row found through
+        // the folded form ranks as a match of it; one form (an ASCII term) compiles as before.
+        $terms  = $this->termVariants($this->searchTerm);
         // Escape LIKE metacharacters so user input cannot widen the match set (consistent
         // with all driver LIKE paths). The exact-match binding uses the raw term intentionally.
-        $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($term, $driver);
+        $safeTerms = array_map(fn (string $term) => \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($term, $driver), $terms);
 
         $scoreExpressions = [];
         $bindings = [];
@@ -2211,14 +2283,18 @@ class SearchBuilder
             // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else.
             $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
 
-            $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
-            $scoreExpressions[] = "(CASE WHEN {$like} THEN ? ELSE 0 END)";
-            $scoreExpressions[] = "(CASE WHEN {$like} THEN ? ELSE 0 END)";
-            $bindings = array_merge($bindings, [
-                $term, (int) round($weight * $this->scoring['exact_match']),
-                $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
-                '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
-            ]);
+            $equals = implode(' OR ', array_fill(0, count($terms), "{$col} = ?"));
+            $likes  = implode(' OR ', array_fill(0, count($terms), $like));
+
+            $scoreExpressions[] = "(CASE WHEN {$equals} THEN ? ELSE 0 END)";
+            $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
+            $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
+            $bindings = array_merge(
+                $bindings,
+                $terms, [(int) round($weight * $this->scoring['exact_match'])],
+                array_map(fn (string $safe) => $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['prefix_match'] * $prefixBoost)],
+                array_map(fn (string $safe) => '%' . $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['contains'])],
+            );
         }
 
         if (!empty($scoreExpressions)) {
@@ -2240,9 +2316,14 @@ class SearchBuilder
      */
     protected function calculateRelevanceScores(Collection $results, ?string $scoreTerm = null): Collection
     {
-        $term = mb_strtolower($scoreTerm ?? $this->searchTerm, 'UTF-8');
+        // The LIKE path scores against every form the term was searched in (termVariants()) and
+        // keeps the best; an extended query's leaves already carry their folded forms.
+        $terms = array_map(
+            fn (string $term) => mb_strtolower($term, 'UTF-8'),
+            $scoreTerm !== null ? [$scoreTerm] : $this->termVariants($this->searchTerm)
+        );
 
-        $results = $results->map(function ($item) use ($term) {
+        $results = $results->map(function ($item) use ($terms) {
             $score = 0;
             $columnScores = [];
 
@@ -2260,7 +2341,9 @@ class SearchBuilder
 
                 // A to-many relation contributes its best related row, never an average.
                 foreach ($values as $value) {
-                    $colScore = max($colScore, $this->scoreValue($value, $term, $weight));
+                    foreach ($terms as $term) {
+                        $colScore = max($colScore, $this->scoreValue($value, $term, $weight));
+                    }
                 }
 
                 $columnScores[$column] = $colScore;
@@ -2409,13 +2492,14 @@ class SearchBuilder
      * Apply highlighting to results. $terms (index path) lists every weighted query term —
      * exact tokens, typo and prefix expansions — so a document that matched through "john"
      * for the query "jonh" still gets its match marked. null (LIKE path) keeps the
-     * single-term behaviour: the whole search string is one needle.
+     * single-term behaviour: the whole search string is one needle, plus its folded form when
+     * that was searched too (termVariants()).
      *
      * @param string[]|null $terms
      */
     protected function applyHighlighting(Collection $results, ?array $terms = null): Collection
     {
-        $needles = $terms === null ? [$this->searchTerm] : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
+        $needles = $terms === null ? $this->termVariants($this->searchTerm) : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
         if ($needles === [] || $needles === ['']) {
             return $results;
         }
@@ -2441,11 +2525,11 @@ class SearchBuilder
                     foreach ($needles as $needle) {
                         $found = array_merge($found, $this->findMatchOffsets($value, $needle));
                     }
-                    // Merge only on the index path (multiple needles from term expansion):
-                    // the LIKE path keeps v2.0's raw, unmerged offsets so adjacent
-                    // matches of the same single needle stay separate tags (e.g. "an" in
+                    // Merge only where there are several needles (the index and extended paths,
+                    // or a LIKE term with a folded variant): a single LIKE needle keeps v2.0's raw,
+                    // unmerged offsets so adjacent matches of it stay separate tags (e.g. "an" in
                     // "banana" stays two <em> pairs instead of collapsing into one).
-                    if ($terms !== null) {
+                    if ($terms !== null || count($needles) > 1) {
                         $found = $this->mergeRanges($found);
                     }
                     if (!empty($found)) {
@@ -2514,9 +2598,9 @@ class SearchBuilder
 
     /**
      * Sort [start, end] ranges and merge overlapping or touching ones, so two needles that
-     * hit the same characters ("john" and "johnny") produce one tag pair. Only called on the
-     * index and extended paths (multiple needles); the LIKE path keeps v2.0's raw,
-     * unmerged offsets from a single needle, so back-to-back repeats of the same needle
+     * hit the same characters ("john" and "johnny") produce one tag pair. Only called with
+     * multiple needles (the index and extended paths, a LIKE term with a folded variant); a single
+     * LIKE needle keeps v2.0's raw, unmerged offsets, so back-to-back repeats of the same needle
      * (e.g. "an" in "banana") stay separate tags instead of collapsing into one.
      *
      * @param  array<int, array{0: int, 1: int}> $ranges
@@ -3101,7 +3185,7 @@ class SearchBuilder
             'token_mode' => $this->tokenMatchMode,
             'stop_words_active' => !empty($this->stopWords),
             'synonyms_active' => !empty($this->synonyms) || !empty($this->synonymGroups),
-            'accent_insensitive' => $this->accentInsensitiveEnabled,
+            'accent_insensitive' => $this->foldsAccents(),
             'cached' => $this->cacheMinutes !== null,
             'recency_boost' => $this->recencyBoostEnabled,
             'limit' => $this->limit,
