@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
@@ -165,10 +166,42 @@ final class TermExpander
                   ->from('fuzzy_index_postings as sp')
                   ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
                   ->where('sp.model_type', $modelType);
+
+                $this->visibleColumnsOnly($q, $modelType);
             });
         }
 
         return $query;
+    }
+
+    /**
+     * Only postings of columns the model shows (ER-51): not one in $hidden, nor one left out of a
+     * non-empty $visible, so suggest(), didYouMean() and the expansions never offer a hidden
+     * column's words. A word that is also in a visible column is still offered. Postings written
+     * before 2.1 carry no column name (''), so they are left out too, but only when the model
+     * hides one of its searchable columns; rebuilding the index brings those words back.
+     */
+    private function visibleColumnsOnly(Builder $postings, string $modelType): void
+    {
+        if (!is_subclass_of($modelType, Model::class)) {
+            return;
+        }
+
+        $model    = new $modelType();
+        $hidden   = $model->getHidden();
+        $visible  = $model->getVisible();
+        $isHidden = fn (string $column) => in_array($column, $hidden, true) || ($visible !== [] && !in_array($column, $visible, true));
+        $legacyOk = !method_exists($model, 'getSearchableColumns')
+            || array_filter($model->getSearchableColumns(), $isHidden) === [];
+
+        if ($visible !== []) {
+            $postings->whereIn('sp.column_name', $legacyOk ? [...$visible, ''] : $visible);
+        }
+
+        $excluded = $legacyOk ? $hidden : [...$hidden, ''];
+        if ($excluded !== []) {
+            $postings->whereNotIn('sp.column_name', $excluded);
+        }
     }
 
     /**
