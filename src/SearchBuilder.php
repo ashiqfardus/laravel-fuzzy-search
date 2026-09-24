@@ -126,7 +126,7 @@ class SearchBuilder
     /**
      * Set the search term
      *
-     * The empty-search guard is deferred to executeSearch() so that callers
+     * The empty-search guard is deferred to the terminal call (guardEmptyTerm()) so that callers
      * using the extended()/searchBoolean() pattern can override the term
      * before execution:
      *
@@ -135,7 +135,7 @@ class SearchBuilder
      *
      * @param string $term
      * @return self
-     * @throws EmptySearchTermException (deferred to get()) if term is empty and config doesn't allow it
+     * @throws EmptySearchTermException (deferred to get(), first(), paginate(), simplePaginate(), count() and getFacets()) if term is empty and config doesn't allow it
      */
     public function search(string $term): self
     {
@@ -1016,6 +1016,22 @@ class SearchBuilder
     }
 
     /**
+     * The empty-term guard every terminal applies after matchesNothing() (ruling ER-46): '' (or
+     * whitespace, which search() trims to '') throws EmptySearchTermException unless
+     * allow_empty_search is on, and then every terminal lists every row. Deferred from search()
+     * so extended()/searchBoolean() can still supply the query: `search('')->extended('=John')`.
+     *
+     * @throws EmptySearchTermException
+     */
+    protected function guardEmptyTerm(): void
+    {
+        if ($this->searchTerm === '' && $this->extendedQuery === null
+            && !config('fuzzy-search.allow_empty_search', false)) {
+            throw new EmptySearchTermException();
+        }
+    }
+
+    /**
      * No column to search: searchIn() gave none — Model::search() passes the declared columns,
      * else the auto-detected ones — and, on the index path, the model has nothing to index
      * (IndexManager::indexesModel()). A model whose table cannot be listed (a $table typo, not
@@ -1054,6 +1070,8 @@ class SearchBuilder
         if ($this->matchesNothing()) {
             return collect();
         }
+
+        $this->guardEmptyTerm();
 
         // Check cache
         if ($this->cacheMinutes !== null) {
@@ -1204,15 +1222,6 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
-        // Deferred empty-search guard (moved from search() so that extended()/searchBoolean()
-        // can supply their own query after an empty string was passed to search('').
-        if ($this->searchTerm === '' && $this->extendedQuery === null) {
-            $allowEmpty = config('fuzzy-search.allow_empty_search', false);
-            if (!$allowEmpty) {
-                throw new EmptySearchTermException();
-            }
-        }
-
         // Only get() reaches this, after matchesNothing() has applied min_search_length.
         // The length cap is here as well as in buildQuery() so the BM25 fast path below inherits it.
         $this->capSearchTerm();
@@ -1656,6 +1665,8 @@ class SearchBuilder
             );
         }
 
+        $this->guardEmptyTerm();
+
         return $this->withFallback(
             fn () => $this->paginateOnce($perPage, $pageName, $page),
             fn (\Illuminate\Contracts\Pagination\LengthAwarePaginator $paginator) => $paginator->total() === 0
@@ -1916,6 +1927,8 @@ class SearchBuilder
             return 0;
         }
 
+        $this->guardEmptyTerm();
+
         return $this->withFallback(
             function (): int {
                 // Mirror paginateOnce()/paginateRanked() so count() never disagrees with
@@ -1966,6 +1979,8 @@ class SearchBuilder
         if ($this->matchesNothing()) {
             return array_fill_keys($this->facets, []);
         }
+
+        $this->guardEmptyTerm();
 
         return $this->onQueryClone(function (): array {
             $this->prepareQuery();

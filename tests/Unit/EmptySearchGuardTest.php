@@ -168,4 +168,73 @@ class EmptySearchGuardTest extends TestCase
         $this->assertSame(1, $federated()->paginate(5)->total());
         $this->assertSame(['User' => 1], $federated()->getCounts());
     }
+    /**
+     * Ruling ER-46: every terminal applies get()'s empty-term guard. count() and paginate() used
+     * to list every row while get() threw.
+     *
+     * @return array<string, \Closure(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder): mixed>
+     */
+    private function terminals(): array
+    {
+        return [
+            'get'            => fn ($b) => $b->get()->count(),
+            'first'          => fn ($b) => $b->first() === null ? 0 : 1,
+            'paginate'       => fn ($b) => $b->paginate(50)->total(),
+            'simplePaginate' => fn ($b) => count($b->simplePaginate(50)->items()),
+            'count'          => fn ($b) => $b->count(),
+            'getFacets'      => fn ($b) => array_sum($b->facet('name')->getFacets()['name']),
+        ];
+    }
+
+    public function test_every_terminal_throws_for_an_empty_term(): void
+    {
+        config(['fuzzy-search.allow_empty_search' => false]);
+
+        $leaks = [];
+
+        foreach (['empty' => '', 'whitespace' => "  \t "] as $label => $term) {
+            foreach (['like' => false, 'index' => true] as $path => $index) {
+                foreach ($this->terminals() as $name => $run) {
+                    $builder = User::search($term);
+                    if ($index) {
+                        $builder->useInvertedIndex();
+                    }
+
+                    try {
+                        $leaks[] = "{$label} {$path} {$name} returned " . json_encode($run($builder));
+                    } catch (EmptySearchTermException) {
+                        $this->addToAssertionCount(1);
+                    }
+                }
+            }
+        }
+
+        $this->assertSame([], $leaks);
+    }
+
+    public function test_every_terminal_lists_every_row_when_empty_search_is_allowed(): void
+    {
+        config(['fuzzy-search.allow_empty_search' => true]);
+        $all = User::query()->count();
+
+        foreach (['like' => false, 'index' => true] as $path => $index) {
+            foreach ($this->terminals() as $name => $run) {
+                $builder = User::search('');
+                if ($index) {
+                    $builder->useInvertedIndex();
+                }
+
+                $this->assertSame($name === 'first' ? 1 : $all, $run($builder), "{$name} on the {$path} path");
+            }
+        }
+    }
+
+    public function test_extended_keeps_its_exemption_on_every_terminal(): void
+    {
+        config(['fuzzy-search.allow_empty_search' => false]);
+
+        foreach ($this->terminals() as $name => $run) {
+            $this->assertGreaterThan(0, $run(User::search('')->extended('john')), $name);
+        }
+    }
 }
