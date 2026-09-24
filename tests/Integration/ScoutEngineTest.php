@@ -590,6 +590,67 @@ class ScoutEngineTest extends TestCase
         }
     }
 
+    public function test_scout_order_by_breaks_ties_by_key_descending(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+        $this->app['db']->table('users')->whereIn('id', [$top, $bottom, $middle])->update(['created_at' => '2026-01-01 00:00:00']);
+
+        // Every created_at is equal: orderBy('created_at', 'desc') — what latest() adds — leaves the
+        // whole order to the tie-break, the key descending, on the id-list query and on the walk alike.
+        foreach ([200, 2] as $chunk) {
+            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+
+            $this->assertSame([$middle, $bottom, $top], $this->resultIds($this->scoutBuilder()->orderBy('created_at', 'desc')->get()), "candidate_chunk {$chunk}");
+            $this->assertSame([$top], $this->resultIds($this->scoutBuilder()->orderBy('created_at', 'desc')->paginate(2, 'page', 2)), "candidate_chunk {$chunk}");
+        }
+    }
+
+    /**
+     * The ordered statements a Scout call runs: those that read users with an ORDER BY. Each is
+     * [sql, bindings, ids] where ids counts the key values it restricts to, inlined or bound.
+     */
+    private function orderedStatements(\Closure $call): array
+    {
+        $statements = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$statements) {
+            if (preg_match('/\busers\b/', $query->sql) && stripos($query->sql, 'order by') !== false) {
+                preg_match_all('/\bin \(([^)]*)\)/i', $query->sql, $lists);
+                $inlined = array_sum(array_map(fn ($list) => count(explode(',', $list)), $lists[1]));
+                $statements[] = [$query->sql, $query->bindings, $inlined + count($query->bindings)];
+            }
+        });
+
+        $call();
+
+        return $statements;
+    }
+
+    public function test_scout_order_by_restricts_by_the_ranked_ids_only_within_one_candidate_chunk(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+
+        // Within one chunk: one ordered statement, restricted to the three ranked ids.
+        $within = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1));
+        $this->assertCount(1, $within);
+        $this->assertSame(3, $within[0][2], 'the ordered query is restricted to the ranked ids');
+
+        // Past one chunk: no statement carries more ids than one chunk — the ids are not listed.
+        config(['fuzzy-search.bm25.candidate_chunk' => 2]);
+        $past = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1));
+        $this->assertNotEmpty($past);
+        foreach ($past as [$sql, , $ids]) {
+            $this->assertLessThanOrEqual(2, $ids, "an id list past one chunk: {$sql}");
+        }
+    }
+
     // -------------------------------------------------------------------------
     // query.max_term_length: the engine binds one parameter per query term, so an uncapped
     // query of a few thousand words passed SQL Server's 2,100-parameter limit
