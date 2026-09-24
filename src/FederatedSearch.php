@@ -114,7 +114,9 @@ class FederatedSearch
     }
 
     /**
-     * Set algorithm options
+     * Algorithm options for every model — the array SearchBuilder::options() and the
+     * whereFuzzyMultiple() macro take (max_distance, max_patterns, …), merged over each model's
+     * own $searchable['options']. typoTolerance() sets max_distance and wins over it here.
      */
     public function options(array $options): self
     {
@@ -260,14 +262,18 @@ class FederatedSearch
 
             // searchOn() applies the model's own $searchable configuration — algorithm, typo
             // tolerance, stop words, synonyms, accents, options — with the narrowed columns
-            // replacing the configured ones. An algorithm or tolerance set on this federated
-            // search overrides the model's; unset, each model searches the way it is configured.
+            // replacing the configured ones. An algorithm, options or a tolerance set on this
+            // federated search override the model's; unset, each model searches as configured.
             $builder = empty($weighted)
                 ? $modelClass::search($this->searchTerm)
                 : $modelClass::searchOn($modelClass::query(), $this->searchTerm, $weighted);
 
             if ($this->algorithm !== null) {
                 $builder->using($this->algorithm);
+            }
+
+            if ($this->options !== []) {
+                $builder->options($this->options);
             }
 
             if ($this->typoTolerance !== null) {
@@ -292,7 +298,7 @@ class FederatedSearch
             $columns,
             $this->searchTerm,
             $this->algorithm ?? 'like',
-            $this->typoTolerance === null ? [] : ['max_distance' => $this->typoTolerance]
+            $this->typoTolerance === null ? $this->options : ['max_distance' => $this->typoTolerance] + $this->options
         );
     }
 

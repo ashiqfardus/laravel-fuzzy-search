@@ -740,6 +740,28 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | options() Reaches Every Model
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_options_apply_to_every_model(): void
+    {
+        // max_distance 0 leaves the fuzzy driver only the typed term, so the typo "jonh" matches
+        // nothing; options() used to be stored and never applied.
+        foreach ([User::class, PlainUser::class] as $class) {
+            $federated = fn () => FederatedSearch::across([$class])->search('jonh')->searchIn(['name'])->using('fuzzy');
+
+            $this->assertNotEmpty($federated()->limit(50)->get(), "{$class}: baseline, the typo matches");
+            $this->assertCount(0, $federated()->options(['max_distance' => 0])->limit(50)->get(), "{$class}: options() ignored");
+            $this->assertSame(0, array_sum($federated()->options(['max_distance' => 0])->getCounts()), "{$class}: getCounts() ignored options()");
+
+            // typoTolerance() sets the same option, and wins over it.
+            $this->assertNotEmpty($federated()->options(['max_distance' => 0])->typoTolerance(2)->limit(50)->get(), "{$class}: typoTolerance() lost to options()");
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */
