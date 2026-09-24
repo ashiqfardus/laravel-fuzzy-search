@@ -61,21 +61,18 @@ class SimilarTextDriver extends BaseDriver
     }
 
     /**
-     * The column's length in characters, the column written as DbDialect::whereLike() writes it.
-     * SQL Server's LEN() ignores trailing spaces, so it measures the column with one character added.
+     * The column's length in characters, the column written as the LIKE beside it writes it
+     * (DbDialect::column()). SQL Server's LEN() ignores trailing spaces, so it measures the column
+     * with one character added, cast first so an int/decimal or legacy text/ntext column works too.
      */
     private function characterLength(Builder $query, string $column): string
     {
-        if ($this->driver === DbDialect::PGSQL) {
-            return 'CHAR_LENGTH(' . $this->quoteColumn($column, $query) . ')';
-        }
+        $col = DbDialect::column($query, $column, $this->driver);
 
-        $col = $query->getGrammar()->wrap($column);
-
-        return match (true) {
-            $this->driver === DbDialect::SQLSRV => "(LEN({$col} + 'x') - 1)",
-            $this->driver === DbDialect::SQLITE => "LENGTH({$col})",
-            default                             => "CHAR_LENGTH({$col})", // MySQL, MariaDB
+        return match ($this->driver) {
+            DbDialect::SQLSRV => "(LEN(CAST({$col} AS NVARCHAR(MAX)) + N'x') - 1)",
+            DbDialect::SQLITE => "LENGTH({$col})",
+            default           => "CHAR_LENGTH({$col})", // MySQL, MariaDB, PostgreSQL
         };
     }
 

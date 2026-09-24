@@ -116,6 +116,27 @@ class SimilarTextMinPercentageTest extends TestCase
         $this->assertSame(['Zoë Müller'], $this->names(DB::table('users')->whereFuzzy('name', 'müller', 'similar_text')->get()));
     }
 
+    /** The bound names the column exactly as the LIKE beside it does: DbDialect::column(), with a table prefix and a qualified column. */
+    public function test_the_bound_and_the_like_write_the_column_the_same_way(): void
+    {
+        $checked = 0;
+        foreach (['mysql', 'mariadb', 'pgsql', 'sqlite', 'sqlsrv'] as $dialect) {
+            if (!$this->fakeDriverAvailable($dialect)) {
+                continue;
+            }
+
+            $query  = $this->fakeConnectionTable($dialect, 'users', 'pre_');
+            $column = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::column($query, 'users.name', $dialect);
+            $sql    = $query->whereFuzzy('users.name', 'john', 'similar_text')->toSql();
+
+            $this->assertStringContainsString("({$column} ", $sql, "{$dialect}: the LIKE");
+            $this->assertMatchesRegularExpression('/(LENGTH|CHAR_LENGTH|LEN)\((CAST\()?' . preg_quote($column, '/') . '/', $sql, "{$dialect}: the bound");
+            $checked++;
+        }
+
+        $this->assertGreaterThanOrEqual(4, $checked);
+    }
+
     public function test_the_bound_is_a_character_length_on_every_grammar(): void
     {
         $expected = [
@@ -123,7 +144,8 @@ class SimilarTextMinPercentageTest extends TestCase
             'mariadb' => 'CHAR_LENGTH(`name`) <= ?',
             'pgsql'   => 'CHAR_LENGTH("name") <= ?',
             'sqlite'  => 'LENGTH("name") <= ?',
-            'sqlsrv'  => "(LEN([name] + 'x') - 1) <= ?", // LEN() alone ignores trailing spaces
+            // LEN() alone ignores trailing spaces; the cast makes it work on int/decimal and legacy text/ntext (ER-54)
+            'sqlsrv'  => "(LEN(CAST([name] AS NVARCHAR(MAX)) + N'x') - 1) <= ?",
         ];
 
         $checked = 0;
