@@ -740,7 +740,7 @@ Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignor
 
 ## Scout Driver
 
-The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed — no separate driver package needed.
+The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed — no separate driver package needed. It supports Laravel Scout 10.x and 11.x.
 
 ```
 SCOUT_DRIVER=fuzzy-search
@@ -906,6 +906,7 @@ try {
 - `InvalidAlgorithmException` - Invalid algorithm specified
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
+- `QuerySyntaxException` - Invalid `extended()` / `searchBoolean()` query: an unknown or ambiguous field, bad operator syntax (an unbalanced parenthesis, an unterminated quote, a misplaced `~` or `!`), or more tokens or nesting than `query.max_tokens` / `query.max_depth` allow
 
 ---
 
@@ -1283,10 +1284,10 @@ This table shows what each algorithm does at the SQL level on each supported dat
 
 | Algorithm | MySQL 8 | MariaDB 11.4 (CI); 10.6+ expected | PostgreSQL 14 | SQLite | SQL Server |
 |---|---|---|---|---|---|
-| **simple** / **like** | `LIKE '%term%'` | `LIKE '%term%'` | `ILIKE '%term%'` | `LIKE '%term%'` | `LOWER() LIKE` |
+| **simple** / **like** | `LIKE '%term%'` | `LIKE '%term%'` | `ILIKE '%term%'` | `LIKE '%term%' ESCAPE '\'` | `LIKE '%term%' ESCAPE '\'`; case-insensitivity follows the column's collation |
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
-| **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Pattern set | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
-| **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true` | LIKE pattern set | LIKE pattern set |
+| **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
+| **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true`, else ILIKE pattern set | LIKE pattern set | LIKE pattern set |
 | **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true`, else pattern fallback | Pattern fallback | Pattern fallback |
 | **metaphone** | Shadow column `{col}_metaphone` + exact `=` match | Shadow column | Shadow column | Shadow column | Shadow column |
 | **similar_text** | `LIKE '%term%'` (SQL); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'`; PHP scores | Same | Same |
@@ -1295,6 +1296,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 
 ### Notes
 
+- **Literal `%`, `_` and `\`:** the package escapes them in a search term (and `[` on SQL Server, where it is a wildcard too) so they match themselves. MySQL, MariaDB and PostgreSQL read the backslash escape by default; SQLite and SQL Server have no default escape character, so there every LIKE the package writes carries `ESCAPE '\'`, pattern sets included.
 - **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. MySQL `SOUNDEX()` is built-in and always active — no flag needed. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
 - **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager.
 - **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`
@@ -1334,9 +1336,20 @@ composer benchmark
 
 ## Requirements
 
-- PHP 8.1 or higher
-- Laravel 10.x, 11.x, 12.x, or 13.x
+- PHP 8.1 – 8.5
+- Laravel 10.x, 11.x, 12.x or 13.x. CI tests these PHP × Laravel pairs:
+
+  | PHP | Laravel |
+  |---|---|
+  | 8.1 | 10 |
+  | 8.2 | 10, 11, 12 |
+  | 8.3 | 10, 11, 12, 13 |
+  | 8.4 | 10, 11, 12, 13 |
+  | 8.5 | 12, 13 |
+
+  SQLite runs every pair. MySQL 8 and PostgreSQL 14 run the PHP 8.2–8.5 pairs, and MariaDB 11.4 and SQL Server 2022 the PHP 8.3–8.5 pairs, with Laravel 10, 12 and 13.
 - Any supported database — MySQL 8+, MariaDB 11.4 (CI); 10.6+ expected, PostgreSQL 14+, SQLite, or SQL Server 2022
+- Optional: Laravel Scout 10.x or 11.x for the [Scout driver](#scout-driver) (semantic and hybrid search are not supported); Filament 3.3, 4.x or 5.x for the [Filament integration](#filament-integration)
 
 ---
 

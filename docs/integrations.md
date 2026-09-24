@@ -12,6 +12,8 @@ It is a keyword (BM25) engine. Scout's semantic and hybrid search (`->semantic()
 
 ### Setup
 
+The engine supports Laravel Scout 10.x and 11.x.
+
 ```bash
 composer require laravel/scout
 php artisan vendor:publish --provider="Laravel\Scout\ScoutServiceProvider"
