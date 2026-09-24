@@ -55,4 +55,22 @@ class DbDialectTest extends TestCase
             $this->assertSame('LIKE', DbDialect::likeOperator($driver), $driver);
         }
     }
+
+    public function test_escape_like_escapes_backslash_percent_underscore_and_on_sql_server_the_bracket(): void
+    {
+        foreach (['mysql', 'mariadb', 'pgsql', 'sqlite'] as $driver) {
+            $this->assertSame('a\\\\b\\%\\_[c]', DbDialect::escapeLike('a\\b%_[c]', $driver), $driver);
+        }
+        $this->assertSame('a\\\\b\\%\\_\\[c]', DbDialect::escapeLike('a\\b%_[c]', 'sqlsrv'));
+        $this->assertSame('Straße ঠ', DbDialect::escapeLike('Straße ঠ', 'sqlsrv'));
+    }
+
+    public function test_like_adds_an_escape_clause_only_where_the_database_has_no_default_escape(): void
+    {
+        $this->assertSame("col LIKE ? ESCAPE '\\'", DbDialect::like('col', 'sqlite'));
+        $this->assertSame("col LIKE ? ESCAPE '\\'", DbDialect::like('col', 'sqlsrv'));
+        $this->assertSame('col LIKE ?', DbDialect::like('col', 'mysql'));
+        $this->assertSame('col LIKE ?', DbDialect::like('col', 'mariadb'));
+        $this->assertSame('col ILIKE ?', DbDialect::like('col', 'pgsql', 'ILIKE'));
+    }
 }

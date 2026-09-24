@@ -84,38 +84,24 @@ class InjectionTest extends TestCase
 
     public function test_extended_search_escapes_like_wildcards(): void
     {
-        // '%' in an extended FuzzyTerm must not match all rows — it should be treated as a literal.
-        $results = (new SearchBuilder(
-            $this->app['db']->table('users'),
-            $this->fuzzySearch
-        ))
-            ->search('%')
-            ->searchIn(['name'])
-            ->extended()
-            ->get();
+        // A '%' or '_' term matches the one row containing it: not every row (an unescaped
+        // wildcard) and not none (an escape the database ignores, as SQLite and SQL Server did).
+        $this->app['db']->table('users')->insert([
+            ['name' => 'Discount 100%', 'email' => 'percent@example.com', 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'first_last', 'email' => 'underscore@example.com', 'created_at' => now(), 'updated_at' => now()],
+        ]);
 
-        // A literal '%' LIKE pattern '%\%%' should match only rows containing '%', not all rows.
-        $this->assertLessThan(
-            $this->baseline,
-            $results->count(),
-            'Extended-path FuzzyTerm with literal % must not match all rows (wildcard not escaped)'
-        );
+        foreach (['%' => ['Discount 100%'], '_' => ['first_last']] as $term => $expected) {
+            $names = (new SearchBuilder($this->app['db']->table('users'), $this->fuzzySearch))
+                ->search($term)
+                ->searchIn(['name'])
+                ->extended()
+                ->get()
+                ->pluck('name')
+                ->all();
 
-        // Same check for '_' which as an unescaped wildcard matches any single character.
-        $results = (new SearchBuilder(
-            $this->app['db']->table('users'),
-            $this->fuzzySearch
-        ))
-            ->search('_')
-            ->searchIn(['name'])
-            ->extended()
-            ->get();
-
-        $this->assertLessThan(
-            $this->baseline,
-            $results->count(),
-            'Extended-path FuzzyTerm with literal _ must not match all rows (wildcard not escaped)'
-        );
+            $this->assertSame($expected, $names, "Extended-path term [{$term}] must match its literal row only");
+        }
     }
 
     public function test_column_name_from_searchin_does_not_allow_raw_sql(): void

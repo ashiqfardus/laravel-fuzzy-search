@@ -249,6 +249,6 @@ class FuzzySearch
         $col = $this->quoteColumnForDriver($column, 'pgsql', $query);
         $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
-        return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . addcslashes($value, '%_') . '%']);
+        return $query->$method("unaccent({$col}) ILIKE unaccent(?)", ['%' . \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($value, self::DRIVER_PGSQL) . '%']);
     }
 }

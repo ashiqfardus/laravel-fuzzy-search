@@ -127,6 +127,18 @@ class TermExpanderTest extends TestCase
         $this->assertSame([], (new TermExpander)->prefix('', 10));
     }
 
+    public function test_prefix_matches_percent_underscore_and_backslash_literally(): void
+    {
+        // PostgreSQL and SQL Server take the LIKE branch; SQLite and MySQL the byte range.
+        foreach (['50%off', '500off', 'snake_case', 'snakexcase', 'back\\slash', 'backslash'] as $term) {
+            $this->seedTerm($term, 1);
+        }
+
+        $this->assertSame(['50%off' => 1.0], (new TermExpander)->prefix('50%', 10));
+        $this->assertSame(['snake_case' => 1.0], (new TermExpander)->prefix('snake_', 10));
+        $this->assertSame(['back\\slash' => 1.0], (new TermExpander)->prefix('back\\', 10));
+    }
+
     public function test_prefix_can_be_scoped_to_a_model(): void
     {
         $johnId = DB::table('fuzzy_index_terms')->where('term', 'john')->value('id');

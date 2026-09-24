@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Query\Builder;
 
@@ -26,23 +27,10 @@ class FuzzyDriver extends BaseDriver
     {
         $patterns = $this->generatePatterns($value);
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $col = $this->quoteColumn($column, $query);
 
-        return $query->$method(function ($q) use ($col, $column, $patterns) {
+        return $query->$method(function ($q) use ($column, $patterns) {
             foreach ($patterns as $index => $pattern) {
-                if ($this->driver === 'pgsql') {
-                    if ($index === 0) {
-                        $q->whereRaw("{$col} ILIKE ?", [$pattern]);
-                    } else {
-                        $q->orWhereRaw("{$col} ILIKE ?", [$pattern]);
-                    }
-                } else {
-                    if ($index === 0) {
-                        $q->where($column, 'LIKE', $pattern);
-                    } else {
-                        $q->orWhere($column, 'LIKE', $pattern);
-                    }
-                }
+                DbDialect::whereLike($q, $column, $pattern, $this->driver, $index === 0 ? 'and' : 'or');
             }
         });
     }

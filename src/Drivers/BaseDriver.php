@@ -46,11 +46,12 @@ abstract class BaseDriver
     }
 
     /**
-     * Escape LIKE metacharacters in a user-supplied value so % and _ are treated literally.
+     * Escape LIKE metacharacters in a user-supplied value so they match literally. Send the
+     * pattern with DbDialect::whereLike(): SQLite and SQL Server read the escapes only there.
      */
     protected function escapeLike(string $value): string
     {
-        return addcslashes($value, '%_');
+        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($value, $this->driver);
     }
 
     /**

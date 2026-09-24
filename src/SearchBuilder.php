@@ -2201,7 +2201,7 @@ class SearchBuilder
         $term   = $this->searchTerm;
         // Escape LIKE metacharacters so user input cannot widen the match set (consistent
         // with all driver LIKE paths). The exact-match binding uses the raw term intentionally.
-        $safeTerm = addcslashes($term, '%_');
+        $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($term, $driver);
 
         $scoreExpressions = [];
         $bindings = [];
@@ -2211,41 +2211,17 @@ class SearchBuilder
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
             $col = $this->quoteColumn(($own[$directColumn] ?? '') . $directColumn, $driver);
+            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '\' on SQLite and SQL Server.
+            $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
 
-            switch ($driver) {
-                case 'mysql':
-                case 'mariadb':
-                    $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
-                    $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
-                    $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
-                    $bindings = array_merge($bindings, [
-                        $term, (int) round($weight * $this->scoring['exact_match']),
-                        $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
-                        '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
-                    ]);
-                    break;
-
-                case 'pgsql':
-                    $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
-                    $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
-                    $scoreExpressions[] = "(CASE WHEN {$col} ILIKE ? THEN ? ELSE 0 END)";
-                    $bindings = array_merge($bindings, [
-                        $term, (int) round($weight * $this->scoring['exact_match']),
-                        $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
-                        '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
-                    ]);
-                    break;
-
-                default:
-                    $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
-                    $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
-                    $scoreExpressions[] = "(CASE WHEN {$col} LIKE ? THEN ? ELSE 0 END)";
-                    $bindings = array_merge($bindings, [
-                        $term, (int) round($weight * $this->scoring['exact_match']),
-                        $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
-                        '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
-                    ]);
-            }
+            $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
+            $scoreExpressions[] = "(CASE WHEN {$like} THEN ? ELSE 0 END)";
+            $scoreExpressions[] = "(CASE WHEN {$like} THEN ? ELSE 0 END)";
+            $bindings = array_merge($bindings, [
+                $term, (int) round($weight * $this->scoring['exact_match']),
+                $safeTerm . '%', (int) round($weight * $this->scoring['prefix_match'] * $prefixBoost),
+                '%' . $safeTerm . '%', (int) round($weight * $this->scoring['contains']),
+            ]);
         }
 
         if (!empty($scoreExpressions)) {
@@ -2812,12 +2788,12 @@ class SearchBuilder
 
         $suggestions = [];
         // $rawTerm  → PHP str_starts_with / strcmp comparisons (must be unescaped)
-        // $safeTerm → LIKE bindings only (% and _ escaped so they match literally)
-        // Never swap these: passing $safeTerm to str_starts_with would miss values
-        // containing literal '%' or '_', and passing $rawTerm to LIKE would treat
-        // those characters as wildcards.
+        // $safeTerm → LIKE bindings only (\, % and _ — and [ on SQL Server — escaped so they
+        // match literally). Never swap these: passing $safeTerm to str_starts_with would miss
+        // values containing those characters, and passing $rawTerm to LIKE would treat them as
+        // wildcards.
         $rawTerm  = Utf8::lowerAscii($this->searchTerm);
-        $safeTerm = addcslashes($rawTerm, '%_');
+        $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
 
         $results = $this->suggestCandidateQuery($safeTerm)->limit($limit * 3)->get();
 
@@ -2920,14 +2896,10 @@ class SearchBuilder
 
         $targets = $this->resolveColumnTargets();
 
+        // ILIKE on PostgreSQL (its LIKE is case-sensitive), ESCAPE '\' on SQLite and SQL Server;
+        // a qualified column's table carries the connection's table prefix, as the FROM does.
         $prefixWhere = function ($q, string $column, string $boolean) use ($safeTerm, $driver) {
-            if ($driver === 'pgsql') {
-                // PostgreSQL's LIKE is case-sensitive; ILIKE matches capitalised values too.
-                // wrap() is the query's own grammar, so a table prefix applies as it does to the FROM.
-                $q->{$boolean === 'or' ? 'orWhereRaw' : 'whereRaw'}($q->getGrammar()->wrap($column) . ' ILIKE ?', [$safeTerm . '%']);
-            } else {
-                $q->{$boolean === 'or' ? 'orWhere' : 'where'}($column, 'LIKE', $safeTerm . '%');
-            }
+            \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::whereLike($q, $column, $safeTerm . '%', $driver, $boolean);
         };
 
         // Under a join (which sends 'auto' suggestions here), qualified as the search path is.

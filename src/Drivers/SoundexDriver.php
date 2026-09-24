@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Query\Builder;
 
 /**
@@ -60,21 +61,11 @@ class SoundexDriver extends BaseDriver
     {
         $patterns = $this->generatePhoneticPatterns($value);
         $method   = $boolean === 'or' ? 'orWhere' : 'where';
-        $col      = $this->quoteColumn($column, $query);
-        $isPgsql  = $this->driver === 'pgsql';
 
-        return $query->$method(function ($q) use ($col, $column, $patterns, $isPgsql) {
+        // Patterns are lower-cased; whereLike() uses ILIKE on PostgreSQL, where LIKE is case-sensitive.
+        return $query->$method(function ($q) use ($column, $patterns) {
             foreach ($patterns as $index => $pattern) {
-                if ($isPgsql) {
-                    // LIKE is case-sensitive on PostgreSQL; patterns are lower-cased.
-                    $index === 0
-                        ? $q->whereRaw("{$col} ILIKE ?", [$pattern])
-                        : $q->orWhereRaw("{$col} ILIKE ?", [$pattern]);
-                } else {
-                    $index === 0
-                        ? $q->where($column, 'LIKE', $pattern)
-                        : $q->orWhere($column, 'LIKE', $pattern);
-                }
+                DbDialect::whereLike($q, $column, $pattern, $this->driver, $index === 0 ? 'and' : 'or');
             }
         });
     }

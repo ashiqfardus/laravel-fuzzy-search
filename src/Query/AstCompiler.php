@@ -8,6 +8,7 @@ use Ashiqfardus\LaravelFuzzySearch\Query\AstNodes\{
     FuzzyTerm, ExactTerm, PrefixTerm, SuffixTerm, IncludeMatchTerm,
     TypoTerm, FieldTerm
 };
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Contracts\Database\Query\Builder;
 
 /**
@@ -163,7 +164,6 @@ class AstCompiler
     private function leafCondition(Builder $q, string $column, AstNode $node, string $pattern, string $term, string $boolean): void
     {
         $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-        $colMethod = $boolean === 'or' ? 'orWhere'    : 'where';
 
         if ($node instanceof TypoTerm) {
             // The fuzzy driver builds the omission/substitution/transposition patterns for
@@ -178,16 +178,14 @@ class AstCompiler
         if ($node instanceof ExactTerm) {
             // Case-insensitive exact: LOWER(quoted_col) = LOWER(?) on all drivers
             $q->$rawMethod('LOWER(' . $this->quoteColumn($column, $q) . ') = LOWER(?)', [$term]);
-        } elseif ($this->dbDriver === 'pgsql') {
-            $q->$rawMethod($this->quoteColumn($column, $q) . ' ILIKE ?', [$pattern]);
         } else {
-            $q->$colMethod($column, 'LIKE', $pattern);
+            DbDialect::whereLike($q, $column, $pattern, $this->dbDriver, $boolean);
         }
     }
 
     private function quoteColumn(string $column, Builder $q): string
     {
-        return \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::quoteIdentifier($column, $this->dbDriver, $q->getGrammar()->getTablePrefix());
+        return DbDialect::quoteIdentifier($column, $this->dbDriver, $q->getGrammar()->getTablePrefix());
     }
 
     private function extractTerm(AstNode $node): string
@@ -200,7 +198,7 @@ class AstCompiler
 
     private function patternFor(AstNode $node, string $term): string
     {
-        $safe = addcslashes($term, '%_');
+        $safe = DbDialect::escapeLike($term, $this->dbDriver);
         return match (true) {
             $node instanceof FuzzyTerm        => '%' . $safe . '%',
             $node instanceof IncludeMatchTerm => '%' . $safe . '%',
