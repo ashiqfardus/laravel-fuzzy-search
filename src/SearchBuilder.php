@@ -999,6 +999,9 @@ class SearchBuilder
     /** The most characters of a value, and of a term, that similar_text() and levenshtein() compare — see similarity(). */
     private const SCORING_MAX_CHARS = 255;
 
+    /** The alias the ordered index walk reads the key under — see orderedIndexedKeys(). */
+    private const WALK_KEY = 'fuzzy_walk_key';
+
     /** Fluent builder methods safe to forward (prefix match: "where" covers whereIn, whereHas, ...). */
     private const FORWARDABLE_PREFIXES = [
         'where', 'orWhere', 'with', 'without', 'join', 'leftJoin', 'rightJoin', 'crossJoin',
@@ -1591,10 +1594,17 @@ class SearchBuilder
 
     /**
      * With orderBy(), the keys of the first $needed matches in that order: $base's rows sorted by
-     * applyExplicitOrder()'s columns, keeping those the ranking matched. Up to one
-     * bm25.candidate_chunk of matches the query is restricted to their ids; past that it walks
-     * the ordered keys, so no id list can pass SQL Server's 2,100-parameter limit (as the Scout
-     * engine does).
+     * applyExplicitOrder()'s columns and then the key, keeping those the ranking matched. Up to
+     * one bm25.candidate_chunk of matches the query is restricted to their ids; past that it walks
+     * the ordered table, so no id list can pass SQL Server's 2,100-parameter limit (as the Scout
+     * engine does), a page of 1,000 rows at a time: lazy(), never one buffered result (pdo_mysql
+     * and pdo_pgsql fetch a whole result set before its first row). The key ends the order, so it
+     * is total and no row moves between pages. It stops once $needed matches are found, so its
+     * cost is one sorted page query per 1,000 rows it passes: cheap when the matches come early
+     * in the order, up to the whole constrained table when they do not.
+     *
+     * The caller's select list stays — an order may name its alias (withCount()'s posts_count, a
+     * selectRaw() column) — and the key is read through an alias of its own.
      *
      * @param  array<int|string, float> $ranked model_id => score
      * @return array<int|string>
@@ -1610,11 +1620,15 @@ class SearchBuilder
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
         }
 
-        $this->applyExplicitOrder($query);
+        $this->applyExplicitOrder($query, true);
+
+        $walk = $query->toBase();
+        $walk->columns ??= ['*'];
+        $walk->addSelect($model->getQualifiedKeyName() . ' as ' . self::WALK_KEY);
         $keys = [];
 
-        foreach ($query->toBase()->select($model->getQualifiedKeyName())->cursor() as $row) {
-            $key = $row->{$model->getKeyName()};
+        foreach ($walk->lazy(1000) as $row) {
+            $key = $row->{self::WALK_KEY};
 
             if (isset($ranked[$key])) {
                 $keys[$key] = true; // a join may repeat a model
@@ -2257,32 +2271,41 @@ class SearchBuilder
 
     /**
      * orderBy()'s columns, in the order the calls were made, then stableRanking()'s key as the
-     * tiebreak. On every path (LIKE, extended, index) an explicit order is the result order: PHP
-     * rescoring still sets _score but does not re-sort by it (calculateRelevanceScores()), and
-     * the index path walks its matches in this order (orderedIndexedKeys()).
+     * tiebreak ($endOnKey: always — the index walk needs a total order). On every path (LIKE,
+     * extended, index) an explicit order is the result order: PHP rescoring still sets _score but
+     * does not re-sort by it (calculateRelevanceScores()), and the index path walks its matches in
+     * this order (orderedIndexedKeys()).
      */
-    private function applyExplicitOrder(Builder|EloquentBuilder $query): void
+    private function applyExplicitOrder(Builder|EloquentBuilder $query, bool $endOnKey = false): void
     {
         foreach ($this->sortBy as $sort) {
             $query->orderBy($sort['column'], $sort['direction']);
         }
 
+        if (!$this->stableRankingEnabled && !$endOnKey) {
+            return;
+        }
+
         // Stable ranking. An aliased FROM has no "users"."id", only its alias's, and a fromSub() has
         // neither (2.0 ordered by the bare key). A plain builder's bare "id" is qualified under a
         // join like a searched column: a join selecting both tables' columns makes it ambiguous.
-        if ($this->stableRankingEnabled) {
-            if ($query instanceof EloquentBuilder) {
-                $model     = $query->getModel();
-                $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($query->toBase()->from);
-                $keyColumn = match (true) {
-                    $from === null    => $model->getKeyName(),
-                    $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
-                    default           => $model->getQualifiedKeyName(),
-                };
-            } else {
-                $keyColumn = ($this->qualifiedColumnMap($query)['id'] ?? '') . 'id';
-            }
+        if ($query instanceof EloquentBuilder) {
+            $model     = $query->getModel();
+            $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($query->toBase()->from);
+            $keyColumn = match (true) {
+                $from === null    => $model->getKeyName(),
+                $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
+                default           => $model->getQualifiedKeyName(),
+            };
+            $names = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn];
+        } else {
+            $keyColumn = ($this->qualifiedColumnMap($query)['id'] ?? '') . 'id';
+            $names     = ['id', $keyColumn];
+        }
 
+        // Once (ruling ER-52): SQL Server rejects a column named twice in ORDER BY.
+        $orders = ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->orders ?? [];
+        if (array_intersect(array_filter(array_column($orders, 'column'), 'is_string'), $names) === []) {
             $query->orderBy($keyColumn, 'asc');
         }
     }
