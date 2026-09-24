@@ -157,23 +157,42 @@ class JoinedColumnSearchTest extends TestCase
 
     /**
      * stableRanking() ordered an Eloquent search by the model's table ("users"."id"), which an
-     * aliased FROM does not have. Without relevance every row ties, so the key alone decides the
-     * order. A plain builder's bare "id" names the select list's id, so a join leaves it alone.
+     * aliased FROM or a fromSub() does not have, and a plain builder by a bare "id", which a
+     * join selecting both tables' columns makes ambiguous. Without relevance every row ties, so
+     * the key alone decides the order; the ORDER BY is checked too, since natural order often
+     * equals key order anyway. [search, the row field holding the users key, the ORDER BY key]
      */
     public function test_stable_ranking_under_an_aliased_from_or_a_join(): void
     {
-        $expected = DB::table('users')->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
-        $keys     = fn (SearchBuilder $search) => $search->withRelevance(false)->stableRanking()->take(50)->get()
-            ->pluck('id')->map(fn ($id) => (int) $id)->all();
-        $eloquent = fn ($query) => $keys(User::searchOn($query, 'example', ['email']));
+        $eloquent = fn ($query) => User::searchOn($query, 'example', ['email']);
+        $plain    = fn ($query) => (new SearchBuilder($query, app(FuzzySearch::class)))->search('example')->searchIn(['email']);
+        $shapes   = [
+            'alias'               => [fn () => $eloquent(User::query()->from('users as u')), 'id', '"u"."id"'],
+            'alias and join'      => [fn () => $eloquent(User::query()->from('users as u')->join('teams', 'teams.user_id', '=', 'u.id')->select('u.*')), 'id', '"u"."id"'],
+            'scope join'          => [fn () => $eloquent(TeamUser::query()), 'id', '"users"."id"'],
+            'fromSub'             => [fn () => $eloquent(User::query()->fromSub(DB::table('users'), 'u')), 'id', '"id"'],
+            'plain, users.*'      => [fn () => $plain(DB::table('users')->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*')), 'id', '"users"."id"'],
+            // select * carries teams.id as well: the row's own key is teams.user_id.
+            'plain, select *'     => [fn () => $plain(DB::table('users')->join('teams', 'teams.user_id', '=', 'users.id')), 'user_id', '"users"."id"'],
+            'plain alias, join'   => [fn () => $plain(DB::table('users as u')->join('teams', 'teams.user_id', '=', 'u.id')), 'user_id', '"u"."id"'],
+        ];
 
-        $this->assertSame($expected, $eloquent(User::query()->from('users as u')));
-        $this->assertSame($expected, $eloquent(User::query()->from('users as u')->join('teams', 'teams.user_id', '=', 'u.id')->select('u.*')));
-        $this->assertSame($expected, $eloquent(TeamUser::query()));
-        $this->assertSame($expected, $keys((new SearchBuilder(
-            DB::table('users')->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*'),
-            app(FuzzySearch::class)
-        ))->search('example')->searchIn(['email'])));
+        $expected = DB::table('users')->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $found    = [];
+        foreach ($shapes as $label => [$search, $field, $key]) {
+            $stable = fn () => $search()->withRelevance(false)->stableRanking()->take(50);
+
+            try {
+                $found[$label] = [
+                    $stable()->get()->pluck($field)->map(fn ($id) => (int) $id)->all(),
+                    str_contains(str_replace(['`', '[', ']'], '"', $stable()->toSql()), "order by {$key} asc"),
+                ];
+            } catch (\Illuminate\Database\QueryException $e) {
+                $found[$label] = strtok($e->getMessage(), "\n");
+            }
+        }
+
+        $this->assertSame(array_fill_keys(array_keys($shapes), [$expected, true]), $found);
     }
 
     public function test_a_forwarded_join(): void
@@ -243,6 +262,7 @@ class JoinedColumnSearchTest extends TestCase
     {
         Schema::table('users', fn ($table) => $table->string('name_metaphone')->nullable());
         DB::table('users')->where('name', 'John Doe')->update(['name_metaphone' => metaphone('john')]);
+        Schema::dropIfExists('profiles');
         Schema::create('profiles', fn ($table) => $table->id());
 
         $eloquent = fn ($query) => $query->searchFuzzy('john', ['name'], 'metaphone');

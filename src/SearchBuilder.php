@@ -977,8 +977,10 @@ class SearchBuilder
 
     /**
      * No column to search: searchIn() gave none — Model::search() passes the declared columns,
-     * else the auto-detected ones — and, on the index path, the model has no column and no
-     * searchableText() hook either, so nothing of it was indexed (IndexManager's own rule).
+     * else the auto-detected ones — and, on the index path, the model has nothing to index
+     * (IndexManager::indexesModel()). A model whose table cannot be listed (a $table typo, not
+     * migrated, the connection down) is not such a model: detection could not look, so the
+     * search runs and its error surfaces instead of an empty result.
      */
     protected function hasNoSearchableColumn(): bool
     {
@@ -986,16 +988,20 @@ class SearchBuilder
             return false;
         }
 
-        $modelClass = $this->useSearchIndex ? $this->resolveIndexModelClass() : null;
+        $indexClass = $this->useSearchIndex ? $this->resolveIndexModelClass() : null;
+        $model      = $indexClass !== null
+            ? new $indexClass()
+            : ($this->query instanceof EloquentBuilder ? $this->query->getModel() : null);
 
-        if ($modelClass === null) {
-            return true;
+        if ($model === null) {
+            return true; // a plain query builder without searchIn()
         }
 
-        $model = new $modelClass();
+        if (SearchableColumns::onTable($model->getConnection(), $model->getTable()) === []) {
+            return false;
+        }
 
-        return !method_exists($model, 'searchableText')
-            && (method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : []) === [];
+        return $indexClass === null || !\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexesModel($model);
     }
 
     /**
@@ -2020,14 +2026,20 @@ class SearchBuilder
             }
         }
 
-        // Stable ranking. An aliased FROM has no "users"."id", only its alias's.
+        // Stable ranking. An aliased FROM has no "users"."id", only its alias's, and a fromSub() has
+        // neither (2.0 ordered by the bare key). A plain builder's bare "id" is qualified under a
+        // join like a searched column: a join selecting both tables' columns makes it ambiguous.
         if ($this->stableRankingEnabled) {
-            $keyColumn = 'id';
-
             if ($this->query instanceof EloquentBuilder) {
                 $model     = $this->query->getModel();
-                $alias     = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($this->query->toBase()->from)[1] ?? null;
-                $keyColumn = $alias === null ? $model->getQualifiedKeyName() : $alias . '.' . $model->getKeyName();
+                $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($this->query->toBase()->from);
+                $keyColumn = match (true) {
+                    $from === null    => $model->getKeyName(),
+                    $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
+                    default           => $model->getQualifiedKeyName(),
+                };
+            } else {
+                $keyColumn = ($this->qualifiedColumnMap($this->query)['id'] ?? '') . 'id';
             }
 
             $this->query->orderBy($keyColumn, 'asc');

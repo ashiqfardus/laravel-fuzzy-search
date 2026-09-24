@@ -27,19 +27,30 @@ class IndexManager
     }
 
     /**
+     * Whether $model has anything to index: searchable columns (declared or auto-detected) or a
+     * searchableText() hook. The one rule the indexer and the search path share: a model it
+     * fails is never indexed, so a search of it has nothing to find.
+     */
+    public static function indexesModel(Model $model): bool
+    {
+        return method_exists($model, 'searchableText')
+            || (method_exists($model, 'getSearchableColumns') && $model->getSearchableColumns() !== []);
+    }
+
+    /**
      * Index (or re-index) a single model instance.
      * Removes old postings first, then writes fresh ones.
      * Does NOT inflate total_docs on re-index.
      */
     public function indexModel(Model $model): void
     {
+        if (!self::indexesModel($model)) {
+            return;
+        }
+
         $modelType = get_class($model);
         $modelId   = $model->getKey();
         $columns   = $model->getSearchableColumns();
-
-        if (empty($columns) && !method_exists($model, 'searchableText')) {
-            return;
-        }
 
         $byColumn = $this->buildTokenFrequencyMap($model, $columns);
         $tokens   = $this->mergeColumnFrequencies($byColumn);
@@ -337,10 +348,10 @@ class IndexManager
                 $modelType = get_class($model);
             }
 
-            $columns = $model->getSearchableColumns();
-            if (empty($columns) && !method_exists($model, 'searchableText')) {
+            if (!self::indexesModel($model)) {
                 continue;
             }
+            $columns = $model->getSearchableColumns();
 
             $byColumn = $this->buildTokenFrequencyMap($model, $columns);
             $tokens   = $this->mergeColumnFrequencies($byColumn);

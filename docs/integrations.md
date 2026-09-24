@@ -155,7 +155,8 @@ TextColumn::make('name')->searchable(query: FuzzySearch::tableSearch(['name']));
 $table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
 
 // With no columns, it falls back to the model's Searchable::getSearchableColumns()
-// (a no-op for a model without the trait, or for a blank search):
+// (a model without the trait, or with no searchable column, matches nothing for a typed
+// search; a blank search adds nothing):
 $table->searchUsing(FuzzySearch::tableSearch());
 ```
 

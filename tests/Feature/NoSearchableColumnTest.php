@@ -16,8 +16,10 @@ use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Closure;
 use Illuminate\Cache\Events\KeyWritten;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
@@ -102,6 +104,32 @@ class NoSearchableColumnTest extends TestCase
         $this->assertCount(7, $names(FuzzySearch::tableSearch(), ''));
     }
 
+    /**
+     * A table that cannot be listed (a $table typo, not migrated yet, the connection down) is not
+     * a model with no column: detection could not look. The search runs, so the error surfaces
+     * instead of an empty result that hides it.
+     */
+    public function test_a_model_whose_table_cannot_be_read_surfaces_the_error(): void
+    {
+        $this->assertFalse(Schema::hasTable('no_such_table_er35'), 'precondition');
+
+        $surfaced = [];
+        foreach ([
+            'get'      => fn () => MissingTableModel::search('john')->get(),
+            'count'    => fn () => MissingTableModel::search('john')->count(),
+            'paginate' => fn () => MissingTableModel::search('john')->paginate(5),
+        ] as $terminal => $run) {
+            try {
+                $run();
+                $surfaced[$terminal] = false;
+            } catch (QueryException) {
+                $surfaced[$terminal] = true;
+            }
+        }
+
+        $this->assertSame(['get' => true, 'count' => true, 'paginate' => true], $surfaced);
+    }
+
     public function test_what_still_searches(): void
     {
         // extended() has always refused a model with no column.
@@ -140,6 +168,14 @@ class HiddenColumnsUser extends Model
     protected $table   = 'users';
     protected $guarded = [];
     protected $hidden  = ['name', 'email'];
+}
+
+/** Zero-config on a table that does not exist. */
+class MissingTableModel extends Model
+{
+    use Searchable;
+
+    protected $table = 'no_such_table_er35';
 }
 
 /** No column either, but a searchableText() hook gives the index something to hold. */

@@ -181,6 +181,11 @@ you get back from a search:
   the attributes in memory (spatie/laravel-ciphersweet) is invisible to the package, so its
   plaintext is indexed. Put such a column in `$hidden`, or declare `$searchable['columns']`.
   Declaring the columns, or overriding `getSearchableColumns()`, is what opts into accessors.
+  Only the index reads the stored value: `suggest()`'s table scan, relevance scoring and
+  highlighting read an auto-detected column through its accessor, as in 2.0, so for a column an
+  accessor decrypts, declare `$searchable['columns']` without it, or hide it (`$hidden`);
+  otherwise `suggest()`'s table scan can return words from the decrypted value of rows the query
+  can see.
 - **Auto-detection skips hidden and secret columns.** A model with no `$searchable['columns']`
   no longer auto-selects a column in `$hidden`, a column outside a non-empty `$visible`, or
   `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`
@@ -223,9 +228,13 @@ you get back from a search:
   nothing to `FederatedSearch`, and `FuzzySearch::tableSearch()` matches nothing for it. A
   `SearchBuilder` on a plain query builder without `searchIn()` matches nothing too, unless
   `useInvertedIndex(Model::class)` searches that model's index; a model with a `searchableText()`
-  hook still searches on `useInvertedIndex()`. `extended()`/`searchBoolean()` still throw
-  `SearchableColumnsNotFoundException`, and the `whereFuzzy`-style macros take their columns
-  explicitly. Declare `$searchable['columns']` to search such a model.
+  hook still searches on `useInvertedIndex()`. `getFacets()` always runs on the LIKE path, so
+  without `searchIn()` those two index searches return empty facets while `get()` returns the
+  index's matches. A model whose table cannot be read (a `$table` typo, a table not migrated yet)
+  is not treated as having no column: the query runs and its database error surfaces.
+  `extended()`/`searchBoolean()` still throw `SearchableColumnsNotFoundException`, and the
+  `whereFuzzy`-style macros take their columns explicitly. Declare `$searchable['columns']` to
+  search such a model.
 - **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
   every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
   SQLite and MySQL); the event and the analytics log record the cleaned term. A term made only of
