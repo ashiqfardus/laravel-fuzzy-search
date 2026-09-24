@@ -88,6 +88,8 @@ class SearchBuilder
     /** @var string[] Positive leaf terms of the compiled extended query — see positiveLeafTerms(). */
     protected array $extendedLeafTerms = [];
     protected ?int $cacheMinutes = null;
+    /** cache() was called: it, not cache.enabled, decides whether get() caches (see cacheSeconds()). */
+    protected bool $cacheCalled = false;
     protected ?string $cacheKey = null;
     protected bool $stableRankingEnabled = false;
     protected array $fallbackAlgorithms = [];
@@ -624,8 +626,8 @@ class SearchBuilder
             'unicode_normalize' => $this->unicodeNormalizeEnabled,
             'prefix_boost' => $this->prefixBoostMultiplier,
             'partial_match' => $this->partialMatchEnabled,
-            'use_cache' => $this->cacheMinutes !== null,
-            'cache_ttl' => $this->cacheMinutes,
+            'use_cache' => $this->cacheSeconds() > 0,
+            'cache_ttl' => $this->cacheSeconds(), // seconds; 0 when get() does not cache
             'use_index' => $this->useSearchIndex,
             'index_ignored' => $this->extendedQuery !== null && $this->useSearchIndex,
             'index_terms' => $this->indexedTermWeights,
@@ -700,10 +702,14 @@ class SearchBuilder
     }
 
     /**
-     * Cache results
+     * Cache get()'s results (first() and simplePaginate() go through it) for $minutes, or for the
+     * cache.ttl config (seconds) when null. 0 turns caching off for this query, also when
+     * cache.enabled caches every search. $key is used as given; a generated key starts with
+     * cache.prefix. The store is cache.driver ('default' is the app's default store).
      */
-    public function cache(?int $minutes = 60, ?string $key = null): self
+    public function cache(?int $minutes = null, ?string $key = null): self
     {
+        $this->cacheCalled  = true;
         $this->cacheMinutes = $minutes;
         $this->cacheKey = $key;
         return $this;
@@ -1077,14 +1083,31 @@ class SearchBuilder
         $this->guardEmptyTerm();
 
         // Check cache
-        if ($this->cacheMinutes !== null) {
-            $cacheKey = $this->cacheKey ?? $this->generateCacheKey();
-            return Cache::remember($cacheKey, $this->cacheMinutes * 60, function () {
-                return $this->executeWithFallback();
-            });
+        $seconds  = $this->cacheSeconds();
+        $cacheKey = $seconds > 0 ? ($this->cacheKey ?? $this->generateCacheKey()) : null;
+
+        if ($cacheKey !== null) {
+            $store = config('fuzzy-search.cache.driver', 'default');
+
+            return Cache::store(in_array($store, [null, '', 'default'], true) ? null : $store)
+                ->remember($cacheKey, $seconds, fn () => $this->executeWithFallback());
         }
 
         return $this->executeWithFallback();
+    }
+
+    /**
+     * How long get() caches, in seconds (0 = it does not): cache() decides when called —
+     * cache($minutes), or the cache.ttl config (seconds) for cache(null), and cache(0) is off —
+     * otherwise cache.enabled caches every search for cache.ttl seconds.
+     */
+    protected function cacheSeconds(): int
+    {
+        if (!$this->cacheCalled && !config('fuzzy-search.cache.enabled', false)) {
+            return 0;
+        }
+
+        return max(0, $this->cacheMinutes === null ? (int) config('fuzzy-search.cache.ttl', 3600) : $this->cacheMinutes * 60);
     }
 
     /**
@@ -2897,14 +2920,20 @@ class SearchBuilder
     }
 
     /**
-     * Generate cache key
+     * The cache key: cache.prefix plus a hash of everything that changes get()'s rows or their
+     * shape — the builder's settings, the caller's query (its SQL, bindings, model class and
+     * eager loads) and where it runs (connection, database, table prefix), so two tenants or two
+     * highlight styles never share an entry. null when a customScore() closure is set: a closure
+     * cannot be part of a key, so that search is not cached (it was stored under a key no later
+     * call could read).
      */
-    protected function generateCacheKey(): string
+    protected function generateCacheKey(): ?string
     {
-        // Closures cannot be serialized — skip caching when a custom score callback is set.
         if ($this->customScoreCallback !== null) {
-            return 'fuzzy_search_nocache_' . uniqid();
+            return null;
         }
+
+        $connection = $this->query->getConnection();
 
         $data = [
             'term'                   => $this->searchTerm,
@@ -2938,11 +2967,19 @@ class SearchBuilder
             'stop_words_overridden'  => $this->stopWordsOverridden,
             'typo_tolerance'         => $this->typoTolerance,
             'fallback_algorithms'    => $this->fallbackAlgorithms,
+            'highlight'              => [$this->highlightTagOpen, $this->highlightTagClose],
+            'with_relevance'         => $this->withRelevance,
+            'debug'                  => $this->debugMode,
+            'index_model'            => $this->invertedIndexModelClass,
+            'scoring'                => $this->scoring,
+            'model'                  => $this->query instanceof EloquentBuilder ? $this->query->getModel()::class : null,
+            'eager_loads'            => $this->query instanceof EloquentBuilder ? array_keys($this->query->getEagerLoads()) : [],
+            'connection'             => [$connection->getName(), $connection->getDatabaseName(), $connection->getTablePrefix()],
             'base_sql'               => $this->query->toSql(),
             'base_bindings'          => $this->query->getBindings(),
         ];
 
-        return 'fuzzy_search_' . md5(serialize($data));
+        return config('fuzzy-search.cache.prefix', 'fuzzy_search_') . md5(serialize($data));
     }
 
     /**
@@ -3337,7 +3374,7 @@ class SearchBuilder
             'stop_words_active' => !empty($this->stopWords),
             'synonyms_active' => !empty($this->synonyms) || !empty($this->synonymGroups),
             'accent_insensitive' => $this->accentInsensitiveEnabled,
-            'cached' => $this->cacheMinutes !== null,
+            'cached' => $this->cacheSeconds() > 0,
             'recency_boost' => $this->recencyBoostEnabled,
             'limit' => $this->limit,
             'offset' => $this->offset,
