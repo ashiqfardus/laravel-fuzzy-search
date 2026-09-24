@@ -115,9 +115,19 @@ class SearchableIndexingObserver
      * A rolled-back transaction discards it, so a rolled-back row is never indexed (the index may
      * sit on another connection, whose writes the rollback would not undo), and a queued job is
      * never pushed before the row it reloads is committed, where a worker could run it first.
+     *
+     * An error in it (a deadlock or lock-wait timeout on the sync path, an unreachable queue) is
+     * reported, not thrown: the caller's write has committed, and a throw here would also skip
+     * the application's own after-commit callbacks. fuzzy-search:rebuild repairs the index.
      */
     private function afterCommit(Model $model, \Closure $callback): void
     {
-        $model->getConnection()->afterCommit($callback);
+        $model->getConnection()->afterCommit(function () use ($callback) {
+            try {
+                $callback();
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        });
     }
 }
