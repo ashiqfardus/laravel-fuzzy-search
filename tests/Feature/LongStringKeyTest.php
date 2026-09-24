@@ -73,6 +73,39 @@ class LongStringKeyTest extends TestCase
         $this->assertSame(2, DB::table('fuzzy_index_documents')->where('model_type', LongKeyNote::class)->count());
     }
 
+    /**
+     * SQL Server lets ALTER COLUMN widen an nvarchar an ordinary or unique index covers, so up()
+     * drops and recreates only the documents primary key; rebuilding postings_unique_idx on a
+     * large table is the costly part it must not do. The SQL is pretended on a never-connected
+     * SQL Server connection, so this runs everywhere.
+     */
+    public function test_on_sql_server_up_only_rebuilds_the_documents_primary_key(): void
+    {
+        config(['database.connections.fake_sqlsrv' => [
+            'driver' => 'sqlsrv', 'host' => '127.0.0.1', 'port' => 1, 'database' => 'fake',
+            'username' => 'fake', 'password' => 'fake', 'prefix' => '',
+        ]]);
+        $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $default   = DB::getDefaultConnection();
+
+        DB::setDefaultConnection('fake_sqlsrv');
+        try {
+            $sql = array_column(DB::connection('fake_sqlsrv')->pretend(fn () => $migration->up()), 'query');
+        } finally {
+            DB::setDefaultConnection($default);
+        }
+
+        // Laravel's quoting of identifiers differs between versions: compare without it.
+        $sql = array_map(fn ($q) => str_replace(['[', ']', '"'], '', $q), $sql);
+
+        $this->assertSame([
+            'alter table fuzzy_index_documents drop constraint fuzzy_index_documents_model_type_model_id_primary',
+            'ALTER TABLE fuzzy_index_postings ALTER COLUMN model_id NVARCHAR(191) NOT NULL',
+            'ALTER TABLE fuzzy_index_documents ALTER COLUMN model_id NVARCHAR(191) NOT NULL',
+            'alter table fuzzy_index_documents add constraint fuzzy_index_documents_model_type_model_id_primary primary key (model_type, model_id)',
+        ], $sql);
+    }
+
     public function test_rolling_back_after_a_test_dropped_an_index_table_does_not_fail(): void
     {
         // Tests drop fuzzy_index_postings to simulate a missing dictionary; the teardown's

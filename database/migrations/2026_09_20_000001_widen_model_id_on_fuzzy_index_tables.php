@@ -16,8 +16,10 @@ use Illuminate\Support\Facades\Schema;
  * of a nonclustered index's 1,700, and the documents primary key 764 of a clustered one's 900.
  *
  * Raw ALTERs, not ->change(): Laravel 10 needs doctrine/dbal for that. SQLite does not enforce a
- * varchar length, so there is nothing to change there. SQL Server refuses to alter a column an
- * index or primary key covers, so those are dropped and recreated around the ALTER.
+ * varchar length, so there is nothing to change there. SQL Server refuses to alter a column a
+ * primary key covers, so the documents primary key is dropped and recreated around the ALTER; it
+ * widens an nvarchar under an ordinary or unique index in place, so the postings indexes (the
+ * costly rebuild on a large index) are dropped and recreated only when down() narrows it.
  */
 return new class extends Migration
 {
@@ -51,8 +53,10 @@ return new class extends Migration
     private function resize(int $length, array $tables): void
     {
         $driver    = DB::connection()->getDriverName();
-        $postings  = in_array('fuzzy_index_postings', $tables, true);
         $documents = in_array('fuzzy_index_documents', $tables, true);
+        // SQL Server widens an nvarchar under an ordinary or unique index in place; only narrowing
+        // (down()) needs the postings indexes out of the way. A primary key blocks both.
+        $postings  = in_array('fuzzy_index_postings', $tables, true) && $length < 191;
 
         if ($driver === DbDialect::SQLSRV && $postings) {
             Schema::table('fuzzy_index_postings', function (Blueprint $table) {
