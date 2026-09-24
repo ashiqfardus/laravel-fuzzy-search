@@ -11,11 +11,12 @@ require_once __DIR__ . '/../TestModels.php';
 
 /**
  * A literal %, _, \ or ! in a search term matches itself on every database and every search path
- * (ER-41, ER-42). SQLite and SQL Server have no default LIKE escape character, so the package's
- * backslash escapes were ordinary characters there and such a term matched nothing; they now
- * escape with ! under ESCAPE '!', so a ! in a term must be escaped too. MySQL, MariaDB and
- * PostgreSQL read "\s" as "s", so a backslash in a term was lost. Each case pairs the literal row
- * with the look-alike that an unescaped wildcard (or a lost character) matches.
+ * (ER-41, ER-42, ER-43). SQLite and SQL Server have no default LIKE escape character, so the
+ * package's backslash escapes were ordinary characters there and such a term matched nothing;
+ * every database but PostgreSQL now escapes with ! under ESCAPE '!', so a ! in a term must be
+ * escaped too (MySQL and MariaDB: see NoBackslashEscapesTest). MySQL, MariaDB and PostgreSQL read
+ * "\s" as "s", so a backslash in a term was lost. Each case pairs the literal row with the
+ * look-alike that an unescaped wildcard (or a lost character) matches.
  */
 class LiteralLikeCharactersTest extends TestCase
 {

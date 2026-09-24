@@ -107,13 +107,15 @@ final class DbDialect
     }
 
     /**
-     * The LIKE escape character: backslash where it is the database's default (MySQL, MariaDB,
-     * PostgreSQL), ! on SQLite and SQL Server, which have none and so take an ESCAPE clause.
-     * Not '\' there: Laravel's toRawSql() and PDO's pre-8.4 SQL scanner read \' as an escaped quote.
+     * The LIKE escape character: backslash on PostgreSQL, its default in every configuration, and
+     * ! everywhere else, with an ESCAPE clause. SQLite and SQL Server have no default; MySQL and
+     * MariaDB lose theirs under the NO_BACKSLASH_ESCAPES SQL mode, and ESCAPE '!' means the same
+     * in every mode. Not ESCAPE '\': Laravel's toRawSql() and PDO's pre-8.4 SQL scanner read \'
+     * as an escaped quote, and MySQL has no spelling of it that parses in every SQL mode.
      */
     public static function likeEscapeCharacter(string $driver): string
     {
-        return $driver === self::SQLITE || $driver === self::SQLSRV ? '!' : '\\';
+        return $driver === self::PGSQL ? '\\' : '!';
     }
 
     /** True where the escape character is not the database's default, so LIKE needs ESCAPE. */
@@ -145,8 +147,8 @@ final class DbDialect
 
     /**
      * Add "$column LIKE $pattern" to $query (a query or Eloquent builder) as the $boolean where.
-     * PostgreSQL gets ILIKE (its LIKE is case-sensitive), SQLite and SQL Server like() with the
-     * column through the query's grammar as where() writes it, MySQL and MariaDB Laravel's where().
+     * PostgreSQL gets ILIKE (its LIKE is case-sensitive), every other database like() with the
+     * column through the query's grammar as where() writes it.
      */
     public static function whereLike(object $query, string $column, string $pattern, string $driver, string $boolean = 'and'): void
     {
@@ -154,10 +156,8 @@ final class DbDialect
 
         if ($driver === self::PGSQL) {
             $query->$raw(self::like(self::quoteIdentifier($column, $driver, $query->getGrammar()->getTablePrefix()), $driver, 'ILIKE'), [$pattern]);
-        } elseif (self::needsLikeEscape($driver)) {
-            $query->$raw(self::like($query->getGrammar()->wrap($column), $driver), [$pattern]);
         } else {
-            $query->{$boolean === 'or' ? 'orWhere' : 'where'}($column, 'LIKE', $pattern);
+            $query->$raw(self::like($query->getGrammar()->wrap($column), $driver), [$pattern]);
         }
     }
 }

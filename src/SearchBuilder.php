@@ -2211,7 +2211,7 @@ class SearchBuilder
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
             $col = $this->quoteColumn(($own[$directColumn] ?? '') . $directColumn, $driver);
-            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' on SQLite and SQL Server.
+            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else.
             $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
 
             $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
@@ -2788,10 +2788,10 @@ class SearchBuilder
 
         $suggestions = [];
         // $rawTerm  → PHP str_starts_with / strcmp comparisons (must be unescaped)
-        // $safeTerm → LIKE bindings only (\, % and _ — and [ on SQL Server — escaped so they
-        // match literally). Never swap these: passing $safeTerm to str_starts_with would miss
-        // values containing those characters, and passing $rawTerm to LIKE would treat them as
-        // wildcards.
+        // $safeTerm → LIKE bindings only (the escape character, % and _ — and [ on SQL Server —
+        // escaped so they match literally). Never swap these: passing $safeTerm to str_starts_with
+        // would miss values containing those characters, and passing $rawTerm to LIKE would treat
+        // them as wildcards.
         $rawTerm  = Utf8::lowerAscii($this->searchTerm);
         $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
 
@@ -2896,7 +2896,7 @@ class SearchBuilder
 
         $targets = $this->resolveColumnTargets();
 
-        // ILIKE on PostgreSQL (its LIKE is case-sensitive), ESCAPE '!' on SQLite and SQL Server;
+        // ILIKE on PostgreSQL (its LIKE is case-sensitive), ESCAPE '!' everywhere else;
         // a qualified column's table carries the connection's table prefix, as the FROM does.
         $prefixWhere = function ($q, string $column, string $boolean) use ($safeTerm, $driver) {
             \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::whereLike($q, $column, $safeTerm . '%', $driver, $boolean);

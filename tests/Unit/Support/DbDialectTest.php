@@ -56,33 +56,35 @@ class DbDialectTest extends TestCase
         }
     }
 
-    public function test_the_like_escape_character_is_backslash_where_it_is_the_default_and_bang_elsewhere(): void
+    public function test_the_like_escape_character_is_backslash_only_on_postgresql(): void
     {
-        foreach (['mysql', 'mariadb', 'pgsql'] as $driver) {
-            $this->assertSame('\\', DbDialect::likeEscapeCharacter($driver), $driver);
+        // PostgreSQL's default escape is backslash in every configuration. MySQL and MariaDB lose
+        // theirs under NO_BACKSLASH_ESCAPES, so they escape with ! like SQLite and SQL Server.
+        $this->assertSame('\\', DbDialect::likeEscapeCharacter('pgsql'));
+        foreach (['mysql', 'mariadb', 'sqlite', 'sqlsrv'] as $driver) {
+            $this->assertSame('!', DbDialect::likeEscapeCharacter($driver), $driver);
+            $this->assertTrue(DbDialect::needsLikeEscape($driver), $driver);
         }
-        $this->assertSame('!', DbDialect::likeEscapeCharacter('sqlite'));
-        $this->assertSame('!', DbDialect::likeEscapeCharacter('sqlsrv'));
+        $this->assertFalse(DbDialect::needsLikeEscape('pgsql'));
     }
 
     public function test_escape_like_escapes_the_metacharacters_with_the_escape_character(): void
     {
-        // Backslash databases: \ % _ (a ! or [ is ordinary). SQLite: ! % _ (a \ is ordinary).
-        // SQL Server: ! % _ and [, which opens a character class there.
-        foreach (['mysql', 'mariadb', 'pgsql'] as $driver) {
-            $this->assertSame('a\\\\b\\%\\_[c]!', DbDialect::escapeLike('a\\b%_[c]!', $driver), $driver);
+        // PostgreSQL: \ % _ (a ! or [ is ordinary). MySQL, MariaDB, SQLite: ! % _ (a \ is
+        // ordinary). SQL Server: ! % _ and [, which opens a character class there.
+        $this->assertSame('a\\\\b\\%\\_[c]!', DbDialect::escapeLike('a\\b%_[c]!', 'pgsql'));
+        foreach (['mysql', 'mariadb', 'sqlite'] as $driver) {
+            $this->assertSame('a\\b!%!_[c]!!', DbDialect::escapeLike('a\\b%_[c]!', $driver), $driver);
         }
-        $this->assertSame('a\\b!%!_[c]!!', DbDialect::escapeLike('a\\b%_[c]!', 'sqlite'));
         $this->assertSame('a\\b!%!_![c]!!', DbDialect::escapeLike('a\\b%_[c]!', 'sqlsrv'));
         $this->assertSame('Straße ঠ', DbDialect::escapeLike('Straße ঠ', 'sqlsrv'));
     }
 
-    public function test_like_adds_an_escape_clause_only_where_the_database_has_no_default_escape(): void
+    public function test_like_adds_an_escape_clause_everywhere_but_postgresql(): void
     {
-        $this->assertSame("col LIKE ? ESCAPE '!'", DbDialect::like('col', 'sqlite'));
-        $this->assertSame("col LIKE ? ESCAPE '!'", DbDialect::like('col', 'sqlsrv'));
-        $this->assertSame('col LIKE ?', DbDialect::like('col', 'mysql'));
-        $this->assertSame('col LIKE ?', DbDialect::like('col', 'mariadb'));
+        foreach (['mysql', 'mariadb', 'sqlite', 'sqlsrv'] as $driver) {
+            $this->assertSame("col LIKE ? ESCAPE '!'", DbDialect::like('col', $driver), $driver);
+        }
         $this->assertSame('col ILIKE ?', DbDialect::like('col', 'pgsql', 'ILIKE'));
     }
 }

@@ -128,8 +128,8 @@ final class TermExpander
         $query = DB::table('fuzzy_index_terms')->where('term', '!=', $prefix);
 
         if ($next === false || !$byteOrdered) {
-            // PostgreSQL (and MySQL) read escapeLike()'s backslashes by default; on SQLite and SQL
-            // Server it escapes with !, which DbDialect::like() declares with ESCAPE '!'.
+            // PostgreSQL reads escapeLike()'s backslashes by default (where() keeps its
+            // "term"::text cast); everywhere else it escapes with !, under like()'s ESCAPE '!'.
             $pattern = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($prefix, $driver) . '%';
             \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::needsLikeEscape($driver)
                 ? $query->whereRaw(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($query->getGrammar()->wrap('term'), $driver, 'like'), [$pattern])

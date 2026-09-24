@@ -1284,7 +1284,7 @@ This table shows what each algorithm does at the SQL level on each supported dat
 
 | Algorithm | MySQL 8 | MariaDB 11.4 (CI); 10.6+ expected | PostgreSQL 14 | SQLite | SQL Server |
 |---|---|---|---|---|---|
-| **simple** / **like** | `LIKE '%term%'` | `LIKE '%term%'` | `ILIKE '%term%'` | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'`; case-insensitivity follows the column's collation |
+| **simple** / **like** | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'` | `ILIKE '%term%'` | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'`; case-insensitivity follows the column's collation |
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
 | **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
 | **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true`, else ILIKE pattern set | LIKE pattern set | LIKE pattern set |
@@ -1296,7 +1296,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 
 ### Notes
 
-- **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. MySQL, MariaDB and PostgreSQL escape with a backslash, their LIKE default, and escape a backslash in the term too. SQLite and SQL Server have no default escape character: there the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there), and every LIKE a search writes carries `ESCAPE '!'`, pattern sets included (only the deprecated, unused `getRelevanceExpression()` / `getRelevanceBindings()` driver methods predate this).
+- **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. PostgreSQL escapes with a backslash, its LIKE default, and escapes a backslash in the term too. SQLite and SQL Server have no default escape character, and MySQL and MariaDB lose theirs under the `NO_BACKSLASH_ESCAPES` SQL mode, so on all four the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there) and every LIKE a search writes carries `ESCAPE '!'`, which works in every SQL mode, pattern sets included (only the deprecated, unused `getRelevanceExpression()` / `getRelevanceBindings()` driver methods predate this).
 - **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. MySQL `SOUNDEX()` is built-in and always active — no flag needed. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
 - **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager.
 - **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`

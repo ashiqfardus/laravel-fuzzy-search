@@ -10,9 +10,10 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
 
 /**
- * ER-41/ER-42, pinned per database without a server (toSql() on fake connections): SQLite and
- * SQL Server have no default LIKE escape character, so every LIKE the package writes there
- * carries ESCAPE '!'; MySQL, MariaDB and PostgreSQL default to backslash and get no clause.
+ * ER-41/ER-42/ER-43, pinned per database without a server (toSql() on fake connections): SQLite
+ * and SQL Server have no default LIKE escape character, and MySQL and MariaDB lose theirs under
+ * NO_BACKSLASH_ESCAPES, so every LIKE the package writes there carries ESCAPE '!'; PostgreSQL
+ * always defaults to backslash and gets no clause.
  */
 class LikeEscapeSqlTest extends TestCase
 {
@@ -35,7 +36,7 @@ class LikeEscapeSqlTest extends TestCase
             SearchBuilder::class
         )();
         $sql['macros']   = $table()->whereFuzzy('name', 'a_b', 'like')->orWhereFuzzy('email', 'a_b', 'fuzzy')->toSql();
-        // The dictionary's LIKE branch: always on PostgreSQL and SQL Server; on SQLite and MySQL
+        // The dictionary's LIKE branch: always on PostgreSQL and SQL Server; on SQLite, MySQL and MariaDB
         // only for a prefix whose last character has no successor.
         $sql['prefix']   = $this->capturedPrefixQuery($driver, "a_\u{10FFFF}");
 
@@ -68,9 +69,13 @@ class LikeEscapeSqlTest extends TestCase
         return $captured;
     }
 
-    public function test_sqlite_and_sql_server_give_every_like_an_escape_clause(): void
+    public function test_every_database_but_postgresql_gives_every_like_an_escape_clause(): void
     {
-        foreach (['sqlite', 'sqlsrv'] as $driver) {
+        foreach (['sqlite', 'sqlsrv', 'mysql', 'mariadb'] as $driver) {
+            if (!$this->fakeDriverAvailable($driver)) {
+                continue; // mariadb on Laravel 10
+            }
+
             foreach ($this->statements($driver) as $label => $sql) {
                 $sql = strtolower($sql);
 
@@ -84,27 +89,21 @@ class LikeEscapeSqlTest extends TestCase
         }
     }
 
-    public function test_mysql_mariadb_and_postgresql_send_no_escape_clause(): void
+    public function test_postgresql_sends_no_escape_clause(): void
     {
-        foreach (['mysql', 'mariadb', 'pgsql'] as $driver) {
-            if (!$this->fakeDriverAvailable($driver)) {
-                continue; // mariadb on Laravel 10
-            }
-
-            foreach ($this->statements($driver) as $label => $sql) {
-                $this->assertStringNotContainsString('escape', strtolower($sql), "{$driver} {$label}");
-            }
+        foreach ($this->statements('pgsql') as $label => $sql) {
+            $this->assertStringNotContainsString('escape', strtolower($sql), "pgsql {$label}");
         }
     }
 
     public function test_the_term_is_escaped_for_like_on_each_database(): void
     {
-        // With backslash: \ % _. With ! (SQLite, SQL Server): ! % _, and [ on SQL Server, the one
-        // database where it is a wildcard; a backslash is ordinary there.
+        // With backslash (PostgreSQL): \ % _. With ! (everywhere else): ! % _, and [ on SQL Server,
+        // the one database where it is a wildcard; a backslash is ordinary there.
         $expected = [
             'sqlite'  => '%a\\b!%!_[c]!!%',
-            'mysql'   => '%a\\\\b\\%\\_[c]!%',
-            'mariadb' => '%a\\\\b\\%\\_[c]!%',
+            'mysql'   => '%a\\b!%!_[c]!!%',
+            'mariadb' => '%a\\b!%!_[c]!!%',
             'pgsql'   => '%a\\\\b\\%\\_[c]!%',
             'sqlsrv'  => '%a\\b!%!_![c]!!%',
         ];
