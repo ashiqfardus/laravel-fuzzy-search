@@ -47,7 +47,9 @@ class RescoringCapTest extends TestCase
             /** @param string[] $terms */
             public function rawScore(Model $row, array $terms): float
             {
-                return $this->searchIn(['name'])->calculateRelevanceScores(collect([$row->fresh()]), $terms)->first()->_raw_score;
+                $scored = $this->searchIn(['name'])->calculateRelevanceScores(collect([$row->fresh()]), $terms)->first();
+
+                return (float) ($scored->_raw_score ?? $scored->_score); // a 0 score is never normalised
             }
         };
     }
@@ -137,5 +139,49 @@ class RescoringCapTest extends TestCase
         $this->assertCount(10, $extended);
         $this->assertLessThan(3.0, $likeSeconds, 'LIKE path rescoring');
         $this->assertLessThan(3.0, $extendedSeconds, 'extended path rescoring');
+    }
+    /**
+     * Ruling ER-55: per-leaf similarity only while the leaves' total length stays within 255
+     * characters (the first leaf always gets it); the rest score by tier alone.
+     */
+    public function test_leaves_past_the_similarity_budget_score_by_tier_only(): void
+    {
+        $scorer = $this->scorer();
+        $alice  = User::query()->where('name', 'Alice Smith')->first();
+
+        // 200 + 5 characters: "smiht" is within the budget and earns its similarity floor.
+        $this->assertGreaterThan($scorer->rawScore($alice, [str_repeat('q', 200)]), $scorer->rawScore($alice, [str_repeat('q', 200), 'smiht']));
+
+        // 251 + 5: past it, "smiht" is scored by tier only — it is not contained, so it adds nothing.
+        $this->assertSame($scorer->rawScore($alice, [str_repeat('q', 251)]), $scorer->rawScore($alice, [str_repeat('q', 251), 'smiht']));
+
+        // A tier still counts past the budget.
+        $this->assertSame($scorer->rawScore($alice, [str_repeat('q', 251)]) + 60.0, $scorer->rawScore($alice, [str_repeat('q', 251), 'smith']));
+    }
+
+    /** Ruling ER-55: 16 long leaves against two 20KB columns at the default max_candidates (1,000 rows). */
+    public function test_sixteen_long_leaves_rescore_in_bounded_time(): void
+    {
+        Schema::dropIfExists('long_docs');
+        Schema::create('long_docs', function ($table) {
+            $table->id();
+            $table->text('title');
+            $table->text('body');
+        });
+
+        $body = substr(str_repeat('the quick brown fox jumps over the lazy dog ', 460), 0, 20000);
+        foreach (array_chunk(range(1, 1000), 20) as $chunk) {
+            DB::table('long_docs')->insert(array_map(fn () => ['title' => $body, 'body' => $body], $chunk));
+        }
+
+        $leaves = array_map(fn (int $i) => substr(str_repeat("brawnfaxjumptlazi{$i}", 8), 0, 120), range(1, 15));
+        $query  = 'quick | ' . implode(' | ', $leaves);
+
+        $started = microtime(true);
+        $rows    = (new SearchBuilder(LongDoc::query(), app(FuzzySearch::class)))->searchIn(['title', 'body'])->extended($query)->take(10)->get();
+        $seconds = microtime(true) - $started;
+
+        $this->assertCount(10, $rows);
+        $this->assertLessThan(3.0, $seconds, '16-leaf extended rescoring over 1,000 rows x 2 x 20KB');
     }
 }

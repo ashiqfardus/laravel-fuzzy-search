@@ -2547,7 +2547,18 @@ class SearchBuilder
     {
         $terms = array_map(fn (string $term) => mb_strtolower($term, 'UTF-8'), $terms ?? [$this->searchTerm]);
 
-        $results = $results->map(function ($item) use ($terms) {
+        // Ruling ER-55, the per-row similarity budget: a term gets the similarity/Levenshtein floor
+        // only while the terms' total length stays within SCORING_MAX_CHARS (the first always
+        // does, so one term scores as it always has); the rest score by tier alone. It bounds a
+        // many-leaf extended query to about one capped comparison per value.
+        $fuzzy = [];
+        $spent = 0;
+        foreach ($terms as $i => $term) {
+            $spent    += mb_strlen($term, 'UTF-8');
+            $fuzzy[$i] = $i === 0 || $spent <= self::SCORING_MAX_CHARS;
+        }
+
+        $results = $results->map(function ($item) use ($terms, $fuzzy) {
             $score = 0;
             $columnScores = [];
 
@@ -2563,11 +2574,14 @@ class SearchBuilder
                     $values = [''];
                 }
 
+                // Each value lowered and cut once, not once per term.
+                $values = array_map(fn (string $value) => [$lower = mb_strtolower($value, 'UTF-8'), self::cut($lower)], $values);
+
                 // A to-many relation contributes its best related row, never an average.
-                foreach ($terms as $term) {
+                foreach ($terms as $i => $term) {
                     $termScore = 0;
-                    foreach ($values as $value) {
-                        $termScore = max($termScore, $this->scoreValue($value, $term, $weight));
+                    foreach ($values as [$lower, $cut]) {
+                        $termScore = max($termScore, $this->scoreLowered($lower, $cut, $term, $weight, $fuzzy[$i]));
                     }
                     $colScore += $termScore;
                 }
@@ -2776,6 +2790,15 @@ class SearchBuilder
     {
         $value = mb_strtolower($value, 'UTF-8');
 
+        return $this->scoreLowered($value, self::cut($value), $term, $weight);
+    }
+
+    /**
+     * scoreValue() for a value already lowered, with its cut (see cut()) made once by the
+     * caller. $fuzzy false (past the similarity budget) scores the tiers only.
+     */
+    private function scoreLowered(string $value, string $cut, string $term, float|int $weight, bool $fuzzy = true): float
+    {
         if ($value === $term) {
             return $this->scoring['exact_match'] * $weight;
         }
@@ -2785,8 +2808,11 @@ class SearchBuilder
         if (str_contains($value, $term)) {
             return $this->scoring['contains'] * $weight;
         }
+        if (!$fuzzy) {
+            return 0.0;
+        }
 
-        [$similarity, $distance] = $this->similarity($value, $term);
+        [$similarity, $distance] = $this->similarity($cut, $term);
 
         $similarityScore  = ($similarity / 100) * $this->scoring['fuzzy_match'] * $weight;
         $levenshteinScore = ($distance <= $this->typoTolerance) ? max(0, (20 - $distance * 4)) * $weight : 0;
@@ -2805,15 +2831,17 @@ class SearchBuilder
      */
     protected function similarity(string $value, string $term): array
     {
-        $cut = fn (string $s) => mb_strlen($s, 'UTF-8') > self::SCORING_MAX_CHARS
-            ? mb_substr($s, 0, self::SCORING_MAX_CHARS, 'UTF-8')
-            : $s;
-
-        $value = $cut($value);
-        $term  = $cut($term);
+        $value = self::cut($value);
+        $term  = self::cut($term);
         similar_text($term, $value, $percent);
 
         return [$percent, FuzzySearch::levenshteinDistance($value, $term)];
+    }
+
+    /** The first SCORING_MAX_CHARS characters of $s; a string within the cap is returned as it is. */
+    private static function cut(string $s): string
+    {
+        return mb_strlen($s, 'UTF-8') > self::SCORING_MAX_CHARS ? mb_substr($s, 0, self::SCORING_MAX_CHARS, 'UTF-8') : $s;
     }
 
     /**
