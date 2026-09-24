@@ -24,6 +24,10 @@ class LiteralLikeCharactersTest extends TestCase
     {
         parent::setUp();
 
+        // similar_text runs here as the exact-substring LIKE it is underneath; its min_percentage
+        // length bound (SimilarTextMinPercentageTest) would drop "50% off" for "50%".
+        config(['fuzzy-search.similar_text.min_percentage' => 0]);
+
         foreach (['50% off', '500 off', 'snake_case', 'snakeXcase', 'back\\slash', 'backslash', 'wow! deal', 'wow deal'] as $i => $name) {
             $this->addUser($name, "literal{$i}@example.com");
         }

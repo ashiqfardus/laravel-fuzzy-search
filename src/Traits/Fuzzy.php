@@ -78,12 +78,13 @@ trait Fuzzy
     }
 
     /**
-     * Scope for Similar text search
+     * Scope for Similar text search. $minPercentage overrides similar_text.min_percentage; 0 turns
+     * the bound off, null keeps the config's.
      */
     public function scopeFuzzySimilar($query, string $searchTerm, ?array $columns = null, ?int $minPercentage = null)
     {
         $columns = $columns ?? $this->getFuzzySearchableColumns();
-        $options = $minPercentage ? ['min_percentage' => $minPercentage] : [];
+        $options = $minPercentage !== null ? ['min_percentage' => $minPercentage] : [];
 
         return $query->whereFuzzyMultiple($columns, $searchTerm, 'similar_text', $options);
     }

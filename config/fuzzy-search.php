@@ -358,6 +358,13 @@ return [
     |--------------------------------------------------------------------------
     | Similar Text Settings
     |--------------------------------------------------------------------------
+    |
+    | min_percentage: the least similar_text() percentage a match may have. The
+    | term is contained in every match, so this is a length bound: a column
+    | value may be at most t·(200 − p) / p characters for a t-character term
+    | (~1.86t at 70). 0 turns it off, the 2.0 behaviour. The min_percentage
+    | option of a single call overrides it.
+    |
     */
     'similar_text' => [
         'min_percentage' => 70,
