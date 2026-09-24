@@ -243,11 +243,12 @@ class FuzzySearch
     /**
      * levenshtein() is O(n·m) and similar_text() worse, so a scoring call on a user term and a
      * column value (the Fuzzy trait's filterFuzzy()/sortByFuzzy(), SearchBuilder's rescoring) sees
-     * only their first 255 characters. Strings of 255 characters or fewer score exactly as before.
+     * only their first 255 characters. A string of 255 characters or fewer is passed through byte
+     * for byte (mb_substr() would turn an invalid byte into "?"), so it scores exactly as before.
      */
     private static function scoringInput(string $value): string
     {
-        return mb_substr($value, 0, 255, 'UTF-8');
+        return mb_strlen($value, 'UTF-8') <= 255 ? $value : mb_substr($value, 0, 255, 'UTF-8');
     }
 
     protected function resolveDriver(string $algorithm, Builder $query, array $config): BaseDriver

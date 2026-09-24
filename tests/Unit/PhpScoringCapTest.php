@@ -44,6 +44,15 @@ class PhpScoringCapTest extends TestCase
         $this->assertSame([$long, $other], User::sortByFuzzy(collect([$other, $long]), 'name', $term)->values()->all());
     }
 
+    /** A short string is passed through byte for byte: mb_substr() would turn an invalid byte into "?". */
+    public function test_a_short_string_with_invalid_utf8_is_left_as_it_is(): void
+    {
+        $this->assertSame(1, FuzzySearch::levenshteinDistance("caf\xE9", 'caf?'));
+
+        similar_text("caf\xE9 latin1", 'caf? latin1', $percent);
+        $this->assertSame($percent, FuzzySearch::similarityPercentage("caf\xE9 latin1", 'caf? latin1'));
+    }
+
     public function test_strings_of_255_characters_or_fewer_score_exactly_as_before(): void
     {
         mt_srand(255);
