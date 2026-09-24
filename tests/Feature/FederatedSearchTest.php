@@ -738,6 +738,48 @@ class FederatedSearchTest extends TestCase
         $this->assertSame(['iPhone 15 Pro'], $results->pluck('title')->all());
     }
 
+    public function test_a_fuzzy_trait_model_is_searched_with_its_own_algorithm_unless_using_overrides_it(): void
+    {
+        // FuzzySoundexUser declares $fuzzyAlgorithm = 'soundex'; the fallback searched it with LIKE.
+        // Soundex is native SOUNDEX() on MySQL and MariaDB, and phonetic LIKE patterns elsewhere,
+        // among them the consonant skeleton "%jnh%" of "jonh", which no other driver generates.
+        $soundex = function (\Closure $call): bool {
+            $seen = false;
+            \Illuminate\Support\Facades\DB::listen(function ($query) use (&$seen) {
+                if (preg_match('/\busers\b/', $query->sql)
+                    && (stripos($query->sql, 'soundex(') !== false || in_array('%jnh%', $query->bindings, true))) {
+                    $seen = true;
+                }
+            });
+            $call();
+
+            return $seen;
+        };
+
+        $own = fn () => FederatedSearch::across([FuzzySoundexUser::class])->search('jonh');
+
+        $this->assertTrue($soundex(fn () => $own()->get()), 'get() did not search with the model\'s soundex');
+        $this->assertTrue($soundex(fn () => $own()->getCounts()), 'getCounts() did not search with the model\'s soundex');
+        $this->assertContains('Jon Snow', $own()->limit(50)->get()->pluck('name')->all()); // "Jon" sounds like "jonh" everywhere
+
+        $this->assertFalse($soundex(fn () => $own()->using('fuzzy')->get()), 'an explicit using() must override the model\'s algorithm');
+        $this->assertFalse($soundex(fn () => $own()->using('fuzzy')->getCounts()));
+    }
+
+    public function test_a_fuzzy_trait_model_is_searched_with_its_own_options(): void
+    {
+        // FuzzyExactUser: fuzzy with $fuzzyOptions max_distance 0, so the typo "jonh" matches nothing,
+        // as its own fuzzy() scope finds nothing. typoTolerance() and options() still override it.
+        $federated = fn () => FederatedSearch::across([FuzzyExactUser::class])->search('jonh');
+
+        $this->assertCount(0, FuzzyExactUser::query()->fuzzy('jonh')->get(), 'baseline: the model\'s own scope');
+        $this->assertCount(0, $federated()->limit(50)->get());
+        $this->assertSame(['FuzzyExactUser' => 0], $federated()->getCounts());
+
+        $this->assertNotEmpty($federated()->typoTolerance(2)->limit(50)->get());
+        $this->assertNotEmpty($federated()->options(['max_distance' => 2])->limit(50)->get());
+    }
+
     /*
     |--------------------------------------------------------------------------
     | options() Reaches Every Model
@@ -879,3 +921,29 @@ class DeclaredPlainProduct extends Model
 
     protected array $searchable = ['columns' => ['description' => 5]];
 }
+
+/** Only the Fuzzy trait, with its own algorithm. */
+class FuzzySoundexUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Fuzzy;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $fuzzySearchable = ['name'];
+    protected string $fuzzyAlgorithm = 'soundex';
+}
+
+/** Only the Fuzzy trait: fuzzy, and no typo distance in its own options. */
+class FuzzyExactUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Fuzzy;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $fuzzySearchable = ['name'];
+    protected string $fuzzyAlgorithm = 'fuzzy';
+    protected array $fuzzyOptions = ['max_distance' => 0];
+}
+

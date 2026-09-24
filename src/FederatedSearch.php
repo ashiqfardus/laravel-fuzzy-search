@@ -77,7 +77,8 @@ class FederatedSearch
 
     /**
      * Set search algorithm for every model. Without it, each model uses its own
-     * $searchable['algorithm'] (models without the Searchable trait: LIKE).
+     * $searchable['algorithm'] — a model with only the Fuzzy trait its getFuzzyAlgorithm(), and
+     * any other model LIKE.
      */
     public function using(string $algorithm): self
     {
@@ -116,7 +117,8 @@ class FederatedSearch
     /**
      * Algorithm options for every model — the array SearchBuilder::options() and the
      * whereFuzzyMultiple() macro take (max_distance, max_patterns, …), merged over each model's
-     * own $searchable['options']. typoTolerance() sets max_distance and wins over it here.
+     * own $searchable['options'] (a Fuzzy-trait model's getFuzzyOptions()). typoTolerance() sets
+     * max_distance and wins over it here.
      */
     public function options(array $options): self
     {
@@ -294,11 +296,18 @@ class FederatedSearch
             return null;
         }
 
+        // A model with the Fuzzy trait keeps its own algorithm and options, read through the trait's
+        // public accessors as its fuzzy() scope reads them; using(), options() and typoTolerance() on
+        // this federated search override them. Any other model is searched with LIKE.
+        $fuzzy = method_exists($instance, 'getFuzzyAlgorithm');
+
         return $modelClass::query()->whereFuzzyMultiple(
             $columns,
             $this->searchTerm,
-            $this->algorithm ?? 'like',
-            $this->typoTolerance === null ? $this->options : ['max_distance' => $this->typoTolerance] + $this->options
+            $this->algorithm ?? ($fuzzy ? $instance->getFuzzyAlgorithm() : 'like'),
+            ($this->typoTolerance === null ? [] : ['max_distance' => $this->typoTolerance])
+                + $this->options
+                + ($fuzzy && method_exists($instance, 'getFuzzyOptions') ? $instance->getFuzzyOptions() : [])
         );
     }
 
