@@ -1212,7 +1212,7 @@ class SearchBuilder
      * It also stays null (or stale from an earlier run on the same instance) whenever a run
      * never reaches dispatchExecuted(): a term shorter than min_search_length or made only of
      * invalid UTF-8 returns from get()/paginate() before any query (see matchesNothing()), and
-     * remember() serves get() from the cache without executing.
+     * cache() serves get() from the cache without executing.
      * FuzzySearchCollection then reports meta.algorithm/meta.latency_ms as null.
      */
     public function lastExecution(): ?\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted
@@ -1303,13 +1303,8 @@ class SearchBuilder
             // full. Constraints (filters, wheres, scopes) are applied before the cut, so a
             // selective filter fills its page from lower-ranked matches instead of coming
             // back short or empty.
-            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
-                $this->indexedBaseQuery($modelClass),
-                array_keys($ranked),
-                $this->bm25Window($modelClass, $this->offset + $this->limit)
-            );
-
-            $sorted = $this->attachBm25Scores($models, $ranked)->slice($this->offset, $this->limit)->values();
+            $sorted = $this->indexedWindow($modelClass, $this->indexedBaseQuery($modelClass), $ranked, $this->offset + $this->limit)
+                ->slice($this->offset, $this->limit)->values();
         }
 
         if ($this->highlightTagOpen) {
@@ -1486,20 +1481,80 @@ class SearchBuilder
      * every page and scores stay comparable across pages. Not the first entry of $ranked: a row
      * the query hides, such as another tenant's, would set the scale and reveal what it contains.
      *
+     * $rank false (an explicit orderBy()) keeps the window's own order.
+     *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
-    protected function attachBm25Scores(Collection $models, array $ranked): Collection
+    protected function attachBm25Scores(Collection $models, array $ranked, bool $rank = true): Collection
     {
         $scores = $models->mapWithKeys(fn ($item, $i) => [$i => $this->searchScore($item, (float) ($ranked[$item->getKey()] ?? 0))]);
         $top    = (float) ($scores->max() ?? 0);
 
         // arsort() is stable: rows the hook left tied keep their BM25 rank.
-        return $scores->sortDesc()->map(function (float $raw, $i) use ($models, $top) {
+        return ($rank ? $scores->sortDesc() : $scores)->map(function (float $raw, $i) use ($models, $top) {
             $item             = $models[$i];
             $item->_raw_score = round($raw, 6);
             $item->_score     = $top > 0 ? round($item->_raw_score / $top, 6) : $item->_raw_score;
             return $item;
         })->values();
+    }
+
+    /**
+     * The index path's first $end matches the constrained $base accepts, scored: in rank order,
+     * or, with orderBy(), in that order (see orderedIndexedKeys()).
+     *
+     * @param array<int|string, float> $ranked model_id => score, best first
+     */
+    private function indexedWindow(string $modelClass, EloquentBuilder $base, array $ranked, int $end): Collection
+    {
+        if ($this->sortBy === []) {
+            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($ranked), $this->bm25Window($modelClass, $end));
+
+            return $this->attachBm25Scores($models, $ranked);
+        }
+
+        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $this->orderedIndexedKeys($base, $ranked, $end));
+
+        return $this->attachBm25Scores($models, $ranked, false);
+    }
+
+    /**
+     * With orderBy(), the keys of the first $needed matches in that order: $base's rows sorted by
+     * applyExplicitOrder()'s columns, keeping those the ranking matched. Up to one
+     * bm25.candidate_chunk of matches the query is restricted to their ids; past that it walks
+     * the ordered keys, so no id list can pass SQL Server's 2,100-parameter limit (as the Scout
+     * engine does).
+     *
+     * @param  array<int|string, float> $ranked model_id => score
+     * @return array<int|string>
+     */
+    private function orderedIndexedKeys(EloquentBuilder $base, array $ranked, int $needed): array
+    {
+        $model = $base->getModel();
+        $ids   = array_keys($ranked);
+        $query = clone $base;
+
+        if (count($ids) <= max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200))) {
+            // A global scope, as RankedCandidates adds its ids, so a caller's where(A)->orWhere(B) is grouped first.
+            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
+        }
+
+        $this->applyExplicitOrder($query);
+        $keys = [];
+
+        foreach ($query->toBase()->select($model->getQualifiedKeyName())->cursor() as $row) {
+            $key = $row->{$model->getKeyName()};
+
+            if (isset($ranked[$key])) {
+                $keys[$key] = true; // a join may repeat a model
+
+                if (count($keys) >= $needed) {
+                    break;
+                }
+            }
+        }
+
+        return array_keys($keys);
     }
 
     /**
@@ -1583,6 +1638,8 @@ class SearchBuilder
                 $this->query->where($filter['column'], $filter['operator'], $filter['value']);
             }
         }
+
+        $this->applyExplicitOrder($this->query);
 
         return $columns;
     }
@@ -1844,15 +1901,9 @@ class SearchBuilder
         if (empty($ranked)) {
             $sorted = collect();
         } else {
-            $ids = array_keys($ranked);
-
-            // Page: walk the ranking against the constrained query until offset + perPage
+            // Page: walk the matches against the constrained query until offset + perPage
             // rows are collected, then slice.
-            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
-                $base, $ids, $this->bm25Window($modelClass, $offset + $perPage)
-            );
-
-            $sorted = $this->attachBm25Scores($models, $ranked)->slice($offset, $perPage)->values();
+            $sorted = $this->indexedWindow($modelClass, $base, $ranked, $offset + $perPage)->slice($offset, $perPage)->values();
         }
 
         if ($this->highlightTagOpen) {
@@ -2125,32 +2176,43 @@ class SearchBuilder
             }
         }
 
-        // Apply sorting
+        // Apply sorting: an explicit orderBy() replaces the relevance order
         if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '') {
             $this->applyRelevanceOrdering();
-        } else {
-            foreach ($this->sortBy as $sort) {
-                $this->query->orderBy($sort['column'], $sort['direction']);
-            }
+        }
+
+        $this->applyExplicitOrder($this->query);
+    }
+
+    /**
+     * orderBy()'s columns, in the order the calls were made, then stableRanking()'s key as the
+     * tiebreak. On every path (LIKE, extended, index) an explicit order is the result order: PHP
+     * rescoring still sets _score but does not re-sort by it (calculateRelevanceScores()), and
+     * the index path walks its matches in this order (orderedIndexedKeys()).
+     */
+    private function applyExplicitOrder(Builder|EloquentBuilder $query): void
+    {
+        foreach ($this->sortBy as $sort) {
+            $query->orderBy($sort['column'], $sort['direction']);
         }
 
         // Stable ranking. An aliased FROM has no "users"."id", only its alias's, and a fromSub() has
         // neither (2.0 ordered by the bare key). A plain builder's bare "id" is qualified under a
         // join like a searched column: a join selecting both tables' columns makes it ambiguous.
         if ($this->stableRankingEnabled) {
-            if ($this->query instanceof EloquentBuilder) {
-                $model     = $this->query->getModel();
-                $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($this->query->toBase()->from);
+            if ($query instanceof EloquentBuilder) {
+                $model     = $query->getModel();
+                $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($query->toBase()->from);
                 $keyColumn = match (true) {
                     $from === null    => $model->getKeyName(),
                     $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
                     default           => $model->getQualifiedKeyName(),
                 };
             } else {
-                $keyColumn = ($this->qualifiedColumnMap($this->query)['id'] ?? '') . 'id';
+                $keyColumn = ($this->qualifiedColumnMap($query)['id'] ?? '') . 'id';
             }
 
-            $this->query->orderBy($keyColumn, 'asc');
+            $query->orderBy($keyColumn, 'asc');
         }
     }
 
@@ -2413,9 +2475,14 @@ class SearchBuilder
             }
 
             return $item;
-        })->sortByDesc(function ($item) {
-            return is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
-        })->values();
+        });
+
+        // An explicit orderBy() is the order (see applyExplicitOrder()); relevance ranks only without one.
+        if ($this->sortBy === []) {
+            $results = $results->sortByDesc(function ($item) {
+                return is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0);
+            })->values();
+        }
 
         // Score normalization to [0,1] range
         // Preserve raw score for backwards compatibility under _raw_score

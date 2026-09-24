@@ -44,7 +44,10 @@ class RankThenLimitTest extends TestCase
             ->search('john')
             ->searchIn(['name'])
             ->withRelevance()
-            ->orderBy('id', 'asc') // Force DB order = insertion order, bypass SQL score ordering
+            // Force DB order = insertion order on the underlying query (it leads the ORDER BY, ahead of
+            // the SQL score ordering). Not SearchBuilder::orderBy(): an explicit order replaces the
+            // relevance order, so PHP rescoring would no longer re-rank.
+            ->query(fn ($q) => $q->orderBy('id', 'asc'))
             ->take(3)
             ->get();
 
@@ -81,7 +84,7 @@ class RankThenLimitTest extends TestCase
             ->search('john')
             ->searchIn(['name'])
             ->withRelevance()
-            ->orderBy('id', 'asc')
+            ->query(fn ($q) => $q->orderBy('id', 'asc'))
             ->skip(1)   // Skip the top-scored result
             ->take(2)
             ->get();
@@ -106,7 +109,7 @@ class RankThenLimitTest extends TestCase
         config(['fuzzy-search.max_candidates' => 100]);
 
         $builder = new SearchBuilder($this->app['db']->table('users'), app(FuzzySearch::class));
-        $page1 = $builder->search('john')->searchIn(['name'])->withRelevance()->orderBy('id', 'asc')->paginate(2, 'page', 1);
+        $page1 = $builder->search('john')->searchIn(['name'])->withRelevance()->query(fn ($q) => $q->orderBy('id', 'asc'))->paginate(2, 'page', 1);
 
         $this->assertSame('john', $page1->items()[0]->name, 'exact match must lead page 1 even though it was inserted last');
         $this->assertSame(6, $page1->total());
