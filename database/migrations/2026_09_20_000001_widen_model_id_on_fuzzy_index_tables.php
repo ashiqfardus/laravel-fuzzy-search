@@ -22,9 +22,11 @@ use Illuminate\Support\Facades\Schema;
  */
 return new class extends Migration
 {
+    private const TABLES = ['fuzzy_index_postings', 'fuzzy_index_documents'];
+
     public function up(): void
     {
-        $this->resize(191);
+        $this->resize(191, self::TABLES);
     }
 
     public function down(): void
@@ -34,28 +36,36 @@ return new class extends Migration
             return;
         }
 
+        // A table already gone (a test that dropped it) has nothing to narrow.
+        $tables = array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
+
         // Keys longer than 36 characters do not fit the old column: drop their rows, and rebuild
         // the affected models after rolling back (php artisan fuzzy-search:rebuild --fresh).
-        foreach (['fuzzy_index_postings', 'fuzzy_index_documents'] as $table) {
+        foreach ($tables as $table) {
             DB::table($table)->whereRaw(DbDialect::lengthFunction($driver) . '(model_id) > 36')->delete();
         }
 
-        $this->resize(36);
+        $this->resize(36, $tables);
     }
 
-    private function resize(int $length): void
+    /** @param list<string> $tables */
+    private function resize(int $length, array $tables): void
     {
-        $driver = DB::connection()->getDriverName();
+        $driver    = DB::connection()->getDriverName();
+        $postings  = in_array('fuzzy_index_postings', $tables, true);
+        $documents = in_array('fuzzy_index_documents', $tables, true);
 
-        if ($driver === DbDialect::SQLSRV) {
+        if ($driver === DbDialect::SQLSRV && $postings) {
             Schema::table('fuzzy_index_postings', function (Blueprint $table) {
                 $table->dropUnique('postings_unique_idx');
                 $table->dropIndex('postings_model_idx');
             });
+        }
+        if ($driver === DbDialect::SQLSRV && $documents) {
             Schema::table('fuzzy_index_documents', fn (Blueprint $table) => $table->dropPrimary(['model_type', 'model_id']));
         }
 
-        foreach (['fuzzy_index_postings', 'fuzzy_index_documents'] as $table) {
+        foreach ($tables as $table) {
             $table = IndexManager::rawIdentifier($table);
 
             match (true) {
@@ -66,11 +76,13 @@ return new class extends Migration
             };
         }
 
-        if ($driver === DbDialect::SQLSRV) {
+        if ($driver === DbDialect::SQLSRV && $postings) {
             Schema::table('fuzzy_index_postings', function (Blueprint $table) {
                 $table->unique(['term_id', 'model_type', 'model_id', 'column_name'], 'postings_unique_idx');
                 $table->index(['model_type', 'model_id'], 'postings_model_idx');
             });
+        }
+        if ($driver === DbDialect::SQLSRV && $documents) {
             Schema::table('fuzzy_index_documents', fn (Blueprint $table) => $table->primary(['model_type', 'model_id']));
         }
     }

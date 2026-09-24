@@ -73,6 +73,19 @@ class LongStringKeyTest extends TestCase
         $this->assertSame(2, DB::table('fuzzy_index_documents')->where('model_type', LongKeyNote::class)->count());
     }
 
+    public function test_rolling_back_after_a_test_dropped_an_index_table_does_not_fail(): void
+    {
+        // Tests drop fuzzy_index_postings to simulate a missing dictionary; the teardown's
+        // rollback then runs this down() first, and a failure there left every later test's
+        // migrations half applied.
+        Schema::drop('fuzzy_index_postings');
+
+        (require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php')->down();
+
+        $this->assertFalse(Schema::hasTable('fuzzy_index_postings'));
+        $this->assertTrue(Schema::hasTable('fuzzy_index_documents'));
+    }
+
     public function test_the_migration_widens_model_id_and_rolls_back(): void
     {
         // Run the migration's own down() and up(): a migrate:rollback --step would leave the rest
