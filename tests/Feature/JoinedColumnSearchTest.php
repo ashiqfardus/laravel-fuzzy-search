@@ -154,6 +154,27 @@ class JoinedColumnSearchTest extends TestCase
         $this->assertSame(self::ids($expected->paginate(100)->items()), self::ids($aliased()->paginate(100)->items()));
     }
 
+    /**
+     * stableRanking() ordered an Eloquent search by the model's table ("users"."id"), which an
+     * aliased FROM does not have. Without relevance every row ties, so the key alone decides the
+     * order. A plain builder's bare "id" names the select list's id, so a join leaves it alone.
+     */
+    public function test_stable_ranking_under_an_aliased_from_or_a_join(): void
+    {
+        $expected = DB::table('users')->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $keys     = fn (SearchBuilder $search) => $search->withRelevance(false)->stableRanking()->take(50)->get()
+            ->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $eloquent = fn ($query) => $keys(User::searchOn($query, 'example', ['email']));
+
+        $this->assertSame($expected, $eloquent(User::query()->from('users as u')));
+        $this->assertSame($expected, $eloquent(User::query()->from('users as u')->join('teams', 'teams.user_id', '=', 'u.id')->select('u.*')));
+        $this->assertSame($expected, $eloquent(TeamUser::query()));
+        $this->assertSame($expected, $keys((new SearchBuilder(
+            DB::table('users')->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*'),
+            app(FuzzySearch::class)
+        ))->search('example')->searchIn(['email'])));
+    }
+
     public function test_a_forwarded_join(): void
     {
         $joined = fn () => User::search('john')->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*');

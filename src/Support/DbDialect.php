@@ -57,6 +57,18 @@ final class DbDialect
     }
 
     /**
+     * A query's FROM as [table, alias]: the table as written (schema included) and its alias, or
+     * null without one. null for a FROM that is not a plain table (fromSub()). The one place a
+     * FROM is parsed, for everything that qualifies a column with the name the FROM goes by.
+     *
+     * @return array{string, ?string}|null
+     */
+    public static function fromTable(mixed $from): ?array
+    {
+        return is_string($from) ? array_pad(preg_split('/\s+as\s+/i', $from), 2, null) : null;
+    }
+
+    /**
      * A string's length as the strictest supported column counts it. VARCHAR(n) holds n
      * characters on MySQL, MariaDB, PostgreSQL and SQLite, but SQL Server's nvarchar(n) holds n
      * UTF-16 code units, and a character outside the BMP (emoji, CJK Extension B, Gothic) is two.

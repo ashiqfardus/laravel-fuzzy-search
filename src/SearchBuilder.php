@@ -287,12 +287,13 @@ class SearchBuilder
     protected function qualifiedColumnMap(Builder|EloquentBuilder $query): array
     {
         $base = $query instanceof EloquentBuilder ? $query->toBase() : $query;
+        $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
 
-        if (empty($base->joins) || !is_string($base->from)) {
+        if (empty($base->joins) || $from === null) {
             return [];
         }
 
-        [$table, $alias] = array_pad(preg_split('/\s+as\s+/i', $base->from), 2, null);
+        [$table, $alias] = $from;
         $qualifier       = $alias ?? substr(strrchr('.' . $table, '.'), 1);
 
         if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/D', $qualifier)) {
@@ -2019,11 +2020,16 @@ class SearchBuilder
             }
         }
 
-        // Stable ranking
+        // Stable ranking. An aliased FROM has no "users"."id", only its alias's.
         if ($this->stableRankingEnabled) {
-            $keyColumn = $this->query instanceof EloquentBuilder
-                ? $this->query->getModel()->getQualifiedKeyName()
-                : 'id';
+            $keyColumn = 'id';
+
+            if ($this->query instanceof EloquentBuilder) {
+                $model     = $this->query->getModel();
+                $alias     = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($this->query->toBase()->from)[1] ?? null;
+                $keyColumn = $alias === null ? $model->getQualifiedKeyName() : $alias . '.' . $model->getKeyName();
+            }
+
             $this->query->orderBy($keyColumn, 'asc');
         }
     }
