@@ -1332,9 +1332,8 @@ class SearchBuilder
      */
     protected function executeSearch(): Collection
     {
-        // Only get() reaches this, after matchesNothing() has applied min_search_length.
-        // The length cap is here as well as in buildQuery() so the BM25 fast path below inherits it.
-        $this->capSearchTerm();
+        // Only get() reaches this, after matchesNothing() has applied min_search_length. The
+        // length cap is applied where the term becomes a query: buildQuery() and indexedQueryTerms().
 
         // Extended-search path (Fuse-style operators)
         if ($this->extendedQuery !== null) {
@@ -1464,8 +1463,7 @@ class SearchBuilder
      */
     protected function indexedQueryTerms(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager $indexManager): array
     {
-        // Every index terminal builds its terms here; count() and paginate() never pass executeSearch().
-        $this->capSearchTerm();
+        $this->capSearchTerm(); // see capSearchTerm(): the index path's one call
 
         $modelClass = $this->resolveIndexModelClass();
         $override   = $this->stopWordsOverridden ? $this->stopWords : null;
@@ -2246,10 +2244,11 @@ class SearchBuilder
      * Truncate the search term to query.max_term_length characters (never bytes), so no
      * driver ever generates O(n²) LIKE patterns from a multi-kilobyte term.
      *
-     * Called from executeSearch() (which also covers the BM25 fast path) and from
-     * buildQuery(), so count(), paginate(), getFacets(), toSql(), getBindings() and
-     * getAnalytics() inherit the same cap instead of only get() having it.
-     * An extended query is a query, not a term — the Lexer caps each of its tokens.
+     * Called where the term becomes a query, and nowhere else: buildQuery() (the LIKE path) and
+     * indexedQueryTerms() (the index path). Every terminal reaches one of them — get(), first(),
+     * paginate(), simplePaginate(), count(), getFacets(), toSql(), getBindings(), getAnalytics()
+     * and fallback() retries — before it reads the term. An extended query is a query, not a
+     * term — the Lexer caps each of its tokens.
      */
     protected function capSearchTerm(): void
     {
@@ -2268,7 +2267,7 @@ class SearchBuilder
      */
     protected function buildQuery(): void
     {
-        $this->capSearchTerm();
+        $this->capSearchTerm(); // see capSearchTerm(): the LIKE path's one call
 
         // Process search term
         $searchTerm = $this->processSearchTerm($this->searchTerm);
