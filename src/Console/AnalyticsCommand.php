@@ -3,19 +3,25 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
 use Ashiqfardus\LaravelFuzzySearch\Analytics\SearchAnalytics;
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Console\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 
 class AnalyticsCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature   = 'fuzzy-search:analytics {--days=30 : Window in days} {--limit=20 : Rows per table} {--zero-results : Only list searches that returned nothing}';
     protected $description = 'Report popular searches, zero-result searches, latency by path and daily volume from the search log (analytics.table)';
 
     public function handle(): int
     {
-        $days  = max(0, (int) $this->option('days'));
-        $limit = max(1, (int) $this->option('limit'));
+        $days  = $this->integerOption('days', 0);
+        $limit = $this->integerOption('limit', 1);
+        if ($days === null || $limit === null) {
+            return self::FAILURE;
+        }
 
         if ($this->option('zero-results')) {
             $rows = SearchAnalytics::zeroResults($days, $limit);

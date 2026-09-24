@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RebuildIndexJob;
 use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
@@ -11,6 +12,8 @@ use Illuminate\Support\Facades\Bus;
 
 class RebuildCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:rebuild
                             {model : Fully-qualified model class e.g. App\\Models\\User}
                             {--fresh : Flush existing index before rebuilding}
@@ -23,8 +26,7 @@ class RebuildCommand extends Command
     {
         $modelClass = $this->argument('model');
 
-        if (!class_exists($modelClass)) {
-            $this->error("Model class [{$modelClass}] not found.");
+        if (!$this->validModel($modelClass, 'indexable')) {
             return self::FAILURE;
         }
 

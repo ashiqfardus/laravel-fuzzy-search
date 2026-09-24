@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -9,6 +10,8 @@ use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 
 class IndexCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:index 
                             {model? : The model class to index}
                             {--all : Index all searchable models}
@@ -22,6 +25,20 @@ class IndexCommand extends Command
         $this->warn('[DEPRECATED] fuzzy-search:index writes to the legacy v1 search_index table.');
         $this->warn('For v2 BM25 inverted index use: php artisan fuzzy-search:rebuild "App\Models\ModelName"');
         $this->newLine();
+
+        // Check the model before creating anything for it.
+        $model = (string) $this->argument('model');
+        if (!$this->option('all')) {
+            if ($model === '') {
+                $this->error('Please provide a model class or use --all flag');
+                return 1;
+            }
+
+            $model = class_exists($model) ? $model : 'App\\Models\\' . $model;
+            if (!$this->validModel($model)) {
+                return 1;
+            }
+        }
 
         $table = config('fuzzy-search.indexing.table', 'search_index');
 
@@ -42,13 +59,6 @@ class IndexCommand extends Command
 
         if ($this->option('all')) {
             return $this->indexAllModels();
-        }
-
-        $model = $this->argument('model');
-
-        if (!$model) {
-            $this->error('Please provide a model class or use --all flag');
-            return 1;
         }
 
         return $this->indexModel($model);
@@ -161,11 +171,12 @@ class IndexCommand extends Command
             return 0;
         }
 
+        $status = 0;
         foreach ($models as $model) {
-            $this->indexModel($model);
+            $status = max($status, $this->indexModel($model)); // one failed model fails the run
         }
 
-        return 0;
+        return $status;
     }
 
     protected function hasSearchableTrait(string $class): bool
