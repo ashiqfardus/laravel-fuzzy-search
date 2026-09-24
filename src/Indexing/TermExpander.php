@@ -27,6 +27,7 @@ final class TermExpander
             return [];
         }
 
+        $term   = Pipeline::capTerm($term); // didYouMean() passes the raw search term
         $length = mb_strlen($term);
 
         $rows = $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType)
@@ -119,7 +120,8 @@ final class TermExpander
             return [];
         }
 
-        $last = mb_substr($prefix, -1);
+        $prefix = Pipeline::capTerm($prefix); // suggest() passes the raw last word
+        $last   = mb_substr($prefix, -1);
         $next = mb_chr(mb_ord($last, 'UTF-8') + 1, 'UTF-8');
 
         $driver      = DB::connection()->getDriverName();

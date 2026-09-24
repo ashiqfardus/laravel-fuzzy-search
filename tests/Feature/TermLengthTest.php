@@ -42,7 +42,7 @@ class TermLengthTest extends TestCase
         $this->assertSame(7, (int) DB::table('fuzzy_index_terms')->where('term', 'stripes')->value('term_length'));
     }
 
-    public function test_the_255_limit_on_a_token_counts_characters_not_bytes(): void
+    public function test_the_191_cap_on_a_token_counts_characters_not_bytes(): void
     {
         // Unsaved models: the users.name column could not hold the 256-character case, and the
         // indexer only reads attributes and the key.
@@ -51,16 +51,17 @@ class TermLengthTest extends TestCase
         );
 
         $bengali  = str_repeat('ক', 100); // 300 bytes
-        $cyrillic = str_repeat('я', 200); // 400 bytes
-        $tooLong  = str_repeat('ক', 256);
+        $cyrillic = str_repeat('я', 191); // 382 bytes: exactly the cap, kept whole
+        $tooLong  = str_repeat('ক', 256); // stored as its first 191 characters
 
         $index(9001, $bengali);
         $index(9002, $cyrillic);
         $index(9003, $tooLong . ' widget');
 
-        $lengths = array_map('intval', DB::table('fuzzy_index_terms')->whereIn('term', [$bengali, $cyrillic, $tooLong])->pluck('term_length', 'term')->all());
+        $capped  = mb_substr($tooLong, 0, 191);
+        $lengths = array_map('intval', DB::table('fuzzy_index_terms')->whereIn('term', [$bengali, $cyrillic, $capped])->pluck('term_length', 'term')->all());
         ksort($lengths);
-        $expected = [$bengali => 100, $cyrillic => 200];
+        $expected = [$bengali => 100, $cyrillic => 191, $capped => 191];
         ksort($expected);
         $this->assertSame($expected, $lengths);
         $this->assertTrue(DB::table('fuzzy_index_terms')->where('term', 'widget')->exists());
@@ -69,7 +70,8 @@ class TermLengthTest extends TestCase
     public function test_the_255_limit_counts_utf16_units_so_sql_server_can_store_every_term(): void
     {
         // nvarchar(255) holds 255 UTF-16 code units; a letter outside the BMP (Gothic 𐌰,
-        // U+10330) is two. 130 of them = 260 units: skipped. 250 Cyrillic letters = 250: kept.
+        // U+10330) is two. 130 of them = 260 units, under the 191-character cap: skipped.
+        // 250 Cyrillic letters are capped at 191 characters = 191 units: kept.
         $gothic   = str_repeat("\u{10330}", 130);
         $cyrillic = str_repeat('ж', 250);
 
@@ -80,7 +82,7 @@ class TermLengthTest extends TestCase
         }
 
         $this->assertFalse(DB::table('fuzzy_index_terms')->where('term', $gothic)->exists());
-        $this->assertSame(250, (int) DB::table('fuzzy_index_terms')->where('term', $cyrillic)->value('term_length'));
+        $this->assertSame(191, (int) DB::table('fuzzy_index_terms')->where('term', mb_substr($cyrillic, 0, 191))->value('term_length'));
     }
 
     public function test_new_config_keys_are_published_with_defaults(): void

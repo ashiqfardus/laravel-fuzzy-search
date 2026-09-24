@@ -614,7 +614,9 @@ class IndexManager
             $column = mb_substr((string) $name, 0, 64);
             foreach ($pipeline->tokens($value) as $stemmed) {
                 if (DbDialect::varcharLength($stemmed) > 255) {
-                    continue; // token exceeds term VARCHAR(255) on some driver — skip rather than truncate silently
+                    // Capped at 191 characters, but SQL Server's nvarchar(255) counts a character
+                    // outside the BMP as two: skip rather than truncate silently.
+                    continue;
                 }
                 if (!isset($byColumn[$column][$stemmed])) {
                     $distinct++;
