@@ -35,6 +35,6 @@ class RebuildIndexJob implements ShouldQueue
 
         // Fill *_metaphone shadow columns for rows saved before they existed, as the sync rebuild does.
         $shadows = app(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
-        $models->each(fn ($model) => $shadows->populateShadowColumns($model));
+        $shadows->backfillShadowColumns($models);
     }
 }

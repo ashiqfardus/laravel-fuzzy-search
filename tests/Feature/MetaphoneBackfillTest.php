@@ -57,6 +57,44 @@ class MetaphoneBackfillTest extends TestCase
         $this->assertSame(0, $events);
     }
 
+    /** One CASE UPDATE per chunk and shadow column; a row whose shadow value is right is left alone. */
+    public function test_rebuild_writes_one_update_per_chunk_and_none_when_the_shadow_values_are_current(): void
+    {
+        $updates = 0;
+        DB::listen(function ($query) use (&$updates) {
+            if (preg_match('/^\s*update\b/i', $query->sql) && str_contains($query->sql, 'users')) {
+                $updates++;
+            }
+        });
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
+        $this->assertBackfilled();
+        $this->assertSame(1, $updates); // seven rows, one chunk
+
+        $updates = 0;
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
+        $this->assertSame(0, $updates);
+
+        // A row whose value changed behind the model's back (a query-builder update) is refreshed.
+        DB::table('users')->where('name', 'Jon Snow')->update(['name' => 'Stephen Snow']);
+        $updates = 0;
+        (new RebuildIndexJob(User::class, User::pluck('id')->all()))->handle(app(IndexManager::class));
+        $this->assertSame(1, $updates);
+        $this->assertSame(metaphone('Stephen Snow'), DB::table('users')->where('name', 'Stephen Snow')->value('name_metaphone'));
+    }
+
+    public function test_a_save_back_to_the_previous_value_still_updates_the_shadow_column(): void
+    {
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
+        $user = User::where('name', 'John Doe')->first(); // name_metaphone loaded
+
+        $user->update(['name' => 'Stephen']);
+        $user->update(['name' => 'John Doe']);
+
+        $this->assertSame(metaphone('John Doe'), DB::table('users')->where('id', $user->getKey())->value('name_metaphone'));
+        $this->assertSame(metaphone('John Doe'), $user->name_metaphone);
+    }
+
     public function test_the_async_rebuild_job_fills_it_too(): void
     {
         (new RebuildIndexJob(User::class, User::pluck('id')->all()))->handle(app(IndexManager::class));

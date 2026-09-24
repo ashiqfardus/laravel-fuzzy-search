@@ -65,7 +65,7 @@ class RebuildCommand extends Command
         // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
         IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed, $shadows) {
             $indexed += $indexManager->indexBatch($models);
-            $models->each(fn ($model) => $shadows->populateShadowColumns($model)); // fills *_metaphone for rows saved before it existed
+            $shadows->backfillShadowColumns($models); // fills *_metaphone for rows saved before it existed
             $bar->advance($models->count());
         }, $keyName);
 
