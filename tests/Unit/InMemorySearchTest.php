@@ -100,4 +100,27 @@ class InMemorySearchTest extends TestCase
         $contains = $this->rowFor('ΘΗΝ', 'αθηνα', ['αθηνα']);
         $this->assertSame(30, $contains['_raw_score'] ?? null, 'a Greek substring in the other case');
     }
+
+    // -------------------------------------------------------------------------
+    // query.max_term_length
+    // -------------------------------------------------------------------------
+
+    public function test_a_term_longer_than_max_term_length_is_searched_on_its_first_max_term_length_characters(): void
+    {
+        config(['fuzzy-search.query.max_term_length' => 128]);
+
+        $events = [];
+        \Illuminate\Support\Facades\Event::listen(\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted::class, function ($event) use (&$events) {
+            $events[] = $event;
+        });
+
+        // 5,000 characters: the first 128 are a prefix of the 200-character value.
+        $results = FuzzySearch::on([['name' => str_repeat('é', 200)], ['name' => 'other']])
+            ->search(str_repeat('é', 5000))->searchIn(['name'])->get();
+
+        $this->assertCount(1, $results);
+        $this->assertSame(60, $results->first()['_raw_score'], 'the capped term is a prefix of the value');
+        $this->assertCount(1, $events);
+        $this->assertSame(128, mb_strlen($events[0]->searchTerm), 'the event reports the term that was searched');
+    }
 }

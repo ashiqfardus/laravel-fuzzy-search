@@ -99,9 +99,13 @@ class InMemorySearch
             return $this->items->slice($this->offset, $this->limit)->values();
         }
 
+        // query.max_term_length characters (never bytes), as SearchBuilder::capSearchTerm() cuts
+        // the term: similar_text() below is O(term × value).
+        $term = mb_substr($this->term, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+
         // Case-folded in every script, as SearchBuilder's PHP scoring folds: strtolower() is
         // ASCII-only, so "ÉCOLE" was only a near-miss for "école" and "МОСКВА" no match for "москва".
-        $needle = mb_strtolower($this->term, 'UTF-8');
+        $needle = mb_strtolower($term, 'UTF-8');
 
         $scored = $this->items->map(function ($item) use ($needle) {
             $score = 0;
@@ -165,7 +169,7 @@ class InMemorySearch
         $results = $scored->slice($this->offset, $this->limit)->values();
 
         event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->term,
+            searchTerm:     $term,
             columns:        $this->columns,
             algorithm:      'in_memory',
             candidateCount: $this->items->count(),
