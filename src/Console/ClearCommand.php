@@ -15,7 +15,7 @@ class ClearCommand extends Command
                             {model? : The model class to clear (e.g. "App\\Models\\User")}
                             {--all : Clear BM25 index for all models}';
 
-    protected $description = 'Clear the BM25 search index for a model';
+    protected $description = 'Clear the BM25 search index for a model (fuzzy-search:flush <model> does the same), or for every model with --all';
 
     public function handle(IndexManager $indexManager): int
     {
