@@ -102,8 +102,9 @@ final class SearchableColumns
     }
 
     /**
-     * The table's column names, memoised per connection and table like detect(). A table that
-     * cannot be read gives [] and is not cached.
+     * The table's column names, memoised per connection and table like detect(). They come from
+     * typesOn()'s read where the types are readable, so detection and this listing read the schema
+     * once. A table that cannot be read gives [] and is not cached.
      *
      * @return string[]
      */
@@ -113,6 +114,11 @@ final class SearchableColumns
 
         if (isset(self::$listings[$key])) {
             return self::$listings[$key];
+        }
+
+        // The same read as typesOn() (and so detection) where the types are readable.
+        if (($types = self::typesOn($connection, $table)) !== []) {
+            return self::$listings[$key] = array_map('strval', array_keys($types));
         }
 
         try {

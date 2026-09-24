@@ -110,6 +110,36 @@ class AutoDetectTextColumnsTest extends TestCase
         $this->assertSame(['note'], (new AutoDetectUntypedRow)->getSearchableColumns());
     }
 
+    /** Detection's column types and onTable()'s listing come from one schema read per table. */
+    public function test_the_schema_is_read_once_per_table(): void
+    {
+        Schema::create('typed_rows', function ($table) {
+            $table->id();
+            $table->integer('quantity');
+        });
+        \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+
+        $schemaReads = function (\Closure $run): array {
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $run();
+            DB::disableQueryLog();
+
+            return array_values(array_filter(
+                array_column(DB::getQueryLog(), 'query'),
+                fn (string $sql) => (bool) preg_match('/pragma|information_schema|pg_catalog|pg_attribute|pg_class|sys\.columns|sqlite_master/i', $sql)
+            ));
+        };
+
+        // One getColumns() call is one read (two queries on SQLite).
+        $oneRead = $schemaReads(fn () => Schema::getColumns('typed_rows'));
+
+        // No text column: detection finds none, then hasNoSearchableColumn() lists the table.
+        $reads = $schemaReads(fn () => $this->assertCount(0, AutoDetectNumericRow::search('42')->get()));
+
+        $this->assertSame($oneRead, $reads);
+    }
+
     public function test_integer_decimal_boolean_date_and_json_columns_are_each_skipped(): void
     {
         Schema::create('typed_rows', function ($table) {
@@ -183,4 +213,12 @@ class AutoDetectUntypedRow extends Model
 
     protected $table    = 'untyped_rows';
     protected $fillable = ['amount', 'note'];
+}
+
+/** Numbers only: nothing to auto-detect. */
+class AutoDetectNumericRow extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table = 'typed_rows';
 }
