@@ -156,22 +156,34 @@ final class SearchableColumns
     }
 
     /**
-     * Whether a database column type holds text a LIKE can search on every supported database:
-     * char/varchar/text in all their sizes and spellings (nchar, nvarchar, ntext, bpchar,
-     * character varying, citext, SQLite's TEXT affinity), plus MySQL/MariaDB enum and set.
-     * Numbers, booleans, dates, json, uuid, binary types and PostgreSQL arrays (`_text`) and
-     * native enums (named by the enum) are not: PostgreSQL rejects their ILIKE outright.
+     * Database types that hold text a LIKE can search on every supported database, by their exact
+     * names: char/varchar/text in all their sizes and spellings (nchar, nvarchar, ntext, bpchar,
+     * character varying, citext, clob, SQLite's `string` and other TEXT-affinity spellings), plus
+     * MySQL/MariaDB enum and set. Only whole names count: a PostgreSQL enum or domain is named by its
+     * own type (`charge_status`), and its ILIKE fails like a number's.
+     */
+    private const TEXT_TYPES = [
+        'char', 'character', 'varchar', 'character varying', 'varying character', 'bpchar', 'nchar',
+        'national character', 'native character', 'nvarchar', 'national character varying',
+        'text', 'tinytext', 'mediumtext', 'longtext', 'ntext', 'citext', 'clob', 'string', 'enum', 'set',
+    ];
+
+    /**
+     * Whether a database column type holds text a LIKE can search: TEXT_TYPES, in any letter
+     * case and with any size or parameters (`varchar(255)`) stripped. Numbers, booleans, dates,
+     * json, uuid, binary types, PostgreSQL arrays (`_text`) and user-defined types are not.
      *
      * @param string|null $type the column's type from typesOn(), or null when it could not be read
      */
     public static function isTextType(?string $type): bool
     {
-        if ($type === null) {
-            return true; // unknown: keep the column, as detection did before types were read
+        // Unknown: keep the column, as detection did before types were read. '' is SQLite's
+        // column declared without a type, which stores text as given (ruling ER-60).
+        if ($type === null || $type === '') {
+            return true;
         }
 
-        return in_array($type, ['enum', 'set'], true)
-            || (!str_starts_with($type, '_') && preg_match('/char|text|clob/', $type) === 1);
+        return in_array(strtolower(trim(explode('(', $type, 2)[0])), self::TEXT_TYPES, true);
     }
 
     /**

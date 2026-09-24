@@ -42,6 +42,10 @@ class AutoDetectTextColumnsTest extends TestCase
     {
         Schema::dropIfExists('orders');
         Schema::dropIfExists('typed_rows');
+        Schema::dropIfExists('untyped_rows');
+        if ($this->dbDriver === 'pgsql') {
+            DB::statement('DROP TYPE IF EXISTS charge_status');
+        }
 
         parent::tearDown();
     }
@@ -73,6 +77,37 @@ class AutoDetectTextColumnsTest extends TestCase
         });
 
         $this->assertSame(['title'], (new AutoDetectTypedRow)->getSearchableColumns());
+    }
+
+    public function test_a_postgresql_enum_whose_name_contains_char_is_not_text(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL only (CI runs it): a user-defined enum type.');
+        }
+
+        DB::statement('DROP TYPE IF EXISTS charge_status');
+        DB::statement("CREATE TYPE charge_status AS ENUM ('open', 'paid')");
+        Schema::create('typed_rows', function ($table) {
+            $table->id();
+            $table->text('remarks')->nullable();
+        });
+        DB::statement('ALTER TABLE typed_rows ADD COLUMN status charge_status');
+        DB::table('typed_rows')->insert(['remarks' => 'open invoice', 'status' => 'open']);
+
+        $this->assertSame(['remarks'], (new AutoDetectChargeRow)->getSearchableColumns());
+        $this->assertSame(['open invoice'], AutoDetectChargeRow::search('open')->get()->pluck('remarks')->all());
+    }
+
+    /** Ruling ER-60: SQLite stores text in a column declared without a type, as 2.0 searched it. */
+    public function test_an_untyped_sqlite_column_is_still_detected(): void
+    {
+        if ($this->dbDriver !== 'sqlite') {
+            $this->markTestSkipped('SQLite only: no other database has a column without a type.');
+        }
+
+        DB::statement('CREATE TABLE untyped_rows (id integer primary key, amount integer, note)');
+
+        $this->assertSame(['note'], (new AutoDetectUntypedRow)->getSearchableColumns());
     }
 
     public function test_integer_decimal_boolean_date_and_json_columns_are_each_skipped(): void
@@ -131,4 +166,21 @@ class AutoDetectTypedColumns extends Model
 
     protected $table    = 'typed_rows';
     protected $fillable = ['quantity', 'amount', 'active', 'shipped_on', 'payload', 'label', 'grade', 'remarks'];
+}
+
+/** A PostgreSQL enum column (charge_status) beside a text one, both in $fillable. */
+class AutoDetectChargeRow extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table    = 'typed_rows';
+    protected $fillable = ['status', 'remarks'];
+}
+
+class AutoDetectUntypedRow extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table    = 'untyped_rows';
+    protected $fillable = ['amount', 'note'];
 }
