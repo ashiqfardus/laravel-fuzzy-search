@@ -187,7 +187,8 @@ class FederatedSearch
     }
 
     /**
-     * Fetch up to $perModelCeiling rows from every model, tag them, and return the merged,
+     * Fetch up to $perModelCeiling rows from every model — never more than max_candidates, the
+     * most a ranked search reads (see countPerModel()) — tag them, and return the merged,
      * ranked collection (score DESC, then orderByModel() rank, then model type, then key).
      */
     protected function fetchRanked(int $perModelCeiling): Collection
@@ -200,7 +201,7 @@ class FederatedSearch
             throw new EmptySearchTermException();
         }
 
-        $perModel   = min($this->limitPerModel ?? PHP_INT_MAX, max(1, $perModelCeiling));
+        $perModel   = min($this->limitPerModel ?? PHP_INT_MAX, max(1, $perModelCeiling), $this->maxCandidates());
         $allResults = collect();
 
         foreach ($this->models as $modelClass) {
@@ -331,10 +332,11 @@ class FederatedSearch
 
     /**
      * How many rows each model can actually contribute to this search: its match count, capped
-     * at limitPerModel() when set and at max_candidates on the SearchBuilder path (a ranked
-     * search reads at most that many candidates and slices the page out of them, so no model
-     * can ever hand over more). getCounts() reports these numbers and paginate()'s total() is
-     * their sum, so the two can never disagree and no page is promised that cannot be filled.
+     * at limitPerModel() when set and at max_candidates (a ranked search reads at most that many
+     * candidates and slices the page out of them, and a model without the Searchable trait is
+     * held to the same window, so no model can ever hand over more). getCounts() reports these
+     * numbers and paginate()'s total() is their sum, so the two can never disagree and no page
+     * is promised that cannot be filled.
      *
      * Keyed by class, not by basename: across([A\User::class, B\User::class]) is two models
      * and must be counted twice.
@@ -360,12 +362,9 @@ class FederatedSearch
                 continue;
             }
 
-            $counts[$modelClass] = $this->matchesNothing() ? 0 : min(
-                $query->count(),
-                $this->limitPerModel ?? PHP_INT_MAX,
-                // The plain whereFuzzyMultiple() fallback has no candidate window.
-                $query instanceof SearchBuilder ? (int) config('fuzzy-search.max_candidates', 1000) : PHP_INT_MAX
-            );
+            $counts[$modelClass] = $this->matchesNothing()
+                ? 0
+                : min($query->count(), $this->limitPerModel ?? PHP_INT_MAX, $this->maxCandidates());
         }
 
         return $counts;
@@ -419,8 +418,17 @@ class FederatedSearch
             return self::validateColumns($instance->fuzzySearchable);
         }
 
-        // Default fallback columns
-        return ['name', 'title'];
+        // Guessed columns: only those the table has. None means nothing to search — the model
+        // matches nothing, as a Searchable model without a column does. A table that cannot be
+        // listed is not such a model: the guess is kept, and its database error surfaces.
+        $listing = SearchableColumns::onTable($instance->getConnection(), $instance->getTable());
+
+        return $listing === [] ? ['name', 'title'] : array_values(array_intersect(['name', 'title'], $listing));
+    }
+
+    private function maxCandidates(): int
+    {
+        return (int) config('fuzzy-search.max_candidates', 1000);
     }
 
     /**

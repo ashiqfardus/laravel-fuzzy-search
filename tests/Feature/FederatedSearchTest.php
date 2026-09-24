@@ -576,6 +576,64 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | Models Without the Searchable Trait Get the Same Limits
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_a_model_without_the_trait_is_capped_at_max_candidates(): void
+    {
+        // "jo" is in John Doe, Jon Snow, Johnny Bravo and Bob Johnson: four matches, two reachable.
+        config(['fuzzy-search.max_candidates' => 2]);
+
+        $federated = fn () => FederatedSearch::across([PlainUser::class])->search('jo')->searchIn(['name'])->using('like');
+
+        $this->assertCount(2, $federated()->limit(10)->get());
+        $this->assertSame(['PlainUser' => 2], $federated()->getCounts());
+
+        $page = $federated()->paginate(1, 'page', 1);
+        $this->assertSame(2, $page->total());
+        $this->assertCount(0, $federated()->paginate(1, 'page', 3)->items());
+        $this->assertCount(0, $federated()->simplePaginate(1, 'page', 3)->items());
+        $this->assertFalse($federated()->simplePaginate(1, 'page', 2)->hasMorePages());
+    }
+
+    public function test_a_model_without_the_trait_and_without_a_searchable_column_matches_nothing(): void
+    {
+        // PlainTag declares no columns and its table has neither of the guessed "name"/"title".
+        $schema = $this->app['db']->connection()->getSchemaBuilder();
+        $schema->dropIfExists('federated_tags');
+        $schema->create('federated_tags', function ($table) {
+            $table->id();
+            $table->string('label');
+        });
+        $this->app['db']->table('federated_tags')->insert([['label' => 'name tag'], ['label' => 'title tag']]);
+
+        try {
+            // The term is the guessed column's own name: were it written into the SQL, SQLite would
+            // read the unknown quoted identifier as a string and match every row, the others throw.
+            foreach (['name', 'title'] as $term) {
+                $federated = fn () => FederatedSearch::across([PlainTag::class, User::class])->search($term);
+
+                $this->assertSame([], $federated()->get()->where('_model_type', 'PlainTag')->all());
+                $this->assertArrayNotHasKey('PlainTag', $federated()->getCounts());
+                $this->assertSame($federated()->get()->count(), $federated()->paginate(15, 'page', 1)->total());
+            }
+        } finally {
+            $schema->dropIfExists('federated_tags');
+        }
+    }
+
+    public function test_a_model_without_the_trait_honours_min_search_length(): void
+    {
+        $federated = fn () => FederatedSearch::across([PlainUser::class])->search('j')->searchIn(['name'])->using('like');
+
+        $this->assertCount(0, $federated()->get());
+        $this->assertSame(['PlainUser' => 0], $federated()->getCounts());
+        $this->assertSame(0, $federated()->paginate(15, 'page', 1)->total());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */
@@ -635,4 +693,19 @@ class TypoZeroUser extends Model
         'algorithm'      => 'fuzzy',
         'typo_tolerance' => 0,
     ];
+}
+
+/** Plain model over "users" with no Searchable/Fuzzy trait (FederatedSearch's fallback branch). */
+class PlainUser extends Model
+{
+    protected $table = 'users';
+    protected $guarded = [];
+}
+
+/** Plain model whose table has neither of the fallback's guessed columns, "name" and "title". */
+class PlainTag extends Model
+{
+    protected $table = 'federated_tags';
+    protected $guarded = [];
+    public $timestamps = false;
 }
