@@ -2209,7 +2209,7 @@ class SearchBuilder
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
             // Every token must match at least one column
             foreach ($tokens as $token) {
-                $tokenTerms = $this->termConditions($this->termAlternatives($token));
+                $tokenTerms = $this->termConditions($this->termAlternatives($token), $searchTerm);
                 $group->where(function ($q) use ($tokenTerms, $targets) {
                     $first = true;
                     foreach ($tokenTerms as [$term, $termOptions]) {
@@ -2224,7 +2224,7 @@ class SearchBuilder
         }
 
         // Any token can match any column
-        $allTerms = $this->termConditions($allTerms);
+        $allTerms = $this->termConditions($allTerms, $searchTerm);
         $group->where(function ($q) use ($allTerms, $targets) {
             $first = true;
             foreach ($allTerms as [$term, $termOptions]) {
@@ -2240,19 +2240,21 @@ class SearchBuilder
      * Each term with the driver options it is applied with. An explicit accent opt-in ORs
      * unaccent() beside the algorithm on PostgreSQL (FuzzySearch::applyFuzzyWhere()): only the
      * first term of each accent-free form carries it, since a folded variant unaccents to its
-     * own term's form and would repeat the same alternative.
+     * own term's form and would repeat the same alternative. Under tokenize(), similar_text's
+     * min_percentage bound measures the whole search term, not each token (ruling ER-59).
      *
      * @param  string[] $terms
      * @return array<int, array{0: string, 1: array<string, mixed>}> [term, options], in order
      */
-    private function termConditions(array $terms): array
+    private function termConditions(array $terms, string $searchTerm): array
     {
         $unaccented = [];
         $conditions = [];
+        $whole      = $this->tokenizeSearch ? ['term_length' => mb_strlen($searchTerm, 'UTF-8')] : [];
 
         foreach ($terms as $term) {
             $form         = mb_strtolower($this->removeAccents($term), 'UTF-8');
-            $conditions[] = [$term, ['accent_insensitive' => $this->accentInsensitiveEnabled && !isset($unaccented[$form])]];
+            $conditions[] = [$term, ['accent_insensitive' => $this->accentInsensitiveEnabled && !isset($unaccented[$form])] + $whole];
             $unaccented[$form] = true;
         }
 

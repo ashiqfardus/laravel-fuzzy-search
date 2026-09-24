@@ -35,10 +35,14 @@ class SimilarTextDriver extends BaseDriver
         });
     }
 
-    /** The min_percentage length bound (see maxValueLength()), or null when it is off. */
+    /**
+     * The min_percentage length bound (see maxValueLength()), or null when it is off. t is the
+     * term's length, or the term_length option: under tokenize() SearchBuilder passes the whole
+     * search term's, so each token is bounded by the whole term (ruling ER-59).
+     */
     public function matchBound(Builder $query, string $column, string $value): ?array
     {
-        $max = $this->maxValueLength(mb_strlen($value, 'UTF-8'));
+        $max = $this->maxValueLength((int) ($this->config['similar_text']['term_length'] ?? mb_strlen($value, 'UTF-8')));
 
         return $max === null ? null : [$this->characterLength($query, $column) . ' <= ?', [$max]];
     }

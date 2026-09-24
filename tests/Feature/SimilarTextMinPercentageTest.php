@@ -88,6 +88,19 @@ class SimilarTextMinPercentageTest extends TestCase
         $this->assertSame(self::ALL_JOHNS, $this->names(User::query()->fuzzySimilar('john', ['name'], 0)->get()), '0 disables it');
     }
 
+    /** Ruling ER-59: under tokenize() the bound measures the whole term, not each token. */
+    public function test_under_tokenize_the_bound_uses_the_whole_term_length(): void
+    {
+        $search = fn () => (new SearchBuilder(User::query(), app(FuzzySearch::class)))->search('john doe')->searchIn(['name'])->using('similar_text')->tokenize();
+
+        // "john doe" (8): v <= floor(8·130/70) = 14, for the "john" and "doe" tokens alike.
+        $this->assertContains('John Doe', $this->names($search()->get()));
+        $this->assertContains('Johnny Bravo', $this->names($search()->get()));
+        $this->assertSame([14, 14], array_values(array_filter($search()->withRelevance(false)->getBindings(), 'is_int')));
+
+        $this->assertSame(['John Doe'], $this->names($search()->matchAll()->get()));
+    }
+
     public function test_lengths_are_counted_in_characters_not_bytes(): void
     {
         DB::table('users')->insert([
