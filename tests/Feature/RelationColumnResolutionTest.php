@@ -82,16 +82,15 @@ class RelationColumnResolutionTest extends TestCase
         Post::search('x')->searchIn(['author.na me']);
     }
 
-    public function test_a_relation_method_that_throws_is_treated_as_a_non_relation(): void
+    public function test_an_untyped_method_is_rejected_without_being_called(): void
     {
-        // isRelationPath() catches the throw and reports "not a relation". With only one
-        // segment before the leaf ("brokenRelation"), resolveColumnTarget() then falls
-        // through to the v2.0 table.column rule rather than raising an exception.
-        $targets = Post::search('x')
-            ->searchIn(['brokenRelation.name'])
-            ->getDebugInfo()['column_targets'];
+        // Ruling ER-50: brokenRelation() has no Relation return type and its path is not in
+        // $searchable['columns'], so isRelationPath() throws before calling it (it would throw a
+        // RuntimeException if it ran). It is never mistaken for the v2.0 table.column.
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('[brokenRelation] on ' . Post::class . ' must be a relation method with a Relation return type');
 
-        $this->assertSame(['relation' => null, 'column' => 'brokenRelation.name'], $targets['brokenRelation.name']);
+        Post::search('x')->searchIn(['brokenRelation.name'])->getDebugInfo();
     }
 
     public function test_trailing_dot_column_throws_from_the_identifier_check(): void

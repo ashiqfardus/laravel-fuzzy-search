@@ -204,7 +204,7 @@ class SearchBuilder
             }
         }
 
-        if ($model !== null && $this->isRelationPath($model, $segments)) {
+        if ($model !== null && $this->isRelationPath($model, $segments, $column)) {
             return ['relation' => implode('.', $segments), 'column' => $leaf];
         }
 
@@ -219,30 +219,70 @@ class SearchBuilder
         );
     }
 
-    /** True when every segment is a relation method, following the chain model by model. */
-    protected function isRelationPath(Model $model, array $segments): bool
+    /**
+     * True when every segment is a relation method, following the chain model by model. A segment
+     * that names no method is not a relation (a two-segment name is then table.column). One that
+     * names a method is called only when isReachableRelation() allows it, and must return a
+     * Relation; anything else throws without calling it (ruling ER-50): searchIn() can carry
+     * request input, and `unguard.body` or `save.body` would otherwise run that method.
+     */
+    protected function isRelationPath(Model $model, array $segments, string $column): bool
     {
-        $current = $model;
+        $current  = $model;
+        $declared = fn (): bool => method_exists($model, 'getSearchableColumns')
+            && in_array($column, $model->getSearchableColumns(), true);
 
         foreach ($segments as $segment) {
             if (!method_exists($current, $segment)) {
                 return false;
             }
 
-            try {
-                $relation = $current->{$segment}();
-            } catch (\Throwable) {
-                return false;
-            }
+            $relation = $this->isReachableRelation($current, $segment, $declared) ? $current->{$segment}() : null;
 
             if (!$relation instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
-                return false;
+                throw new \InvalidArgumentException(
+                    "Invalid column name [{$column}]: [{$segment}] on " . get_class($current)
+                    . " must be a relation method with a Relation return type (or the path must be declared in \$searchable['columns'])."
+                );
             }
 
             $current = $relation->getRelated();
         }
 
         return true;
+    }
+
+    /**
+     * Whether $segment may be called as a relation: a public, non-static method without required
+     * parameters that neither the framework nor this package declares (an override of one counts
+     * as theirs: `save`, `delete`), typed to return a Relation or on a path the model declares in
+     * $searchable['columns'], which is the developer's own config.
+     *
+     * @param Closure(): bool $declared
+     */
+    private function isReachableRelation(Model $model, string $segment, Closure $declared): bool
+    {
+        $method = new \ReflectionMethod($model, $segment);
+
+        if (!$method->isPublic() || $method->isStatic() || $method->getNumberOfRequiredParameters() > 0) {
+            return false;
+        }
+
+        // A trait's method reports the class that uses it as its declaring class, so the owners
+        // are every parent and every trait, each asked whether it has the method.
+        foreach ([...class_parents($model), ...class_uses_recursive($model)] as $owner) {
+            if (method_exists($owner, $segment)
+                && (str_starts_with($owner, 'Illuminate\\')
+                    || str_starts_with((string) (new \ReflectionClass($owner))->getFileName(), __DIR__ . DIRECTORY_SEPARATOR))) {
+                return false;
+            }
+        }
+
+        $type = $method->getReturnType();
+
+        return ($type instanceof \ReflectionNamedType && !$type->isBuiltin()
+                && is_a($type->getName(), \Illuminate\Database\Eloquent\Relations\Relation::class, true))
+            || $declared();
     }
 
     /** @return array<string, string> searchIn() column => column for direct (non-relation) targets */
