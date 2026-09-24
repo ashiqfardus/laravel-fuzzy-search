@@ -7,8 +7,39 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+
+/** Declares its columns in a protected $searchable, as every Searchable model does. */
+class IndexCommandNameOnlyUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['name' => 10]];
+}
+
+/** Scout's Searchable plus the package's, and no $searchable property (docs/integrations.md). */
+class IndexCommandScoutUser extends Model
+{
+    use \Laravel\Scout\Searchable, \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable {
+        \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable::search insteadof \Laravel\Scout\Searchable;
+        \Laravel\Scout\Searchable::search as scoutSearch;
+        \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable::bootSearchable insteadof \Laravel\Scout\Searchable;
+        \Laravel\Scout\Searchable::bootSearchable as bootScoutSearchable;
+    }
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    protected static function booted(): void
+    {
+        static::bootScoutSearchable();
+    }
+}
 
 /**
  * The deprecated v1 `fuzzy-search:index` creates its search_index table with a FULLTEXT index,
@@ -41,7 +72,7 @@ class IndexCommandTest extends TestCase
         $this->assertFalse(Schema::hasTable('search_index'));
     }
 
-    public function test_an_existing_table_is_used_on_every_driver(): void
+    private function createLegacyTable(): void
     {
         Schema::create('search_index', function ($table) {
             $table->id();
@@ -50,9 +81,32 @@ class IndexCommandTest extends TestCase
             $table->text('content');
             $table->timestamps();
         });
+    }
+
+    public function test_an_existing_table_is_used_on_every_driver(): void
+    {
+        $this->createLegacyTable();
 
         $this->artisan('fuzzy-search:index', ['model' => User::class])->assertExitCode(0);
 
         $this->assertSame(User::count(), DB::table('search_index')->count());
+    }
+
+    /**
+     * The command read $instance->searchable from outside the model. The property is protected,
+     * so the read went to Eloquent's __isset() and the declared columns were never seen; on a
+     * model that also uses Scout's Searchable, __isset() resolved Scout's searchable() method
+     * as a relation, which indexed the model and threw a LogicException.
+     */
+    public function test_it_reads_the_declared_columns_and_does_not_trip_over_scouts_searchable(): void
+    {
+        $this->createLegacyTable();
+
+        config(['scout.driver' => 'null', 'scout.queue' => false]);
+        $this->artisan('fuzzy-search:index', ['model' => IndexCommandScoutUser::class])->assertExitCode(0);
+        $this->assertSame('John Doe john@example.com', DB::table('search_index')->where('model', IndexCommandScoutUser::class)->orderBy('model_id')->value('content')); // no columns declared: the common-column fallback
+
+        $this->artisan('fuzzy-search:index', ['model' => IndexCommandNameOnlyUser::class])->assertExitCode(0);
+        $this->assertSame('John Doe', DB::table('search_index')->where('model', IndexCommandNameOnlyUser::class)->orderBy('model_id')->value('content'));
     }
 }

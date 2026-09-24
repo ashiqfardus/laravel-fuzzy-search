@@ -187,8 +187,15 @@ class IndexCommand extends Command
 
     protected function getSearchableColumns($instance): array
     {
-        if (isset($instance->searchable['columns'])) {
-            return array_keys($instance->searchable['columns']);
+        // Through the model's own accessors, never $instance->searchable from outside: the property
+        // is protected, so that read went to Eloquent's __isset() and never saw the declared
+        // columns, and on a model that also uses Scout's Searchable, __isset() resolved Scout's
+        // searchable() method as a relation, which indexed the model and threw. property_exists()
+        // first: without the property, the accessor's own read of $this->searchable goes the same way.
+        if (property_exists($instance, 'searchable') && method_exists($instance, 'hasDeclaredSearchableColumns')
+            && $instance->hasDeclaredSearchableColumns()) {
+            // Real columns only: this command selects them, and a relation path is no column.
+            return array_values(array_filter($instance->getSearchableColumns(), fn ($column) => !str_contains($column, '.')));
         }
 
         // Fallback to common columns
