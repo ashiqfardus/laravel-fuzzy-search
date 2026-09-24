@@ -880,7 +880,7 @@ class SearchBuilder
      */
     public function skip(int $offset): self
     {
-        $this->offset = $offset;
+        $this->offset = max(0, $offset); // a negative offset sliced from the end: the last rows
         return $this;
     }
 
@@ -898,7 +898,7 @@ class SearchBuilder
     public function page(int $page, int $perPage = 15): self
     {
         $this->limit = $perPage;
-        $this->offset = ($page - 1) * $perPage;
+        $this->offset = (max(1, $page) - 1) * $perPage; // page 0 or below is page 1, as for ?page
         return $this;
     }
 

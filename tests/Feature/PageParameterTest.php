@@ -76,4 +76,25 @@ class PageParameterTest extends TestCase
             $this->assertSame([], $make()->simplePaginate(1)->items(), "{$shape} simplePaginate");
         }
     }
+    /** page() and skip() take app input too: page(0) and skip(-3) served the last rows (a negative slice offset). */
+    public function test_page_zero_and_a_negative_skip_are_the_first_rows_on_every_path(): void
+    {
+        $wrong = [];
+
+        foreach ($this->shapes() as $shape => $make) {
+            foreach ([
+                'page(0, 2)'         => [fn ($b) => $b->page(0, 2), 2],
+                'page(-1, 1)'        => [fn ($b) => $b->page(-1, 1), 1],
+                'skip(-1)->take(2)'  => [fn ($b) => $b->skip(-1)->take(2), 2],
+            ] as $call => [$apply, $size]) {
+                $first = $make()->take($size)->get()->pluck('id')->all();
+                $got   = $apply($make())->get()->pluck('id')->all();
+                if ($got !== $first) {
+                    $wrong[] = "{$shape} {$call}: " . json_encode($got) . ' expected ' . json_encode($first);
+                }
+            }
+        }
+
+        $this->assertSame([], $wrong);
+    }
 }
