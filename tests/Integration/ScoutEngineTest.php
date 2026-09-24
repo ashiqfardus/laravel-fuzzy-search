@@ -697,6 +697,54 @@ class ScoutEngineTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Caching a Scout search (the recipe in docs/integrations.md)
+    // -------------------------------------------------------------------------
+
+    public function test_the_documented_ways_to_cache_a_scout_search_cache_it(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+        $cache = \Illuminate\Support\Facades\Cache::build(['driver' => 'array', 'serialize' => true]); // stores like file or redis
+
+        $queries = function (\Closure $call): array {
+            $count = 0;
+            \Illuminate\Support\Facades\DB::listen(function () use (&$count) {
+                $count++;
+            });
+            $result = $call();
+
+            return [$result, $count];
+        };
+
+        // Cache::remember() around Scout's own call.
+        $recipes = [
+            'Cache::remember() + Scout paginate()' => fn () => $cache->remember('users.search.widget.1', now()->addMinutes(10),
+                fn () => $this->scoutBuilder('widget')->paginate(2, 'page', 1)),
+            // The package builder's cache() caches get() (and simplePaginate(), which runs get()).
+            'SearchBuilder cache()->get()' => fn () => ScoutIndexedUser::search('widget')->useInvertedIndex()->typoTolerance(0)->cache(10)->get(),
+            'SearchBuilder cache()->simplePaginate()' => fn () => ScoutIndexedUser::search('widget')->useInvertedIndex()->typoTolerance(0)->cache(10)->simplePaginate(2),
+        ];
+
+        foreach ($recipes as $label => $recipe) {
+            if (!str_starts_with($label, 'Cache::')) {
+                \Illuminate\Support\Facades\Cache::flush();
+            }
+
+            [$first, $firstQueries]   = $queries($recipe);
+            [$second, $secondQueries] = $queries($recipe);
+
+            $this->assertGreaterThan(0, $firstQueries, "{$label}: the first call searches");
+            $this->assertSame(0, $secondQueries, "{$label}: the second call is served from the cache");
+            $this->assertSame($this->resultIds($first), $this->resultIds($second), $label);
+        }
+
+        $this->assertSame([$top, $middle], $this->resultIds($cache->get('users.search.widget.1')));
+    }
+
+    // -------------------------------------------------------------------------
     // query.max_term_length: the engine binds one parameter per query term, so an uncapped
     // query of a few thousand words passed SQL Server's 2,100-parameter limit
     // -------------------------------------------------------------------------
