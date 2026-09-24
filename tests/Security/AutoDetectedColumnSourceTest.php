@@ -15,13 +15,16 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * ER-32. Auto-detection never picks a column the model hides from serialization or a
- * secret-named column, and an auto-detected column is indexed as its stored value — the value
- * the LIKE path searches — not through a get accessor, which may decrypt it. A declared column
- * is the caller's explicit choice and keeps its accessor.
+ * secret-named column, and an auto-detected column is indexed as its raw attribute value — what
+ * the LIKE path searches — not through a get accessor, which may decrypt it. A column the model
+ * chose (declared, or supplied by overriding getSearchableColumns()) keeps its accessor.
  */
 class AutoDetectedColumnSourceTest extends TestCase
 {
-    private const TABLES = ['secret_notes', 'hidden_things', 'visible_things', 'credentials', 'token_only', 'fillable_secrets'];
+    private const TABLES = [
+        'secret_notes', 'hidden_things', 'visible_things', 'credentials', 'token_only', 'fillable_secrets',
+        'cased_secrets', 'shadow_people', 'override_things',
+    ];
 
     protected function defineEnvironment($app): void
     {
@@ -70,6 +73,22 @@ class AutoDetectedColumnSourceTest extends TestCase
             $table->text('two_factor_secret');
             $table->string('api_token');
             $table->string('nickname');
+        });
+        Schema::create('cased_secrets', function ($table) {
+            $table->id();
+            $table->string('Password');
+            $table->string('nickname');
+        });
+        Schema::create('shadow_people', function ($table) {
+            $table->id();
+            $table->string('name');
+            $table->string('name_metaphone')->nullable();
+            $table->string('title');
+        });
+        Schema::create('override_things', function ($table) {
+            $table->id();
+            $table->string('first_name');
+            $table->string('last_name');
         });
     }
 
@@ -183,6 +202,107 @@ class AutoDetectedColumnSourceTest extends TestCase
     {
         $this->assertSame(['nickname'], (new FillableSecretThing)->getSearchableColumns());
     }
+
+    public function test_secret_names_are_matched_in_any_letter_case(): void
+    {
+        $this->assertSame(['nickname'], (new CasedSecretThing)->getSearchableColumns());
+    }
+
+    /** A table that was listed is final even when every column is filtered out: re-listing it changes nothing. */
+    public function test_an_empty_detection_of_a_listed_table_is_cached(): void
+    {
+        $this->assertSame([], (new TokenOnlyThing)->getSearchableColumns());
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $this->assertSame([], (new TokenOnlyThing)->getSearchableColumns());
+        $this->assertSame([], DB::getQueryLog(), 'the table was listed again on every call');
+    }
+
+    public function test_the_schema_failure_fallback_never_picks_an_encrypted_name(): void
+    {
+        $this->useUnreachableConnection();
+
+        $this->assertSame([], (new UnreachableEncryptedNameThing)->getSearchableColumns());
+    }
+
+    /** The fallback is a stand-in for a table that could not be listed: it must not outlive the outage. */
+    public function test_the_schema_failure_fallback_is_not_cached(): void
+    {
+        $this->useUnreachableConnection();
+        $this->assertSame(['name'], (new UnreachableThing)->getSearchableColumns());
+
+        config(['database.connections.unreachable' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '']]);
+        DB::purge('unreachable');
+        Schema::connection('unreachable')->create('recovering_things', function ($table) {
+            $table->id();
+            $table->string('title');
+        });
+
+        $this->assertSame(['title'], (new UnreachableThing)->getSearchableColumns());
+    }
+
+    private function useUnreachableConnection(): void
+    {
+        config(['database.connections.unreachable' => [
+            'driver' => 'sqlite', 'database' => sys_get_temp_dir() . '/fuzzy-search-no-such-dir/none.sqlite', 'prefix' => '',
+        ]]);
+        DB::purge('unreachable');
+    }
+
+    /** @return array<string, array{class-string<Model>}> */
+    public static function shadowModels(): array
+    {
+        return ['auto-detected' => [ShadowPerson::class], 'declared' => [DeclaredShadowPerson::class]];
+    }
+
+    /**
+     * A save that never loaded `name` (a partial select) did not change it, so its shadow still
+     * holds. It was wiped to NULL, or, in strict mode, the save threw.
+     */
+    #[DataProvider('shadowModels')]
+    public function test_saving_a_partially_selected_model_keeps_its_shadow_column(string $class): void
+    {
+        $id = $class::create(['name' => 'Bob Jones', 'title' => 'Engineer'])->getKey();
+        $this->assertSame(metaphone('Bob Jones'), DB::table('shadow_people')->value('name_metaphone'), 'precondition');
+
+        foreach (['default' => false, 'strict' => true] as $mode => $strict) {
+            Model::preventAccessingMissingAttributes($strict);
+
+            try {
+                $person        = $class::select(['id', 'title'])->find($id);
+                $person->title = 'Manager ' . $mode;
+                $person->save();
+            } finally {
+                Model::preventAccessingMissingAttributes(false);
+            }
+
+            $this->assertSame(metaphone('Bob Jones'), DB::table('shadow_people')->value('name_metaphone'), "$mode mode");
+        }
+
+        // A loaded column is still written.
+        $class::find($id)->update(['name' => 'Ada Byron']);
+        $this->assertSame(metaphone('Ada Byron'), DB::table('shadow_people')->value('name_metaphone'));
+    }
+
+    /** Overriding getSearchableColumns() chooses the columns, exactly as declaring them does. */
+    public function test_a_model_that_overrides_get_searchable_columns_keeps_its_accessor(): void
+    {
+        $thing = ColumnsOverrideThing::create(['first_name' => 'Grace', 'last_name' => 'Hopper']);
+
+        $this->assertTrue($thing->hasDeclaredSearchableColumns());
+
+        app(IndexManager::class)->indexModel($thing);
+
+        $this->assertSame(2, DB::table('fuzzy_index_postings')->where('column_name', 'full_name')->count());
+        $this->assertSame(2, DB::table('fuzzy_index_terms')->whereIn('term', ['grace', 'hopper'])->count());
+    }
+
+    /** Detection builds a fresh instance; a constructor that reads the columns must not recurse through it. */
+    public function test_a_constructor_that_reads_the_columns_does_not_recurse(): void
+    {
+        $this->assertSame(['name', 'title', 'body'], (new ConstructorReadsColumns)->columnsAtConstruction);
+    }
 }
 
 /** Zero-config model whose `bio` is encrypted by a mutator and decrypted by a get accessor. */
@@ -265,4 +385,88 @@ class FillableSecretThing extends Model
 
     protected $table    = 'fillable_secrets';
     protected $fillable = ['two_factor_secret', 'api_token', 'nickname'];
+}
+
+class CasedSecretThing extends Model
+{
+    use Searchable;
+
+    protected $table = 'cased_secrets';
+}
+
+/** Its connection points at a database file that does not exist, so detection cannot list the table. */
+class UnreachableThing extends Model
+{
+    use Searchable;
+
+    protected $connection = 'unreachable';
+    protected $table      = 'recovering_things';
+}
+
+class UnreachableEncryptedNameThing extends UnreachableThing
+{
+    protected $casts = ['name' => 'encrypted'];
+}
+
+class ShadowPerson extends Model
+{
+    use Searchable;
+
+    protected $table   = 'shadow_people';
+    protected $guarded = [];
+    public $timestamps = false;
+}
+
+class DeclaredShadowPerson extends ShadowPerson
+{
+    protected array $searchable = ['columns' => ['name' => 10, 'title' => 10]];
+}
+
+/** Supplies its columns by overriding getSearchableColumns(), with no $searchable['columns']. */
+class ColumnsOverrideThing extends Model
+{
+    use Searchable;
+
+    protected $table   = 'override_things';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    public function getSearchableColumns(): array
+    {
+        return ['full_name'];
+    }
+
+    public function getFullNameAttribute(): string
+    {
+        return $this->first_name . ' ' . $this->last_name;
+    }
+}
+
+class ConstructorReadsColumns extends Model
+{
+    use Searchable;
+
+    public static int $depth = 0;
+
+    protected $table = 'visible_things';
+
+    public array $columnsAtConstruction = [];
+
+    public function __construct(array $attributes = [])
+    {
+        parent::__construct($attributes);
+
+        // Fail the test on recursion instead of exhausting the stack.
+        if (self::$depth >= 5) {
+            throw new \RuntimeException('the constructor was re-entered without bound');
+        }
+
+        self::$depth++;
+
+        try {
+            $this->columnsAtConstruction = $this->getSearchableColumns();
+        } finally {
+            self::$depth--;
+        }
+    }
 }

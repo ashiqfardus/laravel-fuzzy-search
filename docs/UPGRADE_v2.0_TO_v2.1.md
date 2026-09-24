@@ -174,16 +174,23 @@ you get back from a search:
   (a later string column may take the freed slot). A value that still turns out not to be text is
   skipped rather than thrown, so this cannot make a save throw. Declare `$searchable['columns']`
   to search or index anything else: a declared column is your choice, and one that cannot be
-  indexed as text raises an error naming it. An auto-detected column is indexed as its stored
-  value, the value the LIKE search matches, so a get accessor that decrypts or reformats it never
-  reaches the index; declaring the column is what opts into its accessor.
+  indexed as text raises an error naming it. An auto-detected column is indexed as the model's raw
+  attribute value, not through a get accessor, so an accessor that decrypts or reformats it never
+  reaches the index. A masking accessor (`Str::mask()`) is bypassed the same way, so the unmasked
+  value is indexed and served by `suggest()` and `didYouMean()`; and encryption that decrypts into
+  the attributes in memory (spatie/laravel-ciphersweet) is invisible to the package, so its
+  plaintext is indexed. Put such a column in `$hidden`, or declare `$searchable['columns']`.
+  Declaring the columns, or overriding `getSearchableColumns()`, is what opts into accessors.
 - **Auto-detection skips hidden and secret columns.** A model with no `$searchable['columns']`
   no longer auto-selects a column in `$hidden`, a column outside a non-empty `$visible`, or
-  `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`,
-  on the LIKE path as well as the index path. A zero-config model whose only priority column was
+  `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`
+  (in any letter case), on the LIKE path as well as the index path. A zero-config model whose only priority column was
   hidden (a hidden `name`, say) now picks another column, or none. With none, `search()` adds no
   constraint and returns every row, as it already did for a model with no detectable column.
-  Declare `$searchable['columns']` to keep searching a hidden column.
+  Declare `$searchable['columns']` to keep searching a hidden column. Detection reads the model
+  class's default `$hidden` and `$visible`, once per process, so a column hidden at runtime with
+  `makeHidden()`, `setHidden()` or a per-request `getHidden()` is still searched and indexed; put
+  it in `$hidden` to keep it out.
 - **Case-insensitive scoring and highlighting now cover every script.** They folded ASCII
   only, so a lower-case Cyrillic, Greek or accented term scored an upper-case value as a fuzzy
   near-miss and highlighted nothing. Such results now rank as exact/prefix/contains matches and

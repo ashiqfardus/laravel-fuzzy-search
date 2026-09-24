@@ -100,13 +100,16 @@ trait Searchable
     }
 
     /**
-     * True when the model declared $searchable['columns'] itself, false when the list was
-     * auto-detected. IndexManager reads it to decide whether a value it cannot index as text is
-     * the caller's mistake (an informative throw) or the heuristic's (skip the column).
+     * True when the model chose its columns — declared $searchable['columns'], or overrode
+     * getSearchableColumns() — false when the list was auto-detected. It decides whether a column
+     * is read through its accessor or as the raw attribute (SearchableColumns::value()), and
+     * whether a value the indexer cannot index as text is the caller's mistake (an informative
+     * throw) or the heuristic's (skip the column).
      */
     public function hasDeclaredSearchableColumns(): bool
     {
-        return !empty($this->searchable['columns']);
+        return !empty($this->searchable['columns'])
+            || (new \ReflectionMethod($this, 'getSearchableColumns'))->getFileName() !== __FILE__;
     }
 
     /**
@@ -296,6 +299,9 @@ trait Searchable
      * heuristic, and the indexer cannot turn such a value into text. Nor is a column the model
      * hides from serialization ($hidden, or outside a non-empty $visible) or a secret by name:
      * the index and suggest() would publish it. Declaring any of them is the caller's choice.
+     *
+     * @return array{array<string, int>, bool} the columns, and whether the table was listed
+     *         (SearchableColumns::detect() caches only then)
      */
     private function detectSearchableColumns(): array
     {
@@ -303,14 +309,29 @@ trait Searchable
         $columns = [];
 
         // Hidden/visible come from a fresh instance: detection is memoised per class, so one
-        // instance's makeVisible() must not decide it for the rest of the process.
-        $defaults = new static;
+        // instance's makeVisible() must not decide it for the rest of the process. A constructor
+        // that reads the columns re-enters here from that instance; it answers for itself.
+        static $building = [];
+
+        if (isset($building[static::class])) {
+            $defaults = $this;
+        } else {
+            $building[static::class] = true;
+
+            try {
+                $defaults = new static;
+            } finally {
+                unset($building[static::class]);
+            }
+        }
+
         $hidden   = $defaults->getHidden();
         $visible  = $defaults->getVisible();
-        $pickable = fn (string $column) => !in_array($column, [
+        $pickable = fn (string $column) => !in_array(strtolower($column), [
             'id', 'password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes', 'api_token',
             'created_at', 'updated_at', 'deleted_at',
-        ], true) && !in_array($column, $hidden, true) && ($visible === [] || in_array($column, $visible, true));
+        ], true) && !in_array($column, $hidden, true) && ($visible === [] || in_array($column, $visible, true))
+            && SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null);
 
         // Priority columns to check
         $priorityColumns = [
@@ -335,10 +356,8 @@ trait Searchable
             // Get actual table columns, minus any the indexer could not read as text and any
             // that must never be picked (every branch below reads this list). Read through the
             // model's own connection, not the default one.
-            $tableColumns = array_values(array_filter(
-                $this->getConnection()->getSchemaBuilder()->getColumnListing($table),
-                fn (string $column) => $pickable($column) && SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null)
-            ));
+            $listing      = $this->getConnection()->getSchemaBuilder()->getColumnListing($table);
+            $tableColumns = array_values(array_filter($listing, $pickable));
 
             // Check which priority columns exist
             foreach ($priorityColumns as $col => $weight) {
@@ -371,10 +390,10 @@ trait Searchable
             }
         } catch (\Exception $e) {
             // Fallback if schema check fails
-            $columns = $pickable('name') ? ['name' => 1] : [];
+            return [$pickable('name') ? ['name' => 1] : [], false];
         }
 
-        return $columns;
+        return [$columns, $listing !== []];
     }
 
     /**

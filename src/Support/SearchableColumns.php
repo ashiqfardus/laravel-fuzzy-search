@@ -30,7 +30,7 @@ final class SearchableColumns
      * and still raises that error.
      *
      * `encrypted` and `hashed` are text but never auto-detected: an auto-detected column is
-     * indexed as stored (value()), so the dictionary would fill with ciphertext or hashes, and a
+     * indexed as its raw attribute (value()), so the dictionary would fill with ciphertext or hashes, and a
      * declared column is read through getAttribute(), which decrypts. Declaring such a column is
      * the caller's explicit choice.
      */
@@ -79,8 +79,9 @@ final class SearchableColumns
     }
 
     /**
-     * @param  string                        $key    model class, connection and table
-     * @param  Closure(): array<string, int> $detect
+     * @param  string                                      $key    model class, connection and table
+     * @param  Closure(): array{array<string, int>, bool} $detect the columns, and whether the
+     *                                                            table's column listing was read
      * @return array<string, int>
      */
     public static function detect(string $key, Closure $detect): array
@@ -89,12 +90,12 @@ final class SearchableColumns
             return self::$detected[$key];
         }
 
-        $columns = $detect();
+        [$columns, $listed] = $detect();
 
-        // An empty result means the table could not be read (it does not exist yet, most
-        // likely). Caching that would make a model touched before its migration unsearchable
-        // for the life of the process.
-        return $columns === [] ? [] : self::$detected[$key] = $columns;
+        // A table that could not be listed (not migrated yet, or its connection is down) must
+        // not pin its answer for the life of the process. One that was listed is final, even
+        // when every column was filtered out: listing it again changes nothing.
+        return $listed ? self::$detected[$key] = $columns : $columns;
     }
 
     /**
@@ -122,17 +123,21 @@ final class SearchableColumns
 
     /**
      * What the indexer and the shadow columns read for a searchable column. A column the model
-     * declared goes through getAttribute() — accessors and casts, a documented feature. An
-     * auto-detected one is read as stored, the value the LIKE path searches: nobody chose to
-     * expose it, and a get accessor may decrypt it into the dictionary that suggest() serves.
+     * chose goes through getAttribute() — accessors and casts, a documented feature. An
+     * auto-detected one is read as the raw attribute, what the LIKE path searches: nobody chose
+     * to expose it, and a get accessor may decrypt it into the dictionary that suggest() serves.
+     * The flip side: a masking accessor is bypassed too, and so is anything that swaps the raw
+     * attributes in memory (a decrypt-on-retrieved package) — the docs say to $hidden such columns.
      */
     public static function value(Model $model, string $column): mixed
     {
-        if (method_exists($model, 'hasDeclaredSearchableColumns') && !$model->hasDeclaredSearchableColumns()) {
-            return $model->getAttributes()[$column] ?? null;
-        }
+        return self::declared($model) ? $model->getAttribute($column) : $model->getAttributes()[$column] ?? null;
+    }
 
-        return $model->getAttribute($column);
+    /** False only for a Searchable model whose columns were auto-detected; a model without the trait chose its own. */
+    public static function declared(Model $model): bool
+    {
+        return !method_exists($model, 'hasDeclaredSearchableColumns') || $model->hasDeclaredSearchableColumns();
     }
 
     /** @param string|null $cast the model's cast for the column, or null when it has none */

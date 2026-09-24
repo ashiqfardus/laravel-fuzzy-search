@@ -513,7 +513,7 @@ class IndexManager
     /**
      * The texts to index for a model: the searchableText() hook when the model defines one
      * (any keys, related data allowed), otherwise the searchable columns' values — through
-     * accessors for declared columns, as stored for auto-detected ones (SearchableColumns::value()).
+     * accessors for declared columns, as raw attributes for auto-detected ones (SearchableColumns::value()).
      *
      * A hook value may be a Collection or array (e.g. `$this->tags->pluck('name')`) — its
      * scalar items are joined with a space so callers don't have to implode() themselves.
@@ -531,7 +531,7 @@ class IndexManager
         // Auto-detection is a heuristic: a value it lands on may still not be text. Skip such a
         // value rather than break the model's save. A column the caller declared (or a hook
         // value) is their choice and still gets the throw.
-        $declared = !method_exists($model, 'hasDeclaredSearchableColumns') || $model->hasDeclaredSearchableColumns();
+        $declared = SearchableColumns::declared($model);
         $texts    = $fromHook
             ? (array) $model->searchableText()
             : array_combine($columns, array_map(fn ($c) => SearchableColumns::value($model, $c), $columns));

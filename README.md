@@ -124,7 +124,7 @@ $users = User::search('john')->get();
 - `bio`, `summary`, `excerpt` (weight: 3)
 - `slug`, `sku`, `code` (weight: 2-6)
 
-If none of these exist, it falls back to the model's `$fillable` columns, then to the first remaining column. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes`, `api_token`, `id` or the timestamps.
+If none of these exist, it falls back to the model's `$fillable` columns, then to the first remaining column. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes`, `api_token`, `id` or the timestamps. It reads the model class's default `$hidden` and `$visible`, so a column hidden at runtime with `makeHidden()` is still searched and indexed.
 
 ### Manual Column Configuration
 
@@ -202,7 +202,13 @@ User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 
 The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
 
-`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. Nor does it select a column the model hides from serialization (`$hidden`, or any column outside a non-empty `$visible`), or `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`. An auto-detected column is indexed as its stored value — the value the LIKE search matches — so a get accessor that decrypts or reformats it never reaches the index or its `*_metaphone` shadow column. Declaring a column in `$searchable['columns']` is what opts into its accessor. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
+`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. Nor does it select a column the model hides from serialization (`$hidden`, or any column outside a non-empty `$visible`), or `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`, in any letter case. An auto-detected column is indexed as the model's raw attribute value, not through a get accessor, and its `*_metaphone` shadow column is filled from the same value, so an accessor that decrypts or reformats it never reaches the index. Declaring a column in `$searchable['columns']`, or overriding `getSearchableColumns()`, is what opts into its accessor. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
+
+Auto-detection does not keep a column out of the index in these cases. Put the column in `$hidden`, or declare `$searchable['columns']` without it:
+
+- **A masking accessor** (`Str::mask()` on an email) is bypassed: the index, `suggest()` and `didYouMean()` serve the unmasked value, and the shadow column encodes it.
+- **Encryption that decrypts into the model's attributes in memory** (spatie/laravel-ciphersweet does this when a model is retrieved) is invisible to the package: the plaintext is indexed, while the LIKE search matches the ciphertext in the database.
+- **A column hidden at runtime** (`makeHidden()`, `setHidden()`, or a `getHidden()` that changes per request) is still searched, indexed and highlighted: detection reads the model class's default `$hidden` and `$visible`, once per process.
 
 → Full guide: [docs/relationships.md](docs/relationships.md)
 

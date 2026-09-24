@@ -50,7 +50,7 @@ class SearchableObserver
                 static::$columnCache[$cacheKey] = $schema->hasColumn($table, $metaphoneCol);
             }
 
-            if (static::$columnCache[$cacheKey]) {
+            if (static::$columnCache[$cacheKey] && $this->loaded($model, $column)) {
                 $value               = SearchableColumns::value($model, $column);
                 $updates[$metaphoneCol] = $value !== null ? metaphone((string) $value) : null;
             }
@@ -63,5 +63,16 @@ class SearchableObserver
                   ->where($model->getKeyName(), $model->getKey())
                   ->update($updates);
         }
+    }
+
+    /**
+     * False for a column this save never loaded (a partial select): it did not change, so its
+     * shadow still holds. Reading it would give NULL, or throw under preventAccessingMissingAttributes().
+     * Only a declared column's accessor can supply a value that is not a loaded attribute.
+     */
+    protected function loaded(Model $model, string $column): bool
+    {
+        return array_key_exists($column, $model->getAttributes())
+            || (SearchableColumns::declared($model) && ($model->hasGetMutator($column) || $model->hasAttributeGetMutator($column)));
     }
 }
