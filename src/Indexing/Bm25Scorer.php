@@ -57,18 +57,20 @@ class Bm25Scorer
      */
     private function weightedFrequencySql(array $columnWeights): array
     {
-        $cases    = '';
-        $bindings = [];
+        // The builder writes the alias p with the connection's table prefix: pfx_p.
+        $frequency = IndexManager::rawIdentifier('p.frequency');
+        $cases     = '';
+        $bindings  = [];
         foreach ($columnWeights as $column => $weight) {
             $w = (float) $weight;
             if ($w <= 0 || $w == 1.0) {
                 continue; // excluded by whereNotIn() / default branch
             }
-            $cases     .= ' WHEN ? THEN p.frequency * ' . sprintf('%.6F', $w);
+            $cases     .= " WHEN ? THEN {$frequency} * " . sprintf('%.6F', $w);
             $bindings[] = (string) $column;
         }
 
-        return [$cases === '' ? 'SUM(p.frequency)' : "SUM(CASE p.column_name{$cases} ELSE p.frequency END)", $bindings];
+        return [$cases === '' ? "SUM({$frequency})" : 'SUM(CASE ' . IndexManager::rawIdentifier('p.column_name') . "{$cases} ELSE {$frequency} END)", $bindings];
     }
 
     /**

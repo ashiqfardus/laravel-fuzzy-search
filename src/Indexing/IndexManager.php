@@ -27,6 +27,27 @@ class IndexManager
     }
 
     /**
+     * A table, or table.column, for raw SQL on the default connection (the one the index lives
+     * on): as written when the connection has no table prefix, so that SQL stays byte-identical,
+     * and through the grammar, prefix included, when it has one. The query builder prefixes an
+     * alias as well ("fuzzy_index_postings as p" is written as pfx_p), so a raw reference to an
+     * alias the builder declared goes through here too. The migrations use it as well.
+     *
+     * @internal
+     */
+    public static function rawIdentifier(string $identifier): string
+    {
+        $connection = DB::connection();
+        if ($connection->getTablePrefix() === '') {
+            return $identifier;
+        }
+
+        $grammar = $connection->getQueryGrammar();
+
+        return str_contains($identifier, '.') ? $grammar->wrap($identifier) : $grammar->wrapTable($identifier);
+    }
+
+    /**
      * Whether $model has anything to index: searchable columns (declared or auto-detected) or a
      * searchableText() hook. The one rule the indexer and the search path share: a model it
      * fails is never indexed, so a search of it has nothing to find.
@@ -96,7 +117,7 @@ class IndexManager
                 // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
                 // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
                 // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
-                ['doc_count' => DB::raw('fuzzy_index_terms.doc_count + 1')]
+                ['doc_count' => DB::raw(self::rawIdentifier('fuzzy_index_terms.doc_count') . ' + 1')]
             );
 
             // Fetch all term IDs in one query
@@ -217,18 +238,20 @@ class IndexManager
 
             // Clean up orphan terms (those with no remaining postings) via DB-side JOIN
             // — avoids loading million-row term_id arrays into PHP memory.
-            $driver = DB::connection()->getDriverName();
+            $driver   = DB::connection()->getDriverName();
+            $terms    = self::rawIdentifier('fuzzy_index_terms');
+            $postings = self::rawIdentifier('fuzzy_index_postings');
 
             if (\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver)) {
                 DB::statement(
-                    'DELETE t FROM fuzzy_index_terms t ' .
-                    'LEFT JOIN fuzzy_index_postings p ON t.id = p.term_id ' .
+                    "DELETE t FROM {$terms} t " .
+                    "LEFT JOIN {$postings} p ON t.id = p.term_id " .
                     'WHERE p.id IS NULL'
                 );
             } elseif ($driver === 'pgsql') {
                 DB::statement(
-                    'DELETE FROM fuzzy_index_terms t ' .
-                    'WHERE NOT EXISTS (SELECT 1 FROM fuzzy_index_postings p WHERE p.term_id = t.id)'
+                    "DELETE FROM {$terms} t " .
+                    "WHERE NOT EXISTS (SELECT 1 FROM {$postings} p WHERE p.term_id = t.id)"
                 );
             } else {
                 DB::table('fuzzy_index_terms')
@@ -449,7 +472,7 @@ class IndexManager
                 DB::table('fuzzy_index_terms')->upsert(
                     [['term' => $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)]],
                     ['term'],
-                    ['doc_count' => DB::raw("fuzzy_index_terms.doc_count + {$increment}")]
+                    ['doc_count' => DB::raw(self::rawIdentifier('fuzzy_index_terms.doc_count') . " + {$increment}")]
                 );
             }
 
@@ -628,7 +651,7 @@ class IndexManager
             }
             $inList = implode(',', array_map('intval', array_keys($chunk)));
             DB::statement(
-                "UPDATE fuzzy_index_terms SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
+                'UPDATE ' . self::rawIdentifier('fuzzy_index_terms') . " SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
             );
         }
     }

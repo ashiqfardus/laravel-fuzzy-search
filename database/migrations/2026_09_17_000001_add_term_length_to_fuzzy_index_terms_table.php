@@ -1,5 +1,6 @@
 <?php
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -18,7 +19,7 @@ return new class extends Migration
         // filter by length immediately. lengthFunction() is the character (not byte) length
         // on every driver: CHAR_LENGTH (MySQL/MariaDB), LEN (SQL Server), LENGTH (others).
         $length = DbDialect::lengthFunction(DB::connection()->getDriverName());
-        DB::statement("UPDATE fuzzy_index_terms SET term_length = {$length}(term)");
+        DB::statement('UPDATE ' . IndexManager::rawIdentifier('fuzzy_index_terms') . " SET term_length = {$length}(term)");
     }
 
     public function down(): void
