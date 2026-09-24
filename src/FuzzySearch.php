@@ -64,7 +64,7 @@ class FuzzySearch
         ?array $options = [],
         string $boolean = 'and'
     ): Builder {
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
             throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
         }
 

@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Security;
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -131,5 +132,33 @@ class InjectionTest extends TestCase
         // Table must still exist with same count
         $count = $this->app['db']->table('users')->count();
         $this->assertEquals($this->baseline, $count);
+    }
+
+    /** `$` alone matches before a final newline: every column check anchors at the very end. */
+    #[DataProvider('trailingNewlineColumns')]
+    public function test_a_column_with_a_trailing_newline_is_rejected(string $column): void
+    {
+        $entryPoints = [
+            'searchIn'   => fn () => (new SearchBuilder($this->app['db']->table('users'), $this->fuzzySearch))->searchIn([$column]),
+            'facet'      => fn () => (new SearchBuilder($this->app['db']->table('users'), $this->fuzzySearch))->facet($column),
+            'whereFuzzy' => fn () => $this->app['db']->table('users')->whereFuzzy($column, 'john'),
+            'federated'  => fn () => FederatedSearch::across([])->searchIn([$column]),
+        ];
+
+        $accepted = [];
+        foreach ($entryPoints as $label => $call) {
+            try {
+                $call();
+                $accepted[] = $label;
+            } catch (\InvalidArgumentException) {
+            }
+        }
+
+        $this->assertSame([], $accepted, 'accepted ' . json_encode($column));
+    }
+
+    public static function trailingNewlineColumns(): array
+    {
+        return ['bare' => ["name\n"], 'qualified' => ["users.name\n"]];
     }
 }

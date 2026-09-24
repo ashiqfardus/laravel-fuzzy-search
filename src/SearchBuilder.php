@@ -151,7 +151,7 @@ class SearchBuilder
     public function searchIn(array $columns): self
     {
         foreach (SearchableColumns::weights($columns) as $col => $weight) {
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $col)) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $col)) {
                 throw new \InvalidArgumentException("Invalid column name [{$col}]: only letters, digits, underscores, and dots allowed.");
             }
             if (!in_array($col, $this->searchableColumns, true)) {
@@ -199,7 +199,7 @@ class SearchBuilder
         $leaf     = array_pop($segments);
 
         foreach ([...$segments, $leaf] as $segment) {
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $segment)) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/D', $segment)) {
                 throw new \InvalidArgumentException("Invalid column name [{$column}]: each dotted segment must be an identifier.");
             }
         }
@@ -278,6 +278,9 @@ class SearchBuilder
      * it may live on the joined table. [] with no join — the SQL is then unchanged — or when FROM
      * is not a plain table (fromSub()). Only SQL is qualified: scoring, highlighting, _score,
      * facet keys and events keep the logical name. toBase() so a global scope's join counts.
+     * A schema-qualified FROM (public.users) is qualified by its table alone: a 3-part column
+     * would take the table prefix on the schema. A qualifier the column check would reject
+     * (user-profiles, 2fa_users) leaves the columns bare, as before.
      *
      * @return array<string, string> column => "table." or "alias."
      */
@@ -290,8 +293,13 @@ class SearchBuilder
         }
 
         [$table, $alias] = array_pad(preg_split('/\s+as\s+/i', $base->from), 2, null);
+        $qualifier       = $alias ?? substr(strrchr('.' . $table, '.'), 1);
 
-        return array_fill_keys(SearchableColumns::onTable($base->getConnection(), $table), ($alias ?? $table) . '.');
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/D', $qualifier)) {
+            return [];
+        }
+
+        return array_fill_keys(SearchableColumns::onTable($base->getConnection(), $table), $qualifier . '.');
     }
 
     /**
@@ -734,7 +742,7 @@ class SearchBuilder
      */
     public function facet(string $column): self
     {
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
             throw new \InvalidArgumentException(
                 "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
             );
@@ -1890,12 +1898,15 @@ class SearchBuilder
         return $this->onQueryClone(function (): array {
             $this->prepareQuery();
             $facetResults = [];
-            $own          = $this->qualifiedColumnMap($this->query);
+            // On the base query, so global scopes are already applied: a scope's select() would
+            // otherwise run at pluck() time and replace the facet's select(col, COUNT(*)).
+            $base = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
+            $own  = $this->qualifiedColumnMap($base);
 
             foreach ($this->facets as $facet) {
                 $column = ($own[$facet] ?? '') . $facet; // the result stays keyed by $facet; pluck() strips the table
 
-                $facetResults[$facet] = $this->query
+                $facetResults[$facet] = $base
                     ->clone()
                     ->reorder()
                     ->select($column, DB::raw('COUNT(*) as count'))

@@ -55,6 +55,9 @@ class JoinedColumnSearchTest extends TestCase
     protected function tearDown(): void
     {
         Schema::dropIfExists('teams');
+        foreach (self::oddTables() as [$table]) {
+            Schema::dropIfExists($table);
+        }
 
         parent::tearDown();
     }
@@ -133,6 +136,8 @@ class JoinedColumnSearchTest extends TestCase
 
         $this->assertNotEmpty($expected['name']);
         $this->assertSame($expected, TeamJoinOnlyUser::search('john')->facet('name')->facet('email')->getFacets());
+        // A scope's select('users.*') must not replace the facet query's select(col, COUNT(*)).
+        $this->assertSame($expected, TeamUser::search('john')->facet('name')->facet('email')->getFacets());
         $this->assertSame($expected, User::search('john')->join('teams', 'teams.user_id', '=', 'users.id')->facet('name')->facet('email')->getFacets());
     }
 
@@ -193,10 +198,94 @@ class JoinedColumnSearchTest extends TestCase
         Schema::table('users', fn ($table) => $table->string('name_metaphone')->nullable());
         DB::table('users')->where('name', 'John Doe')->update(['name_metaphone' => metaphone('john')]);
 
-        $this->assertSame(
-            [$this->userId('John Doe')],
-            self::ids(TeamUser::searchOn(TeamUser::query(), 'john', ['name'])->using('metaphone')->get())
-        );
+        $john = [$this->userId('John Doe')];
+        $this->assertSame($john, self::ids(TeamUser::searchOn(TeamUser::query(), 'john', ['name'])->using('metaphone')->get()));
+
+        // Eloquent hands the where(Closure) group the model's table, not "users as u": the
+        // qualifier "u" is then the FROM alias, not a table.
+        $aliased = fn () => User::query()->from('users as u')
+            ->join('teams', 'teams.user_id', '=', 'u.id')->select('u.*')
+            ->searchFuzzy('john', ['name'], 'metaphone');
+        $this->assertSame($john, self::ids($aliased()->get()));
+        $this->assertSame($john, self::ids($aliased()->withRelevance(false)->get()));
+        $this->assertStringContainsString('"u"."name_metaphone"', str_replace('`', '"', $aliased()->toSql()));
+    }
+
+    /**
+     * A FROM table SQLite reads as a keyword unless quoted, or one that is not an identifier
+     * the column regex accepts: under a join the search must still run. [table, searched column]
+     * ("name" collides with teams.name, "nickname" does not).
+     */
+    public static function oddTables(): array
+    {
+        return [
+            'keyword order'      => ['order', 'name'],
+            'keyword values'     => ['values', 'name'],
+            'keyword group'      => ['group', 'name'],
+            'keyword index'      => ['index', 'name'],
+            'hyphenated'         => ['user-profiles', 'nickname'],
+            'leading digit'      => ['2fa_users', 'nickname'],
+        ];
+    }
+
+    #[DataProvider('oddTables')]
+    public function test_an_odd_from_table_name_under_a_join(string $table, string $column): void
+    {
+        Schema::dropIfExists($table);
+        Schema::create($table, function ($t) {
+            $t->id();
+            $t->string('name');
+            $t->string('nickname');
+        });
+        foreach (DB::table('users')->pluck('name', 'id') as $id => $name) {
+            DB::table($table)->insert(['id' => $id, 'name' => $name, 'nickname' => $name]);
+        }
+
+        $search = fn ($query, string $col) => (new SearchBuilder($query, app(FuzzySearch::class)))->searchIn([$col]);
+        $joined = fn () => $search(DB::table($table)->join('teams', 'teams.user_id', '=', "{$table}.id")->select("{$table}.*"), $column);
+        $plain  = fn () => $search(DB::table('users'), 'name');
+
+        $this->assertSame(self::ids($plain()->search('john')->get()), self::ids($joined()->search('john')->get()));
+        $this->assertSame(self::ids($plain()->search('john')->using('like')->get()), self::ids($joined()->search('john')->using('like')->get()));
+        $this->assertSame(self::ids($plain()->extended('="john doe" | ^bob')->get()), self::ids($joined()->extended('="john doe" | ^bob')->get()));
+        $this->assertSame($plain()->search('john')->count(), $joined()->search('john')->count());
+    }
+
+    /**
+     * A schema-qualified FROM (main.users) is qualified by its table, not the 3-part
+     * main.users.name: on a prefixed connection the grammar prefixes the table
+     * ("main"."pre_users"), and a 3-part column would get the prefix on the schema.
+     */
+    public function test_a_schema_qualified_from_on_a_prefixed_connection(): void
+    {
+        config(['database.connections.join_prefixed' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => 'pre_']]);
+        $db     = DB::connection('join_prefixed');
+        $schema = $db->getSchemaBuilder();
+        $schema->create('users', function ($t) {
+            $t->id();
+            $t->string('name');
+            $t->string('name_metaphone')->nullable();
+        });
+        $schema->create('teams', function ($t) {
+            $t->id();
+            $t->unsignedBigInteger('user_id');
+            $t->string('name');
+        });
+        foreach (['John Doe' => 'Crimson', 'Alice Smith' => 'Johnson Crew', 'Bob Johnson' => 'Ivory'] as $name => $team) {
+            $id = $db->table('users')->insertGetId(['name' => $name, 'name_metaphone' => metaphone(strtok($name, ' '))]);
+            $db->table('teams')->insert(['user_id' => $id, 'name' => $team]);
+        }
+
+        $search = fn () => (new SearchBuilder(
+            $db->table('main.users')->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*'),
+            app(FuzzySearch::class)
+        ))->searchIn(['name']);
+
+        $this->assertSame([1, 3], self::ids($search()->search('john')->get()));
+        $this->assertSame([1, 3], self::ids($search()->search('john')->using('like')->get()));
+        $this->assertSame([3], self::ids($search()->extended('="john doe" | ^bob')->get())); // raw LOWER(col) = LOWER(?)
+        $this->assertSame([1], self::ids($search()->search('john')->using('metaphone')->get()));
+        $this->assertStringNotContainsString('main"."users"."name', $search()->search('john')->toSql());
     }
 
     /**
@@ -213,8 +302,9 @@ class JoinedColumnSearchTest extends TestCase
                 continue;
             }
 
-            foreach (['', 'pre_'] as $prefix) {
-                $query = fn () => $this->fakeConnectionTable($driver, 'users', $prefix)
+            // A schema-qualified FROM is qualified by its table: main.users.name would be 3-part.
+            foreach ([['', 'users'], ['', 'main.users'], ['pre_', 'users'], ['pre_', 'main.users']] as [$prefix, $from]) {
+                $query = fn () => $this->fakeConnectionTable($driver, $from, $prefix)
                     ->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*');
                 $this->seedColumnListing($query(), ['id', 'name', 'email']);
 
@@ -224,7 +314,6 @@ class JoinedColumnSearchTest extends TestCase
                     default            => ['"', '"'],
                 };
                 $wrapped = $open . $prefix . 'users' . $close . '.' . $open . 'name' . $close;
-                $dialect = $driver === 'sqlite' ? $prefix . 'users.name' : $wrapped; // DbDialect leaves SQLite unquoted
 
                 foreach ([false, true] as $native) {
                     config(['fuzzy-search.use_native_functions' => $native]);
@@ -237,14 +326,13 @@ class JoinedColumnSearchTest extends TestCase
                     $builders['accent']   = (new SearchBuilder($query(), app(FuzzySearch::class)))->search('john')->searchIn(['name'])->accentInsensitive();
 
                     foreach ($builders as $label => $builder) {
-                        $sql  = $builder->toSql();
-                        $rest = str_replace([$wrapped, $dialect], '', $sql);
+                        $sql   = $builder->toSql();
+                        $where = "{$driver}/{$prefix}/{$from}/{$label}";
 
-                        $this->assertStringContainsString($wrapped === $dialect ? $wrapped : $prefix . 'users', $sql, "{$driver}/{$prefix}/{$label}");
-                        $this->assertDoesNotMatchRegularExpression('/(?<![\w.])[`"\[]?name[`"\]]?(?![\w.])/', $rest, "{$driver}/{$prefix}/{$label} names the column bare: {$sql}");
-                        if ($prefix !== '') {
-                            $this->assertDoesNotMatchRegularExpression('/(?<!pre_)users[`"\]]?\.[`"\[]?name/', $sql, "{$driver}/{$label} qualifies without the table prefix: {$sql}");
-                        }
+                        $this->assertStringContainsString($wrapped, $sql, $where);
+                        $this->assertDoesNotMatchRegularExpression('/(?<![\w.])[`"\[]?name[`"\]]?(?![\w.])/', str_replace($wrapped, '', $sql), "{$where} names the column bare: {$sql}");
+                        $this->assertDoesNotMatchRegularExpression('/(?<!pre_)users[`"\]]?\.[`"\[]?name/', $prefix === '' ? '' : $sql, "{$where} qualifies without the table prefix: {$sql}");
+                        $this->assertDoesNotMatchRegularExpression('/main[`"\]]?\.[`"\[]?(pre_)?users[`"\]]?\.[`"\[]?name/', $sql, "{$where} writes a 3-part column: {$sql}");
                         $checked++;
                     }
                 }
@@ -252,12 +340,12 @@ class JoinedColumnSearchTest extends TestCase
         }
 
         config(['fuzzy-search.use_native_functions' => false]);
-        $this->assertGreaterThanOrEqual(64, $checked);
+        $this->assertGreaterThanOrEqual(128, $checked);
     }
 
     public function test_order_by_fuzzy_prefixes_a_qualified_column(): void
     {
-        foreach (['mysql' => '`pre_users`.`name`', 'pgsql' => '"pre_users"."name"', 'sqlsrv' => '[pre_users].[name]', 'sqlite' => 'pre_users.name'] as $driver => $expected) {
+        foreach (['mysql' => '`pre_users`.`name`', 'pgsql' => '"pre_users"."name"', 'sqlsrv' => '[pre_users].[name]', 'sqlite' => '"pre_users"."name"'] as $driver => $expected) {
             $sql = $this->fakeConnectionTable($driver, 'users', 'pre_')->orderByFuzzy('users.name', 'john')->toSql();
 
             $this->assertStringContainsString($expected, $sql, $driver);
@@ -268,7 +356,7 @@ class JoinedColumnSearchTest extends TestCase
     private function seedColumnListing(\Illuminate\Database\Query\Builder $query, array $columns): void
     {
         $listings = new \ReflectionProperty(SearchableColumns::class, 'listings');
-        $listings->setValue(null, [$query->getConnection()->getName() . '|users' => $columns] + $listings->getValue());
+        $listings->setValue(null, [$query->getConnection()->getName() . '|' . $query->from => $columns] + $listings->getValue());
     }
 }
 
@@ -283,7 +371,7 @@ class TeamUser extends User
     }
 }
 
-/** The same join without a select(): a scope's select() would replace the facet query's own. */
+/** The same join without a select(). */
 class TeamJoinOnlyUser extends User
 {
     protected static function booted(): void

@@ -29,24 +29,27 @@ final class DbDialect
      * Splits on "." so `users.name` becomes `users`.`name`, not a single identifier.
      * $tablePrefix is the connection's table prefix: the grammar writes the FROM table (and its
      * alias) with it, so the table part of a qualified column carries it too, as wrap() does.
+     * SQLite leaves a bare column as written but quotes a qualified one: its table may be a
+     * keyword (`order`, `values`) that SQLite reads as syntax.
      */
     public static function quoteIdentifier(string $column, string $driver, string $tablePrefix = ''): string
     {
-        $parts = explode('.', $column);
+        $parts     = explode('.', $column);
+        $qualified = count($parts) > 1;
 
-        if (count($parts) > 1) {
+        if ($qualified) {
             $parts[0] = $tablePrefix . $parts[0];
         }
 
-        $quoted = array_map(static function (string $part) use ($driver): string {
+        $quoted = array_map(static function (string $part) use ($driver, $qualified): string {
             if (self::isMySqlFamily($driver)) {
                 return '`' . str_replace('`', '``', $part) . '`';
             }
 
-            return match ($driver) {
-                self::PGSQL  => '"' . str_replace('"', '""', $part) . '"',
-                self::SQLSRV => '[' . str_replace(']', ']]', $part) . ']',
-                default      => $part,
+            return match (true) {
+                $driver === self::PGSQL, $driver === self::SQLITE && $qualified => '"' . str_replace('"', '""', $part) . '"',
+                $driver === self::SQLSRV => '[' . str_replace(']', ']]', $part) . ']',
+                default                  => $part,
             };
         }, $parts);
 

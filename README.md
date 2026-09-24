@@ -192,7 +192,7 @@ Executing methods that would bypass the search conditions (`delete()`, `exists()
 
 `latest()`, `oldest()`, `inRandomOrder()` and `reorder()` are forwarded the same way as `orderBy()`: they only shape which rows make it into the candidate window, since the relevance `ORDER BY` is appended after them and PHP-side rescoring re-sorts by `_score` whenever `withRelevance` is on (the default) — call `withRelevance(false)` if you want the forwarded order to stick. The closure passed to `when()`, `unless()` or `tap()` receives the underlying Eloquent builder, not the `SearchBuilder`.
 
-Under a join (a forwarded `join()`, one inside `query()`, or a global scope's), the model's own searched columns are qualified with its table (or the FROM alias) automatically, so a joined table with a column of the same name is not ambiguous; to search the joined table's column, write it dotted: `searchIn(['teams.name'])`.
+Under a join (a forwarded `join()`, one inside `query()`, or a global scope's), the model's own searched columns are qualified with its table (or the FROM alias) automatically, so a joined table with a column of the same name is not ambiguous; to search the joined table's column, write it dotted: `searchIn(['teams.name'])`. Select the model's columns (`select('users.*')`) as with any Eloquent join, or the joined table's same-named columns (`id`, `name`) overwrite the model's attributes, and scoring, highlighting and `useInvertedIndex()` read the wrong values.
 
 ### Searching Relationships
 
@@ -233,6 +233,8 @@ The same macros exist on the Eloquent builder and the query builder:
 - `whereFuzzy(string $column, string $value, ?string $algorithm = null, ?array $options = [])` — adds the algorithm's predicate (default: `default_algorithm`) with `AND`.
 - `orWhereFuzzy(string $column, string $value, ?string $algorithm = null, ?array $options = [])` — the same predicate joined with `OR`, e.g. a second column with a different algorithm.
 - `orderByFuzzy(string $column, string $value, string $direction = 'asc')` — orders by the position of `$value` in `$column` (`LOCATE()`/`POSITION()`/`INSTR()`/`CHARINDEX()`), so with `'asc'` the earliest occurrence comes first. A row that does not contain `$value` has position 0 and sorts **before** every match, so filter to rows containing the term first. The position follows the database's case rules: case-insensitive under MySQL's default collation, case-sensitive on PostgreSQL and SQLite. A direction other than `asc`/`desc` throws `InvalidArgumentException`.
+
+The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `where()`: under a join, qualify it yourself (`whereFuzzy('users.name', 'john')`), or a joined table's column of the same name makes it ambiguous. A qualified column's table is written unprefixed, as in `where()`; the connection's table prefix is added for you.
 
 ---
 

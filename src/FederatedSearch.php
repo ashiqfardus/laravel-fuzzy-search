@@ -66,7 +66,7 @@ class FederatedSearch
     {
         foreach ($columns as $key => $value) {
             $column = is_string($key) ? $key : $value;
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
                 throw new \InvalidArgumentException(
                     "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
                 );
@@ -442,7 +442,7 @@ class FederatedSearch
     private function validateColumns(array $columns): array
     {
         foreach ($columns as $column) {
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $column)) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
                 throw new \InvalidArgumentException(
                     "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
                 );
