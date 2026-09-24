@@ -67,6 +67,10 @@ class FuzzySearchEngine extends Engine
 
     public function paginate(Builder $builder, $perPage, $page)
     {
+        // Scout resolves ?page to any whole number of at least 1. Capped as SearchBuilder::resolvePage()
+        // caps it, so that no offset (plus one page) overflows into a float: past that, every page is empty.
+        $perPage   = max(1, (int) $perPage);
+        $page      = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
         $modelType = $builder->model::class;
         $orders    = $this->orders($builder);
         $terms     = $this->terms($builder);
@@ -80,7 +84,8 @@ class FuzzySearchEngine extends Engine
         $total = $query === null || empty($ranked)
             ? $this->scorer->count($terms, $modelType, $weights)
             : RankedCandidates::count($query, array_keys($ranked));
-        $keys  = $this->resultKeys($builder, $query, $orders, $ranked, $offset + $perPage);
+        // A page past every ranked id is empty: never walk to it.
+        $keys  = $offset < count($ranked) ? $this->resultKeys($builder, $query, $orders, $ranked, $offset + $perPage) : [];
 
         return [
             'results' => $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage))),

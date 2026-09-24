@@ -671,6 +671,31 @@ class ScoutEngineTest extends TestCase
         }
     }
 
+    public function test_scout_paginate_serves_an_empty_page_for_a_page_too_large_for_an_offset(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top] = $this->seedOrderableWidgets();
+
+        // ($page - 1) * $perPage overflowed into a float and resultKeys(int) threw a TypeError.
+        $builders = [
+            'unconstrained' => fn () => $this->scoutBuilder(),
+            'orderBy'       => fn () => $this->scoutBuilder()->orderBy('name'),
+            'where'         => fn () => $this->scoutBuilder()->where('id', $top),
+        ];
+
+        foreach ($builders as $label => $builder) {
+            $this->assertSame([], $this->resultIds($builder()->paginate(15, 'page', PHP_INT_MAX)), "{$label}: paginate()");
+            $this->assertSame([], $this->resultIds($builder()->simplePaginate(15, 'page', PHP_INT_MAX)), "{$label}: simplePaginate()");
+
+            $this->app['request']->query->set('page', (string) PHP_INT_MAX);
+            $this->assertSame([], $this->resultIds($builder()->paginate(15)), "{$label}: ?page");
+            $this->app['request']->query->remove('page');
+        }
+    }
+
     // -------------------------------------------------------------------------
     // query.max_term_length: the engine binds one parameter per query term, so an uncapped
     // query of a few thousand words passed SQL Server's 2,100-parameter limit
