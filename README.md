@@ -1222,7 +1222,7 @@ Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a war
 | BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
 | Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
 
-**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index should therefore stay close to the 100k figures above. Typo expansion adds one dictionary query per query term whose cost grows with dictionary size (roughly 30 ms per term, measured on SQLite at ~450k distinct terms); call `typoTolerance(0)` on latency-critical searches.
+**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index should therefore stay close to the 100k figures above. Typo expansion adds one dictionary query per query term whose cost grows with dictionary size, and since 2.1 it is scoped to the searched model's own terms: roughly 16 ms per term on PostgreSQL and 50 ms on MySQL, measured at ~220k distinct terms across two models (about 1.6–1.8× the unscoped lookup); call `typoTolerance(0)` on latency-critical searches.
 
 ### When to Use BM25 vs LIKE
 
