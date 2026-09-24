@@ -188,6 +188,24 @@ class ExtendedSyntaxTest extends TestCase
         $this->assertSame(['Yahoo Mail', 'Yahoo great', 'yahoo'], $names('yahoo !"yahoo!mail"'));
     }
 
+    /** ER-45: a ! after another operator is the first character of the term, not a dropped NOT. */
+    public function test_a_bang_after_another_operator_is_searched(): void
+    {
+        DB::table('users')->insert(array_map(
+            fn (string $name) => ['name' => $name, 'email' => md5($name) . '@bang.test', 'created_at' => now(), 'updated_at' => now()],
+            ['!urgent', 'urgent', 'not !urgent', 'plain']
+        ));
+        $names = fn (string $query) => User::search('')->searchIn(['name'])->extended($query)->get()->pluck('name')->sort()->values()->all();
+
+        $this->assertSame(['!urgent'], $names('^!urg'), '^!a is a prefix search for !a');
+        $this->assertSame(['!urgent', 'not !urgent'], $names("'!urg"), "'!a includes !a");
+        $this->assertSame(['!urgent'], $names('=!urgent'), '=!a equals !a');
+        $this->assertContains('!urgent', $names('~!urgent'), '~!a is a typo term for !a');
+        $this->assertSame(['urgent'], $names('urgent !!urg'), '!!a is NOT !a');
+        $this->assertNotContains('!urgent', $names('!!'), '!! is NOT !');
+        $this->assertContains('plain', $names('!!'));
+    }
+
     public function test_a_query_of_nothing_but_a_bang_or_an_operator_still_throws(): void
     {
         foreach (['!', '! !', '|', '()', '!(john)', 'name:!john'] as $query) {

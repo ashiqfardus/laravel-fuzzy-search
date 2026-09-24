@@ -191,6 +191,30 @@ class LexerTest extends TestCase
         }
     }
 
+    /**
+     * ER-45: ! is NOT only as the first character of a token. After another operator it is the
+     * first character of the term: at ab152ae ^!a, '!a, =!a and !!a dropped the operator and
+     * meant NOT a, and ~!a threw.
+     */
+    public function test_a_bang_after_another_operator_is_part_of_the_term(): void
+    {
+        $cases = [
+            '^!a'   => [[Token::TYPE_PREFIX, '!a', null]],
+            "'!a"   => [[Token::TYPE_INCLUDE_MATCH, '!a', null]],
+            '=!a'   => [[Token::TYPE_EXACT, '!a', null]],
+            '~!a'   => [[Token::TYPE_TYPO, '!a', null]],
+            '!!a'   => [[Token::TYPE_NOT_FUZZY, '!a', null]],
+            '!!'    => [[Token::TYPE_NOT_FUZZY, '!', null]],
+            '!^!a'  => [[Token::TYPE_NOT_PREFIX, '!a', null]],
+            '!~!a'  => [[Token::TYPE_NOT_TYPO, '!a', null]],
+            'b ^!a' => [[Token::TYPE_FUZZY, 'b', null], [Token::TYPE_PREFIX, '!a', null]],
+        ];
+
+        foreach ($cases as $query => $expected) {
+            $this->assertSame($expected, self::shape($this->lexer->tokenize($query)), $query);
+        }
+    }
+
     public function test_a_bang_at_the_start_of_a_token_still_negates(): void
     {
         $cases = [

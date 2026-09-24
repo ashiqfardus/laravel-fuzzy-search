@@ -286,10 +286,12 @@ of a token and `Re:` / `Fwd:` subject prefixes: `extended('http://example.com')`
 `extended('Re: meeting')` throws because nothing follows the colon. Quote them to restore the v2.0
 substring match: `"http://example.com"`, `"mailto:bob@example.com"`, `"Re:" meeting`.
 
-**A `!` inside or at the end of a word is now part of the word.** In v2.0 any `!` started a NOT
-term, so `extended('yahoo!mail')` meant `yahoo !mail` (excluding the row it named) and `=John!!!`
-searched for `John`. `!` now negates only at the start of a term; put a space before it for the
-old meaning (`yahoo !mail`).
+**A `!` is now NOT only as the first character of a token.** In v2.0 any `!` started a NOT term,
+so `extended('yahoo!mail')` meant `yahoo !mail` (excluding the row it named), `=John!!!` searched
+for `John`, and a `!` right after another operator dropped that operator: `^!a`, `'!a`, `=!a` and
+`!!a` all meant NOT `a`, and `~!a` threw. Anywhere but a token's first character `!` is now part of
+the term: `^!a` is a prefix search for `!a`, `~!a` a typo-tolerant term, `!!a` excludes `!a`. For
+the old meaning, start the token with the `!`: `yahoo !mail`, `!a`.
 
 `useInvertedIndex()` combined with `extended()` still runs the query on the LIKE path — that was
 already true in v2.0, it's just visible now: `getDebugInfo()` reports `'algorithm' => 'extended'`
