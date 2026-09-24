@@ -231,7 +231,9 @@ you get back from a search:
   hook still searches on `useInvertedIndex()`. `getFacets()` always runs on the LIKE path, so
   without `searchIn()` those two index searches return empty facets while `get()` returns the
   index's matches. A model whose table cannot be read (a `$table` typo, a table not migrated yet)
-  is not treated as having no column: the query runs and its database error surfaces.
+  is not treated as having no column: the query runs and its database error surfaces. On
+  `useInvertedIndex()` the table is read only when the index has matches, so an empty index
+  still returns nothing without an error.
   `extended()`/`searchBoolean()` still throw `SearchableColumnsNotFoundException`, and the
   `whereFuzzy`-style macros take their columns explicitly. Declare `$searchable['columns']` to
   search such a model.
