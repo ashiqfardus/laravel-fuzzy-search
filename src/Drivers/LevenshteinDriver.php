@@ -78,28 +78,38 @@ class LevenshteinDriver extends BaseDriver
      */
     protected function generateLevenshteinPatterns(string $value): array
     {
-        $value    = $this->normalizeTerm($value);
-        $chars    = $this->chars($value);
-        $len      = count($chars);
-        $patterns = [];
+        return $this->firstPatterns($this->patternCandidates($value));
+    }
+
+    /**
+     * Every pattern, nearest distance first, built lazily: firstPatterns() stops pulling at
+     * max_patterns, so the O(n²) distance-2 patterns of a long term are never all built.
+     *
+     * @return \Generator<int, string>
+     */
+    protected function patternCandidates(string $value): \Generator
+    {
+        $value = $this->normalizeTerm($value);
+        $chars = $this->chars($value);
+        $len   = count($chars);
 
         // Distance 0: Exact match
-        $patterns[] = '%' . $this->escapeLike($value) . '%';
+        yield '%' . $this->escapeLike($value) . '%';
 
         if ($this->maxDistance >= 1) {
             // Distance 1: Single deletion
             for ($i = 0; $i < $len; $i++) {
-                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
+                yield '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
             }
 
             // Distance 1: Single insertion (wildcard)
             for ($i = 0; $i <= $len; $i++) {
-                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i)) . '%';
+                yield '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i)) . '%';
             }
 
             // Distance 1: Single substitution (wildcard)
             for ($i = 0; $i < $len; $i++) {
-                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
+                yield '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
             }
         }
 
@@ -109,7 +119,7 @@ class LevenshteinDriver extends BaseDriver
                 for ($j = $i + 1; $j < $len; $j++) {
                     $str = $this->slice($chars, 0, $i) . $this->slice($chars, $i + 1, $j - $i - 1) . $this->slice($chars, $j + 1);
                     if (mb_strlen($str, 'UTF-8') >= 2) {
-                        $patterns[] = '%' . $this->escapeLike($str) . '%';
+                        yield '%' . $this->escapeLike($str) . '%';
                     }
                 }
             }
@@ -117,20 +127,18 @@ class LevenshteinDriver extends BaseDriver
             // Distance 2: Transposition + deletion
             for ($i = 0; $i < $len - 1; $i++) {
                 $transposed = $this->slice($chars, 0, $i) . $chars[$i + 1] . $chars[$i] . $this->slice($chars, $i + 2);
-                $patterns[] = '%' . $this->escapeLike($transposed) . '%';
+                yield '%' . $this->escapeLike($transposed) . '%';
             }
         }
 
         if ($this->maxDistance >= 3 && $len > 3) {
             // Distance 3: Prefix matching with wildcards
-            $patterns[] = $this->escapeLike($this->slice($chars, 0, 2)) . '%';
-            $patterns[] = '%' . $this->escapeLike($this->slice($chars, -2));
+            yield $this->escapeLike($this->slice($chars, 0, 2)) . '%';
+            yield '%' . $this->escapeLike($this->slice($chars, -2));
 
             // Keep first and last char with wildcard in between
-            $patterns[] = $this->escapeLike($chars[0]) . '%' . $this->escapeLike($this->slice($chars, -1));
+            yield $this->escapeLike($chars[0]) . '%' . $this->escapeLike($this->slice($chars, -1));
         }
-
-        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

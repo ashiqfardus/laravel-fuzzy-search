@@ -1980,10 +1980,7 @@ class SearchBuilder
             return;
         }
 
-        $maxLength = (int) config('fuzzy-search.query.max_term_length', 128);
-        if (mb_strlen($this->searchTerm, 'UTF-8') > $maxLength) {
-            $this->searchTerm = mb_substr($this->searchTerm, 0, $maxLength, 'UTF-8');
-        }
+        $this->searchTerm = FuzzySearch::capTerm($this->searchTerm);
     }
 
     /**

@@ -66,7 +66,7 @@ class FuzzySearch
     ): Builder {
         $this->assertValidColumn($column);
 
-        $value = Utf8::clean($value); // every macro and Fuzzy scope binds its term here or in applyFuzzyOrder()
+        $value = $this->term($value);
 
         $algorithm = $algorithm ?? $this->currentConfig()['default_algorithm'] ?? 'fuzzy';
         $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
@@ -121,7 +121,28 @@ class FuzzySearch
             default                         => "CASE WHEN {$col} LIKE ? THEN 0 ELSE 1 END",
         };
 
-        return $query->orderByRaw("{$expression} {$direction}", [Utf8::clean($value)]);
+        return $query->orderByRaw("{$expression} {$direction}", [$this->term($value)]);
+    }
+
+    /**
+     * Every macro, Fuzzy scope and SearchBuilder condition binds its term through here (the two
+     * public entry points above): invalid UTF-8 dropped and capped at query.max_term_length, so
+     * no driver generates patterns from a longer term than search() would.
+     */
+    private function term(string $value): string
+    {
+        return self::capTerm(Utf8::clean($value));
+    }
+
+    /**
+     * Truncate a term to query.max_term_length characters (never bytes). The one cap every path
+     * applies: SearchBuilder::capSearchTerm(), tableSearch() and the applyFuzzy*() entry points.
+     *
+     * @internal
+     */
+    public static function capTerm(string $term): string
+    {
+        return mb_substr($term, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
     }
 
     /**
@@ -141,7 +162,7 @@ class FuzzySearch
      * survives a join. For a relation column keep Filament's own `searchable()`.
      *
      * The term is trimmed and capped at query.max_term_length before it reaches a driver — the
-     * table search box is unbounded user input (see SearchBuilder::capSearchTerm()).
+     * table search box is unbounded user input (see capTerm()).
      */
     public static function tableSearch(array|string|null $columns = null, ?string $algorithm = null, array $options = []): \Closure
     {
@@ -154,7 +175,7 @@ class FuzzySearch
                     : [],
             };
 
-            $search = mb_substr(trim(Utf8::clean($search)), 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+            $search = self::capTerm(trim(Utf8::clean($search)));
 
             if ($search === '') {
                 return $query;

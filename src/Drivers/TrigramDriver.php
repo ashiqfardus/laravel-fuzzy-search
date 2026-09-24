@@ -47,8 +47,7 @@ class TrigramDriver extends BaseDriver
      */
     protected function applyPatternBased(Builder $query, string $column, string $value, string $boolean): Builder
     {
-        $trigrams = $this->generateTrigrams($value);
-        $patterns = $this->trigramsToPatterns($trigrams, $this->normalizeTerm($value));
+        $patterns = $this->firstPatterns($this->patternCandidates($value));
         $method = $boolean === 'or' ? 'orWhere' : 'where';
 
         return $query->$method(function ($q) use ($column, $patterns) {
@@ -63,19 +62,51 @@ class TrigramDriver extends BaseDriver
      */
     protected function generateTrigrams(string $value): array
     {
-        $value    = '  ' . $this->normalizeTerm($value) . ' '; // Pad with spaces (PostgreSQL style)
-        $chars    = $this->chars($value);
-        $trigrams = [];
+        return array_unique(iterator_to_array($this->trigrams($value), false));
+    }
+
+    /**
+     * The term's trigrams in order, padded with spaces (PostgreSQL style), built lazily.
+     *
+     * @return \Generator<int, string>
+     */
+    private function trigrams(string $value): \Generator
+    {
+        $chars = $this->chars('  ' . $this->normalizeTerm($value) . ' ');
 
         for ($i = 0; $i < count($chars) - 2; $i++) {
-            $trigrams[] = $this->slice($chars, $i, 3);
+            yield $this->slice($chars, $i, 3);
+        }
+    }
+
+    /**
+     * The whole term, then each trigram's pattern, built lazily: firstPatterns() stops pulling at
+     * max_patterns. The whole term goes first so it is always kept. (It was once rebuilt by
+     * concatenating the trigrams — "jjojohohnhn" for "john" — and never matched anything.)
+     *
+     * @return \Generator<int, string>
+     */
+    protected function patternCandidates(string $value): \Generator
+    {
+        $value = $this->normalizeTerm($value);
+
+        if ($value !== '') {
+            yield '%' . $this->escapeLike($value) . '%';
         }
 
-        return array_unique($trigrams);
+        foreach ($this->trigrams($value) as $trigram) {
+            $trigram = trim($trigram);
+            if (!empty($trigram)) {
+                yield '%' . $this->escapeLike($trigram) . '%';
+            }
+        }
     }
 
     /**
      * Convert trigrams to LIKE patterns
+     *
+     * @deprecated Not called by any internal code path since 2.1 — apply() builds its patterns
+     *             lazily through patternCandidates(). Will be removed in v3.
      */
     protected function trigramsToPatterns(array $trigrams, string $value = ''): array
     {
@@ -88,8 +119,6 @@ class TrigramDriver extends BaseDriver
             }
         }
 
-        // The whole term goes first so capPatterns() keeps it. (Previously this was rebuilt by
-        // concatenating the trigrams — "jjojohohnhn" for "john" — and never matched anything.)
         if ($value !== '') {
             array_unshift($patterns, '%' . $this->escapeLike($value) . '%');
         }

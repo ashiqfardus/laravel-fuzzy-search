@@ -111,11 +111,32 @@ abstract class BaseDriver
      */
     protected function capPatterns(array $patterns): array
     {
-        $max = (int) ($this->config['max_patterns']
-            ?? $this->config['performance']['max_patterns']
-            ?? 100);
+        return $this->firstPatterns($patterns);
+    }
 
-        return array_slice(array_values(array_unique($patterns)), 0, max(1, $max));
+    /**
+     * The first max_patterns distinct patterns, in order. The bundled drivers pass a generator
+     * (patternCandidates()), which is pulled only until that many are kept: a long term never has
+     * its whole pattern set built — O(n²) for levenshtein — just to be sliced.
+     *
+     * @param iterable<string> $patterns
+     * @return string[]
+     */
+    protected function firstPatterns(iterable $patterns): array
+    {
+        $max  = max(1, (int) ($this->config['max_patterns'] ?? $this->config['performance']['max_patterns'] ?? 100));
+        $kept = [];
+
+        foreach ($patterns as $pattern) {
+            if (!in_array($pattern, $kept, true)) {
+                $kept[] = $pattern;
+                if (count($kept) >= $max) {
+                    break;
+                }
+            }
+        }
+
+        return $kept;
     }
 }
 
