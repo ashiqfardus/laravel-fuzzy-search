@@ -942,6 +942,9 @@ class SearchBuilder
      */
     private const WHITESPACE = '/[ \t\n\r\x0B\f]+/';
 
+    /** The most characters of a value, and of a term, that similar_text() and levenshtein() compare — see similarity(). */
+    private const SCORING_MAX_CHARS = 255;
+
     /** Fluent builder methods safe to forward (prefix match: "where" covers whereIn, whereHas, ...). */
     private const FORWARDABLE_PREFIXES = [
         'where', 'orWhere', 'with', 'without', 'join', 'leftJoin', 'rightJoin', 'crossJoin',
@@ -1551,13 +1554,16 @@ class SearchBuilder
     }
 
     /**
-     * What the extended path scores rows against: the leaf terms joined, or null on the LIKE
-     * path (and for a query with no positive leaf, e.g. a pure NOT) so that
+     * What the extended path scores rows against: its leaf terms, each on its own (joined into one
+     * string, a long OR query scored every row against all of it — see similarity()), or null on
+     * the LIKE path (and for a query with no positive leaf, e.g. a pure NOT) so that
      * calculateRelevanceScores() falls back to the search term as before.
+     *
+     * @return string[]|null
      */
-    private function extendedScoringTerm(): ?string
+    private function extendedScoringTerms(): ?array
     {
-        return $this->extendedLeafTerms === [] ? null : implode(' ', $this->extendedLeafTerms);
+        return $this->extendedLeafTerms === [] ? null : $this->extendedLeafTerms;
     }
 
     /**
@@ -1598,7 +1604,7 @@ class SearchBuilder
         $candidates = $this->query->limit($maxCandidates)->get();
 
         if ($this->withRelevance) {
-            $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerm());
+            $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerms());
         }
 
         $results = $candidates->slice($this->offset, $this->limit)->values();
@@ -1752,13 +1758,13 @@ class SearchBuilder
         } else {
             $candidates = $this->query->clone()->limit($maxCandidates)->get();
             if ($this->withRelevance && $term !== '') {
-                $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerm());
+                $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerms());
             }
             $items = $candidates->slice($offset, $perPage)->values();
         }
 
         if ($this->withRelevance && $offset >= $maxCandidates && $term !== '') {
-            $items = $this->calculateRelevanceScores($items, $this->extendedScoringTerm());
+            $items = $this->calculateRelevanceScores($items, $this->extendedScoringTerms());
         }
 
         if ($this->highlightTagOpen) {
@@ -2307,13 +2313,18 @@ class SearchBuilder
     }
 
     /**
-     * Calculate relevance scores for results
+     * Calculate relevance scores for results. $terms (an extended query's leaf terms) are scored
+     * one by one and a column adds up each term's best score, so a row that matches more of the
+     * query ranks higher; a single term scores exactly as the search term does. null scores the
+     * search term.
+     *
+     * @param string[]|null $terms
      */
-    protected function calculateRelevanceScores(Collection $results, ?string $scoreTerm = null): Collection
+    protected function calculateRelevanceScores(Collection $results, ?array $terms = null): Collection
     {
-        $term = mb_strtolower($scoreTerm ?? $this->searchTerm, 'UTF-8');
+        $terms = array_map(fn (string $term) => mb_strtolower($term, 'UTF-8'), $terms ?? [$this->searchTerm]);
 
-        $results = $results->map(function ($item) use ($term) {
+        $results = $results->map(function ($item) use ($terms) {
             $score = 0;
             $columnScores = [];
 
@@ -2330,8 +2341,12 @@ class SearchBuilder
                 }
 
                 // A to-many relation contributes its best related row, never an average.
-                foreach ($values as $value) {
-                    $colScore = max($colScore, $this->scoreValue($value, $term, $weight));
+                foreach ($terms as $term) {
+                    $termScore = 0;
+                    foreach ($values as $value) {
+                        $termScore = max($termScore, $this->scoreValue($value, $term, $weight));
+                    }
+                    $colScore += $termScore;
                 }
 
                 $columnScores[$column] = $colScore;
@@ -2466,14 +2481,34 @@ class SearchBuilder
             return $this->scoring['contains'] * $weight;
         }
 
-        $similarity = 0;
-        similar_text($term, $value, $similarity);
-        $distance = FuzzySearch::levenshteinDistance($value, $term);
+        [$similarity, $distance] = $this->similarity($value, $term);
 
         $similarityScore  = ($similarity / 100) * $this->scoring['fuzzy_match'] * $weight;
         $levenshteinScore = ($distance <= $this->typoTolerance) ? max(0, (20 - $distance * 4)) * $weight : 0;
 
         return max($similarityScore, $levenshteinScore);
+    }
+
+    /**
+     * similar_text()'s percentage and the Levenshtein distance between $value and $term, each
+     * cut to its first SCORING_MAX_CHARS characters: both are O(n·m) (similar_text() worse), and
+     * on whole values a 127-character term against 300 rows of 20KB took seconds, a CPU DoS. A
+     * value or term within the cap is compared as it is, so it scores exactly as before. Every
+     * call PHP rescoring makes to either function goes through here.
+     *
+     * @return array{0: float, 1: int}
+     */
+    protected function similarity(string $value, string $term): array
+    {
+        $cut = fn (string $s) => mb_strlen($s, 'UTF-8') > self::SCORING_MAX_CHARS
+            ? mb_substr($s, 0, self::SCORING_MAX_CHARS, 'UTF-8')
+            : $s;
+
+        $value = $cut($value);
+        $term  = $cut($term);
+        similar_text($term, $value, $percent);
+
+        return [$percent, FuzzySearch::levenshteinDistance($value, $term)];
     }
 
     /**
