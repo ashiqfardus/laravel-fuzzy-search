@@ -1659,8 +1659,10 @@ class SearchBuilder
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
         if ($this->matchesNothing()) {
+            $perPage = $this->clampPerPage($perPage);
+
             return new \Illuminate\Pagination\LengthAwarePaginator(
-                [], 0, $this->clampPerPage($perPage), max(1, (int) ($page ?: request()->input($pageName, 1))),
+                [], 0, $perPage, $this->resolvePage($page, $pageName, $perPage),
                 ['path' => request()->url(), 'pageName' => $pageName]
             );
         }
@@ -1707,6 +1709,18 @@ class SearchBuilder
     }
 
     /**
+     * The page every paginator serves: $page, else the request's $pageName, and 1 for anything
+     * that is not a whole number of at least 1 (?page=abc, ?page=0, ?page=-3, ?page[]=1). The
+     * request value is user input: unsanitised, the index path threw a TypeError on it and
+     * served the wrong rows for 0. Capped so that no offset it gives (simplePaginate() reads one
+     * row past the page) overflows into a float: past that, every page is empty anyway.
+     */
+    protected function resolvePage(?int $page, string $pageName, int $perPage): int
+    {
+        return min(max(1, (int) ($page ?: request()->input($pageName, 1))), intdiv(PHP_INT_MAX, $perPage + 1));
+    }
+
+    /**
      * Length-aware pagination that ranks globally: fetch up to max_candidates rows, rescore in
      * PHP, slice the page. total() is the real DB count. For pages whose offset is beyond the
      * candidate ceiling, fall back to DB-level ordering for that page (documented limitation).
@@ -1714,8 +1728,7 @@ class SearchBuilder
     protected function paginateRanked(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
         $startedAt = microtime(true);
-        $page      = (int) ($page ?: request()->input($pageName, 1));
-        $page      = max(1, $page);
+        $page      = $this->resolvePage($page, $pageName, $perPage);
         $offset    = ($page - 1) * $perPage;
 
         $this->prepareQuery();
@@ -1783,7 +1796,7 @@ class SearchBuilder
             return $this->paginateOnce($perPage, $pageName, $page);
         }
 
-        $page   = $page ?: request()->input($pageName, 1);
+        $page   = $this->resolvePage($page, $pageName, $perPage);
         $offset = ($page - 1) * $perPage;
 
         ['total' => $total, 'ranked' => $ranked, 'base' => $base] = $this->indexedRankingAndTotal($modelClass);
@@ -1858,7 +1871,7 @@ class SearchBuilder
     public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): \Illuminate\Contracts\Pagination\Paginator
     {
         $perPage = $this->clampPerPage($perPage);
-        $page    = $page ?: (int) request()->input($pageName, 1);
+        $page    = $this->resolvePage($page, $pageName, $perPage);
         $offset  = ($page - 1) * $perPage;
 
         // Fetch one extra item so Paginator::setItems() can detect whether a next
