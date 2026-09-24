@@ -98,6 +98,24 @@ class AccentVariantTest extends TestCase
         $this->assertGreaterThan($results['Zoë Müller']->_score, $results['Muller']->_score);
     }
 
+    /**
+     * The relevance ORDER BY decides which rows survive the max_candidates cut before PHP
+     * rescores them, so each of its tiers matches either form.
+     */
+    public function test_the_relevance_order_by_ranks_either_form(): void
+    {
+        $search = fn () => $this->builder()->search('Müller')->searchIn(['name'])->using('like');
+
+        $this->assertMatchesRegularExpression('/order by .*CASE WHEN \S+ = \? OR \S+ = \? THEN/', $search()->toSql());
+        $bindings = $search()->getBindings();
+        $exact    = array_search(100, $bindings, true);
+        $this->assertSame(['Müller', 'Muller', 100], array_slice($bindings, $exact - 2, 3), 'the exact tier binds both forms');
+
+        // "Muller" is the folded form's exact match: it must be the one candidate kept.
+        config(['fuzzy-search.max_candidates' => 1]);
+        $this->assertSame(['Muller'], $search()->get()->pluck('name')->all());
+    }
+
     public function test_the_macros_bind_the_typed_term_unchanged(): void
     {
         // The variant belongs to SearchBuilder; a macro searches the term it is given.
