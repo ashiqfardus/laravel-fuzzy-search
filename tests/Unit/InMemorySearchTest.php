@@ -65,4 +65,39 @@ class InMemorySearchTest extends TestCase
         $page2 = FuzzySearch::on($items)->search('john')->searchIn(['name'])->skip(3)->take(3)->get();
         $this->assertCount(3, $page2);
     }
+
+    // -------------------------------------------------------------------------
+    // Case folding covers every script, as the SQL path's PHP scoring does
+    // -------------------------------------------------------------------------
+
+    /** The row whose $column is $value, from an in-memory search for $term. */
+    private function rowFor(string $term, string $value, array $values): ?array
+    {
+        return FuzzySearch::on(array_map(fn ($v) => ['name' => $v], $values))
+            ->search($term)->searchIn(['name'])->get()
+            ->firstWhere('name', $value);
+    }
+
+    public function test_upper_case_accented_latin_matches_its_lower_case_form_exactly(): void
+    {
+        $row = $this->rowFor('ÉCOLE', 'école', ['école', 'lycée']);
+
+        $this->assertNotNull($row);
+        $this->assertSame(100, $row['_raw_score'], 'ÉCOLE must be an exact match for école, not a similar_text near-miss');
+
+        $this->assertSame(100, $this->rowFor('école', 'ÉCOLE', ['ÉCOLE', 'LYCÉE'])['_raw_score'] ?? null);
+    }
+
+    public function test_cyrillic_and_greek_case_pairs_match(): void
+    {
+        foreach ([['МОСКВА', 'москва'], ['москва', 'МОСКВА'], ['ΑΘΗΝΑ', 'αθηνα'], ['αθηνα', 'ΑΘΗΝΑ']] as [$term, $value]) {
+            $this->assertSame(100, $this->rowFor($term, $value, [$value, 'other'])['_raw_score'] ?? null, "{$term} vs {$value}: exact");
+        }
+
+        $prefix = $this->rowFor('МОСК', 'москва', ['москва']);
+        $this->assertSame(60, $prefix['_raw_score'] ?? null, 'a Cyrillic prefix in the other case');
+
+        $contains = $this->rowFor('ΘΗΝ', 'αθηνα', ['αθηνα']);
+        $this->assertSame(30, $contains['_raw_score'] ?? null, 'a Greek substring in the other case');
+    }
 }

@@ -99,12 +99,14 @@ class InMemorySearch
             return $this->items->slice($this->offset, $this->limit)->values();
         }
 
-        $needle = strtolower($this->term);
+        // Case-folded in every script, as SearchBuilder's PHP scoring folds: strtolower() is
+        // ASCII-only, so "ÉCOLE" was only a near-miss for "école" and "МОСКВА" no match for "москва".
+        $needle = mb_strtolower($this->term, 'UTF-8');
 
         $scored = $this->items->map(function ($item) use ($needle) {
             $score = 0;
             foreach ($this->columns as $col) {
-                $value = strtolower((string) data_get($item, $col, ''));
+                $value = mb_strtolower((string) data_get($item, $col, ''), 'UTF-8');
                 if ($value === $needle) {
                     $score = max($score, 100);
                 } elseif (str_starts_with($value, $needle)) {
