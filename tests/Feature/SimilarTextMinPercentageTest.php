@@ -101,6 +101,20 @@ class SimilarTextMinPercentageTest extends TestCase
         $this->assertSame(['John Doe'], $this->names($search()->matchAll()->get()));
     }
 
+    /** The whole-term length is the builder's own (ER-59): no caller option can set it and widen the bound. */
+    public function test_a_caller_cannot_widen_the_bound_through_options(): void
+    {
+        foreach (['term_length', 'whole_term_length'] as $key) {
+            $this->assertSame(['John', 'Johnny'], $this->names($this->search()->options([$key => 999])->get()), "builder: {$key}");
+            $this->assertSame(['John', 'Johnny'], $this->names(DB::table('users')->whereFuzzy('name', 'john', 'similar_text', [$key => 999])->get()), "macro: {$key}");
+            $this->assertSame(['John', 'Johnny'], $this->names(User::query()->whereFuzzyMultiple(['name'], 'john', 'similar_text', [$key => 999])->get()), "Eloquent macro: {$key}");
+
+            $tokenized = fn (array $options) => $this->names((new SearchBuilder(User::query(), app(FuzzySearch::class)))
+                ->search('john doe')->searchIn(['name'])->using('similar_text')->tokenize()->options($options)->get());
+            $this->assertSame($tokenized([]), $tokenized([$key => 999]), "tokenize: {$key}");
+        }
+    }
+
     public function test_lengths_are_counted_in_characters_not_bytes(): void
     {
         DB::table('users')->insert([

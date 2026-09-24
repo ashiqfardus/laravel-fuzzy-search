@@ -2183,6 +2183,9 @@ class SearchBuilder
             $tokens = [$searchTerm];
         }
 
+        // Under tokenize(), similar_text bounds each token by the whole term's length (ER-59).
+        $wholeTermLength = $this->tokenizeSearch ? mb_strlen($searchTerm, 'UTF-8') : null;
+
         // Expand with the folded variant and synonyms
         $allTerms = [];
         foreach ($tokens as $token) {
@@ -2209,12 +2212,12 @@ class SearchBuilder
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
             // Every token must match at least one column
             foreach ($tokens as $token) {
-                $tokenTerms = $this->termConditions($this->termAlternatives($token), $searchTerm);
-                $group->where(function ($q) use ($tokenTerms, $targets) {
+                $tokenTerms = $this->termConditions($this->termAlternatives($token));
+                $group->where(function ($q) use ($tokenTerms, $targets, $wholeTermLength) {
                     $first = true;
                     foreach ($tokenTerms as [$term, $termOptions]) {
                         foreach ($targets as $target) {
-                            $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or', $termOptions);
+                            $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or', $termOptions, $wholeTermLength);
                             $first = false;
                         }
                     }
@@ -2224,12 +2227,12 @@ class SearchBuilder
         }
 
         // Any token can match any column
-        $allTerms = $this->termConditions($allTerms, $searchTerm);
-        $group->where(function ($q) use ($allTerms, $targets) {
+        $allTerms = $this->termConditions($allTerms);
+        $group->where(function ($q) use ($allTerms, $targets, $wholeTermLength) {
             $first = true;
             foreach ($allTerms as [$term, $termOptions]) {
                 foreach ($targets as $target) {
-                    $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or', $termOptions);
+                    $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or', $termOptions, $wholeTermLength);
                     $first = false;
                 }
             }
@@ -2240,21 +2243,19 @@ class SearchBuilder
      * Each term with the driver options it is applied with. An explicit accent opt-in ORs
      * unaccent() beside the algorithm on PostgreSQL (FuzzySearch::applyFuzzyWhere()): only the
      * first term of each accent-free form carries it, since a folded variant unaccents to its
-     * own term's form and would repeat the same alternative. Under tokenize(), similar_text's
-     * min_percentage bound measures the whole search term, not each token (ruling ER-59).
+     * own term's form and would repeat the same alternative.
      *
      * @param  string[] $terms
      * @return array<int, array{0: string, 1: array<string, mixed>}> [term, options], in order
      */
-    private function termConditions(array $terms, string $searchTerm): array
+    private function termConditions(array $terms): array
     {
         $unaccented = [];
         $conditions = [];
-        $whole      = $this->tokenizeSearch ? ['term_length' => mb_strlen($searchTerm, 'UTF-8')] : [];
 
         foreach ($terms as $term) {
             $form         = mb_strtolower($this->removeAccents($term), 'UTF-8');
-            $conditions[] = [$term, ['accent_insensitive' => $this->accentInsensitiveEnabled && !isset($unaccented[$form])] + $whole];
+            $conditions[] = [$term, ['accent_insensitive' => $this->accentInsensitiveEnabled && !isset($unaccented[$form])]];
             $unaccented[$form] = true;
         }
 
@@ -2269,20 +2270,22 @@ class SearchBuilder
      *
      * @param array{relation: ?string, column: string} $target
      * @param array<string, mixed> $termOptions this term's own driver options (termConditions())
+     * @param int|null $wholeTermLength under tokenize(), the whole search term's length, which
+     *                 similar_text's min_percentage bound measures (ruling ER-59)
      */
-    protected function applyColumnCondition($query, array $target, string $term, string $boolean, array $termOptions = []): void
+    protected function applyColumnCondition($query, array $target, string $term, string $boolean, array $termOptions = [], ?int $wholeTermLength = null): void
     {
         $options = array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled], $termOptions);
 
         if ($target['relation'] === null) {
             $subQuery = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
-            $this->fuzzySearch->applyFuzzyWhere($subQuery, $target['column'], $term, $this->algorithm, $options, $boolean);
+            $this->fuzzySearch->applyTermWhere($subQuery, $target['column'], $term, $this->algorithm, $options, $boolean, $wholeTermLength);
             return;
         }
 
         $method = $boolean === 'or' ? 'orWhereHas' : 'whereHas';
-        $query->{$method}($target['relation'], function (EloquentBuilder $related) use ($target, $term, $options) {
-            $this->fuzzySearch->applyFuzzyWhere($related->getQuery(), $target['column'], $term, $this->algorithm, $options, 'and');
+        $query->{$method}($target['relation'], function (EloquentBuilder $related) use ($target, $term, $options, $wholeTermLength) {
+            $this->fuzzySearch->applyTermWhere($related->getQuery(), $target['column'], $term, $this->algorithm, $options, 'and', $wholeTermLength);
         });
     }
 

@@ -56,6 +56,12 @@ class FuzzySearch
         return $this->config ?? (array) config('fuzzy-search', []);
     }
 
+    /**
+     * @internal The driver-config key applyTermWhere() sets from its own argument, after the
+     *           caller's options are merged, so no option can set it.
+     */
+    public const WHOLE_TERM_LENGTH = 'whole_term_length';
+
     public function applyFuzzyWhere(
         Builder $query,
         string $column,
@@ -64,12 +70,31 @@ class FuzzySearch
         ?array $options = [],
         string $boolean = 'and'
     ): Builder {
+        return $this->applyTermWhere($query, $column, $value, $algorithm, $options ?? [], $boolean, null);
+    }
+
+    /**
+     * @internal applyFuzzyWhere() for SearchBuilder. $wholeTermLength is the whole search term's
+     * length under tokenize(), which similar_text's min_percentage bound measures instead of the
+     * token's (ruling ER-59). It is an argument, never an option: whatever a caller passes in
+     * $options, options() or a macro cannot widen the bound.
+     */
+    public function applyTermWhere(
+        Builder $query,
+        string $column,
+        string $value,
+        ?string $algorithm,
+        array $options,
+        string $boolean,
+        ?int $wholeTermLength
+    ): Builder {
         $this->assertValidColumn($column);
 
         $value = $this->term($value);
 
         $algorithm = $algorithm ?? $this->currentConfig()['default_algorithm'] ?? 'fuzzy';
-        $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
+        $mergedConfig = $this->mergeOptions($algorithm, $options);
+        $mergedConfig[$algorithm][self::WHOLE_TERM_LENGTH] = $wholeTermLength;
         $driver = $this->resolveDriver($algorithm, $query, $mergedConfig);
 
         // $options['accent_insensitive'] is the explicit opt-in: ->accentInsensitive(), the model's
