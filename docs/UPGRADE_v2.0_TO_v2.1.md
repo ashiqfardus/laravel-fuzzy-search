@@ -188,8 +188,10 @@ you get back from a search:
   can see.
 - **Auto-detection skips hidden and secret columns.** A model with no `$searchable['columns']`
   no longer auto-selects a column in `$hidden`, a column outside a non-empty `$visible`, or
-  `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`
-  (in any letter case), on the LIKE path as well as the index path. A zero-config model whose only priority column was
+  a secret-named column — any name containing `password`, ending in `_token` or `_secret`, or
+  named `token`, `secret`, `api_key`, `private_key`, `recovery_codes` or
+  `two_factor_recovery_codes` (in any letter case; `sort_key`-style names are still picked) —
+  on the LIKE path as well as the index path. A zero-config model whose only priority column was
   hidden (a hidden `name`, say) now picks another column, or none. With none, the model has no
   column to search, and its search matches nothing (see below).
   Declare `$searchable['columns']` to keep searching a hidden column. Detection reads the model

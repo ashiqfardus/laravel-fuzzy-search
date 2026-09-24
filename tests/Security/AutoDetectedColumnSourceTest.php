@@ -23,7 +23,7 @@ class AutoDetectedColumnSourceTest extends TestCase
 {
     private const TABLES = [
         'secret_notes', 'hidden_things', 'visible_things', 'credentials', 'token_only', 'fillable_secrets',
-        'cased_secrets', 'shadow_people', 'override_things',
+        'cased_secrets', 'shadow_people', 'override_things', 'pattern_secrets',
     ];
 
     protected function defineEnvironment($app): void
@@ -77,6 +77,14 @@ class AutoDetectedColumnSourceTest extends TestCase
         Schema::create('cased_secrets', function ($table) {
             $table->id();
             $table->string('Password');
+            $table->string('nickname');
+        });
+        Schema::create('pattern_secrets', function ($table) {
+            $table->id();
+            $table->string('webhook_secret');
+            $table->string('invite_token');
+            $table->string('password_hash');
+            $table->string('api_key');
             $table->string('nickname');
         });
         Schema::create('shadow_people', function ($table) {
@@ -201,6 +209,11 @@ class AutoDetectedColumnSourceTest extends TestCase
     public function test_secret_named_columns_are_skipped_in_the_fillable_branch(): void
     {
         $this->assertSame(['nickname'], (new FillableSecretThing)->getSearchableColumns());
+    }
+
+    public function test_secret_name_patterns_are_skipped_too(): void
+    {
+        $this->assertSame(['nickname'], (new PatternSecretThing)->getSearchableColumns());
     }
 
     public function test_secret_names_are_matched_in_any_letter_case(): void
@@ -392,6 +405,14 @@ class CasedSecretThing extends Model
     use Searchable;
 
     protected $table = 'cased_secrets';
+}
+
+/** No priority column and no $fillable: the first string-like pick must skip every secret-shaped name. */
+class PatternSecretThing extends Model
+{
+    use Searchable;
+
+    protected $table = 'pattern_secrets';
 }
 
 /** Its connection points at a database file that does not exist, so detection cannot list the table. */

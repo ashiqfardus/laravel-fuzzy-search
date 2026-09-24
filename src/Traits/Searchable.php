@@ -327,10 +327,8 @@ trait Searchable
 
         $hidden   = $defaults->getHidden();
         $visible  = $defaults->getVisible();
-        $pickable = fn (string $column) => !in_array(strtolower($column), [
-            'id', 'password', 'remember_token', 'two_factor_secret', 'two_factor_recovery_codes', 'api_token',
-            'created_at', 'updated_at', 'deleted_at',
-        ], true) && !in_array($column, $hidden, true) && ($visible === [] || in_array($column, $visible, true))
+        $pickable = fn (string $column) => !in_array(strtolower($column), ['id', 'created_at', 'updated_at', 'deleted_at'], true)
+            && !SearchableColumns::isSecretName($column) && !in_array($column, $hidden, true) && ($visible === [] || in_array($column, $visible, true))
             && SearchableColumns::isTextLikeCast($this->getCasts()[$column] ?? null);
 
         // Priority columns to check

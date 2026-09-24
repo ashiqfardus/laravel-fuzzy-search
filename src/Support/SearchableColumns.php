@@ -153,6 +153,23 @@ final class SearchableColumns
         return in_array(explode(':', strtolower($cast), 2)[0], self::TEXT_LIKE_CASTS, true);
     }
 
+    /**
+     * Whether a column name says it holds a secret, so auto-detection must never pick it: an
+     * exact name (`token`, `api_key`, …), anything ending in `_token` or `_secret`, or anything
+     * containing `password`, in any letter case. `*_key` is deliberately not a rule — it would
+     * also hide `sort_key` or `lookup_key`; the secret ones are named exactly. Declaring such a
+     * column in $searchable['columns'] is the caller's explicit choice and is not affected.
+     */
+    public static function isSecretName(string $column): bool
+    {
+        $column = strtolower($column);
+
+        return in_array($column, ['token', 'secret', 'api_key', 'private_key', 'recovery_codes', 'two_factor_recovery_codes'], true)
+            || str_ends_with($column, '_token')
+            || str_ends_with($column, '_secret')
+            || str_contains($column, 'password');
+    }
+
     public static function reset(): void
     {
         self::$detected = [];

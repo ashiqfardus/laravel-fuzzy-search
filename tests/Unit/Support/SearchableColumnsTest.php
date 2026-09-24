@@ -69,6 +69,29 @@ class SearchableColumnsTest extends TestCase
         }
     }
 
+    /** Auto-detection never picks a column whose name says it holds a secret. */
+    public function test_secret_names(): void
+    {
+        $secret = [
+            'password', 'Password', 'password_hash', 'app_password', 'old_passwords',
+            'token', 'secret', 'api_key', 'API_KEY', 'api_secret', 'access_token', 'refresh_token',
+            'client_secret', 'private_key', 'otp_secret', 'recovery_codes', 'remember_token',
+            'api_token', 'invite_token', 'Reset_Token', 'webhook_secret', 'two_factor_secret',
+            'two_factor_recovery_codes',
+        ];
+        $ordinary = [
+            'name', 'nickname', 'title', 'sort_key', 'lookup_key', 'idempotency_key', 'token_count',
+            'tokens', 'secretary', 'secret_santa_name', 'keyword', 'description',
+        ];
+
+        foreach ($secret as $column) {
+            $this->assertTrue(SearchableColumns::isSecretName($column), "{$column} should be secret");
+        }
+        foreach ($ordinary as $column) {
+            $this->assertFalse(SearchableColumns::isSecretName($column), "{$column} should not be secret");
+        }
+    }
+
     public function test_names_reads_both_declaration_forms(): void
     {
         $this->assertSame(['name', 'email'], SearchableColumns::names(['name' => 10, 'email' => 5]));
