@@ -746,7 +746,7 @@ The Scout engine adapter is bundled in this package and registers automatically 
 SCOUT_DRIVER=fuzzy-search
 ```
 
-It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync.
+It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync. Scout's semantic and hybrid search (`semantic()`, `hybrid()`, Scout 11.6+) are not supported by this engine: both throw `NotSupportedException`.
 
 → Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
 

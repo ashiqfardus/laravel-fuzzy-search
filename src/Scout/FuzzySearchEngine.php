@@ -14,6 +14,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Laravel\Scout\Builder;
 use Laravel\Scout\Engines\Engine;
+use Laravel\Scout\Exceptions\NotSupportedException;
 
 /**
  * Scout engine adapter — bundled in core, registered conditionally
@@ -106,6 +107,13 @@ class FuzzySearchEngine extends Engine
      */
     private function terms(Builder $builder): array
     {
+        // Scout 11.6+ hybrid() asks for a full-text + semantic ranking this engine cannot give;
+        // without this check it would quietly return a plain BM25 page. (semantic() alone is
+        // rejected by Scout itself, which checks SupportsSemanticSearch; Scout 10 has neither.)
+        if (($builder->hybridSearch ?? null) !== null) {
+            throw new NotSupportedException('The fuzzy-search Scout engine does not support hybrid (semantic) search.');
+        }
+
         $query = Utf8::clean($builder->query);
 
         return SearchBuilder::belowMinSearchLength(trim($query))

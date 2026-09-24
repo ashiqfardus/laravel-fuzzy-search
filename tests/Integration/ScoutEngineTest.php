@@ -25,6 +25,30 @@ class ScoutEngineTest extends TestCase
         $this->assertInstanceOf(FuzzySearchEngine::class, $engine);
     }
 
+    /**
+     * Scout 11.6+ hybrid() asks for a full-text + semantic ranking this engine cannot produce.
+     * It must fail loudly rather than quietly return a plain BM25 page (semantic() alone is
+     * already rejected by Scout itself, which checks SupportsSemanticSearch).
+     */
+    public function test_hybrid_search_is_rejected_instead_of_silently_running_bm25(): void
+    {
+        if (!class_exists(\Laravel\Scout\Builder::class) || !method_exists(\Laravel\Scout\Builder::class, 'hybrid')) {
+            $this->markTestSkipped('This Scout version has no hybrid().');
+        }
+
+        $engine = $this->app->make(\Laravel\Scout\EngineManager::class)->engine('fuzzy-search');
+        $builder = (new \Laravel\Scout\Builder(new ScoutIndexedUser, 'john'))->hybrid();
+
+        foreach (['search' => fn () => $engine->search($builder), 'paginate' => fn () => $engine->paginate($builder, 15, 1)] as $method => $call) {
+            try {
+                $call();
+                $this->fail("{$method}() ran a hybrid search as plain BM25");
+            } catch (\Laravel\Scout\Exceptions\NotSupportedException $e) {
+                $this->assertStringContainsString('hybrid', $e->getMessage());
+            }
+        }
+    }
+
     public function test_scout_engine_indexes_and_retrieves(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

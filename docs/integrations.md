@@ -8,6 +8,10 @@
 
 The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed. No separate driver package is required.
 
+It is a keyword (BM25) engine. Scout's semantic and hybrid search (`->semantic()`, `->hybrid()`, added in Scout 11.6) are not supported: `semantic()` is rejected by Scout itself, and `hybrid()` throws `Laravel\Scout\Exceptions\NotSupportedException` rather than quietly returning a plain keyword ranking.
+
+It is a keyword (BM25) engine. Scout's semantic and hybrid search (`->semantic()`, `->hybrid()`, added in Scout 11.6) are not supported: `semantic()` is rejected by Scout itself, and `hybrid()` throws `Laravel\Scout\Exceptions\NotSupportedException` rather than quietly returning a plain keyword ranking.
+
 ### Setup
 
 ```bash
