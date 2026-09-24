@@ -17,7 +17,7 @@ use Illuminate\Database\Eloquent\Model;
  * process (a tenant model that switches either gets its own entry): it reads the
  * table's columns, and it is called on every save (shadow columns), every indexed row and every
  * search. Declared columns never reach it. The cache is as long-lived as
- * SearchableObserver::$columnCache and onTable()'s listings — a schema change needs
+ * SearchableObserver::$columnCache and onTable()'s and typesOn()'s listings — a schema change needs
  * a fresh process (or reset(), which the test suite calls between cases).
  */
 final class SearchableColumns
@@ -44,6 +44,9 @@ final class SearchableColumns
 
     /** @var array<string, string[]> "connection|table" => column names */
     private static array $listings = [];
+
+    /** @var array<string, array<string, string>> "connection|table" => column => database type */
+    private static array $types = [];
 
     /**
      * @param  array<string|int, string|int> $columns
@@ -122,6 +125,56 @@ final class SearchableColumns
     }
 
     /**
+     * The table's columns and their database types (Schema::getColumns()'s type_name, lower case),
+     * memoised per connection and table like onTable(). [] when the types cannot be read — Laravel 10
+     * before Schema::getColumns() existed, or a table that cannot be listed — and then not cached:
+     * auto-detection then keeps its untyped behaviour.
+     *
+     * @return array<string, string> column => type
+     */
+    public static function typesOn(Connection $connection, string $table): array
+    {
+        $key    = $connection->getName() . '|' . $table;
+        $schema = $connection->getSchemaBuilder();
+
+        if (isset(self::$types[$key]) || !method_exists($schema, 'getColumns')) {
+            return self::$types[$key] ?? [];
+        }
+
+        try {
+            $columns = $schema->getColumns($table);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        $types = [];
+        foreach ($columns as $column) {
+            $types[(string) $column['name']] = strtolower((string) $column['type_name']);
+        }
+
+        return $types === [] ? [] : self::$types[$key] = $types;
+    }
+
+    /**
+     * Whether a database column type holds text a LIKE can search on every supported database:
+     * char/varchar/text in all their sizes and spellings (nchar, nvarchar, ntext, bpchar,
+     * character varying, citext, SQLite's TEXT affinity), plus MySQL/MariaDB enum and set.
+     * Numbers, booleans, dates, json, uuid, binary types and PostgreSQL arrays (`_text`) and
+     * native enums (named by the enum) are not: PostgreSQL rejects their ILIKE outright.
+     *
+     * @param string|null $type the column's type from typesOn(), or null when it could not be read
+     */
+    public static function isTextType(?string $type): bool
+    {
+        if ($type === null) {
+            return true; // unknown: keep the column, as detection did before types were read
+        }
+
+        return in_array($type, ['enum', 'set'], true)
+            || (!str_starts_with($type, '_') && preg_match('/char|text|clob/', $type) === 1);
+    }
+
+    /**
      * What the indexer and the shadow columns read for a searchable column. A column the model
      * chose goes through getAttribute() — accessors and casts, a documented feature. An
      * auto-detected one is read as the raw attribute value: nobody chose to expose it, and a get
@@ -177,5 +230,6 @@ final class SearchableColumns
     {
         self::$detected = [];
         self::$listings = [];
+        self::$types    = [];
     }
 }

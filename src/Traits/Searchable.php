@@ -304,7 +304,10 @@ trait Searchable
     }
 
     /**
-     * The uncached auto-detection itself — see getAutoDetectedColumns(). Columns whose cast is
+     * The uncached auto-detection itself — see getAutoDetectedColumns(). Only text-typed database
+     * columns are selected (SearchableColumns::isTextType(): a LIKE on a bigint or json column fails
+     * on PostgreSQL); where the types cannot be read (Laravel 10 before Schema::getColumns()) every
+     * column is a candidate, as before. Columns whose cast is
      * not text (an enum, an array, a custom cast class) are never selected: detection is a
      * heuristic, and the indexer cannot turn such a value into text. Nor is a column the model
      * hides from serialization ($hidden, or outside a non-empty $visible) or a secret by name:
@@ -361,11 +364,16 @@ trait Searchable
         ];
 
         try {
-            // Get actual table columns, minus any the indexer could not read as text and any
-            // that must never be picked (every branch below reads this list). Read through the
-            // model's own connection, not the default one.
-            $listing      = $this->getConnection()->getSchemaBuilder()->getColumnListing($table);
-            $tableColumns = array_values(array_filter($listing, $pickable));
+            // Get actual table columns, minus any that are not text, any the indexer could not
+            // read as text and any that must never be picked (every branch below reads this
+            // list). Read through the model's own connection, not the default one; the types'
+            // listing is the column listing too, so the schema is read once.
+            $types        = SearchableColumns::typesOn($this->getConnection(), $table);
+            $listing      = $types === [] ? $this->getConnection()->getSchemaBuilder()->getColumnListing($table) : array_keys($types);
+            $tableColumns = array_values(array_filter(
+                array_map('strval', $listing),
+                fn (string $column) => $pickable($column) && SearchableColumns::isTextType($types[$column] ?? null)
+            ));
 
             // Check which priority columns exist
             foreach ($priorityColumns as $col => $weight) {
