@@ -82,8 +82,9 @@ class IndexModelJobOverlapTest extends TestCase
     #[DataProvider('concurrentWriters')]
     public function test_a_concurrent_write_for_the_same_model_counts_it_once(string $writer): void
     {
-        if (!extension_loaded('pcntl') || !extension_loaded('posix')) {
-            $this->markTestSkipped('The race needs two processes: the pcntl and posix extensions.');
+        // function_exists(), not extension_loaded(): disable_functions can remove them too.
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
+            $this->markTestSkipped('The race needs two processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
         }
 
         // The child's own connection to the same database: the parent's socket is not shared.
