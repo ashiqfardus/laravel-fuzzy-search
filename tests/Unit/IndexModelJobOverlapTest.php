@@ -6,19 +6,44 @@ require_once __DIR__ . '/../TestModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Scout\FuzzySearchEngine;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
-use Illuminate\Contracts\Cache\LockTimeoutException;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
- * Two IndexModelJobs for one model must not overlap: both read the row as not yet indexed and
- * both added it to doc_count and total_docs. Each run holds a cache lock keyed by the model's
- * class and key; a second run waits for it (up to the job's timeout) instead of running alongside.
+ * Two index writes for one model must not overlap: both read the row as not yet indexed and
+ * both added it to doc_count and total_docs. IndexManager claims and locks the model's document
+ * row first, in the same transaction as the write, so IndexModelJob, the Scout engine's update()
+ * and the rebuild batches all wait for each other on the database, never on a cache lock.
+ *
+ * On SQLite the database is a file here, so two processes can share it.
  */
 class IndexModelJobOverlapTest extends TestCase
 {
+    private ?string $file = null;
+
+    protected function defineEnvironment($app): void
+    {
+        parent::defineEnvironment($app);
+
+        if ($app['config']->get('database.default') === 'testing') {
+            $this->file = sys_get_temp_dir() . '/fuzzy-race-' . getmypid() . '-' . uniqid() . '.sqlite';
+            touch($this->file);
+            $app['config']->set('database.connections.testing.database', $this->file);
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        if ($this->file !== null) {
+            @unlink($this->file);
+        }
+    }
+
     private function snapshot(): array
     {
         return [
@@ -38,44 +63,62 @@ class IndexModelJobOverlapTest extends TestCase
         (new IndexModelJob(User::class, $user->getKey()))->handle(app(IndexManager::class));
         $this->assertSame($once, $this->snapshot());
         $this->assertSame(1, (int) $once['meta']['total_docs']);
+
+        // The Scout engine and a rebuild batch write the same state.
+        app(FuzzySearchEngine::class)->update(User::whereKey($user->getKey())->get());
+        app(IndexManager::class)->indexBatch(User::whereKey($user->getKey())->get());
+        $this->assertSame($once, $this->snapshot());
+    }
+
+    public static function concurrentWriters(): array
+    {
+        return ['IndexModelJob' => ['job'], 'Scout update()' => ['scout'], 'rebuild batch' => ['batch']];
     }
 
     /**
-     * The race itself, in two processes: each run pauses after reading whether the model is
-     * already indexed, so both read "not yet" unless the second waits for the first.
+     * The race itself, in two processes: each write pauses after its first read of the document
+     * row, so both read "not yet indexed" unless the second waits for the first.
      */
-    public function test_two_concurrent_runs_for_one_model_count_it_once(): void
+    #[DataProvider('concurrentWriters')]
+    public function test_a_concurrent_write_for_the_same_model_counts_it_once(string $writer): void
     {
-        if (!$this->usingRealDatabase()) {
-            $this->markTestSkipped('Two processes cannot share an in-memory SQLite database; CI runs this on MySQL, MariaDB, PostgreSQL and SQL Server.');
+        if (!extension_loaded('pcntl') || !extension_loaded('posix')) {
+            $this->markTestSkipped('The race needs two processes: the pcntl and posix extensions.');
         }
 
-        $dir = sys_get_temp_dir() . '/fuzzy-overlap-' . getmypid();
-        config([
-            'cache.default'           => 'file', // a lock both processes see
-            'cache.stores.file.path'  => $dir,
-            'database.connections.race' => config('database.connections.' . config('database.default')),
-        ]);
+        // The child's own connection to the same database: the parent's socket is not shared.
+        config(['database.connections.race' => config('database.connections.' . config('database.default'))]);
 
-        DB::listen(function ($query) {
-            if (str_contains($query->sql, 'fuzzy_index_documents') && str_contains($query->sql, 'doc_length') && str_starts_with(strtolower($query->sql), 'select')) {
+        $paused = false;
+        DB::listen(function ($query) use (&$paused) {
+            if (!$paused && preg_match('/^\s*select\b/i', $query->sql) && str_contains($query->sql, 'fuzzy_index_documents')) {
+                $paused = true;
                 usleep(600_000); // after the "already indexed?" read, before any write
             }
         });
 
         $id     = User::where('name', 'John Doe')->value('id');
-        $failed = "{$dir}/child-failed";
+        $failed = sys_get_temp_dir() . '/fuzzy-race-child-' . getmypid() . '-' . uniqid();
 
         $pid = pcntl_fork();
+        if ($pid === -1) {
+            $this->markTestSkipped('pcntl_fork() failed.');
+        }
+
         if ($pid === 0) {
             try {
-                DB::setDefaultConnection('race'); // its own connection: the parent's socket is not shared
-                (new IndexModelJob(User::class, $id))->handle(app(IndexManager::class));
+                DB::setDefaultConnection('race');
+                $models = User::whereKey($id)->get();
+                match ($writer) {
+                    'job'   => (new IndexModelJob(User::class, $id))->handle(app(IndexManager::class)),
+                    'scout' => app(FuzzySearchEngine::class)->update($models),
+                    'batch' => app(IndexManager::class)->indexBatch($models),
+                };
             } catch (\Throwable $e) {
-                @mkdir($dir, 0777, true);
                 file_put_contents($failed, (string) $e);
+            } finally {
+                posix_kill(getmypid(), SIGKILL); // no destructors, no PHPUnit shutdown: they belong to the parent
             }
-            posix_kill(getmypid(), SIGKILL); // no destructors: they would close the parent's connection
         }
 
         usleep(50_000);
@@ -83,41 +126,11 @@ class IndexModelJobOverlapTest extends TestCase
         pcntl_waitpid($pid, $status);
 
         $childError = is_file($failed) ? file_get_contents($failed) : null;
-        (new \Illuminate\Filesystem\Filesystem())->deleteDirectory($dir);
+        @unlink($failed);
 
         $this->assertNull($childError);
         $this->assertSame(1, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
         $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
-    }
-
-    public function test_a_run_waits_while_another_run_holds_the_model_and_does_not_index_alongside_it(): void
-    {
-        config(['fuzzy-search.indexing.job.timeout' => 1]); // how long the second run waits
-        $user = User::where('name', 'John Doe')->first();
-        $job  = new IndexModelJob(User::class, $user->getKey());
-
-        $held = Cache::lock($job->lockKey(), 10);
-        $this->assertTrue($held->get()); // a first run is in progress
-
-        try {
-            $job->handle(app(IndexManager::class));
-            $this->fail('the second run should have waited for the lock');
-        } catch (LockTimeoutException) {
-            // a queued job is retried later; nothing ran alongside the first run
-        } finally {
-            $held->release();
-        }
-
-        $this->assertSame(0, DB::table('fuzzy_index_postings')->count());
-
-        // Another model is not held up by it, and the released lock lets the model through.
-        $jane = User::where('name', 'Jane Doe')->first();
-        $held = Cache::lock($job->lockKey(), 10);
-        $held->get();
-        (new IndexModelJob(User::class, $jane->getKey()))->handle(app(IndexManager::class));
-        $held->release();
-        $job->handle(app(IndexManager::class));
-
-        $this->assertSame(2, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
+        $this->assertSame(1, DB::table('fuzzy_index_documents')->where('model_type', User::class)->count());
     }
 }

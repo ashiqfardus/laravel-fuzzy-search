@@ -60,8 +60,8 @@ class IndexManager
 
     /**
      * Index (or re-index) a single model instance.
-     * Removes old postings first, then writes fresh ones.
-     * Does NOT inflate total_docs on re-index.
+     * Claims the model's document row, removes its old postings (giving back their doc_count),
+     * then writes fresh ones, in one transaction. Does NOT inflate total_docs on re-index.
      */
     public function indexModel(Model $model): void
     {
@@ -87,15 +87,10 @@ class IndexManager
         $docLength = array_sum($tokens);
 
         DB::transaction(function () use ($modelType, $modelId, $tokens, $byColumn, $docLength) {
-            // Read old doc_length BEFORE removing so we can compute the delta for avg_doc_length (C11)
-            $oldDoc       = DB::table('fuzzy_index_documents')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->first(['doc_length']);
-            $wasIndexed   = $oldDoc !== null;
-            $oldDocLength = $wasIndexed ? (int) ($oldDoc->doc_length ?? 0) : 0;
+            // Old doc_length for the avg_doc_length delta (C11); 0 = not indexed yet.
+            $oldDocLength = $this->claimDocuments($modelType, [$modelId])[$modelId] ?? 0;
 
-            $this->removeFromIndex($modelType, $modelId, updateMeta: false);
+            $this->deletePostings($modelType, [$modelId]);
 
             // PHP normalises numeric-string array keys (e.g. '10') to int keys, so
             // array_keys($tokens) can yield an int for a purely numeric token. Cast back to
@@ -146,53 +141,28 @@ class IndexManager
                 ['doc_length']
             );
 
-            $this->upsertMeta($modelType, $docLength, isNewDoc: !$wasIndexed, oldDocLength: $oldDocLength);
+            $this->upsertMeta($modelType, $docLength, isNewDoc: $oldDocLength === 0, oldDocLength: $oldDocLength);
         });
     }
 
     /**
      * Remove all index entries for a specific model instance.
      */
-    public function removeFromIndex(string $modelType, int|string $modelId, bool $updateMeta = true): void
+    public function removeFromIndex(string $modelType, int|string $modelId): void
     {
-        DB::transaction(function () use ($modelType, $modelId, $updateMeta) {
-            $termIds = DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->distinct()
-                ->pluck('term_id');
+        DB::transaction(function () use ($modelType, $modelId) {
+            // Waits for a write to this row in flight; 0 = it was not indexed.
+            $oldDocLength = $this->claimDocuments($modelType, [$modelId])[$modelId] ?? 0;
 
-            if ($termIds->isEmpty()) {
-                return;
-            }
+            $this->deletePostings($modelType, [$modelId]);
 
-            // Capture old doc_length before the document row is deleted — needed to keep
-            // total_tokens (and thus avg_doc_length) accurate when updateMeta=true (C11)
-            $oldDocLength = $updateMeta
-                ? (int) (DB::table('fuzzy_index_documents')
-                    ->where('model_type', $modelType)
-                    ->where('model_id', $modelId)
-                    ->value('doc_length') ?? 0)
-                : 0;
-
-            DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->delete();
-
-            // Guard against underflow on unsigned columns under concurrent deletes
-            DB::table('fuzzy_index_terms')
-                ->whereIn('id', $termIds)
-                ->update([
-                    'doc_count' => DB::raw('CASE WHEN doc_count > 0 THEN doc_count - 1 ELSE 0 END'),
-                ]);
-
+            // The document row, or the placeholder the claim just inserted.
             DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)
                 ->where('model_id', $modelId)
                 ->delete();
 
-            if ($updateMeta) {
+            if ($oldDocLength > 0) {
                 // Two-step meta update wrapped in the enclosing transaction so no concurrent
                 // BM25 read can observe an inconsistent avg_doc_length between the two UPDATEs
                 DB::table('fuzzy_index_meta')
@@ -214,6 +184,77 @@ class IndexManager
                     ]);
             }
         });
+    }
+
+    /**
+     * Claim the models' document rows for the enclosing transaction: insert a placeholder
+     * (doc_length 0) where none exists, then lock every row. Every write to a model's index
+     * entries (indexModel(), removeFromIndex(), indexBatch(), and so IndexModelJob, the Scout
+     * engine and the rebuild batches) starts here, so two writes for one model run one after the
+     * other: the second waits for the first to commit, then reads what it wrote. Without the
+     * claim both read "not indexed yet" and both added the model to doc_count and total_docs.
+     * The upsert also waits for a concurrent first insert of the row, which a lock on a missing
+     * row cannot; SQLite takes its database write lock on it. A crashed process releases the
+     * lock with its connection. Ids are claimed in sorted order, so two batches cannot deadlock.
+     *
+     * @param  array<int|string>  $modelIds
+     * @return array<int|string, int> model id => doc_length, for the models already indexed
+     */
+    private function claimDocuments(string $modelType, array $modelIds): array
+    {
+        sort($modelIds, SORT_STRING);
+        $indexed = [];
+
+        foreach (array_chunk($modelIds, 500) as $chunk) { // 1,500 bindings: under SQL Server's 2,100
+            DB::table('fuzzy_index_documents')->upsert(
+                array_map(fn ($id) => ['model_type' => $modelType, 'model_id' => $id, 'doc_length' => 0], $chunk),
+                ['model_type', 'model_id'],
+                ['model_type'] // a no-op update: the conflict branch only takes the row lock
+            );
+
+            $rows = DB::table('fuzzy_index_documents')
+                ->where('model_type', $modelType)
+                ->whereIn('model_id', $chunk)
+                ->lockForUpdate()
+                ->pluck('doc_length', 'model_id');
+
+            foreach ($rows as $id => $length) {
+                if ((int) $length > 0) {
+                    $indexed[$id] = (int) $length;
+                }
+            }
+        }
+
+        return $indexed;
+    }
+
+    /**
+     * Delete the models' postings and give back their share of each term's doc_count:
+     * COUNT(DISTINCT model_id) per term, since a document has one posting per column a term is in.
+     *
+     * @param array<int|string> $modelIds
+     */
+    private function deletePostings(string $modelType, array $modelIds): void
+    {
+        foreach (array_chunk($modelIds, 1000) as $chunk) {
+            $counts = DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelType)
+                ->whereIn('model_id', $chunk)
+                ->groupBy('term_id')
+                ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
+                ->pluck('cnt', 'term_id');
+
+            if ($counts->isEmpty()) {
+                continue;
+            }
+
+            DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelType)
+                ->whereIn('model_id', $chunk)
+                ->delete();
+
+            $this->decrementDocCounts($counts->all());
+        }
     }
 
     /**
@@ -412,49 +453,15 @@ class IndexManager
         $modelIds = array_keys($tokensByModel);
 
         return DB::transaction(function () use ($modelType, $tokensByModel, $columnsByModel, $allTerms, $modelIds) {
-            // Find which models in this batch are already indexed (for accurate meta)
-            $alreadyIndexed = DB::table('fuzzy_index_documents')
-                ->where('model_type', $modelType)
-                ->whereIn('model_id', $modelIds)
-                ->pluck('model_id')
-                ->flip();
+            // Claim the batch's document rows (see claimDocuments()): a live IndexModelJob or
+            // Scout update for one of them waits, or is waited for. model_id => old doc_length
+            // for the models already indexed, which keeps meta accurate (C11).
+            $alreadyIndexed   = $this->claimDocuments($modelType, $modelIds);
+            $oldReindexTokens = array_sum($alreadyIndexed);
 
-            // For re-indexed models: capture per-term model-counts and old total_tokens
-            // BEFORE deleting. We need per-term counts (not a flat -1) because N models
-            // may share a term — decrementing by 1 would under-correct doc_count. (C12)
-            // Old token sum is used to keep avg_doc_length accurate. (C11)
-            $oldReindexTermCounts = collect(); // term_id => number of re-indexed models that had it
-            $oldReindexTokens     = 0;
-
-            if ($alreadyIndexed->isNotEmpty()) {
-                $reindexIds = $alreadyIndexed->keys()->toArray();
-
-                // COUNT(DISTINCT model_id) per term_id = number of models in the batch that had
-                // this term (a term now has one posting row per column it appears in, so
-                // COUNT(*) would double-count a term that lives in two columns of one document).
-                $oldReindexTermCounts = DB::table('fuzzy_index_postings')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->groupBy('term_id')
-                    ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
-                    ->pluck('cnt', 'term_id');
-
-                $oldReindexTokens = (int) DB::table('fuzzy_index_documents')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->sum('doc_length');
-
-                DB::table('fuzzy_index_postings')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->delete();
-                DB::table('fuzzy_index_documents')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->delete();
-
-                $this->decrementDocCounts($oldReindexTermCounts->all());
-            }
+            // Re-indexed models lose their old postings and give back their doc_count, per term
+            // (C12); their document rows are overwritten below.
+            $this->deletePostings($modelType, array_keys($alreadyIndexed));
 
             // Count term occurrences across ALL models (new + re-indexed).
             // Re-indexed models had their old doc_counts decremented above, so we must
@@ -498,7 +505,7 @@ class IndexManager
                 foreach ($this->postingRows($columnsByModel[$modelId], $termIds, $modelType, $modelId) as $row) {
                     $postingRows[] = $row;
                 }
-                if (!$alreadyIndexed->has($modelId)) {
+                if (!isset($alreadyIndexed[$modelId])) {
                     $totalNewDocs++;
                     $totalNewTokens += $docLength;
                 } else {
