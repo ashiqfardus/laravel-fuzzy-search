@@ -106,6 +106,32 @@ class LongStringKeyTest extends TestCase
         ], $sql);
     }
 
+    /** down() drops the index rows whose key no longer fits, and gives back what they counted. */
+    public function test_rolling_back_gives_back_the_counts_of_the_rows_it_drops(): void
+    {
+        $long  = LongKeyNote::create(['code' => $this->key('a'), 'body' => 'shared widget']);
+        $short = LongKeyNote::create(['code' => 'short-key', 'body' => 'shared thing']);
+        app(IndexManager::class)->indexBatch(LongKeyNote::all());
+        $this->assertSame(2, (int) DB::table('fuzzy_index_terms')->where('term', 'shared')->value('doc_count'));
+
+        $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $migration->down();
+        $migration->up();
+
+        $meta = DB::table('fuzzy_index_meta')->where('model_type', LongKeyNote::class)->first();
+        if ($this->dbDriver === 'sqlite') { // no narrowing on SQLite, so nothing is dropped
+            $this->assertSame(2, (int) $meta->total_docs);
+            return;
+        }
+
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_id', $long->code)->count());
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'shared')->value('doc_count'));
+        $this->assertSame(0, (int) DB::table('fuzzy_index_terms')->where('term', 'widget')->value('doc_count'));
+        $this->assertSame(1, (int) $meta->total_docs);
+        $this->assertSame(2, (int) $meta->total_tokens); // "shared thing"
+        $this->assertSame([$short->code], LongKeyNote::search('shared')->useInvertedIndex()->typoTolerance(0)->get()->pluck('code')->all());
+    }
+
     public function test_rolling_back_after_a_test_dropped_an_index_table_does_not_fail(): void
     {
         // Tests drop fuzzy_index_postings to simulate a missing dictionary; the teardown's

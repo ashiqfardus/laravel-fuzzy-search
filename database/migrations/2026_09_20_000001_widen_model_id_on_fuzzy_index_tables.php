@@ -1,5 +1,6 @@
 <?php
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -40,10 +41,18 @@ return new class extends Migration
         // A table already gone (a test that dropped it) has nothing to narrow.
         $tables = array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
 
-        // Keys longer than 36 characters do not fit the old column: drop their rows, and rebuild
-        // the affected models after rolling back (php artisan fuzzy-search:rebuild --fresh).
+        // Keys longer than 36 characters do not fit the old column. Those models leave the index
+        // the way a deleted model does, giving back their doc_count and meta totals; rebuild
+        // them after rolling back if they must stay searchable. Postings with no document row
+        // left (none in a consistent index) are then dropped as they are.
+        $tooLong = DbDialect::lengthFunction($driver) . '(model_id) > 36';
+        if (in_array('fuzzy_index_documents', $tables, true)) {
+            foreach (DB::table('fuzzy_index_documents')->whereRaw($tooLong)->get(['model_type', 'model_id']) as $document) {
+                app(IndexManager::class)->removeFromIndex($document->model_type, $document->model_id);
+            }
+        }
         foreach ($tables as $table) {
-            DB::table($table)->whereRaw(DbDialect::lengthFunction($driver) . '(model_id) > 36')->delete();
+            DB::table($table)->whereRaw($tooLong)->delete();
         }
 
         $this->resize(36, $tables);
