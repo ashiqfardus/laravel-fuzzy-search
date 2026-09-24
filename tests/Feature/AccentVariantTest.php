@@ -251,19 +251,37 @@ class AccentVariantTest extends TestCase
     {
         $this->requirePostgresExtensions(['pg_trgm', 'fuzzystrmatch']);
 
+        $installed = DB::table('pg_extension')->where('extname', 'unaccent')->exists();
+
         try {
             DB::statement('DROP EXTENSION IF EXISTS unaccent');
         } catch (\Throwable $e) {
             $this->markTestSkipped('Cannot drop the unaccent extension here: ' . $e->getMessage());
         }
 
-        config(['fuzzy-search.use_native_functions' => true]);
+        try {
+            config(['fuzzy-search.use_native_functions' => true]);
 
-        foreach (['trigram', 'levenshtein', 'soundex'] as $algorithm) {
-            $names = $this->builder()->search('Müller')->searchIn(['name'])->using($algorithm)->get()->pluck('name')->all();
+            foreach (['trigram', 'levenshtein', 'soundex'] as $algorithm) {
+                $names = $this->builder()->search('Müller')->searchIn(['name'])->using($algorithm)->get()->pluck('name')->all();
 
-            $this->assertContains('Zoë Müller', $names, $algorithm);
+                $this->assertContains('Zoë Müller', $names, $algorithm);
+            }
+        } finally {
+            if ($installed) {
+                DB::statement('CREATE EXTENSION IF NOT EXISTS unaccent'); // a developer's shared database keeps it
+            }
         }
+    }
+
+    /** The test above drops unaccent from a database a developer may share: it must put it back. */
+    public function test_the_unaccent_extension_is_restored_after_the_test_that_drops_it(): void
+    {
+        $this->requirePostgresExtensions(['unaccent']);
+
+        $this->test_postgresql_native_functions_run_without_the_unaccent_extension();
+
+        $this->assertTrue(DB::table('pg_extension')->where('extname', 'unaccent')->exists());
     }
 
     public function test_postgresql_explicit_opt_in_keeps_typo_tolerance_and_folds_the_column(): void
