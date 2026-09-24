@@ -3,7 +3,6 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Http\Resources;
 
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
@@ -28,21 +27,11 @@ class FuzzySearchResource extends JsonResource
 
         $plain = array_filter($attr, fn ($key) => !str_starts_with((string) $key, '_'), ARRAY_FILTER_USE_KEY);
 
-        // A dotted column is the row's relation when it has that relation loaded ("author.name"),
-        // else a qualified column ("teams.name"), whose attribute is the last part.
-        $shown = function (string $column) use ($row): bool {
-            $head = strstr($column, '.', true);
-
-            return SearchBuilder::shows($row, $head !== false && $row instanceof Model && $row->relationLoaded($head)
-                ? $head
-                : substr((string) strrchr('.' . $column, '.'), 1));
-        };
-
         return $plain + [
             '_score'       => $get('_score') !== null ? (float) $get('_score') : null,
             '_raw_score'   => $get('_raw_score') !== null ? (float) $get('_raw_score') : null,
-            '_highlighted' => array_filter((array) ($get('_highlighted') ?? []), fn ($column) => $shown((string) $column), ARRAY_FILTER_USE_KEY),
-            '_matches'     => array_values(array_filter((array) ($get('_matches') ?? []), fn ($match) => $shown((string) ($match['column'] ?? '')))),
+            '_highlighted' => array_filter((array) ($get('_highlighted') ?? []), fn ($column) => SearchBuilder::showsColumn($row, (string) $column), ARRAY_FILTER_USE_KEY),
+            '_matches'     => array_values(array_filter((array) ($get('_matches') ?? []), fn ($match) => SearchBuilder::showsColumn($row, (string) ($match['column'] ?? '')))),
             '_model_type'  => $get('_model_type') ?? (is_object($row) ? class_basename($row) : null),
         ];
     }

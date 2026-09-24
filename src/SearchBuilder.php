@@ -2649,10 +2649,8 @@ class SearchBuilder
      * Whether $row->toArray() shows $key, by Eloquent's own rule (getArrayableItems()): not in
      * getHidden(), and in getVisible() when that is set. Read off the row itself, so a runtime
      * makeHidden()/makeVisible() counts. Anything but a model has no such rule and shows it all.
-     *
-     * @internal shared with FuzzySearchResource
      */
-    public static function shows(mixed $row, string $key): bool
+    private static function shows(mixed $row, string $key): bool
     {
         if (!$row instanceof Model) {
             return true;
@@ -2661,6 +2659,55 @@ class SearchBuilder
         $visible = $row->getVisible();
 
         return !in_array($key, $row->getHidden(), true) && ($visible === [] || in_array($key, $visible, true));
+    }
+
+    /**
+     * shows() for a searchIn() column, judged on $row alone: a dotted name by its relation when
+     * the row has that relation loaded ("author.name"), else by its last part ("teams.name" is
+     * the attribute "name"). The related rows' own rule applies where their values are read.
+     *
+     * @internal FuzzySearchResource re-applies it to a row as it renders
+     */
+    public static function showsColumn(mixed $row, string $column): bool
+    {
+        $head = strstr($column, '.', true);
+
+        return self::shows($row, $head !== false && $row instanceof Model && $row->relationLoaded($head) ? $head : self::lastSegment($column));
+    }
+
+    /**
+     * Whether toArray() shows a searchIn() column on $item (the #5 rule): the attribute for a
+     * direct column; for a relation path, the relation on the row and each segment, then the leaf,
+     * on every related row loaded along the path.
+     *
+     * @param array{relation: ?string, column: string} $target
+     */
+    protected function columnShown($item, array $target): bool
+    {
+        if ($target['relation'] === null) {
+            return self::shows($item, self::lastSegment($target['column']));
+        }
+
+        $rows = [$item];
+        foreach ([...explode('.', $target['relation']), $target['column']] as $key) {
+            $next = [];
+            foreach ($rows as $row) {
+                if (!self::shows($row, $key)) {
+                    return false;
+                }
+                if ($row instanceof Model && $row->relationLoaded($key)) {
+                    $related = $row->getRelation($key);
+                    foreach ($related instanceof \Illuminate\Support\Collection ? $related : [$related] as $one) {
+                        if ($one !== null) {
+                            $next[] = $one;
+                        }
+                    }
+                }
+            }
+            $rows = $next;
+        }
+
+        return true;
     }
 
     /**
@@ -2947,14 +2994,17 @@ class SearchBuilder
     protected function addDebugInfo(Collection $results): Collection
     {
         return $results->map(function ($item) {
+            // The #5 rule: a column toArray() would not show is left out, as from _highlighted.
+            $shown = array_flip(array_keys(array_filter($this->resolveColumnTargets(), fn (array $target) => $this->columnShown($item, $target))));
+
             $debug = [
                 'term' => $this->searchTerm,
                 'algorithm' => $this->extendedQuery !== null ? 'extended' : ($this->algorithm ?? 'fuzzy'),
                 'typo_tolerance' => $this->typoTolerance,
                 'prefix_boost' => $this->prefixBoostMultiplier,
-                'columns' => $this->searchableColumns,
-                'weights' => $this->columnWeights,
-                'column_scores' => is_object($item) ? ($item->_column_scores ?? []) : ($item['_column_scores'] ?? []),
+                'columns' => array_values(array_filter($this->searchableColumns, fn (string $column) => isset($shown[$column]))),
+                'weights' => array_intersect_key($this->columnWeights, $shown),
+                'column_scores' => array_intersect_key(is_object($item) ? ($item->_column_scores ?? []) : ($item['_column_scores'] ?? []), $shown),
                 'final_score' => is_object($item) ? ($item->_score ?? 0) : ($item['_score'] ?? 0),
             ];
 
@@ -3120,7 +3170,8 @@ class SearchBuilder
         // Extract unique suggestions from results
         foreach ($results as $result) {
             foreach ($this->resolveColumnTargets() as $column => $target) {
-                foreach ($this->columnValues($result, $column, $target) as $value) {
+                // Ruling ER-51: never a word from a column the row hides (the #5 rule).
+                foreach ($this->columnValues($result, $column, $target, true) as $value) {
                     // Extract the matching word/phrase
                     $words = preg_split(self::WHITESPACE, $value);
                     foreach ($words as $word) {

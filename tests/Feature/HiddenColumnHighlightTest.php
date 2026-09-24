@@ -156,4 +156,40 @@ class HiddenColumnHighlightTest extends TestCase
             $this->assertSame(['title'], array_keys((new FuzzySearchResource($row))->toArray(Request::create('/'))['_highlighted']), "{$why}, resource");
         }
     }
+    /** Finding 11: _debug follows the #5 rule — no hidden column in its columns, weights or column_scores. */
+    public function test_debug_output_leaves_hidden_columns_out(): void
+    {
+        app(IndexManager::class)->indexBatch(HiddenEmailUser::all());
+
+        foreach ([
+            'like'     => fn () => HiddenEmailUser::search('john')->debugScore()->get(),
+            'extended' => fn () => HiddenEmailUser::search('')->extended('john')->debugScore()->get(),
+            'index'    => fn () => HiddenEmailUser::search('john')->useInvertedIndex()->debugScore()->get(),
+        ] as $path => $run) {
+            $debug = $run()->firstWhere('name', 'John Doe')->_debug;
+
+            // The index path scores documents, not columns: its column_scores is empty.
+            $this->assertSame($path === 'index' ? [] : ['name'], array_keys($debug['column_scores']), $path);
+            $this->assertSame(['name'], $debug['columns'], $path);
+            $this->assertSame(['name'], array_keys($debug['weights']), $path);
+        }
+
+        $this->createRelationTables();
+        $this->seedRelationFixtures();
+        $debug = PostWithHiddenAuthorName::search('tolkien')->searchIn(['title', 'author.name'])->debugScore()->get()->first()->_debug;
+        $this->assertSame(['title'], array_keys($debug['column_scores']), 'the related model hides name');
+    }
+
+    /** Ruling ER-51: the suggest() table scan never offers words from a hidden column. */
+    public function test_suggestions_never_come_from_a_hidden_column(): void
+    {
+        $suggestions = HiddenEmailUser::search('jo')->suggestFrom('table')->suggest(10);
+
+        $this->assertNotEmpty($suggestions, 'the visible name column still suggests');
+        foreach ($suggestions as $suggestion) {
+            $this->assertStringNotContainsString('@', $suggestion);
+        }
+
+        $this->assertSame([], VisibleNameUser::search('example')->suggestFrom('table')->suggest(10), 'only an email holds "example"');
+    }
 }
