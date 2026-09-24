@@ -449,6 +449,147 @@ class ScoutEngineTest extends TestCase
         $this->assertSame($productPostings, $postings(Product::class));
     }
 
+    // -------------------------------------------------------------------------
+    // orderBy(): an explicit order replaces the relevance order, as on Scout's database engine
+    // -------------------------------------------------------------------------
+
+    /**
+     * Three matches whose relevance, name and id orders all differ. Inserted in this order, so
+     * by id: top ("widget" 3×), bottom (1×), middle (2×); relevance is top > middle > bottom.
+     *
+     * @return array{int, int, int} the ids of the top, bottom and middle match
+     */
+    private function seedOrderableWidgets(): array
+    {
+        $ids = [];
+        foreach (['widget widget widget one', 'widget beta', 'widget widget gamma'] as $name) {
+            $ids[] = $this->app['db']->table('users')->insertGetId([
+                'name' => $name, 'email' => 'order_' . uniqid() . '@test.com', 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        $this->makeEngine()->update(ScoutIndexedUser::whereIn('id', $ids)->get());
+        config(['scout.driver' => 'fuzzy-search']);
+
+        return $ids;
+    }
+
+    private function scoutBuilder(string $query = 'widget'): \Laravel\Scout\Builder
+    {
+        return new \Laravel\Scout\Builder(new ScoutIndexedUser, $query);
+    }
+
+    /** @return array<int> the ids of a Scout result, a paginator's page or a collection, in order */
+    private function resultIds(iterable $results): array
+    {
+        return collect($results instanceof \Illuminate\Contracts\Pagination\Paginator ? $results->items() : $results)
+            ->map(fn ($model) => (int) $model->getKey())
+            ->all();
+    }
+
+    public function test_scout_order_by_name_replaces_the_relevance_order_on_get_and_every_paginator(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+
+        $this->assertSame([$top, $middle, $bottom], $this->resultIds($this->scoutBuilder()->get()), 'baseline: relevance order');
+
+        $byName = [$bottom, $middle, $top]; // widget beta < widget widget gamma < widget widget widget one
+
+        $this->assertSame($byName, $this->resultIds($this->scoutBuilder()->orderBy('name')->get()));
+        $this->assertSame([$bottom, $middle], $this->resultIds($this->scoutBuilder()->orderBy('name')->take(2)->get()));
+        $this->assertSame($bottom, (int) $this->scoutBuilder()->orderBy('name')->first()->getKey());
+
+        $page1 = $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1);
+        $page2 = $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 2);
+        $this->assertSame([$bottom, $middle], $this->resultIds($page1));
+        $this->assertSame([$top], $this->resultIds($page2));
+        $this->assertSame(3, $page1->total());
+
+        $simple = $this->scoutBuilder()->orderBy('name')->simplePaginate(2, 'page', 1);
+        $this->assertSame([$bottom, $middle], $this->resultIds($simple));
+        $this->assertTrue($simple->hasMorePages());
+        $this->assertSame([$top], $this->resultIds($this->scoutBuilder()->orderBy('name')->simplePaginate(2, 'page', 2)));
+    }
+
+    public function test_scout_order_by_id_desc_replaces_the_relevance_order_on_paginate(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+
+        $page1 = $this->scoutBuilder()->orderBy('id', 'desc')->paginate(2, 'page', 1);
+        $page2 = $this->scoutBuilder()->orderBy('id', 'desc')->paginate(2, 'page', 2);
+
+        $this->assertSame([$middle, $bottom], $this->resultIds($page1));
+        $this->assertSame([$top], $this->resultIds($page2));
+        $this->assertSame(3, $page1->total());
+        $this->assertSame([$middle, $bottom, $top], $this->resultIds($this->scoutBuilder()->orderBy('id', 'desc')->get()));
+    }
+
+    public function test_scout_order_by_applies_after_the_builder_constraints(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+
+        $page = $this->scoutBuilder()->whereIn('id', [$top, $bottom])->orderBy('name')->paginate(1, 'page', 1);
+        $this->assertSame([$bottom], $this->resultIds($page));
+        $this->assertSame(2, $page->total());
+
+        $callback = $this->scoutBuilder()->query(fn ($query) => $query->where('id', '!=', $bottom))->orderBy('name')->get();
+        $this->assertSame([$middle, $top], $this->resultIds($callback));
+    }
+
+    /**
+     * More matches than one bm25.candidate_chunk: binding every ranked id could pass SQL Server's
+     * 2,100-parameter limit, so the order must hold without them.
+     */
+    public function test_scout_order_by_holds_when_the_matches_exceed_one_candidate_chunk(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+        config(['fuzzy-search.bm25.candidate_chunk' => 2]);
+
+        $this->assertSame([$bottom, $middle, $top], $this->resultIds($this->scoutBuilder()->orderBy('name')->get()));
+        $this->assertSame([$top], $this->resultIds($this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 2)));
+        $this->assertSame(
+            [$middle, $top],
+            $this->resultIds($this->scoutBuilder()->whereIn('id', [$top, $middle])->orderBy('name')->paginate(2, 'page', 1))
+        );
+    }
+
+    public function test_scout_order_by_rejects_a_column_that_is_not_an_identifier(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        $engine = $this->makeEngine();
+
+        foreach (['name desc, (select 1)', 'name) --', 'data->"$.x"'] as $column) {
+            foreach (['search' => fn ($b) => $engine->search($b), 'paginate' => fn ($b) => $engine->paginate($b, 15, 1)] as $method => $call) {
+                try {
+                    $call($this->scoutBuilder()->orderBy($column));
+                    $this->fail("{$method}() ordered by [{$column}]");
+                } catch (\InvalidArgumentException $e) {
+                    $this->assertStringContainsString('Invalid column name', $e->getMessage());
+                }
+            }
+        }
+    }
+
     public function test_scout_paginate_total_and_page_reflect_builder_wheres(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

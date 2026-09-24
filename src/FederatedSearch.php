@@ -65,12 +65,7 @@ class FederatedSearch
     public function searchIn(array $columns): self
     {
         foreach ($columns as $key => $value) {
-            $column = is_string($key) ? $key : $value;
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
-                throw new \InvalidArgumentException(
-                    "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
-                );
-            }
+            self::validateColumns([is_string($key) ? $key : $value]);
             if (is_string($key)) {
                 $this->searchableColumns[] = $key;
                 $this->columnWeights[$key] = (int) $value;
@@ -427,19 +422,25 @@ class FederatedSearch
 
         // Try to get from model's searchable property
         if (isset($instance->searchable['columns'])) {
-            return $this->validateColumns(Support\SearchableColumns::names($instance->searchable['columns']));
+            return self::validateColumns(Support\SearchableColumns::names($instance->searchable['columns']));
         }
 
         // Try to get from fuzzySearchable property
         if (isset($instance->fuzzySearchable)) {
-            return $this->validateColumns($instance->fuzzySearchable);
+            return self::validateColumns($instance->fuzzySearchable);
         }
 
         // Default fallback columns
         return ['name', 'title'];
     }
 
-    private function validateColumns(array $columns): array
+    /**
+     * Throws for any column that is not an identifier (dotted table.column allowed) — the rule every
+     * column name the package writes into SQL follows. Also used by the Scout engine for orderBy().
+     *
+     * @internal
+     */
+    public static function validateColumns(array $columns): array
     {
         foreach ($columns as $column) {
             if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {

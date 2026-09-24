@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Scout;
 
+use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
@@ -46,6 +47,7 @@ class FuzzySearchEngine extends Engine
     public function search(Builder $builder)
     {
         $modelType = $builder->model::class;
+        $orders    = $this->orders($builder);
         $terms     = $this->terms($builder);
         $limit     = $builder->limit ?? 15;
 
@@ -54,20 +56,11 @@ class FuzzySearchEngine extends Engine
 
         // 'total' is the match count — the ranked ids (that satisfy the constraints) — not
         // the size of the page cut from them.
-        if ($query === null || empty($ranked)) {
-            $total   = count($ranked);
-            $results = $this->hydrate(array_slice($ranked, 0, $limit, true));
-        } else {
-            // Constraints first, then the cut — otherwise a selective where() returns a
-            // short or empty page while matches exist further down the ranking.
-            $ids     = array_keys($ranked);
-            $total   = RankedCandidates::count($query, $ids);
-            $keys    = RankedCandidates::keys($query, $ids, $limit);
-            $results = $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit)));
-        }
+        $total = $query === null || empty($ranked) ? count($ranked) : RankedCandidates::count($query, array_keys($ranked));
+        $keys  = $this->resultKeys($builder, $query, $orders, $ranked, $limit);
 
         return [
-            'results' => $results,
+            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit))),
             'total'   => $total,
         ];
     }
@@ -75,6 +68,7 @@ class FuzzySearchEngine extends Engine
     public function paginate(Builder $builder, $perPage, $page)
     {
         $modelType = $builder->model::class;
+        $orders    = $this->orders($builder);
         $terms     = $this->terms($builder);
         $offset    = ($page - 1) * $perPage;
         $weights   = $this->columnWeights($builder);
@@ -82,21 +76,110 @@ class FuzzySearchEngine extends Engine
         $ranked = $this->scorer->rank($terms, $modelType, $weights);
         $query  = $this->constrainedQuery($builder);
 
-        if ($query === null || empty($ranked)) {
-            // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
-            $total   = $this->scorer->count($terms, $modelType, $weights);
-            $results = $this->hydrate(array_slice($ranked, $offset, $perPage, true));
-        } else {
-            $ids     = array_keys($ranked);
-            $total   = RankedCandidates::count($query, $ids);
-            $keys    = RankedCandidates::keys($query, $ids, $offset + $perPage);
-            $results = $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage)));
-        }
+        // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
+        $total = $query === null || empty($ranked)
+            ? $this->scorer->count($terms, $modelType, $weights)
+            : RankedCandidates::count($query, array_keys($ranked));
+        $keys  = $this->resultKeys($builder, $query, $orders, $ranked, $offset + $perPage);
 
         return [
-            'results' => $results,
+            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage))),
             'total'   => $total,
         ];
+    }
+
+    /**
+     * The first $needed matches, in result order: the ranking, cut after the builder's
+     * constraints (otherwise a selective where() returns a short or empty page while matches
+     * exist further down the ranking) — or, with orderBy(), the builder's own order.
+     *
+     * @param  array<int, array{column: string, direction: string}> $orders
+     * @param  array<int|string, float>                             $ranked model_id => score, best first
+     * @return array<int|string>
+     */
+    private function resultKeys(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, int $needed): array
+    {
+        if (empty($ranked)) {
+            return [];
+        }
+
+        if ($orders !== []) {
+            return $this->orderedKeys($query ?? $builder->model->newQuery(), $orders, $ranked, $needed);
+        }
+
+        return $query === null
+            ? array_slice(array_keys($ranked), 0, $needed)
+            : RankedCandidates::keys($query, array_keys($ranked), $needed);
+    }
+
+    /**
+     * The builder's orderBy() clauses. An explicit order replaces the relevance order, as it
+     * does on Scout's database engine; each column is checked like every other column name the
+     * package writes into SQL.
+     *
+     * @return array<int, array{column: string, direction: string}>
+     */
+    private function orders(Builder $builder): array
+    {
+        $orders = $builder->orders ?? [];
+
+        FederatedSearch::validateColumns(array_column($orders, 'column'));
+
+        return $orders;
+    }
+
+    /**
+     * The first $needed ranked ids that $query returns, in the builder's order, then by key
+     * descending for ties (Scout's database engine breaks them the same way, and a tie must not
+     * move between one page's query and the next).
+     *
+     * Up to one bm25.candidate_chunk of matches, the ids restrict the query and the database
+     * returns only them. Past that, binding every id could exceed SQL Server's 2,100-parameter
+     * limit, so the ordered rows are read one by one until $needed of them are ranked — the
+     * database still decides the order, and a broad match fills its page early in the walk.
+     *
+     * @param  array<int, array{column: string, direction: string}> $orders
+     * @param  array<int|string, float>                             $ranked
+     * @return array<int|string>
+     */
+    private function orderedKeys(EloquentBuilder $query, array $orders, array $ranked, int $needed): array
+    {
+        $model = $query->getModel();
+        $ids   = array_keys($ranked);
+
+        $query = clone $query;
+
+        if (count($ids) <= max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200))) {
+            // Added the way RankedCandidates does, so a caller's where(A)->orWhere(B) is wrapped first.
+            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
+        }
+
+        $query = $query->toBase()->select($model->getQualifiedKeyName());
+
+        foreach ($orders as $order) {
+            $query->orderBy($order['column'], $order['direction']);
+        }
+
+        // SQL Server rejects a column named twice in ORDER BY.
+        if (array_intersect(array_column($orders, 'column'), [$model->getKeyName(), $model->getQualifiedKeyName()]) === []) {
+            $query->orderBy($model->getQualifiedKeyName(), 'desc');
+        }
+
+        $keys = [];
+
+        foreach ($query->cursor() as $row) {
+            $key = $row->{$model->getKeyName()};
+
+            if (isset($ranked[$key])) {
+                $keys[$key] = true; // a join may repeat a model
+
+                if (count($keys) >= $needed) {
+                    break;
+                }
+            }
+        }
+
+        return array_keys($keys);
     }
 
     /**
@@ -228,10 +311,13 @@ class FuzzySearchEngine extends Engine
 
         $ids      = $this->mapIds($results)->toArray();
         $scoreMap = collect($results['results'])->pluck('score', 'model_id');
+        $position = array_flip($ids);
 
         $models = $model->getScoutModelsByIds($builder, $ids);
 
-        return $models->sortByDesc(fn($m) => $scoreMap[$m->getKey()] ?? 0)
+        // The order search()/paginate() chose — relevance, or the builder's orderBy() — not the
+        // order the database happened to return the rows in.
+        return $models->sortBy(fn($m) => $position[$m->getKey()] ?? PHP_INT_MAX)
             ->map(function ($m) use ($scoreMap) {
                 $m->_score = round((float) ($scoreMap[$m->getKey()] ?? 0), 6);
                 return $m;
