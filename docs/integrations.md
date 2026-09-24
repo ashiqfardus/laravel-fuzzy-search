@@ -159,7 +159,7 @@ $table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
 $table->searchUsing(FuzzySearch::tableSearch());
 ```
 
-`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` (v3, v4, v5) and `Table::searchUsing()` (**Filament v4+ only** — the method does not exist in v3) expect. The columns are SQL columns of the table being queried: each one is qualified with the table name so the predicate survives a join, which means `author.name` becomes `author`.`name` and not a `whereHas` — keep Filament's built-in `searchable()` for relation columns. The typed term is trimmed and capped at `query.max_term_length` before it reaches a driver. Like the `whereFuzzy` macros, it is a constraint helper that `min_search_length` does not govern: a one-character term filters the table.
+`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` (v3, v4, v5) and `Table::searchUsing()` (**Filament v4+ only** — the method does not exist in v3) expect. The columns are SQL columns of the table being queried: each one is qualified with the table name so the predicate survives a join, which means `author.name` becomes `author`.`name` and not a `whereHas` — keep Filament's built-in `searchable()` for relation columns. Called with no columns it searches the model's `$searchable` columns, declared or auto-detected; when there are none, a typed search matches nothing. The typed term is trimmed and capped at `query.max_term_length` before it reaches a driver. Like the `whereFuzzy` macros, it is a constraint helper that `min_search_length` does not govern: a one-character term filters the table.
 
 ### Versions
 

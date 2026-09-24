@@ -185,8 +185,8 @@ you get back from a search:
   no longer auto-selects a column in `$hidden`, a column outside a non-empty `$visible`, or
   `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes` or `api_token`
   (in any letter case), on the LIKE path as well as the index path. A zero-config model whose only priority column was
-  hidden (a hidden `name`, say) now picks another column, or none. With none, `search()` adds no
-  constraint and returns every row, as it already did for a model with no detectable column.
+  hidden (a hidden `name`, say) now picks another column, or none. With none, the model has no
+  column to search, and its search matches nothing (see below).
   Declare `$searchable['columns']` to keep searching a hidden column. Detection reads the model
   class's default `$hidden` and `$visible`, once per process, so a column hidden at runtime with
   `makeHidden()`, `setHidden()` or a per-request `getHidden()` is still searched and indexed; put
@@ -214,6 +214,18 @@ you get back from a search:
 - **A term made only of stop words matches nothing.** With `ignoreStopWords()`, `search('the')`
   applied no condition on the LIKE path and returned every row (the index path returned none); it
   now returns no rows and a total of 0 everywhere.
+- **A search on a model with no searchable column now returns nothing instead of every row.**
+  When a model declares no `$searchable['columns']`, auto-detection finds none (every text column
+  hidden, say) and `searchIn()` is not called, `search()`, `searchOn()`, the `searchFuzzy()` scope
+  and `useInvertedIndex()` added no condition and returned every row. They now match nothing, like
+  a term below `min_search_length`: an empty collection or `null`, an empty page with a total of 0,
+  a count of 0, empty facets, no `FuzzySearchExecuted` and no cache entry. Such a model contributes
+  nothing to `FederatedSearch`, and `FuzzySearch::tableSearch()` matches nothing for it. A
+  `SearchBuilder` on a plain query builder without `searchIn()` matches nothing too, unless
+  `useInvertedIndex(Model::class)` searches that model's index; a model with a `searchableText()`
+  hook still searches on `useInvertedIndex()`. `extended()`/`searchBoolean()` still throw
+  `SearchableColumnsNotFoundException`, and the `whereFuzzy`-style macros take their columns
+  explicitly. Declare `$searchable['columns']` to search such a model.
 - **Invalid UTF-8 bytes are dropped from search terms.** `?q=jo%C3hn` now searches `john` on
   every database instead of erroring on PostgreSQL and SQL Server (and searching the raw bytes on
   SQLite and MySQL); the event and the analytics log record the cleaned term. A term made only of

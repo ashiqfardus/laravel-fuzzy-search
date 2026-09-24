@@ -961,15 +961,40 @@ class SearchBuilder
     /**
      * The search matches nothing, on every terminal and without dispatching an event: a plain
      * term below min_search_length, one made only of invalid UTF-8, or one made only of stop
-     * words (the index path has no term left either). Not '', which throws or, with
-     * allow_empty_search, lists every row. An extended()/searchBoolean() query is a query, not a
-     * term, and is never measured.
+     * words (the index path has no term left either), or a search with no column to run on (see
+     * hasNoSearchableColumn()). Not '', which throws or, with allow_empty_search, lists every
+     * row. An extended()/searchBoolean() query is a query, not a term, and is never measured; with
+     * no column it throws SearchableColumnsNotFoundException.
      */
     protected function matchesNothing(): bool
     {
         return $this->invalidBytesOnly
             || ($this->extendedQuery === null && $this->searchTerm !== ''
-                && (self::belowMinSearchLength($this->searchTerm) || $this->processSearchTerm($this->searchTerm) === ''));
+                && (self::belowMinSearchLength($this->searchTerm) || $this->processSearchTerm($this->searchTerm) === ''
+                    || $this->hasNoSearchableColumn()));
+    }
+
+    /**
+     * No column to search: searchIn() gave none — Model::search() passes the declared columns,
+     * else the auto-detected ones — and, on the index path, the model has no column and no
+     * searchableText() hook either, so nothing of it was indexed (IndexManager's own rule).
+     */
+    protected function hasNoSearchableColumn(): bool
+    {
+        if ($this->searchableColumns !== []) {
+            return false;
+        }
+
+        $modelClass = $this->useSearchIndex ? $this->resolveIndexModelClass() : null;
+
+        if ($modelClass === null) {
+            return true;
+        }
+
+        $model = new $modelClass();
+
+        return !method_exists($model, 'searchableText')
+            && (method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : []) === [];
     }
 
     /**
@@ -1964,8 +1989,10 @@ class SearchBuilder
         // Process search term
         $searchTerm = $this->processSearchTerm($this->searchTerm);
 
-        if ($searchTerm !== '' && !empty($this->searchableColumns)) {
-            $this->applySearchConditions($searchTerm);
+        if ($searchTerm !== '') {
+            // No column: match nothing, never every row (a fallback() retry after the index path
+            // reaches here without matchesNothing(); '0 = 1' is Laravel's own whereIn([]) form).
+            $this->searchableColumns === [] ? $this->query->whereRaw('0 = 1') : $this->applySearchConditions($searchTerm);
         }
 
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and

@@ -163,12 +163,14 @@ class EloquentTraitTest extends TestCase
     public function test_search_fuzzy_scope_matches_search_for_a_model_with_no_text_columns(): void
     {
         // Auto-detection finds nothing here (the only non-key column is cast to array), so
-        // search()/searchOn() search no column; searchFuzzy() must not invent a 'name' one.
+        // search()/searchOn() search no column and match nothing; searchFuzzy() must not
+        // invent a 'name' one, and matches nothing too.
         \Illuminate\Support\Facades\Schema::create('payload_rows', function ($table) {
             $table->id();
             $table->json('payload')->nullable();
             $table->timestamps();
         });
+        DB::table('payload_rows')->insert(['payload' => '{"name":"john"}']);
 
         try {
             $model = new class extends \Illuminate\Database\Eloquent\Model {
@@ -183,6 +185,8 @@ class EloquentTraitTest extends TestCase
             $this->assertSame([], $expected['searchable_columns']);
             $this->assertSame($expected['searchable_columns'], $actual['searchable_columns']);
             $this->assertSame($expected['column_weights'], $actual['column_weights']);
+            $this->assertSame(0, $model::search('john')->count());
+            $this->assertSame(0, $model::searchFuzzy('john')->count());
         } finally {
             \Illuminate\Support\Facades\Schema::dropIfExists('payload_rows');
         }

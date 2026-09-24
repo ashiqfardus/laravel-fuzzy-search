@@ -133,7 +133,8 @@ class FuzzySearch
      * `searchUsing()` calls it bare with the whole term — either way the predicate is added as
      * its own group (applyFuzzyWhereMultiple() wraps itself), so it composes with Filament's
      * other constraints.
-     * With no columns the model's $searchable columns are used (Searchable trait models only).
+     * With no columns the model's $searchable columns are used (Searchable trait models only);
+     * when that leaves none, a typed search matches nothing.
      *
      * The columns are SQL columns of the table being queried (or already-qualified `table.column`
      * names), not relation paths: each one is passed through qualifyColumn() so the predicate
@@ -155,8 +156,12 @@ class FuzzySearch
 
             $search = mb_substr(trim(Utf8::clean($search)), 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
 
-            if ($cols === [] || $search === '') {
+            if ($search === '') {
                 return $query;
+            }
+
+            if ($cols === []) {
+                return $query->whereRaw('0 = 1'); // no column to search matches nothing, as in SearchBuilder
             }
 
             $cols = array_map(fn ($c) => $query->qualifyColumn($c), array_values($cols));

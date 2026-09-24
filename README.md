@@ -124,7 +124,7 @@ $users = User::search('john')->get();
 - `bio`, `summary`, `excerpt` (weight: 3)
 - `slug`, `sku`, `code` (weight: 2-6)
 
-If none of these exist, it falls back to the model's `$fillable` columns, then to the first remaining column. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes`, `api_token`, `id` or the timestamps. It reads the model class's default `$hidden` and `$visible`, so a column hidden at runtime with `makeHidden()` is still searched and indexed.
+If none of these exist, it falls back to the model's `$fillable` columns, then to the first remaining column. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), `password`, `remember_token`, `two_factor_secret`, `two_factor_recovery_codes`, `api_token`, `id` or the timestamps. It reads the model class's default `$hidden` and `$visible`, so a column hidden at runtime with `makeHidden()` is still searched and indexed. A model where no column qualifies (every text column hidden, say) has nothing to search: its search matches nothing (no rows, a count of 0, no event), and so does `FuzzySearch::tableSearch()` on it, while `extended()` throws `SearchableColumnsNotFoundException`. Declare `$searchable['columns']` to search it.
 
 ### Manual Column Configuration
 
