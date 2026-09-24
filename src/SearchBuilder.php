@@ -170,7 +170,9 @@ class SearchBuilder
      *
      * Decision D2: `a.b[.c]` is a relation path only when `a` (and each further segment)
      * is a relation method on the model; otherwise a two-segment name is the v2.0
-     * table-qualified column `table.column` and is passed through untouched.
+     * table-qualified column `table.column` and is passed through untouched. A head that names
+     * a table of the query — the FROM table, a joined one, or either's alias — is always that
+     * table's column (ruling ER-57), and no method is looked at.
      *
      * @return array<string, array{relation: ?string, column: string}> keyed by the searchIn() column
      */
@@ -181,17 +183,21 @@ class SearchBuilder
         }
 
         $model   = $this->query instanceof EloquentBuilder ? $this->query->getModel() : null;
+        $tables  = $this->queryTableNames();
         $targets = [];
 
         foreach ($this->searchableColumns as $column) {
-            $targets[$column] = $this->resolveColumnTarget($column, $model);
+            $targets[$column] = $this->resolveColumnTarget($column, $model, $tables);
         }
 
         return $this->columnTargets = $targets;
     }
 
-    /** @return array{relation: ?string, column: string} */
-    protected function resolveColumnTarget(string $column, ?Model $model): array
+    /**
+     * @param  string[] $tables the names the query's tables go by (see queryTableNames())
+     * @return array{relation: ?string, column: string}
+     */
+    protected function resolveColumnTarget(string $column, ?Model $model, array $tables = []): array
     {
         if (!str_contains($column, '.')) {
             return ['relation' => null, 'column' => $column];
@@ -206,6 +212,10 @@ class SearchBuilder
             }
         }
 
+        if (in_array($segments[0], $tables, true)) {
+            return ['relation' => null, 'column' => $column]; // a table of the query (ER-57)
+        }
+
         if ($model !== null && $this->isRelationPath($model, $segments, $column)) {
             return ['relation' => implode('.', $segments), 'column' => $leaf];
         }
@@ -214,44 +224,82 @@ class SearchBuilder
             return ['relation' => null, 'column' => $column]; // table.column (v2.0 behaviour)
         }
 
-        throw new \InvalidArgumentException(
-            $model === null
-                ? "Relation search [{$column}] needs an Eloquent model: use Model::search() instead of a Query Builder."
-                : "[{$column}]: [{$segments[0]}] is not a relation on " . get_class($model) . '.'
-        );
+        throw $model === null
+            ? new \InvalidArgumentException("Relation search [{$column}] needs an Eloquent model: use Model::search() instead of a Query Builder.")
+            : self::notARelation($column, $model, $segments[0]);
     }
 
     /**
-     * True when every segment is a relation method, following the chain model by model. A segment
-     * that names no method is not a relation (a two-segment name is then table.column). One that
-     * names a method is called only when isReachableRelation() allows it, and must return a
-     * Relation; anything else throws without calling it (ruling ER-50): searchIn() can carry
-     * request input, and `unguard.body` or `save.body` would otherwise run that method.
+     * The names the query's FROM table and joined tables go by: each table's name (without a
+     * schema) and its alias. toBase() so a global scope's join counts; a joinSub()/fromSub() has
+     * no plain name and adds none.
+     *
+     * @return string[]
+     */
+    private function queryTableNames(): array
+    {
+        $base  = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
+        $names = [];
+
+        foreach ([$base->from, ...array_map(fn ($join) => $join->table, $base->joins ?? [])] as $from) {
+            foreach (\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($from) ?? [] as $name) {
+                if ($name !== null) {
+                    $names[] = self::lastSegment($name);
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /** "users.name" → "name", "public.users" → "users", "name" → "name". */
+    private static function lastSegment(string $name): string
+    {
+        return substr((string) strrchr('.' . $name, '.'), 1);
+    }
+
+    /**
+     * True when every segment is a relation method, following the chain model by model. A first
+     * segment that names no method is not a relation (a two-segment name is then table.column).
+     * Any other segment is called only when isReachableRelation() allows it, and must return a
+     * Relation; anything else throws, naming that segment, without calling it (ruling ER-50):
+     * searchIn() can carry request input, and `unguard.body` or `save.body` would otherwise run
+     * that method.
      */
     protected function isRelationPath(Model $model, array $segments, string $column): bool
     {
-        $current  = $model;
-        $declared = fn (): bool => method_exists($model, 'getSearchableColumns')
+        $current = $model;
+        // Declared config only: auto-detected columns never hold a dotted path, and detecting them
+        // would run schema SQL before the rejection.
+        $declared = fn (): bool => method_exists($model, 'hasDeclaredSearchableColumns')
+            && $model->hasDeclaredSearchableColumns()
             && in_array($column, $model->getSearchableColumns(), true);
 
-        foreach ($segments as $segment) {
-            if (!method_exists($current, $segment)) {
+        foreach ($segments as $i => $segment) {
+            if ($i === 0 && !method_exists($current, $segment)) {
                 return false;
             }
 
-            $relation = $this->isReachableRelation($current, $segment, $declared) ? $current->{$segment}() : null;
+            $relation = method_exists($current, $segment) && $this->isReachableRelation($current, $segment, $declared)
+                ? $current->{$segment}()
+                : null;
 
             if (!$relation instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
-                throw new \InvalidArgumentException(
-                    "Invalid column name [{$column}]: " . get_class($current) . "::{$segment} is not a relation: "
-                    . "declare a Relation return type or list the path in \$searchable['columns']."
-                );
+                throw self::notARelation($column, $current, $segment);
             }
 
             $current = $relation->getRelated();
         }
 
         return true;
+    }
+
+    private static function notARelation(string $column, Model $model, string $segment): \InvalidArgumentException
+    {
+        return new \InvalidArgumentException(
+            "Invalid column name [{$column}]: " . get_class($model) . "::{$segment} is not a relation: "
+            . "declare a Relation return type or list the path in \$searchable['columns']."
+        );
     }
 
     /**
@@ -336,7 +384,7 @@ class SearchBuilder
         }
 
         [$table, $alias] = $from;
-        $qualifier       = $alias ?? substr(strrchr('.' . $table, '.'), 1);
+        $qualifier       = $alias ?? self::lastSegment($table);
 
         if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/D', $qualifier)) {
             return [];
@@ -2550,10 +2598,13 @@ class SearchBuilder
     protected function columnValues($item, string $column, array $target, bool $shownOnly = false): array
     {
         if ($target['relation'] === null) {
-            if ($shownOnly && !self::shows($item, substr((string) strrchr('.' . $target['column'], '.'), 1))) {
+            if ($shownOnly && !self::shows($item, self::lastSegment($target['column']))) {
                 return []; // a qualified column (teams.name) is the row's attribute "name"
             }
-            $value = (string) data_get($item, $target['column'], '');
+            // A table.column name is read off the attributes, never through getAttribute(): that
+            // calls a model method named like the table (ER-57: items.name must not run items()).
+            $source = $item instanceof Model && str_contains($target['column'], '.') ? $item->getAttributes() : $item;
+            $value  = (string) data_get($source, $target['column'], '');
             return $value === '' ? [] : [$value];
         }
 

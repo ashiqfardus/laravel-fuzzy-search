@@ -80,6 +80,24 @@ class ProbePost extends Post
     }
 }
 
+/** Searchable with no $searchable: its columns are auto-detected, which is not declared config. */
+class ZeroConfigProbePost extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    public static int $calls = 0;
+
+    protected $table   = 'posts';
+    protected $guarded = [];
+
+    public function helper()
+    {
+        static::$calls++;
+
+        return $this->belongsTo(Author::class, 'author_id');
+    }
+}
+
 /** Lists the nested path whose middle segment (company) has no return type. */
 class ListedProbePost extends ProbePost
 {
@@ -244,5 +262,44 @@ class RelationPathSafetyTest extends TestCase
             ['relation' => null, 'column' => 'posts.body'],
             ProbePost::search('ring')->searchIn(['posts.body'])->getDebugInfo()['column_targets']['posts.body']
         );
+    }
+    /** Finding 10: the segment that is missing is the one named, with the fix. */
+    public function test_a_missing_segment_is_named_with_the_fix(): void
+    {
+        foreach ([
+            'author.nosuch.name' => Author::class . '::nosuch is not a relation: declare a Relation return type',
+            'nothing.deep.name'  => Post::class . '::nothing is not a relation: declare a Relation return type',
+        ] as $column => $message) {
+            try {
+                Post::search('ring')->searchIn([$column])->getDebugInfo();
+                $this->fail("[{$column}] was accepted");
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString($message, $e->getMessage(), $column);
+            }
+        }
+    }
+
+    /** Finding 14: auto-detected columns are not declared config, so no schema SQL runs before the rejection. */
+    public function test_a_model_without_declared_columns_rejects_before_any_sql(): void
+    {
+        \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+        $builder = (new \Ashiqfardus\LaravelFuzzySearch\SearchBuilder(ZeroConfigProbePost::query(), app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)))
+            ->search('ring')->searchIn(['helper.name']);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        try {
+            $builder->get();
+            $this->fail('accepted');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('::helper is not a relation', $e->getMessage());
+        } finally {
+            $queries = DB::getQueryLog();
+            DB::disableQueryLog();
+        }
+
+        $this->assertSame([], array_column($queries, 'query'));
+        $this->assertSame(0, ZeroConfigProbePost::$calls);
     }
 }
