@@ -230,7 +230,7 @@ class JoinedColumnSearchTest extends TestCase
             ->searchFuzzy('john', ['name'], 'metaphone');
         $this->assertSame($john, self::ids($aliased()->get()));
         $this->assertSame($john, self::ids($aliased()->withRelevance(false)->get()));
-        $this->assertStringContainsString('"u"."name_metaphone"', str_replace('`', '"', $aliased()->toSql()));
+        $this->assertStringContainsString('"u"."name_metaphone"', str_replace(['`', '[', ']'], '"', $aliased()->toSql()));
     }
 
     /**
@@ -288,7 +288,7 @@ class JoinedColumnSearchTest extends TestCase
     {
         Schema::dropIfExists($table);
         Schema::create($table, function ($t) {
-            $t->id();
+            $t->unsignedBigInteger('id')->primary(); // not an identity: the ids are inserted explicitly (SQL Server)
             $t->string('name');
             $t->string('nickname');
         });
@@ -313,6 +313,10 @@ class JoinedColumnSearchTest extends TestCase
      */
     public function test_a_schema_qualified_from_on_a_prefixed_connection(): void
     {
+        if (version_compare(app()->version(), '12.0', '<')) {
+            $this->markTestSkipped('Laravel 10/11 wrapTable() puts the table prefix on the schema ("pre_main"."users"), so the framework\'s own FROM names no table here.');
+        }
+
         config(['database.connections.join_prefixed' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => 'pre_']]);
         $db     = DB::connection('join_prefixed');
         $schema = $db->getSchemaBuilder();
