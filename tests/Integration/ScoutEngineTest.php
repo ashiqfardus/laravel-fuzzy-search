@@ -590,6 +590,99 @@ class ScoutEngineTest extends TestCase
         }
     }
 
+    // -------------------------------------------------------------------------
+    // query.max_term_length: the engine binds one parameter per query term, so an uncapped
+    // query of a few thousand words passed SQL Server's 2,100-parameter limit
+    // -------------------------------------------------------------------------
+
+    /**
+     * Runs $call and returns every executed query's bindings.
+     *
+     * @return array<int, array<int, mixed>>
+     */
+    private function bindingsOf(\Closure $call): array
+    {
+        $bindings = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$bindings) {
+            $bindings[] = $query->bindings;
+        });
+
+        $call();
+
+        return $bindings;
+    }
+
+    /** The query words ("word1", "word2", …) each executed query bound, whichever table it read. */
+    private function boundWords(\Closure $call): array
+    {
+        $bound = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$bound) {
+            $words = array_values(array_filter($query->bindings, fn ($b) => is_string($b) && preg_match('/^word\d*$/D', $b)));
+            if ($words !== []) {
+                $bound[] = $words;
+            }
+        });
+
+        $call();
+
+        return $bound;
+    }
+
+    public function test_scout_caps_a_5000_character_query_at_max_term_length(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        config(['fuzzy-search.query.max_term_length' => 128]);
+        $engine = $this->makeEngine();
+
+        // One 5,000-character word, and 1,000 distinct words of five characters or so.
+        $word  = str_repeat('widget', 834);
+        $words = 'widget ' . implode(' ', array_map(fn ($i) => 'w' . $i, range(1000, 1999)));
+        $this->assertGreaterThanOrEqual(5000, strlen($words));
+
+        foreach (['one word' => $word, 'many words' => $words] as $label => $query) {
+            foreach (['search' => fn () => $engine->search($this->scoutBuilder($query)), 'paginate' => fn () => $engine->paginate($this->scoutBuilder($query), 15, 1)] as $method => $call) {
+                foreach ($this->bindingsOf($call) as $bindings) {
+                    $this->assertLessThan(2100, count($bindings), "{$label}: {$method}() bound " . count($bindings) . ' parameters');
+
+                    foreach ($bindings as $binding) {
+                        $this->assertLessThanOrEqual(128, mb_strlen((string) $binding), "{$label}: {$method}() bound a term longer than max_term_length");
+                    }
+                }
+            }
+        }
+
+        // The capped query still searches: its first 128 characters start with "widget".
+        $this->assertSame(3, $engine->search($this->scoutBuilder($words))['total']);
+    }
+
+    public function test_scout_looks_up_only_the_words_within_max_term_length_of_a_500_word_query(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        config(['fuzzy-search.query.max_term_length' => 128]);
+        $engine = $this->makeEngine();
+
+        $query    = implode(' ', array_map(fn ($i) => 'word' . $i, range(1, 500)));
+        $expected = app(IndexManager::class)->processTerms(mb_substr($query, 0, 128), null, ScoutIndexedUser::class);
+        $this->assertLessThan(30, count($expected));
+
+        foreach (['search' => fn () => $engine->search($this->scoutBuilder($query)), 'paginate' => fn () => $engine->paginate($this->scoutBuilder($query), 15, 1)] as $method => $call) {
+            $bound = $this->boundWords($call);
+
+            $this->assertContains($expected, $bound, "{$method}() did not look up the words within max_term_length");
+            foreach ($bound as $words) {
+                $this->assertSame([], array_diff($words, $expected), "{$method}() looked up words past max_term_length");
+            }
+        }
+    }
+
     public function test_scout_paginate_total_and_page_reflect_builder_wheres(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

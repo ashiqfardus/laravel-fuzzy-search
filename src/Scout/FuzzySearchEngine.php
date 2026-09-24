@@ -184,7 +184,8 @@ class FuzzySearchEngine extends Engine
 
     /**
      * The query's index terms. A query below min_search_length has none, so it matches nothing
-     * (a total of 0), as Model::search() does — see SearchBuilder::belowMinSearchLength().
+     * (a total of 0), as Model::search() does — see SearchBuilder::belowMinSearchLength(). A
+     * longer one is searched on its first query.max_term_length characters.
      *
      * @return string[]
      */
@@ -197,11 +198,18 @@ class FuzzySearchEngine extends Engine
             throw new NotSupportedException('The fuzzy-search Scout engine does not support hybrid (semantic) search.');
         }
 
-        $query = Utf8::clean($builder->query);
+        $query = trim(Utf8::clean($builder->query));
 
-        return SearchBuilder::belowMinSearchLength(trim($query))
-            ? []
-            : $this->indexManager->processTerms($query, null, $builder->model::class);
+        if (SearchBuilder::belowMinSearchLength($query)) {
+            return [];
+        }
+
+        // query.max_term_length characters (never bytes), as SearchBuilder::capSearchTerm() cuts the
+        // term on the index path. It also bounds the term count: rank() binds one parameter per
+        // term, and an uncapped query of a few thousand words passed SQL Server's 2,100 limit.
+        $query = mb_substr($query, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+
+        return $this->indexManager->processTerms($query, null, $builder->model::class);
     }
 
     /**
