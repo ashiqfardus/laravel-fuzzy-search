@@ -223,11 +223,16 @@ class Bm25Scorer
         }
 
         // Rounded before sorting: the sums' last bits depend on the order the database returned
-        // the postings in. Best first; a tie goes to the lower model key (integer keys compare as
-        // numbers, string keys byte-wise), so equal scores come back in one order on every database.
+        // the postings in. Best first; a tie goes to the lower model key, so equal scores come
+        // back in one order on every database. A total order over mixed keys: integer keys first,
+        // as numbers, then string keys byte-wise (numbers-or-strings alone made 9 < 10 < "5x" < 9).
         $scores = array_map(fn($score) => round($score, 6), $scores);
-        uksort($scores, fn ($a, $b) => ($scores[$b] <=> $scores[$a])
-            ?: (is_int($a) && is_int($b) ? $a <=> $b : strcmp((string) $a, (string) $b)));
+        uksort($scores, fn ($a, $b) => ($scores[$b] <=> $scores[$a]) ?: match (true) {
+            is_int($a) && is_int($b) => $a <=> $b,
+            is_int($a)               => -1,
+            is_int($b)               => 1,
+            default                  => strcmp($a, $b),
+        });
 
         return $scores;
     }

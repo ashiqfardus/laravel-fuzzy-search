@@ -8,6 +8,7 @@ use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Rows with the same BM25 score come back by model key, ascending. The postings arrive in
@@ -41,6 +42,27 @@ class Bm25TieOrderTest extends TestCase
 
         $this->assertCount(1, array_unique($ranked));
         $this->assertEquals($this->ids, array_keys($ranked));
+    }
+
+    /**
+     * A total order for mixed keys: integers first, by value, then strings, byte-wise. Comparing
+     * integers as numbers and everything else as strings made 9 < 10 < "5x" < 9, so the result
+     * followed the postings' row order again.
+     */
+    public function test_ties_between_integer_and_string_keys_have_one_order_whatever_the_row_order(): void
+    {
+        $termId = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'tiebreak', 'doc_count' => 3, 'term_length' => 8]);
+
+        foreach ([['10', '9', '5x'], ['5x', '10', '9'], ['9', '5x', '10'], ['10', '5x', '9']] as $n => $order) {
+            $type = "App\\Models\\Tie{$n}";
+            DB::table('fuzzy_index_meta')->insert(['model_type' => $type, 'total_docs' => 3, 'total_tokens' => 3, 'avg_doc_length' => 1]);
+            foreach ($order as $id) {
+                DB::table('fuzzy_index_documents')->insert(['model_type' => $type, 'model_id' => $id, 'doc_length' => 1]);
+                DB::table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => $type, 'model_id' => $id, 'column_name' => '', 'frequency' => 1]);
+            }
+
+            $this->assertSame([9, 10, '5x'], array_keys(app(Bm25Scorer::class)->rank(['tiebreak'], $type)), implode(',', $order));
+        }
     }
 
     public function test_the_index_path_returns_ties_in_key_order(): void
