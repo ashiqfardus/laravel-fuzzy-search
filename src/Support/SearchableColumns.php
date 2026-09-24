@@ -154,20 +154,23 @@ final class SearchableColumns
     }
 
     /**
-     * Whether a column name says it holds a secret, so auto-detection must never pick it: an
-     * exact name (`token`, `api_key`, …), anything ending in `_token` or `_secret`, or anything
-     * containing `password`, in any letter case. `*_key` is deliberately not a rule — it would
-     * also hide `sort_key` or `lookup_key`; the secret ones are named exactly. Declaring such a
-     * column in $searchable['columns'] is the caller's explicit choice and is not affected.
+     * Whether a column name says it holds a secret, so auto-detection must never pick it, in any
+     * letter case: anything containing `password`; `token` or anything ending in `_token`;
+     * `secret`, `api_key` or `private_key` as a whole underscore-separated part of the name
+     * (`secret_note`, `stripe_api_key`, `webhook_secret` — but not `secretary_name`); and
+     * `recovery_codes`. `*_key` alone is deliberately not a rule — it would also hide `sort_key`
+     * or `lookup_key`. Declaring such a column in $searchable['columns'] is the caller's explicit
+     * choice and is not affected.
      */
     public static function isSecretName(string $column): bool
     {
         $column = strtolower($column);
 
-        return in_array($column, ['token', 'secret', 'api_key', 'private_key', 'recovery_codes', 'two_factor_recovery_codes'], true)
+        return $column === 'token'
             || str_ends_with($column, '_token')
-            || str_ends_with($column, '_secret')
-            || str_contains($column, 'password');
+            || str_ends_with($column, 'recovery_codes')
+            || str_contains($column, 'password')
+            || preg_match('/(^|_)(secret|api_key|private_key)(_|$)/', $column) === 1;
     }
 
     public static function reset(): void

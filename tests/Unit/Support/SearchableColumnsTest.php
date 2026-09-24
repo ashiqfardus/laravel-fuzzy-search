@@ -77,11 +77,12 @@ class SearchableColumnsTest extends TestCase
             'token', 'secret', 'api_key', 'API_KEY', 'api_secret', 'access_token', 'refresh_token',
             'client_secret', 'private_key', 'otp_secret', 'recovery_codes', 'remember_token',
             'api_token', 'invite_token', 'Reset_Token', 'webhook_secret', 'two_factor_secret',
-            'two_factor_recovery_codes',
+            'two_factor_recovery_codes', 'secret_key', 'secret_note', 'secret_answer', 'stripe_api_key',
+            'aws_private_key', 'api_key_hash',
         ];
         $ordinary = [
             'name', 'nickname', 'title', 'sort_key', 'lookup_key', 'idempotency_key', 'token_count',
-            'tokens', 'secretary', 'secret_santa_name', 'keyword', 'description',
+            'tokens', 'secretary', 'secretary_name', 'keyword', 'keywords', 'description',
         ];
 
         foreach ($secret as $column) {
