@@ -3,9 +3,12 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 require_once __DIR__ . '/../TestModels.php';
+require_once __DIR__ . '/../RelationModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\CreatesRelationTables;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Post;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
@@ -29,6 +32,8 @@ class OtherClassUser extends Model
  */
 class CacheConfigTest extends TestCase
 {
+    use CreatesRelationTables;
+
     /** @var string[] */
     private array $files = [];
 
@@ -47,6 +52,7 @@ class CacheConfigTest extends TestCase
         foreach ($this->files as $file) {
             @unlink($file);
         }
+        $this->dropRelationTables();
         parent::tearDown();
     }
 
@@ -269,5 +275,66 @@ class CacheConfigTest extends TestCase
 
         $this->assertCount($before + 1, $search());
         $this->assertSame([], $this->storedKeys());
+    }
+    /** Finding 2: schema-per-tenant on PostgreSQL switches search_path on one connection and database. */
+    public function test_a_postgres_connection_switched_to_another_schema_never_shares_an_entry(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('search_path is PostgreSQL-only; the CI PostgreSQL job runs this.');
+        }
+
+        $tenants = ['zz_fz_ta' => 'John Alpha', 'zz_fz_tb' => 'John Beta'];
+        $default = config('database.connections.' . config('database.default'));
+
+        try {
+            foreach ($tenants as $schema => $name) {
+                DB::statement("drop schema if exists {$schema} cascade");
+                DB::statement("create schema {$schema}");
+                DB::statement("create table {$schema}.users (id serial primary key, name varchar(255))");
+                DB::table("{$schema}.users")->insert(['name' => $name]);
+            }
+
+            foreach ($tenants as $schema => $name) {
+                DB::purge('fuzzy_tenant');
+                config(['database.connections.fuzzy_tenant' => ['search_path' => $schema] + $default]);
+
+                $this->assertSame([$name], $this->names((new SearchBuilder(DB::connection('fuzzy_tenant')->table('users'), app(FuzzySearch::class)))
+                    ->search('john')->searchIn(['name'])->using('like')->cache()), $schema);
+            }
+        } finally {
+            DB::purge('fuzzy_tenant');
+            foreach (array_keys($tenants) as $schema) {
+                DB::statement("drop schema if exists {$schema} cascade");
+            }
+        }
+    }
+
+    /**
+     * Ruling ER-58: a cached payload carries no relations; each read loads the current request's
+     * eager loads, constraint closures included, which the key cannot see.
+     */
+    public function test_a_cache_hit_loads_the_current_requests_eager_loads(): void
+    {
+        $this->createRelationTables();
+        $this->seedRelationFixtures();
+
+        $tags = fn (string $name) => Post::search('ring')->with(['tags' => fn ($q) => $q->where('name', $name)])->cache()->get()
+            ->first()->tags->pluck('name')->all();
+
+        $this->assertSame(['fantasy'], $tags('fantasy'));
+        $this->assertSame(['epic'], $tags('epic'), 'served the first request\'s related rows');
+
+        // The relation a searchIn() column reads is loaded on a hit as on a miss, and never stored.
+        $search = fn () => Post::search('tolkien')->searchIn(['title', 'author.name'])->cache()->get();
+        $search();
+        $hit = $search();
+        $this->assertTrue($hit->first()->relationLoaded('author'));
+        $this->assertSame('Tolkien', $hit->first()->author->name);
+
+        foreach ($this->storedKeys() as $key) {
+            foreach (Cache::get($key) as $row) {
+                $this->assertSame([], $row->getRelations(), 'a stored row carries no relation');
+            }
+        }
     }
 }

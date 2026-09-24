@@ -1137,14 +1137,47 @@ class SearchBuilder
         $seconds  = $this->cacheSeconds();
         $cacheKey = $seconds > 0 ? ($this->cacheKey ?? $this->generateCacheKey()) : null;
 
-        if ($cacheKey !== null) {
-            $store = config('fuzzy-search.cache.driver', 'default');
-
-            return Cache::store(in_array($store, [null, '', 'default'], true) ? null : $store)
-                ->remember($cacheKey, $seconds, fn () => $this->executeWithFallback());
+        if ($cacheKey === null) {
+            return $this->executeWithFallback();
         }
 
-        return $this->executeWithFallback();
+        $store  = config('fuzzy-search.cache.driver', 'default');
+        $store  = Cache::store(in_array($store, [null, '', 'default'], true) ? null : $store);
+        $cached = $store->get($cacheKey);
+
+        if ($cached !== null) {
+            return $this->loadEagerRelations($cached);
+        }
+
+        $results = $this->executeWithFallback();
+
+        // Ruling ER-58: the payload carries no relations. A with() constraint is a closure the key
+        // cannot hold, so each read loads the current request's own (loadEagerRelations()).
+        $store->put($cacheKey, $results->map(fn ($row) => $row instanceof Model ? $row->withoutRelations() : $row), $seconds);
+
+        return $results;
+    }
+
+    /**
+     * A cached result's relations, loaded as a live get() would have them (ruling ER-58): the
+     * caller's eager loads with their constraint closures, then the relation paths searchIn()
+     * reads (buildQuery() and indexedBaseQuery() add those after the caller's). Costs the
+     * eager-load queries on a cache hit.
+     */
+    private function loadEagerRelations(Collection $results): Collection
+    {
+        if (!$this->query instanceof EloquentBuilder || !$results->first() instanceof Model) {
+            return $results;
+        }
+
+        $model = $this->query->getModel();
+        $eager = $model->newQueryWithoutRelationships()
+            ->setEagerLoads($this->query->getEagerLoads())
+            ->with($this->relationPaths())
+            ->getEagerLoads();
+
+        // Onto copies: a store that does not serialise (array) hands back the stored rows themselves.
+        return $eager === [] ? $results : $model->newCollection($results->map(fn (Model $row) => $row->withoutRelations())->all())->load($eager);
     }
 
     /**
@@ -3046,8 +3079,10 @@ class SearchBuilder
     /**
      * The cache key: cache.prefix plus a hash of everything that changes get()'s rows or their
      * shape — the builder's settings, the caller's query (its SQL, bindings, model class and
-     * eager loads) and where it runs (connection, database, table prefix), so two tenants or two
-     * highlight styles never share an entry. null when a customScore() closure is set: a closure
+     * eager-load names; their constraints are applied on each read, see loadEagerRelations()) and
+     * where it runs (connection, driver, host, port, database, table prefix and, on PostgreSQL,
+     * search_path: one extra query when a search is cached), so two tenants or two highlight
+     * styles never share an entry. null when a customScore() closure is set: a closure
      * cannot be part of a key, so that search is not cached (it was stored under a key no later
      * call could read).
      */
@@ -3098,7 +3133,14 @@ class SearchBuilder
             'scoring'                => $this->scoring,
             'model'                  => $this->query instanceof EloquentBuilder ? $this->query->getModel()::class : null,
             'eager_loads'            => $this->query instanceof EloquentBuilder ? array_keys($this->query->getEagerLoads()) : [],
-            'connection'             => [$connection->getName(), $connection->getDatabaseName(), $connection->getTablePrefix()],
+            'connection'             => [
+                $connection->getName(), $connection->getDriverName(), $connection->getConfig('host'), $connection->getConfig('port'),
+                $connection->getDatabaseName(), $connection->getTablePrefix(),
+                // Schema-per-tenant on PostgreSQL switches search_path on one connection and database.
+                $connection->getDriverName() === 'pgsql'
+                    ? $connection->selectOne("select current_setting('search_path') as search_path")->search_path
+                    : null,
+            ],
             'base_sql'               => $this->query->toSql(),
             'base_bindings'          => $this->query->getBindings(),
         ];
