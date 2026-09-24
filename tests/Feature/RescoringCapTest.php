@@ -159,7 +159,11 @@ class RescoringCapTest extends TestCase
         $this->assertSame($scorer->rawScore($alice, [str_repeat('q', 251)]) + 60.0, $scorer->rawScore($alice, [str_repeat('q', 251), 'smith']));
     }
 
-    /** Ruling ER-55: 16 long leaves against two 20KB columns at the default max_candidates (1,000 rows). */
+    /**
+     * Ruling ER-55: 16 long leaves against two long columns at the default max_candidates (1,000
+     * rows). 2KB, not 20KB: past the 255-character cut every value costs the same comparison, and
+     * 1,000 x 2 x 20KB rows would need more than PHP's default 128MB on a buffered connection.
+     */
     public function test_sixteen_long_leaves_rescore_in_bounded_time(): void
     {
         Schema::dropIfExists('long_docs');
@@ -169,7 +173,7 @@ class RescoringCapTest extends TestCase
             $table->text('body');
         });
 
-        $body = substr(str_repeat('the quick brown fox jumps over the lazy dog ', 460), 0, 20000);
+        $body = substr(str_repeat('the quick brown fox jumps over the lazy dog ', 50), 0, 2000);
         foreach (array_chunk(range(1, 1000), 20) as $chunk) {
             DB::table('long_docs')->insert(array_map(fn () => ['title' => $body, 'body' => $body], $chunk));
         }
@@ -182,6 +186,6 @@ class RescoringCapTest extends TestCase
         $seconds = microtime(true) - $started;
 
         $this->assertCount(10, $rows);
-        $this->assertLessThan(3.0, $seconds, '16-leaf extended rescoring over 1,000 rows x 2 x 20KB');
+        $this->assertLessThan(2.0, $seconds, '16-leaf extended rescoring over 1,000 rows x 2 x 2KB (about 0.4 s; 3 s before ER-55)');
     }
 }
