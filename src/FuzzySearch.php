@@ -210,21 +210,33 @@ class FuzzySearch
         }
     }
 
+    /** Compares at most the first 255 characters of each string — see scoringInput(). */
     public static function levenshteinDistance(string $str1, string $str2, array $options = []): int
     {
         return levenshtein(
-            strtolower($str1),
-            strtolower($str2),
+            strtolower(self::scoringInput($str1)),
+            strtolower(self::scoringInput($str2)),
             $options['cost_insert']  ?? 1,
             $options['cost_replace'] ?? 1,
             $options['cost_delete']  ?? 1
         );
     }
 
+    /** Compares at most the first 255 characters of each string — see scoringInput(). */
     public static function similarityPercentage(string $str1, string $str2): float
     {
-        similar_text(strtolower($str1), strtolower($str2), $percent);
+        similar_text(strtolower(self::scoringInput($str1)), strtolower(self::scoringInput($str2)), $percent);
         return $percent;
+    }
+
+    /**
+     * levenshtein() is O(n·m) and similar_text() worse, so a scoring call on a user term and a
+     * column value (the Fuzzy trait's filterFuzzy()/sortByFuzzy(), SearchBuilder's rescoring) sees
+     * only their first 255 characters. Strings of 255 characters or fewer score exactly as before.
+     */
+    private static function scoringInput(string $value): string
+    {
+        return mb_substr($value, 0, 255, 'UTF-8');
     }
 
     protected function resolveDriver(string $algorithm, Builder $query, array $config): BaseDriver
