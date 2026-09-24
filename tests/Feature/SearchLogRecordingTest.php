@@ -150,18 +150,19 @@ class SearchLogRecordingTest extends TestCase
         $this->assertEqualsWithDelta(999999.99, (float) DB::table('fuzzy_search_logs')->value('latency_ms'), 0.001);
     }
 
-    public function test_logged_terms_fit_255_utf16_units_without_splitting_a_character(): void
+    public function test_logged_terms_fit_their_utf16_widths_without_splitting_a_character(): void
     {
         // The search caps the term at 128 characters — 256 UTF-16 units of emoji, one more than
-        // SQL Server's nvarchar(255) holds. The in-memory path passes its term uncapped.
+        // SQL Server's nvarchar(255) holds. The in-memory path passes its term uncapped. The
+        // indexed normalized_term is nvarchar(191).
         $emoji = str_repeat("\u{1F600}", 200);
         User::search($emoji)->get();
         event(new FuzzySearchExecuted($emoji, [], 'in_memory', 0, 1.0, 0, 'in_memory'));
 
         foreach (DB::table('fuzzy_search_logs')->get(['term', 'normalized_term']) as $row) {
-            foreach ([$row->term, $row->normalized_term] as $logged) {
+            foreach ([[$row->term, 127], [$row->normalized_term, 95]] as [$logged, $fits]) { // 254 and 190 units: the most that fits
                 $this->assertTrue(mb_check_encoding($logged, 'UTF-8'));
-                $this->assertSame(str_repeat("\u{1F600}", 127), $logged); // 254 units: the most that fits
+                $this->assertSame(str_repeat("\u{1F600}", $fits), $logged);
             }
         }
         $this->assertSame(2, DB::table('fuzzy_search_logs')->count());
