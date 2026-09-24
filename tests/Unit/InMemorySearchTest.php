@@ -123,4 +123,26 @@ class InMemorySearchTest extends TestCase
         $this->assertCount(1, $events);
         $this->assertSame(128, mb_strlen($events[0]->searchTerm), 'the event reports the term that was searched');
     }
+
+    // -------------------------------------------------------------------------
+    // No searchable column: matches nothing (owner decision Q12)
+    // -------------------------------------------------------------------------
+
+    public function test_a_search_without_search_in_columns_matches_nothing(): void
+    {
+        $items = [['name' => 'John Doe'], ['name' => 'Jane']];
+
+        $events = [];
+        \Illuminate\Support\Facades\Event::listen(\Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted::class, function ($event) use (&$events) {
+            $events[] = $event;
+        });
+
+        $this->assertCount(0, FuzzySearch::on($items)->search('john')->get());
+        $this->assertCount(0, FuzzySearch::on($items)->search('john')->searchIn([])->get());
+        $this->assertSame([], $events, 'nothing was searched, so nothing is reported');
+
+        // '' is not a search: it still lists the items, with or without columns.
+        $this->assertCount(2, FuzzySearch::on($items)->search('')->get());
+        $this->assertCount(2, FuzzySearch::on($items)->search('')->searchIn(['name'])->get());
+    }
 }

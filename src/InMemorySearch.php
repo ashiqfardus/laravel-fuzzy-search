@@ -93,11 +93,17 @@ class InMemorySearch
             return collect();
         }
 
-        $startedAt = microtime(true);
-
-        if ($this->term === '' || empty($this->columns)) {
+        if ($this->term === '') {
             return $this->items->slice($this->offset, $this->limit)->values();
         }
+
+        // No searchIn() column: nothing to search, so nothing matches (as SearchBuilder does
+        // without a column) — not every item.
+        if (empty($this->columns)) {
+            return collect();
+        }
+
+        $startedAt = microtime(true);
 
         // query.max_term_length characters (never bytes), as SearchBuilder::capSearchTerm() cuts
         // the term: similar_text() below is O(term × value).
