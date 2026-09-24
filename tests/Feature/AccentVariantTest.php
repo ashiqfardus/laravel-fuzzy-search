@@ -184,6 +184,21 @@ class AccentVariantTest extends TestCase
         $this->assertStringContainsString('unaccent(', $preset, 'preset');
     }
 
+    public function test_the_explicit_opt_in_emits_one_unaccent_alternative_per_accent_free_form(): void
+    {
+        config(['fuzzy-search.use_native_functions' => true]);
+
+        $sql = fn (array $synonyms = []) => (new SearchBuilder($this->fakeConnectionTable('pgsql', 'users'), app(FuzzySearch::class)))
+            ->search('Müller')->searchIn(['name', 'email'])->using('trigram')->withSynonyms($synonyms)->accentInsensitive()->toSql();
+
+        // "Müller" and its folded variant "Muller" unaccent alike: one alternative per column.
+        $this->assertSame(1, substr_count($sql(), 'unaccent("name")'));
+        $this->assertSame(1, substr_count($sql(), 'unaccent("email")'));
+
+        // A synonym with another accent-free form gets its own.
+        $this->assertSame(2, substr_count($sql(['müller' => ['miller']]), 'unaccent("name")'));
+    }
+
     /** ER-49 × Q15: the unaccent() alternative is a similar_text match too, so it carries the min_percentage bound. */
     public function test_the_unaccent_alternative_carries_the_similar_text_length_bound(): void
     {

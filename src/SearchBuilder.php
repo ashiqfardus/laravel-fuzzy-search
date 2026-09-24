@@ -2209,12 +2209,12 @@ class SearchBuilder
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
             // Every token must match at least one column
             foreach ($tokens as $token) {
-                $tokenTerms = $this->termAlternatives($token);
+                $tokenTerms = $this->termConditions($this->termAlternatives($token));
                 $group->where(function ($q) use ($tokenTerms, $targets) {
                     $first = true;
-                    foreach ($tokenTerms as $term) {
+                    foreach ($tokenTerms as [$term, $termOptions]) {
                         foreach ($targets as $target) {
-                            $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or');
+                            $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or', $termOptions);
                             $first = false;
                         }
                     }
@@ -2224,15 +2224,39 @@ class SearchBuilder
         }
 
         // Any token can match any column
+        $allTerms = $this->termConditions($allTerms);
         $group->where(function ($q) use ($allTerms, $targets) {
             $first = true;
-            foreach ($allTerms as $term) {
+            foreach ($allTerms as [$term, $termOptions]) {
                 foreach ($targets as $target) {
-                    $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or');
+                    $this->applyColumnCondition($q, $target, $term, $first ? 'and' : 'or', $termOptions);
                     $first = false;
                 }
             }
         });
+    }
+
+    /**
+     * Each term with the driver options it is applied with. An explicit accent opt-in ORs
+     * unaccent() beside the algorithm on PostgreSQL (FuzzySearch::applyFuzzyWhere()): only the
+     * first term of each accent-free form carries it, since a folded variant unaccents to its
+     * own term's form and would repeat the same alternative.
+     *
+     * @param  string[] $terms
+     * @return array<int, array{0: string, 1: array<string, mixed>}> [term, options], in order
+     */
+    private function termConditions(array $terms): array
+    {
+        $unaccented = [];
+        $conditions = [];
+
+        foreach ($terms as $term) {
+            $form         = mb_strtolower($this->removeAccents($term), 'UTF-8');
+            $conditions[] = [$term, ['accent_insensitive' => $this->accentInsensitiveEnabled && !isset($unaccented[$form])]];
+            $unaccented[$form] = true;
+        }
+
+        return $conditions;
     }
 
     /**
@@ -2242,10 +2266,11 @@ class SearchBuilder
      * which Eloquent compiles to a portable EXISTS subquery.
      *
      * @param array{relation: ?string, column: string} $target
+     * @param array<string, mixed> $termOptions this term's own driver options (termConditions())
      */
-    protected function applyColumnCondition($query, array $target, string $term, string $boolean): void
+    protected function applyColumnCondition($query, array $target, string $term, string $boolean, array $termOptions = []): void
     {
-        $options = array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled]);
+        $options = array_merge($this->options, ['accent_insensitive' => $this->accentInsensitiveEnabled], $termOptions);
 
         if ($target['relation'] === null) {
             $subQuery = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
