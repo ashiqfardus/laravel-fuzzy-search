@@ -201,6 +201,15 @@ class IndexManager
     public function flush(string $modelClass): void
     {
         DB::transaction(function () use ($modelClass) {
+            // Give back this model's share of every term's doc_count first. A term another model
+            // still uses survives the orphan sweep below, and it kept counting this model's
+            // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
+            DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelClass)
+                ->groupBy('term_id')
+                ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
+                ->chunkById(1000, fn ($rows) => $this->decrementDocCounts($rows->pluck('cnt', 'term_id')->all()), 'term_id');
+
             // Bulk delete index data for this model type — DB-side, no PHP memory load.
             DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->delete();
             DB::table('fuzzy_index_documents')->where('model_type', $modelClass)->delete();
@@ -421,22 +430,7 @@ class IndexManager
                     ->whereIn('model_id', $reindexIds)
                     ->delete();
 
-                // Decrement doc_count per term in a single UPDATE to avoid N round-trips.
-                // $termId and $cnt are PHP ints sourced from the DB — not user input.
-                if ($oldReindexTermCounts->isNotEmpty()) {
-                    $cases   = '';
-                    $termIds = [];
-                    foreach ($oldReindexTermCounts as $termId => $cnt) {
-                        $termId  = (int) $termId;
-                        $cnt     = (int) $cnt;
-                        $cases  .= " WHEN {$termId} THEN CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END";
-                        $termIds[] = $termId;
-                    }
-                    $inList = implode(',', $termIds);
-                    DB::statement(
-                        "UPDATE fuzzy_index_terms SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
-                    );
-                }
+                $this->decrementDocCounts($oldReindexTermCounts->all());
             }
 
             // Count term occurrences across ALL models (new + re-indexed).
@@ -614,6 +608,29 @@ class IndexManager
             }
         }
         return $byColumn;
+    }
+
+    /**
+     * Subtract term_id => count from doc_count, floored at 0 (unsigned column, concurrent
+     * deletes): one UPDATE per 1,000 terms instead of a round-trip each. Ids and counts are
+     * inlined as ints; they come from the database, never from user input.
+     *
+     * @param array<int, int|string> $counts
+     */
+    private function decrementDocCounts(array $counts): void
+    {
+        foreach (array_chunk($counts, 1000, true) as $chunk) {
+            $cases = '';
+            foreach ($chunk as $termId => $cnt) {
+                $termId = (int) $termId;
+                $cnt    = (int) $cnt;
+                $cases .= " WHEN {$termId} THEN CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END";
+            }
+            $inList = implode(',', array_map('intval', array_keys($chunk)));
+            DB::statement(
+                "UPDATE fuzzy_index_terms SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
+            );
+        }
     }
 
     /** Per-document term frequencies (term => total across columns) — doc_length and doc_count use this. */

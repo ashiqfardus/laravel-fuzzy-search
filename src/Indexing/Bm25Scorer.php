@@ -150,7 +150,7 @@ class Bm25Scorer
 
         $termData = DB::table('fuzzy_index_terms')
             ->whereIn('term', $this->termBindings($weights))
-            ->select('id', 'term', 'doc_count')
+            ->select('id', 'term')
             ->get()
             ->keyBy('id');
 
@@ -159,6 +159,22 @@ class Bm25Scorer
         }
 
         $termIds = $termData->keys()->toArray();
+
+        // Document frequency within $modelType, the population N counts. The dictionary's
+        // doc_count spans every model, so a word another model used more often than this one
+        // has rows gave a negative idf and ranked the best match last. DISTINCT model_id: a
+        // document has one posting per column it holds the term in. Chunked under SQL Server's
+        // 2,100 bindings; postings_unique_idx (term_id, model_type, model_id, …) covers it.
+        $df = [];
+        foreach (array_chunk($termIds, 1000) as $chunk) {
+            $df += DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelType)
+                ->whereIn('term_id', $chunk)
+                ->groupBy('term_id')
+                ->selectRaw('term_id, COUNT(DISTINCT model_id) as df')
+                ->pluck('df', 'term_id')
+                ->all();
+        }
 
         // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
         // One row per (document, term), weighted in SQL, ordered by that weighted frequency DESC
@@ -195,7 +211,8 @@ class Bm25Scorer
             }
             $td     = $termData[$row->term_id];
             $weight = (float) ($weights[$td->term] ?? 1.0);
-            $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
+            $n      = min((float) ($df[$row->term_id] ?? 1), $N); // never above N: the idf stays positive
+            $idf    = log(($N - $n + 0.5) / ($n + 0.5) + 1);
             $tf     = ($f * ($this->k1 + 1))
                     / ($f + $this->k1 * (1 - $this->b + $this->b * (float) $row->doc_len / $avgdl));
 
