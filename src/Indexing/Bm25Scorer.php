@@ -221,8 +221,13 @@ class Bm25Scorer
             $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $weight * $idf * $tf;
         }
 
-        arsort($scores);
+        // Rounded before sorting: the sums' last bits depend on the order the database returned
+        // the postings in. Best first; a tie goes to the lower model key (integer keys compare as
+        // numbers, string keys byte-wise), so equal scores come back in one order on every database.
+        $scores = array_map(fn($score) => round($score, 6), $scores);
+        uksort($scores, fn ($a, $b) => ($scores[$b] <=> $scores[$a])
+            ?: (is_int($a) && is_int($b) ? $a <=> $b : strcmp((string) $a, (string) $b)));
 
-        return array_map(fn($score) => round($score, 6), $scores);
+        return $scores;
     }
 }
