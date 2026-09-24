@@ -1306,14 +1306,10 @@ class SearchBuilder
             $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
                 $this->indexedBaseQuery($modelClass),
                 array_keys($ranked),
-                $this->offset + $this->limit
+                $this->bm25Window($modelClass, $this->offset + $this->limit)
             );
 
-            $sorted = $this->attachBm25Scores(
-                $models->slice($this->offset, $this->limit)->values(),
-                $ranked,
-                $models->first()
-            );
+            $sorted = $this->attachBm25Scores($models, $ranked)->slice($this->offset, $this->limit)->values();
         }
 
         if ($this->highlightTagOpen) {
@@ -1480,23 +1476,58 @@ class SearchBuilder
     }
 
     /**
-     * Set _raw_score / _score on a page of models. Normalised against $top, the best row the
-     * query can see (the ranking walk always starts at rank 1, so it is the same on every page
-     * and scores stay comparable across pages). Not the first entry of $ranked: a row the query
-     * hides, such as another tenant's, would set the scale and reveal what it contains.
+     * Set _raw_score / _score on the ranked window of models and return it best first. The raw
+     * score is the BM25 score through the model's getSearchScore() override, if it has one (see
+     * searchScore()), which can reorder the window. _score is normalised against the window's best
+     * row: the ranking walk always starts at rank 1 of what the query can see, so it is the same on
+     * every page and scores stay comparable across pages. Not the first entry of $ranked: a row
+     * the query hides, such as another tenant's, would set the scale and reveal what it contains.
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
-    protected function attachBm25Scores(Collection $models, array $ranked, ?Model $top): Collection
+    protected function attachBm25Scores(Collection $models, array $ranked): Collection
     {
-        $bm25Max = $top === null ? 0.0 : (float) ($ranked[$top->getKey()] ?? 0);
+        $scores = $models->mapWithKeys(fn ($item, $i) => [$i => $this->searchScore($item, (float) ($ranked[$item->getKey()] ?? 0))]);
+        $top    = (float) ($scores->max() ?? 0);
 
-        return $models->map(function ($item) use ($ranked, $bm25Max) {
-            $raw = round((float) ($ranked[$item->getKey()] ?? 0), 6);
-            $item->_raw_score = $raw;
-            $item->_score     = $bm25Max > 0 ? round($raw / $bm25Max, 6) : $raw;
+        // arsort() is stable: rows the hook left tied keep their BM25 rank.
+        return $scores->sortDesc()->map(function (float $raw, $i) use ($models, $top) {
+            $item             = $models[$i];
+            $item->_raw_score = round($raw, 6);
+            $item->_score     = $top > 0 ? round($item->_raw_score / $top, 6) : $item->_raw_score;
             return $item;
-        });
+        })->values();
+    }
+
+    /**
+     * How many ranked rows the index path hydrates for a page that ends at $end: $end, or
+     * max_candidates when the model overrides getSearchScore(), whose scores can reorder the
+     * ranking, so the page is cut from the same window the LIKE path rescores.
+     */
+    private function bm25Window(string $modelClass, int $end): int
+    {
+        return self::hasSearchScoreHook($modelClass) ? max($end, (int) config('fuzzy-search.max_candidates', 1000)) : $end;
+    }
+
+    /**
+     * $score through $item's getSearchScore() — Searchable's per-model hook, applied once per row
+     * to the score PHP computed (the LIKE and extended rescoring's column sum, the BM25 raw score)
+     * before normalisation, so the ranking follows it. The trait's own method returns the score
+     * unchanged, so only a model that overrides it is called.
+     */
+    private function searchScore(mixed $item, float $score): float
+    {
+        return $item instanceof Model && self::hasSearchScoreHook($item::class) ? (float) $item->getSearchScore($score) : $score;
+    }
+
+    /** @var array<class-string, bool> model class => it uses Searchable and overrides getSearchScore() */
+    private static array $searchScoreHooks = [];
+
+    private static function hasSearchScoreHook(string $modelClass): bool
+    {
+        return self::$searchScoreHooks[$modelClass] ??= in_array(\Ashiqfardus\LaravelFuzzySearch\Traits\Searchable::class, class_uses_recursive($modelClass), true)
+            && (new \ReflectionMethod($modelClass, 'getSearchScore'))->getFileName()
+                !== (new \ReflectionClass(\Ashiqfardus\LaravelFuzzySearch\Traits\Searchable::class))->getFileName();
     }
 
     /**
@@ -1815,10 +1846,10 @@ class SearchBuilder
             // Page: walk the ranking against the constrained query until offset + perPage
             // rows are collected, then slice.
             $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models(
-                $base, $ids, $offset + $perPage
+                $base, $ids, $this->bm25Window($modelClass, $offset + $perPage)
             );
 
-            $sorted = $this->attachBm25Scores($models->slice($offset, $perPage)->values(), $ranked, $models->first());
+            $sorted = $this->attachBm25Scores($models, $ranked)->slice($offset, $perPage)->values();
         }
 
         if ($this->highlightTagOpen) {
@@ -2352,6 +2383,9 @@ class SearchBuilder
                 $columnScores[$column] = $colScore;
                 $score += $colScore;
             }
+
+            // The model's own getSearchScore() adjusts the base score first
+            $score = $this->searchScore($item, $score);
 
             // Apply custom scoring
             if ($this->customScoreCallback) {
