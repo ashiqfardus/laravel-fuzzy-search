@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 class AnalyticsCommand extends Command
 {
     protected $signature   = 'fuzzy-search:analytics {--days=30 : Window in days} {--limit=20 : Rows per table} {--zero-results : Only list searches that returned nothing}';
-    protected $description = 'Report popular searches, zero-result searches, latency by path and daily volume from fuzzy_search_logs';
+    protected $description = 'Report popular searches, zero-result searches, latency by path and daily volume from the search log (analytics.table)';
 
     public function handle(): int
     {

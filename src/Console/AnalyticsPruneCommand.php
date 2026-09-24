@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 class AnalyticsPruneCommand extends Command
 {
     protected $signature   = 'fuzzy-search:analytics:prune {--days= : Delete rows older than this many days (default: analytics.retention_days)}';
-    protected $description = 'Delete fuzzy_search_logs rows older than the retention window';
+    protected $description = 'Delete search log rows (analytics.table) older than the retention window';
 
     public function handle(): int
     {
