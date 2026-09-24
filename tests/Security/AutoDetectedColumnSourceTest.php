@@ -15,8 +15,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * ER-32. Auto-detection never picks a column the model hides from serialization or a
- * secret-named column, and an auto-detected column is indexed as its raw attribute value — what
- * the LIKE path searches — not through a get accessor, which may decrypt it. A column the model
+ * secret-named column, and an auto-detected column is indexed as the raw attribute value, not
+ * through a get accessor, which may decrypt it. A column the model
  * chose (declared, or supplied by overriding getSearchableColumns()) keeps its accessor.
  */
 class AutoDetectedColumnSourceTest extends TestCase

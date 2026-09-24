@@ -124,8 +124,8 @@ final class SearchableColumns
     /**
      * What the indexer and the shadow columns read for a searchable column. A column the model
      * chose goes through getAttribute() — accessors and casts, a documented feature. An
-     * auto-detected one is read as the raw attribute, what the LIKE path searches: nobody chose
-     * to expose it, and a get accessor may decrypt it into the dictionary that suggest() serves.
+     * auto-detected one is read as the raw attribute value: nobody chose to expose it, and a get
+     * accessor may decrypt it into the dictionary that suggest() serves.
      * The flip side: a masking accessor is bypassed too, and so is anything that swaps the raw
      * attributes in memory (a decrypt-on-retrieved package) — the docs say to $hidden such columns.
      */
