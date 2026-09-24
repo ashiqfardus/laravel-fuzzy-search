@@ -58,12 +58,13 @@ trait Fuzzy
     }
 
     /**
-     * Scope for Levenshtein search
+     * Scope for Levenshtein search. $maxDistance overrides levenshtein.max_distance; 0 is exact
+     * containment, null keeps the config's.
      */
     public function scopeFuzzyLevenshtein($query, string $searchTerm, ?array $columns = null, ?int $maxDistance = null)
     {
         $columns = $columns ?? $this->getFuzzySearchableColumns();
-        $options = $maxDistance ? ['max_distance' => $maxDistance] : [];
+        $options = $maxDistance !== null ? ['max_distance' => $maxDistance] : [];
 
         return $query->whereFuzzyMultiple($columns, $searchTerm, 'levenshtein', $options);
     }
