@@ -77,15 +77,26 @@ class FuzzySearch
         // passes the global unicode.accent_insensitive default here — that one only adds the term's
         // folded form as a variant. On PostgreSQL with use_native_functions the opt-in ORs
         // unaccent(col) ILIKE unaccent(?) beside the algorithm's predicate, in one group so an
-        // outer AND still binds both; the algorithm (and its typo tolerance) stays. It needs the
-        // unaccent extension.
+        // outer AND still binds both; the algorithm (and its typo tolerance) stays, and the
+        // alternative carries the driver's matchBound() (similar_text's min_percentage). It needs
+        // the unaccent extension.
         if (($options['accent_insensitive'] ?? false)
             && $this->getDriver($query) === self::DRIVER_PGSQL
             && ($this->currentConfig()['use_native_functions'] ?? false)
         ) {
             return $query->{$boolean === 'or' ? 'orWhere' : 'where'}(function (Builder $group) use ($driver, $column, $value) {
                 $driver->apply($group, $column, $value);
-                $this->applyWithUnaccent($group, $column, $value, 'or');
+
+                if (($bound = $driver->matchBound($group, $column, $value)) === null) {
+                    $this->applyWithUnaccent($group, $column, $value, 'or');
+
+                    return;
+                }
+
+                $group->orWhere(function (Builder $alternative) use ($column, $value, $bound) {
+                    $this->applyWithUnaccent($alternative, $column, $value, 'and');
+                    $alternative->whereRaw(...$bound);
+                });
             });
         }
 

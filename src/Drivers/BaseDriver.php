@@ -24,6 +24,19 @@ abstract class BaseDriver
     abstract public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder;
 
     /**
+     * A condition every match must meet besides apply()'s pattern, as [sql, bindings], or null
+     * for none. FuzzySearch ANDs it onto the unaccent() alternative of an explicit accent opt-in,
+     * so that alternative cannot match a row the driver itself rejects (similar_text's
+     * min_percentage bound).
+     *
+     * @return array{0: string, 1: array<int, mixed>}|null
+     */
+    public function matchBound(Builder $query, string $column, string $value): ?array
+    {
+        return null;
+    }
+
+    /**
      * Get relevance expression for ordering.
      *
      * @deprecated Not called by any internal code path — relevance ordering is handled

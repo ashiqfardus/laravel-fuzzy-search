@@ -19,21 +19,28 @@ class SimilarTextDriver extends BaseDriver
 {
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
-        $term    = Utf8::lowerAscii($value);
-        $pattern = '%' . $this->escapeLike($term) . '%';
-        $max     = $this->maxValueLength(mb_strlen($term, 'UTF-8'));
+        $pattern = '%' . $this->escapeLike(Utf8::lowerAscii($value)) . '%';
+        $bound   = $this->matchBound($query, $column, $value);
 
-        if ($max === null) {
+        if ($bound === null) {
             DbDialect::whereLike($query, $column, $pattern, $this->driver, $boolean);
 
             return $query;
         }
 
         // One group, so an outer OR takes the LIKE and its bound together.
-        return $query->{$boolean === 'or' ? 'orWhere' : 'where'}(function (Builder $q) use ($column, $pattern, $max) {
+        return $query->{$boolean === 'or' ? 'orWhere' : 'where'}(function (Builder $q) use ($column, $pattern, $bound) {
             DbDialect::whereLike($q, $column, $pattern, $this->driver);
-            $q->whereRaw($this->characterLength($q, $column) . ' <= ?', [$max]);
+            $q->whereRaw(...$bound);
         });
+    }
+
+    /** The min_percentage length bound (see maxValueLength()), or null when it is off. */
+    public function matchBound(Builder $query, string $column, string $value): ?array
+    {
+        $max = $this->maxValueLength(mb_strlen($value, 'UTF-8'));
+
+        return $max === null ? null : [$this->characterLength($query, $column) . ' <= ?', [$max]];
     }
 
     /**

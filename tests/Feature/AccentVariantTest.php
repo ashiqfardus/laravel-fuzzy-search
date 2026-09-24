@@ -184,6 +184,36 @@ class AccentVariantTest extends TestCase
         $this->assertStringContainsString('unaccent(', $preset, 'preset');
     }
 
+    /** ER-49 × Q15: the unaccent() alternative is a similar_text match too, so it carries the min_percentage bound. */
+    public function test_the_unaccent_alternative_carries_the_similar_text_length_bound(): void
+    {
+        config(['fuzzy-search.use_native_functions' => true]);
+
+        $sql = fn () => $this->fakeConnectionTable('pgsql', 'users')->whereFuzzy('name', 'john', 'similar_text', ['accent_insensitive' => true]);
+
+        $this->assertStringContainsString('or (unaccent("name") ILIKE unaccent(?) and CHAR_LENGTH("name") <= ?)', $sql()->toSql());
+        $this->assertSame(['%john%', 7, '%john%', 7], $sql()->getBindings());
+
+        config(['fuzzy-search.similar_text.min_percentage' => 0]);
+        $this->assertStringContainsString('or unaccent("name") ILIKE unaccent(?))', $sql()->toSql(), 'min_percentage 0: no bound on either side');
+        $this->assertStringNotContainsString('<= ?', $sql()->toSql());
+    }
+
+    public function test_postgresql_explicit_opt_in_keeps_the_similar_text_bound(): void
+    {
+        $this->requirePostgresExtensions(['unaccent']);
+
+        config(['fuzzy-search.use_native_functions' => true]);
+
+        // Every seeded "john" name is longer than 7 characters, the 70% bound for a 4-character term.
+        $search = fn () => $this->builder()->search('john')->searchIn(['name'])->using('similar_text')->accentInsensitive();
+        $this->assertSame([], $search()->get()->pluck('name')->all());
+        $this->assertSame([], DB::table('users')->whereFuzzy('name', 'john', 'similar_text', ['accent_insensitive' => true])->pluck('name')->all());
+
+        config(['fuzzy-search.similar_text.min_percentage' => 0]);
+        $this->assertEqualsCanonicalizing(['John Doe', 'Johnny Bravo', 'Bob Johnson'], $search()->get()->pluck('name')->all());
+    }
+
     public function test_postgresql_native_functions_run_without_the_unaccent_extension(): void
     {
         $this->requirePostgresExtensions(['pg_trgm', 'fuzzystrmatch']);
