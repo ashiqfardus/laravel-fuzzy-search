@@ -13,6 +13,13 @@ use Ashiqfardus\LaravelFuzzySearch\Support\StopWords;
  */
 class IndexManager
 {
+    /**
+     * Rows per upsert, so no statement passes SQL Server's 2,100 bindings: a posting row binds
+     * five values (2,000 a statement), a dictionary or document row three (1,500).
+     */
+    private const POSTING_ROWS_PER_UPSERT = 400;
+    private const ROWS_PER_UPSERT         = 500;
+
     private Pipeline $default;
 
     public function __construct(
@@ -102,23 +109,22 @@ class IndexManager
             $termKeys = array_map('strval', array_keys($tokens));
 
             // Batch upsert all terms
-            DB::table('fuzzy_index_terms')->upsert(
-                array_map(fn($term) => [
-                    'term'        => (string) $term,
-                    'doc_count'   => 1,
-                    'term_length' => mb_strlen((string) $term),
-                ], $termKeys),
-                ['term'],
-                // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
-                // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
-                // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
-                ['doc_count' => DB::raw(self::rawIdentifier('fuzzy_index_terms.doc_count') . ' + 1')]
-            );
+            foreach (array_chunk($termKeys, self::ROWS_PER_UPSERT) as $chunk) {
+                DB::table('fuzzy_index_terms')->upsert(
+                    array_map(fn($term) => [
+                        'term'        => (string) $term,
+                        'doc_count'   => 1,
+                        'term_length' => mb_strlen((string) $term),
+                    ], $chunk),
+                    ['term'],
+                    // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
+                    // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
+                    // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
+                    ['doc_count' => DB::raw(self::rawIdentifier('fuzzy_index_terms.doc_count') . ' + 1')]
+                );
+            }
 
-            // Fetch all term IDs in one query
-            $termIds = DB::table('fuzzy_index_terms')
-                ->whereIn('term', $termKeys)
-                ->pluck('id', 'term');
+            $termIds = $this->termIds($termKeys);
 
             // Build posting rows — one per (term, column); a term missing from $termIds means
             // a pre-migration MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
@@ -126,9 +132,9 @@ class IndexManager
 
             // Upsert postings — INSERT ... ON DUPLICATE KEY UPDATE prevents concurrent-worker
             // collisions on the UNIQUE (term_id, model_type, model_id, column_name) constraint (C9)
-            if (!empty($postingRows)) {
+            foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
                 DB::table('fuzzy_index_postings')->upsert(
-                    $postingRows,
+                    $chunk,
                     ['term_id', 'model_type', 'model_id', 'column_name'],
                     ['frequency']
                 );
@@ -205,7 +211,7 @@ class IndexManager
         sort($modelIds, SORT_STRING);
         $indexed = [];
 
-        foreach (array_chunk($modelIds, 500) as $chunk) { // 1,500 bindings: under SQL Server's 2,100
+        foreach (array_chunk($modelIds, self::ROWS_PER_UPSERT) as $chunk) {
             DB::table('fuzzy_index_documents')->upsert(
                 array_map(fn ($id) => ['model_type' => $modelType, 'model_id' => $id, 'doc_length' => 0], $chunk),
                 ['model_type', 'model_id'],
@@ -401,7 +407,7 @@ class IndexManager
 
     /**
      * Bulk-index a collection of models in a single transaction.
-     * Postings and document rows go out in 1000-row upserts and re-indexed models are cleared
+     * Postings and document rows go out in chunked upserts and re-indexed models are cleared
      * with set-based statements, but the dictionary is upserted once per distinct term (each
      * term's doc_count increment differs): a 500-model chunk with 3,000 distinct terms costs
      * ~3,000 term upserts plus about ten other queries — not indexModel()'s per-model reads,
@@ -483,10 +489,7 @@ class IndexManager
                 );
             }
 
-            // Fetch term IDs
-            $termIds = DB::table('fuzzy_index_terms')
-                ->whereIn('term', $allTerms)
-                ->pluck('id', 'term');
+            $termIds = $this->termIds($allTerms);
 
             // Build all postings rows
             $postingRows      = [];
@@ -514,7 +517,7 @@ class IndexManager
             }
 
             // Upsert postings — prevents concurrent-worker UNIQUE constraint failures (C9)
-            foreach (array_chunk($postingRows, 1000) as $chunk) {
+            foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
                 DB::table('fuzzy_index_postings')->upsert(
                     $chunk,
                     ['term_id', 'model_type', 'model_id', 'column_name'],
@@ -523,7 +526,7 @@ class IndexManager
             }
 
             // Upsert documents
-            foreach (array_chunk($documentRows, 1000) as $chunk) {
+            foreach (array_chunk($documentRows, self::ROWS_PER_UPSERT) as $chunk) {
                 DB::table('fuzzy_index_documents')->upsert(
                     $chunk,
                     ['model_type', 'model_id'],
@@ -663,6 +666,22 @@ class IndexManager
                 'UPDATE ' . self::rawIdentifier('fuzzy_index_terms') . " SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
             );
         }
+    }
+
+    /**
+     * term => id for $terms, 1,000 bindings a query.
+     *
+     * @param  string[] $terms
+     * @return array<string, int>
+     */
+    private function termIds(array $terms): array
+    {
+        $ids = [];
+        foreach (array_chunk($terms, 1000) as $chunk) {
+            $ids += DB::table('fuzzy_index_terms')->whereIn('term', $chunk)->pluck('id', 'term')->all();
+        }
+
+        return $ids;
     }
 
     /** Per-document term frequencies (term => total across columns) — doc_length and doc_count use this. */
