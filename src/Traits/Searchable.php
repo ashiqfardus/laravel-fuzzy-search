@@ -78,7 +78,7 @@ trait Searchable
      */
     public function getSearchableColumns(): array
     {
-        $columns = $this->searchable['columns'] ?? [];
+        $columns = $this->searchableDeclaration()['columns'] ?? [];
 
         if (empty($columns)) {
             $columns = $this->getAutoDetectedColumns();
@@ -108,7 +108,7 @@ trait Searchable
      */
     public function hasDeclaredSearchableColumns(): bool
     {
-        return !empty($this->searchable['columns'])
+        return !empty($this->searchableDeclaration()['columns'])
             || (new \ReflectionMethod($this, 'getSearchableColumns'))->getFileName() !== __FILE__;
     }
 
@@ -122,7 +122,7 @@ trait Searchable
      */
     public function getReindexTriggers(): array
     {
-        return array_values((array) ($this->searchable['reindex_on'] ?? []));
+        return array_values((array) ($this->searchableDeclaration()['reindex_on'] ?? []));
     }
 
     /**
@@ -245,7 +245,7 @@ trait Searchable
      */
     public function getSearchablePipeline(): array
     {
-        $config = $this->searchable ?? [];
+        $config = $this->searchableDeclaration() ?? [];
 
         return array_filter([
             'tokenizer'        => $config['tokenizer'] ?? null,
@@ -256,14 +256,24 @@ trait Searchable
     }
 
     /**
+     * The model's own $searchable declaration, or null when it declares none. Every read of the
+     * property goes through here: beside Laravel Scout's Searchable trait (the dual-trait recipe
+     * in docs/integrations.md) a model without the property would resolve `$this->searchable`
+     * through Eloquent's __get()/__isset() to Scout's searchable() method, which Eloquent takes
+     * for a relation — it indexes the model and throws, on search() and on every save.
+     */
+    private function searchableDeclaration(): ?array
+    {
+        return property_exists($this, 'searchable') ? $this->searchable ?? null : null;
+    }
+
+    /**
      * Get searchable configuration
      */
     protected function getSearchableConfig(): array
     {
         // Check if custom config is defined
-        if (isset($this->searchable)) {
-            $config = $this->searchable;
-
+        if (($config = $this->searchableDeclaration()) !== null) {
             // Ensure columns are set
             if (empty($config['columns'])) {
                 $config['columns'] = $this->getAutoDetectedColumns();
