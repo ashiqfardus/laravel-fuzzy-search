@@ -36,6 +36,28 @@ class PatternGeneratorCapTest extends TestCase
         return substr(str_repeat('phfockzswrknghab', 20), 0, 300);
     }
 
+    /** A subclass that overrides generateTrigrams() or trigramsToPatterns() still shapes what apply() binds. */
+    public function test_a_trigram_subclass_still_shapes_the_patterns_through_its_hooks(): void
+    {
+        $config = ['max_patterns' => 100];
+
+        $trigrams = new class($config, 'sqlite') extends TrigramDriver {
+            protected function generateTrigrams(string $value): array
+            {
+                return ['zzz', 'yyy'];
+            }
+        };
+        $this->assertSame(['%john%', '%zzz%', '%yyy%'], $trigrams->apply($this->app['db']->table('users'), 'name', 'john')->getBindings());
+
+        $patterns = new class($config, 'sqlite') extends TrigramDriver {
+            protected function trigramsToPatterns(array $trigrams, string $value = ''): array
+            {
+                return ['%custom%'];
+            }
+        };
+        $this->assertSame(['%custom%'], $patterns->apply($this->app['db']->table('users'), 'name', 'john')->getBindings());
+    }
+
     /** @return array<string, BaseDriver> the pattern-based drivers, on SQLite so soundex takes its pattern path */
     private function drivers(): array
     {
@@ -65,7 +87,8 @@ class PatternGeneratorCapTest extends TestCase
 
     public function test_each_generator_is_pulled_only_until_max_patterns_are_kept(): void
     {
-        foreach ($this->drivers() as $name => $driver) {
+        // trigram builds its patterns through its overridable array hooks; the counter test covers it.
+        foreach (array_diff_key($this->drivers(), ['trigram' => true]) as $name => $driver) {
             $pulled     = 0;
             $candidates = (new \ReflectionMethod($driver, 'patternCandidates'))->invoke($driver, $this->term());
             $counted    = (function () use ($candidates, &$pulled) {

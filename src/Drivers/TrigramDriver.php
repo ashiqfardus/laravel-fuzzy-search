@@ -47,7 +47,7 @@ class TrigramDriver extends BaseDriver
      */
     protected function applyPatternBased(Builder $query, string $column, string $value, string $boolean): Builder
     {
-        $patterns = $this->firstPatterns($this->patternCandidates($value));
+        $patterns = $this->trigramsToPatterns($this->generateTrigrams($value), $this->normalizeTerm($value));
         $method = $boolean === 'or' ? 'orWhere' : 'where';
 
         return $query->$method(function ($q) use ($column, $patterns) {
@@ -62,68 +62,41 @@ class TrigramDriver extends BaseDriver
      */
     protected function generateTrigrams(string $value): array
     {
-        return array_unique(iterator_to_array($this->trigrams($value), false));
-    }
-
-    /**
-     * The term's trigrams in order, padded with spaces (PostgreSQL style), built lazily.
-     *
-     * @return \Generator<int, string>
-     */
-    private function trigrams(string $value): \Generator
-    {
-        $chars = $this->chars('  ' . $this->normalizeTerm($value) . ' ');
+        $value    = '  ' . $this->normalizeTerm($value) . ' '; // Pad with spaces (PostgreSQL style)
+        $chars    = $this->chars($value);
+        $trigrams = [];
 
         for ($i = 0; $i < count($chars) - 2; $i++) {
-            yield $this->slice($chars, $i, 3);
+            $trigrams[] = $this->slice($chars, $i, 3);
         }
+
+        return array_unique($trigrams);
     }
 
     /**
-     * The whole term, then each trigram's pattern, built lazily: firstPatterns() stops pulling at
-     * max_patterns. The whole term goes first so it is always kept. (It was once rebuilt by
-     * concatenating the trigrams — "jjojohohnhn" for "john" — and never matched anything.)
-     *
-     * @return \Generator<int, string>
+     * Convert trigrams to LIKE patterns: the whole term first, so it is always kept (it was once
+     * rebuilt by concatenating the trigrams — "jjojohohnhn" for "john" — and never matched
+     * anything), then each trigram's. Built lazily: firstPatterns() stops at max_patterns.
+     * apply() goes through this and generateTrigrams(), so a subclass can override either.
      */
-    protected function patternCandidates(string $value): \Generator
+    protected function trigramsToPatterns(array $trigrams, string $value = ''): array
     {
-        $value = $this->normalizeTerm($value);
+        return $this->firstPatterns($this->trigramPatterns($trigrams, $value));
+    }
 
+    /** @return \Generator<int, string> */
+    private function trigramPatterns(array $trigrams, string $value): \Generator
+    {
         if ($value !== '') {
             yield '%' . $this->escapeLike($value) . '%';
         }
 
-        foreach ($this->trigrams($value) as $trigram) {
+        foreach ($trigrams as $trigram) {
             $trigram = trim($trigram);
             if (!empty($trigram)) {
                 yield '%' . $this->escapeLike($trigram) . '%';
             }
         }
-    }
-
-    /**
-     * Convert trigrams to LIKE patterns
-     *
-     * @deprecated Not called by any internal code path since 2.1 — apply() builds its patterns
-     *             lazily through patternCandidates(). Will be removed in v3.
-     */
-    protected function trigramsToPatterns(array $trigrams, string $value = ''): array
-    {
-        $patterns = [];
-
-        foreach ($trigrams as $trigram) {
-            $trigram = trim($trigram);
-            if (!empty($trigram)) {
-                $patterns[] = '%' . $this->escapeLike($trigram) . '%';
-            }
-        }
-
-        if ($value !== '') {
-            array_unshift($patterns, '%' . $this->escapeLike($value) . '%');
-        }
-
-        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string
