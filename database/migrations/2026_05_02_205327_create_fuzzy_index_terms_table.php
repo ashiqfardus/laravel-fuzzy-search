@@ -1,6 +1,6 @@
 <?php
 
-use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -20,7 +20,7 @@ return new class extends Migration
         // limit on servers where innodb_large_prefix is not enabled (MySQL ≤ 5.7).
         if (DB::connection()->getDriverName() === 'mysql') {
             DB::statement(
-                'ALTER TABLE ' . IndexManager::rawIdentifier('fuzzy_index_terms') . ' ' .
+                'ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . ' ' .
                 'ADD UNIQUE KEY fuzzy_index_terms_term_unique (term(191))'
             );
         } else {

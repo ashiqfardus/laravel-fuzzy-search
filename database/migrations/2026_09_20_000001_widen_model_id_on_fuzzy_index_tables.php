@@ -1,6 +1,5 @@
 <?php
 
-use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -66,7 +65,7 @@ return new class extends Migration
         }
 
         foreach ($tables as $table) {
-            $table = IndexManager::rawIdentifier($table);
+            $table = DbDialect::rawIdentifier($table);
 
             match (true) {
                 DbDialect::isMySqlFamily($driver) => DB::statement("ALTER TABLE {$table} MODIFY model_id VARCHAR({$length}) NOT NULL"),

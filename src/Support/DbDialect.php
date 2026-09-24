@@ -160,4 +160,23 @@ final class DbDialect
             $query->$raw(self::like($query->getGrammar()->wrap($column), $driver), [$pattern]);
         }
     }
+
+    /**
+     * A table, or table.column, for raw SQL on the default connection (the one the index lives
+     * on): as written when the connection has no table prefix, so that SQL stays byte-identical,
+     * and through the grammar, prefix included, when it has one. The query builder prefixes an
+     * alias as well ("fuzzy_index_postings as p" is written as pfx_p), so a raw reference to an
+     * alias the builder declared goes through here too. The migrations use it as well.
+     */
+    public static function rawIdentifier(string $identifier): string
+    {
+        $connection = \Illuminate\Support\Facades\DB::connection();
+        if ($connection->getTablePrefix() === '') {
+            return $identifier;
+        }
+
+        $grammar = $connection->getQueryGrammar();
+
+        return str_contains($identifier, '.') ? $grammar->wrap($identifier) : $grammar->wrapTable($identifier);
+    }
 }

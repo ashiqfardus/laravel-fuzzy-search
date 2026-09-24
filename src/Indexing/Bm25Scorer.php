@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -58,7 +59,7 @@ class Bm25Scorer
     private function weightedFrequencySql(array $columnWeights): array
     {
         // The builder writes the alias p with the connection's table prefix: pfx_p.
-        $frequency = IndexManager::rawIdentifier('p.frequency');
+        $frequency = DbDialect::rawIdentifier('p.frequency');
         $cases     = '';
         $bindings  = [];
         foreach ($columnWeights as $column => $weight) {
@@ -70,7 +71,7 @@ class Bm25Scorer
             $bindings[] = (string) $column;
         }
 
-        return [$cases === '' ? "SUM({$frequency})" : 'SUM(CASE ' . IndexManager::rawIdentifier('p.column_name') . "{$cases} ELSE {$frequency} END)", $bindings];
+        return [$cases === '' ? "SUM({$frequency})" : 'SUM(CASE ' . DbDialect::rawIdentifier('p.column_name') . "{$cases} ELSE {$frequency} END)", $bindings];
     }
 
     /**

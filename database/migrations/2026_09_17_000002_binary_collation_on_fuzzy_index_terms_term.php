@@ -1,6 +1,5 @@
 <?php
 
-use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
@@ -19,7 +18,7 @@ return new class extends Migration
             return;
         }
 
-        DB::statement('ALTER TABLE ' . IndexManager::rawIdentifier('fuzzy_index_terms') . ' MODIFY term VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL');
+        DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . ' MODIFY term VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL');
     }
 
     public function down(): void
