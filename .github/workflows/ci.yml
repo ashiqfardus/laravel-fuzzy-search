@@ -319,3 +319,24 @@ jobs:
           composer install --no-interaction --prefer-dist
       - name: Run the Filament integration tests
         run: vendor/bin/phpunit tests/Integration/Filament
+
+  # ── Scout 10 ──────────────────────────────────────────────────────────────
+  # composer.json allows laravel/scout ^10.0|^11.0, and every other job resolves 11.x.
+  test-scout10:
+    name: "Scout ^10 / PHP 8.4 / Laravel 12 / SQLite"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_sqlite
+          coverage: none
+      - name: Install deps
+        run: |
+          composer config policy.advisories.block false
+          composer require "laravel/framework:12.*" --no-update --no-interaction
+          composer require --dev "laravel/scout:^10.0" --no-update --no-interaction
+          composer install --no-interaction --prefer-dist
+      - name: Run tests (SQLite, Scout 10)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
