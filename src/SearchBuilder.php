@@ -2119,11 +2119,19 @@ class SearchBuilder
             $this->resolveColumnTargets()
         );
 
+        // whereHas() needs an Eloquent group, but an Eloquent where(Closure) group carries the
+        // model's table, not the FROM and its alias, which a driver may read (metaphone's shadow
+        // column check). Direct columns alone group on the base query, as compileExtendedQuery()
+        // does; the SQL is the same.
+        $group = $this->query instanceof EloquentBuilder && $this->relationTargets() === []
+            ? $this->query->getQuery()
+            : $this->query;
+
         if ($this->tokenMatchMode === 'all' && $this->tokenizeSearch) {
             // Every token must match at least one column
             foreach ($tokens as $token) {
                 $tokenTerms = $this->expandWithSynonyms($token);
-                $this->query->where(function ($q) use ($tokenTerms, $targets) {
+                $group->where(function ($q) use ($tokenTerms, $targets) {
                     $first = true;
                     foreach ($tokenTerms as $term) {
                         foreach ($targets as $target) {
@@ -2137,7 +2145,7 @@ class SearchBuilder
         }
 
         // Any token can match any column
-        $this->query->where(function ($q) use ($allTerms, $targets) {
+        $group->where(function ($q) use ($allTerms, $targets) {
             $first = true;
             foreach ($allTerms as $term) {
                 foreach ($targets as $target) {

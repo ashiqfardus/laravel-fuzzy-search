@@ -55,6 +55,7 @@ class JoinedColumnSearchTest extends TestCase
     protected function tearDown(): void
     {
         Schema::dropIfExists('teams');
+        Schema::dropIfExists('profiles');
         foreach (self::oddTables() as [$table]) {
             Schema::dropIfExists($table);
         }
@@ -230,6 +231,39 @@ class JoinedColumnSearchTest extends TestCase
         $this->assertSame($john, self::ids($aliased()->get()));
         $this->assertSame($john, self::ids($aliased()->withRelevance(false)->get()));
         $this->assertStringContainsString('"u"."name_metaphone"', str_replace('`', '"', $aliased()->toSql()));
+    }
+
+    /**
+     * A qualifier names the FROM's alias before any table of that name: under
+     * from('users as profiles') "profiles.name_metaphone" is the users table's shadow column,
+     * though a real profiles table exists. With no join the column is bare and is checked on the
+     * FROM's table, not on "users as u".
+     */
+    public function test_metaphone_resolves_the_from_alias_before_a_table_of_that_name(): void
+    {
+        Schema::table('users', fn ($table) => $table->string('name_metaphone')->nullable());
+        DB::table('users')->where('name', 'John Doe')->update(['name_metaphone' => metaphone('john')]);
+        Schema::create('profiles', fn ($table) => $table->id());
+
+        $eloquent = fn ($query) => $query->searchFuzzy('john', ['name'], 'metaphone');
+        $plain    = fn ($query) => (new SearchBuilder($query, app(FuzzySearch::class)))->search('john')->searchIn(['name'])->using('metaphone');
+        $searches = [
+            'eloquent, alias named like a table, join' => fn () => $eloquent(User::query()->from('users as profiles')->join('teams', 'teams.user_id', '=', 'profiles.id')->select('profiles.*')),
+            'plain, alias named like a table, join'    => fn () => $plain(DB::table('users as profiles')->join('teams', 'teams.user_id', '=', 'profiles.id')->select('profiles.*')),
+            'eloquent, alias, no join'                 => fn () => $eloquent(User::query()->from('users as u')),
+            'plain, alias, no join'                    => fn () => $plain(DB::table('users as u')),
+        ];
+
+        $found = [];
+        foreach ($searches as $label => $search) {
+            try {
+                $found[$label] = self::ids($search()->get());
+            } catch (\RuntimeException $e) {
+                $found[$label] = strtok($e->getMessage(), "\n");
+            }
+        }
+
+        $this->assertSame(array_fill_keys(array_keys($searches), [$this->userId('John Doe')]), $found);
     }
 
     /**

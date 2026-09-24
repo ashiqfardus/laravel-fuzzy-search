@@ -46,19 +46,20 @@ class MetaphoneDriver extends BaseDriver
 
     private function assertShadowColumnExists(Builder $query, string $shadowColumn, string $originalColumn): void
     {
-        $table = $query->from;
+        $from   = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($query->from);
+        $table  = $from[0] ?? $query->from; // the FROM's table, never "users as u"
         $schema = $query->getConnection()->getSchemaBuilder();
 
         // A qualified column (the search path qualifies the FROM table's own under a join) names
-        // the FROM's alias, its table, or the last segment of a schema-qualified one, or else
-        // a table the caller joined: check the column itself on that table. Eloquent hands a
-        // where(Closure) group the model's table without the FROM alias ("users", not
-        // "users as u"), so a qualifier that is no table is taken as the FROM's alias.
+        // the FROM: its alias, its table, or the last segment of a schema-qualified one. That is
+        // resolved first, as SQL does, even when a table has the alias's name. Anything else is a
+        // table the caller joined: check the column itself on that table. A qualifier that is no
+        // table is taken as the FROM's alias: an Eloquent where(Closure) group with a relation
+        // column carries the model's table without the FROM alias ("users", not "users as u").
         $parts     = explode('.', $shadowColumn);
         $column    = array_pop($parts);
         $qualifier = implode('.', $parts);
-        if ($qualifier !== '' && is_string($table)) {
-            $from  = preg_split('/\s+as\s+/i', $table);
+        if ($qualifier !== '' && $from !== null) {
             $own   = in_array($qualifier, [...$from, substr(strrchr('.' . $from[0], '.'), 1)], true)
                 || !$schema->hasTable($qualifier);
             $table = $own ? $from[0] : $qualifier;
