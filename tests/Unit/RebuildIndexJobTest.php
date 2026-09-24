@@ -111,6 +111,12 @@ class RebuildIndexJobTest extends TestCase
     {
         \Illuminate\Support\Facades\Bus::fake();
 
+        // --async checks that the batch table exists before it dispatches anything.
+        config(['queue.batching.database' => config('database.default')]);
+        \Illuminate\Support\Facades\Schema::dropIfExists('job_batches');
+        \Illuminate\Support\Facades\Schema::create('job_batches', fn ($table) => $table->string('id')->primary());
+        $this->beforeApplicationDestroyed(fn () => \Illuminate\Support\Facades\Schema::dropIfExists('job_batches'));
+
         $hooked = RebuildHookTestUser::create(['name' => 'hooked epsilon', 'email' => 'h5@test.com']);
         RebuildHookTestUser::create(['name' => 'plain zeta', 'email' => 'h6@test.com']);
         RebuildHookTestUser::$hookCalls = 0;

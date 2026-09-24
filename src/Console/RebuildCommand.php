@@ -9,6 +9,7 @@ use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Illuminate\Bus\Batch;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Schema;
 
 class RebuildCommand extends Command
 {
@@ -27,6 +28,11 @@ class RebuildCommand extends Command
         $modelClass = $this->argument('model');
 
         if (!$this->validModel($modelClass, 'indexable')) {
+            return self::FAILURE;
+        }
+
+        // Before --fresh flushes anything: an --async run that cannot dispatch leaves no index.
+        if ($this->option('async') && !$this->batchTableExists()) {
             return self::FAILURE;
         }
 
@@ -76,6 +82,24 @@ class RebuildCommand extends Command
 
         $this->info("Done. Indexed {$indexed} of {$total} records.");
         return self::SUCCESS;
+    }
+
+    /**
+     * --async dispatches a job batch, which Laravel stores in queue.batching.table (job_batches)
+     * on queue.batching.database; DynamoDB-backed batching needs no table.
+     */
+    private function batchTableExists(): bool
+    {
+        $batching = (array) config('queue.batching', []);
+        if (($batching['driver'] ?? 'database') === 'dynamodb'
+            || Schema::connection($batching['database'] ?? null)->hasTable($batching['table'] ?? 'job_batches')) {
+            return true;
+        }
+
+        $this->error('--async dispatches a job batch, and the ' . ($batching['table'] ?? 'job_batches') . ' table that stores batches does not exist.');
+        $this->line('Create it with <comment>php artisan make:queue-batches-table</comment> (Laravel 10: <comment>php artisan queue:batches-table</comment>), then <comment>php artisan migrate</comment>.');
+
+        return false;
     }
 
     private function rebuildAsync(string $modelClass, int $chunkSize, string $queue, int $total): int
