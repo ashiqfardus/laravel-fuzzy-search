@@ -906,7 +906,7 @@ try {
 - `InvalidAlgorithmException` - Invalid algorithm specified
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
-- `QuerySyntaxException` - Invalid `extended()` / `searchBoolean()` query: an unknown or ambiguous field, bad operator syntax (an unbalanced parenthesis, an unterminated quote, a misplaced `~` or `!`), or more tokens or nesting than `query.max_tokens` / `query.max_depth` allow
+- `QuerySyntaxException` - Invalid `extended()` / `searchBoolean()` query: an unknown or ambiguous field, bad operator syntax (an unbalanced parenthesis, an unterminated quote, a misplaced `~` or `!`), a query with no searchable terms (`|`, `()`, a lone `!`) or a field scope with no term (`name:`), or more tokens or nesting than `query.max_tokens` / `query.max_depth` allow
 
 ---
 
@@ -1296,7 +1296,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 
 ### Notes
 
-- **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. MySQL, MariaDB and PostgreSQL escape with a backslash, their LIKE default, and escape a backslash in the term too. SQLite and SQL Server have no default escape character: there the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there), and every LIKE it writes carries `ESCAPE '!'`, pattern sets included.
+- **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. MySQL, MariaDB and PostgreSQL escape with a backslash, their LIKE default, and escape a backslash in the term too. SQLite and SQL Server have no default escape character: there the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there), and every LIKE a search writes carries `ESCAPE '!'`, pattern sets included (only the deprecated, unused `getRelevanceExpression()` / `getRelevanceBindings()` driver methods predate this).
 - **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. MySQL `SOUNDEX()` is built-in and always active — no flag needed. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
 - **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager.
 - **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`

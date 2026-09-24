@@ -46,9 +46,11 @@ abstract class BaseDriver
     }
 
     /**
-     * Escape LIKE metacharacters in a user-supplied value so they match literally. Send the
-     * pattern with DbDialect::whereLike(): SQLite and SQL Server read the escapes only with the
-     * ESCAPE clause it adds.
+     * Escape LIKE metacharacters in a user-supplied value so they match literally. The result is
+     * only correct inside a LIKE that carries the matching ESCAPE clause: SQLite and SQL Server
+     * escape with `!` and read it only under `ESCAPE '!'`, so a plain `where($col, 'LIKE', …)` in a
+     * subclass would make a `!`, `%` or `_` term match nothing there. Build the predicate the way
+     * the bundled drivers do, with DbDialect::whereLike() (or DbDialect::like() for raw SQL).
      */
     protected function escapeLike(string $value): string
     {
