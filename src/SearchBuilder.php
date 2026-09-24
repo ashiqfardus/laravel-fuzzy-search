@@ -2448,12 +2448,18 @@ class SearchBuilder
      * handed to columnValues()/renderHighlighted() directly rather than through one of
      * those paths — contributes nothing rather than triggering a lazy-load query.
      *
+     * $shownOnly (highlighting) keeps only what toArray() would show (see shows()): a column the
+     * row hides, a relation it hides, and a leaf the related row hides contribute nothing.
+     *
      * @param  array{relation: ?string, column: string} $target
      * @return string[] non-empty strings only
      */
-    protected function columnValues($item, string $column, array $target): array
+    protected function columnValues($item, string $column, array $target, bool $shownOnly = false): array
     {
         if ($target['relation'] === null) {
+            if ($shownOnly && !self::shows($item, substr((string) strrchr('.' . $target['column'], '.'), 1))) {
+                return []; // a qualified column (teams.name) is the row's attribute "name"
+            }
             $value = (string) data_get($item, $target['column'], '');
             return $value === '' ? [] : [$value];
         }
@@ -2467,7 +2473,7 @@ class SearchBuilder
                     // eager-loads relationPaths() up front, so an unloaded relation means
                     // this model bypassed that (e.g. a caller-supplied row) — contribute
                     // nothing rather than issuing a query.
-                    if (!$row->relationLoaded($segment)) {
+                    if (!$row->relationLoaded($segment) || ($shownOnly && !self::shows($row, $segment))) {
                         continue;
                     }
                     $related = $row->{$segment};
@@ -2487,12 +2493,30 @@ class SearchBuilder
 
         $values = [];
         foreach ($rows as $row) {
-            $value = (string) data_get($row, $target['column'], '');
+            $value = $shownOnly && !self::shows($row, $target['column']) ? '' : (string) data_get($row, $target['column'], '');
             if ($value !== '') {
                 $values[] = $value;
             }
         }
         return $values;
+    }
+
+    /**
+     * Whether $row->toArray() shows $key, by Eloquent's own rule (getArrayableItems()): not in
+     * getHidden(), and in getVisible() when that is set. Read off the row itself, so a runtime
+     * makeHidden()/makeVisible() counts. Anything but a model has no such rule and shows it all.
+     *
+     * @internal shared with FuzzySearchResource
+     */
+    public static function shows(mixed $row, string $key): bool
+    {
+        if (!$row instanceof Model) {
+            return true;
+        }
+
+        $visible = $row->getVisible();
+
+        return !in_array($key, $row->getHidden(), true) && ($visible === [] || in_array($key, $visible, true));
     }
 
     /**
@@ -2567,8 +2591,9 @@ class SearchBuilder
             $matches     = [];
             $highlighted = [];
 
+            // Only what toArray() shows: _highlighted and _matches must not reveal a hidden column.
             foreach ($this->resolveColumnTargets() as $column => $target) {
-                $values = $this->columnValues($item, $column, $target);
+                $values = $this->columnValues($item, $column, $target, true);
                 if (empty($values)) {
                     continue;
                 }
