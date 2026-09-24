@@ -634,6 +634,51 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | perPage and ?page Are Clamped
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_paginate_clamps_per_page_to_at_least_one_and_at_most_max_candidates(): void
+    {
+        $federated = fn () => FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like');
+
+        foreach ([0, -5] as $perPage) {
+            $page = $federated()->paginate($perPage, 'page', 1);
+            $this->assertSame(1, $page->perPage(), "paginate({$perPage})");
+            $this->assertCount(1, $page->items(), "paginate({$perPage})");
+            $this->assertSame($page->total(), $page->lastPage(), "paginate({$perPage})");
+
+            $simple = $federated()->simplePaginate($perPage, 'page', 1);
+            $this->assertSame(1, $simple->perPage(), "simplePaginate({$perPage})");
+            $this->assertCount(1, $simple->items(), "simplePaginate({$perPage})");
+        }
+
+        config(['fuzzy-search.max_candidates' => 2]);
+        $this->assertSame(2, $federated()->paginate(5000, 'page', 1)->perPage());
+        $this->assertSame(2, $federated()->simplePaginate(5000, 'page', 1)->perPage());
+    }
+
+    public function test_paginate_reads_a_non_numeric_or_non_positive_page_as_page_one(): void
+    {
+        $federated = fn () => FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like');
+
+        $first = collect($federated()->paginate(1, 'page', 1)->items())->map(fn ($r) => $r->_model_type . ':' . $r->getKey())->all();
+
+        foreach (['abc', '0', '-3', ['1'], '1abc'] as $value) {
+            $this->app['request']->query->set('page', $value);
+
+            $page = $federated()->paginate(1);
+            $this->assertSame(1, $page->currentPage(), 'paginate() ?page=' . json_encode($value));
+            $this->assertSame($first, collect($page->items())->map(fn ($r) => $r->_model_type . ':' . $r->getKey())->all());
+
+            $this->assertSame(1, $federated()->simplePaginate(1)->currentPage(), 'simplePaginate() ?page=' . json_encode($value));
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */

@@ -153,8 +153,9 @@ class FederatedSearch
 
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): LengthAwarePaginator
     {
-        $page   = max(1, (int) ($page ?: request()->input($pageName, 1)));
-        $offset = ($page - 1) * $perPage;
+        $perPage = $this->clampPerPage($perPage);
+        $page    = max(1, (int) ($page ?: request()->input($pageName, 1)));
+        $offset  = ($page - 1) * $perPage;
 
         $total  = $this->countAll();
         $ranked = $this->fetchRanked($offset + $perPage);
@@ -168,8 +169,9 @@ class FederatedSearch
 
     public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): Paginator
     {
-        $page   = max(1, (int) ($page ?: request()->input($pageName, 1)));
-        $offset = ($page - 1) * $perPage;
+        $perPage = $this->clampPerPage($perPage);
+        $page    = max(1, (int) ($page ?: request()->input($pageName, 1)));
+        $offset  = ($page - 1) * $perPage;
 
         $ranked = $this->fetchRanked($offset + $perPage + 1); // +1 lets Paginator detect a next page
         $items  = $ranked->slice($offset, $perPage + 1)->values();
@@ -424,6 +426,15 @@ class FederatedSearch
         $listing = SearchableColumns::onTable($instance->getConnection(), $instance->getTable());
 
         return $listing === [] ? ['name', 'title'] : array_values(array_intersect(['name', 'title'], $listing));
+    }
+
+    /**
+     * SearchBuilder::clampPerPage()'s rule, [1, max_candidates] — that method is protected on the
+     * builder. paginate(0) divided by zero, and a negative size gave a negative offset.
+     */
+    private function clampPerPage(int $perPage): int
+    {
+        return max(1, min($perPage, $this->maxCandidates()));
     }
 
     private function maxCandidates(): int
