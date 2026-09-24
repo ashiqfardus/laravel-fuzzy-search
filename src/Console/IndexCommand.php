@@ -34,7 +34,7 @@ class IndexCommand extends Command
                 return 1;
             }
 
-            $model = class_exists($model) ? $model : 'App\\Models\\' . $model;
+            $model = $this->modelName($model);
             if (!$this->validModel($model)) {
                 return 1;
             }
@@ -80,11 +80,6 @@ class IndexCommand extends Command
 
     protected function indexModel(string $model): int
     {
-        if (!class_exists($model)) {
-            // Try to resolve short name
-            $model = 'App\\Models\\' . $model;
-        }
-
         if (!class_exists($model)) {
             $this->error("Model class not found: {$model}");
             return 1;

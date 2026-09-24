@@ -29,6 +29,13 @@ class AddShadowColumnCommand extends Command
             return self::FAILURE;
         }
 
+        // The only shadow column the package maintains; another type would get a migration for a
+        // column nothing ever fills.
+        if ($type !== 'metaphone') {
+            $this->error("--type must be metaphone, the only shadow column type; got [{$type}].");
+            return self::FAILURE;
+        }
+
         if (!class_exists($modelClass)) {
             $this->error("Model class [{$modelClass}] not found.");
             return self::FAILURE;

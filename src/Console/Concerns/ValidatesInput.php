@@ -41,6 +41,12 @@ trait ValidatesInput
         return $ok;
     }
 
+    /** A short name ("User") is looked up under App\Models; a qualified one is taken as given. */
+    protected function modelName(string $name): string
+    {
+        return class_exists($name) || str_contains($name, '\\') ? $name : 'App\\Models\\' . $name;
+    }
+
     /** The --$name option as an integer of at least $min, or null after printing the error. */
     protected function integerOption(string $name, int $min): ?int
     {

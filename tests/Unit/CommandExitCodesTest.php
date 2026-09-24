@@ -66,6 +66,32 @@ class CommandExitCodesTest extends TestCase
         $this->artisan('fuzzy-search:index', ['model' => \stdClass::class])->expectsOutputToContain('is not an Eloquent model')->assertExitCode(1);
     }
 
+    public function test_add_shadow_column_rejects_a_type_other_than_metaphone(): void
+    {
+        $before = glob(database_path('migrations/*_soundex_*')) ?: [];
+
+        $this->artisan('fuzzy-search:add-shadow-column', ['model' => User::class, 'column' => 'name', '--type' => 'soundex'])
+            ->expectsOutputToContain('--type')
+            ->assertExitCode(1);
+
+        $this->assertSame($before, glob(database_path('migrations/*_soundex_*')) ?: []); // no migration written
+    }
+
+    /** A qualified name is reported as given; only a short name is looked up under App\Models. */
+    public function test_a_missing_qualified_class_is_named_as_given(): void
+    {
+        foreach (['fuzzy-search:clear', 'fuzzy-search:flush', 'fuzzy-search:benchmark', 'fuzzy-search:explain', 'fuzzy-search:index'] as $command) {
+            $this->artisan($command, ['model' => 'App\\Models\\Nope'])
+                ->expectsOutputToContain('Model class [App\\Models\\Nope] not found.')
+                ->doesntExpectOutputToContain('App\\Models\\App\\Models')
+                ->assertExitCode(1);
+        }
+
+        $this->artisan('fuzzy-search:clear', ['model' => 'Nope'])
+            ->expectsOutputToContain('Model class [App\\Models\\Nope] not found.')
+            ->assertExitCode(1);
+    }
+
     public function test_analytics_commands_reject_a_non_integer_day_count(): void
     {
         DB::table('fuzzy_search_logs')->insert([

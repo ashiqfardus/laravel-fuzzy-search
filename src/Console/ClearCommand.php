@@ -37,9 +37,7 @@ class ClearCommand extends Command
             return self::FAILURE;
         }
 
-        if (!class_exists($model)) {
-            $model = 'App\\Models\\' . $model;
-        }
+        $model = $this->modelName($model);
 
         if (!$this->validModel($model)) {
             return self::FAILURE;

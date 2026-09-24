@@ -21,9 +21,7 @@ class BenchmarkCommand extends Command
     {
         $model = $this->argument('model');
 
-        if (!class_exists($model)) {
-            $model = 'App\\Models\\' . $model;
-        }
+        $model = $this->modelName($model);
 
         if (!$this->validModel($model, 'searchable')) {
             return self::FAILURE;
