@@ -10,11 +10,12 @@ use PHPUnit\Framework\Attributes\DataProvider;
 require_once __DIR__ . '/../TestModels.php';
 
 /**
- * A literal %, _ or \ in a search term matches itself on every database and every search path
- * (ER-41). SQLite and SQL Server have no default LIKE escape character, so the package's
- * backslash escapes were ordinary characters there and such a term matched nothing. MySQL,
- * MariaDB and PostgreSQL read "\s" as "s", so a backslash in a term was lost. Each case pairs
- * the literal row with the look-alike that an unescaped wildcard (or a lost backslash) matches.
+ * A literal %, _, \ or ! in a search term matches itself on every database and every search path
+ * (ER-41, ER-42). SQLite and SQL Server have no default LIKE escape character, so the package's
+ * backslash escapes were ordinary characters there and such a term matched nothing; they now
+ * escape with ! under ESCAPE '!', so a ! in a term must be escaped too. MySQL, MariaDB and
+ * PostgreSQL read "\s" as "s", so a backslash in a term was lost. Each case pairs the literal row
+ * with the look-alike that an unescaped wildcard (or a lost character) matches.
  */
 class LiteralLikeCharactersTest extends TestCase
 {
@@ -22,7 +23,7 @@ class LiteralLikeCharactersTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['50% off', '500 off', 'snake_case', 'snakeXcase', 'back\\slash', 'backslash'] as $i => $name) {
+        foreach (['50% off', '500 off', 'snake_case', 'snakeXcase', 'back\\slash', 'backslash', 'wow! deal', 'wow deal'] as $i => $name) {
             $this->addUser($name, "literal{$i}@example.com");
         }
     }
@@ -45,6 +46,7 @@ class LiteralLikeCharactersTest extends TestCase
             'percent'    => ['50%', '50% off', '500 off'],
             'underscore' => ['snake_case', 'snake_case', 'snakeXcase'],
             'backslash'  => ['back\\slash', 'back\\slash', 'backslash'],
+            'bang'       => ['wow!', 'wow! deal', 'wow deal'],
         ];
     }
 
@@ -99,6 +101,8 @@ class LiteralLikeCharactersTest extends TestCase
             'typo (~), short term' => ['~50%', ['50% off']],
             'backslash'            => ['back\\slash', ['back\\slash']],
             'backslash suffix'     => ['back\\slash$', ['back\\slash']],
+            // A bare ! starts a NOT term, so a literal one is written inside a quoted phrase.
+            'bang in a phrase'     => ['"wow!"', ['wow! deal']],
         ];
     }
 
@@ -127,6 +131,7 @@ class LiteralLikeCharactersTest extends TestCase
             'percent'    => ['50%', '50% off'],
             'underscore' => ['snake_', 'snake_case'],
             'backslash'  => ['back\\', 'back\\slash'],
+            'bang'       => ['wow!', 'wow! deal'],
         ];
     }
 

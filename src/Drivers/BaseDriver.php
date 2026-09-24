@@ -47,7 +47,8 @@ abstract class BaseDriver
 
     /**
      * Escape LIKE metacharacters in a user-supplied value so they match literally. Send the
-     * pattern with DbDialect::whereLike(): SQLite and SQL Server read the escapes only there.
+     * pattern with DbDialect::whereLike(): SQLite and SQL Server read the escapes only with the
+     * ESCAPE clause it adds.
      */
     protected function escapeLike(string $value): string
     {

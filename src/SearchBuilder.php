@@ -2211,7 +2211,7 @@ class SearchBuilder
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
             $col = $this->quoteColumn(($own[$directColumn] ?? '') . $directColumn, $driver);
-            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '\' on SQLite and SQL Server.
+            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' on SQLite and SQL Server.
             $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
 
             $scoreExpressions[] = "(CASE WHEN {$col} = ? THEN ? ELSE 0 END)";
@@ -2896,7 +2896,7 @@ class SearchBuilder
 
         $targets = $this->resolveColumnTargets();
 
-        // ILIKE on PostgreSQL (its LIKE is case-sensitive), ESCAPE '\' on SQLite and SQL Server;
+        // ILIKE on PostgreSQL (its LIKE is case-sensitive), ESCAPE '!' on SQLite and SQL Server;
         // a qualified column's table carries the connection's table prefix, as the FROM does.
         $prefixWhere = function ($q, string $column, string $boolean) use ($safeTerm, $driver) {
             \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::whereLike($q, $column, $safeTerm . '%', $driver, $boolean);

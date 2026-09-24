@@ -124,6 +124,7 @@ No code changes required — these are bug fixes in the package itself:
 These land alongside the config wiring above. None require code changes, but a few affect what
 you get back from a search:
 
+- **A backslash in a search term is literal on MySQL, MariaDB and PostgreSQL.** 2.0 passed it to LIKE, which read it as an escape, so `back\slash` matched `backslash` and not itself; 2.1 escapes it. SQLite and SQL Server always treated it as literal.
 - **Rebuild your index if you search non-Latin or accented text.** The BM25 tokenizer now keeps
   combining marks (`\p{M}`) attached to their base character instead of stripping them. Indexes
   built from Bengali, Hindi, Thai, or decomposed-accent Latin text before this fix are stale —

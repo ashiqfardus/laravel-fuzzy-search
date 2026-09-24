@@ -10,9 +10,9 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
 
 /**
- * ER-41, pinned per database without a server (toSql() on fake connections): SQLite and SQL
- * Server have no default LIKE escape character, so every LIKE the package writes there carries
- * ESCAPE '\'; MySQL, MariaDB and PostgreSQL default to backslash and get no clause.
+ * ER-41/ER-42, pinned per database without a server (toSql() on fake connections): SQLite and
+ * SQL Server have no default LIKE escape character, so every LIKE the package writes there
+ * carries ESCAPE '!'; MySQL, MariaDB and PostgreSQL default to backslash and get no clause.
  */
 class LikeEscapeSqlTest extends TestCase
 {
@@ -77,7 +77,7 @@ class LikeEscapeSqlTest extends TestCase
                 $this->assertGreaterThan(0, substr_count($sql, ' like ?'), "{$driver} {$label}: {$sql}");
                 $this->assertSame(
                     substr_count($sql, ' like ?'),
-                    substr_count($sql, " like ? escape '\\'"),
+                    substr_count($sql, " like ? escape '!'"),
                     "{$driver} {$label}: {$sql}"
                 );
             }
@@ -99,13 +99,14 @@ class LikeEscapeSqlTest extends TestCase
 
     public function test_the_term_is_escaped_for_like_on_each_database(): void
     {
-        // \ % and _ everywhere; [ only on SQL Server, the one database where it is a wildcard.
+        // With backslash: \ % _. With ! (SQLite, SQL Server): ! % _, and [ on SQL Server, the one
+        // database where it is a wildcard; a backslash is ordinary there.
         $expected = [
-            'sqlite'  => '%a\\\\b\\%\\_[c]%',
-            'mysql'   => '%a\\\\b\\%\\_[c]%',
-            'mariadb' => '%a\\\\b\\%\\_[c]%',
-            'pgsql'   => '%a\\\\b\\%\\_[c]%',
-            'sqlsrv'  => '%a\\\\b\\%\\_\\[c]%',
+            'sqlite'  => '%a\\b!%!_[c]!!%',
+            'mysql'   => '%a\\\\b\\%\\_[c]!%',
+            'mariadb' => '%a\\\\b\\%\\_[c]!%',
+            'pgsql'   => '%a\\\\b\\%\\_[c]!%',
+            'sqlsrv'  => '%a\\b!%!_![c]!!%',
         ];
 
         foreach ($expected as $driver => $pattern) {
@@ -114,9 +115,27 @@ class LikeEscapeSqlTest extends TestCase
             }
 
             $builder = (new SearchBuilder($this->fakeConnectionTable($driver, 'users'), app(FuzzySearch::class)))
-                ->search('a\\b%_[c]')->searchIn(['name'])->using('simple')->withRelevance(false);
+                ->search('a\\b%_[c]!')->searchIn(['name'])->using('simple')->withRelevance(false);
 
             $this->assertSame([$pattern], $builder->getBindings(), $driver);
         }
+    }
+
+    public function test_to_raw_sql_on_sqlite_shows_every_binding(): void
+    {
+        if (!method_exists(\Illuminate\Database\Query\Builder::class, 'toRawSql')) {
+            $this->markTestSkipped('Query\Builder::toRawSql() arrived in Laravel 10.15.');
+        }
+
+        // Laravel's raw-SQL renderer reads \' as an escaped quote, so ESCAPE '\' hid every later
+        // binding behind a '?'. ESCAPE '!' is an ordinary one-character string.
+        $raw = $this->fakeConnectionTable('sqlite', 'users')
+            ->whereFuzzy('name', '50%', 'like')
+            ->orWhereFuzzy('email', 'x_y', 'like')
+            ->toRawSql();
+
+        $this->assertStringNotContainsString('?', $raw);
+        $this->assertStringContainsString("'%50!%%' ESCAPE '!'", $raw);
+        $this->assertStringContainsString("'%x!_y%' ESCAPE '!'", $raw);
     }
 }

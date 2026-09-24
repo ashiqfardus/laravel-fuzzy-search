@@ -107,29 +107,40 @@ final class DbDialect
     }
 
     /**
-     * A user's text for a LIKE pattern, matched literally: \, % and _ get a backslash, and so
-     * does [ on SQL Server, the one database where it opens a character class. The pattern's own
-     * wildcards are added around (or between) escaped pieces, never escaped. Send it with like()
-     * or whereLike().
+     * The LIKE escape character: backslash where it is the database's default (MySQL, MariaDB,
+     * PostgreSQL), ! on SQLite and SQL Server, which have none and so take an ESCAPE clause.
+     * Not '\' there: Laravel's toRawSql() and PDO's pre-8.4 SQL scanner read \' as an escaped quote.
      */
-    public static function escapeLike(string $value, string $driver): string
+    public static function likeEscapeCharacter(string $driver): string
     {
-        return addcslashes($value, $driver === self::SQLSRV ? '\\%_[' : '\\%_');
+        return $driver === self::SQLITE || $driver === self::SQLSRV ? '!' : '\\';
+    }
+
+    /** True where the escape character is not the database's default, so LIKE needs ESCAPE. */
+    public static function needsLikeEscape(string $driver): bool
+    {
+        return self::likeEscapeCharacter($driver) !== '\\';
     }
 
     /**
-     * True where LIKE has no default escape character (SQLite, SQL Server): escapeLike()'s
-     * backslashes count there only with ESCAPE '\'. MySQL, MariaDB and PostgreSQL default to it.
+     * A user's text for a LIKE pattern, matched literally: the escape character, % and _ get the
+     * escape character in front, and so does [ on SQL Server, the one database where it opens a
+     * character class. The pattern's own wildcards are added around (or between) escaped pieces,
+     * never escaped. Send it with like() or whereLike().
      */
-    public static function needsLikeEscape(string $driver): bool
+    public static function escapeLike(string $value, string $driver): string
     {
-        return $driver === self::SQLITE || $driver === self::SQLSRV;
+        $escape = self::likeEscapeCharacter($driver);
+        $chars  = $driver === self::SQLSRV ? [$escape, '%', '_', '['] : [$escape, '%', '_'];
+
+        return strtr($value, array_combine($chars, array_map(fn (string $c) => $escape . $c, $chars)));
     }
 
-    /** "$column $operator ?" for a column already written as SQL, with ESCAPE '\' where needsLikeEscape(). */
+    /** "$column $operator ?" for a column already written as SQL, with ESCAPE where needsLikeEscape(). */
     public static function like(string $column, string $driver, string $operator = 'LIKE'): string
     {
-        return "{$column} {$operator} ?" . (self::needsLikeEscape($driver) ? " ESCAPE '\\'" : '');
+        return "{$column} {$operator} ?"
+            . (self::needsLikeEscape($driver) ? " ESCAPE '" . self::likeEscapeCharacter($driver) . "'" : '');
     }
 
     /**
