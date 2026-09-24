@@ -241,8 +241,8 @@ class SearchBuilder
 
             if (!$relation instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
                 throw new \InvalidArgumentException(
-                    "Invalid column name [{$column}]: [{$segment}] on " . get_class($current)
-                    . " must be a relation method with a Relation return type (or the path must be declared in \$searchable['columns'])."
+                    "Invalid column name [{$column}]: " . get_class($current) . "::{$segment} is not a relation: "
+                    . "declare a Relation return type or list the path in \$searchable['columns']."
                 );
             }
 

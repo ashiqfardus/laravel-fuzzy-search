@@ -9,6 +9,29 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\CreatesRelationTables;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Post;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+class Company extends Model
+{
+    protected $table   = 'companies';
+    protected $guarded = [];
+    public $timestamps = false;
+}
+
+class ProbeAuthor extends Author
+{
+    public static int $calls = 0;
+
+    /** Untyped: reachable only on a path the searched model lists in $searchable['columns']. */
+    public function company()
+    {
+        static::$calls++;
+
+        return $this->belongsTo(Company::class, 'company_id');
+    }
+}
 
 /**
  * A post whose model carries methods searchIn() must never call (ruling ER-50): an app method
@@ -23,6 +46,12 @@ class ProbePost extends Post
         'columns'   => ['title' => 10, 'writer.name' => 5],
         'algorithm' => 'like',
     ];
+
+    /** Typed, so its head segment is always reachable; ProbeAuthor::company() is not typed. */
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(ProbeAuthor::class, 'author_id');
+    }
 
     /** Untyped, but its path is declared above. */
     public function writer()
@@ -51,6 +80,15 @@ class ProbePost extends Post
     }
 }
 
+/** Lists the nested path whose middle segment (company) has no return type. */
+class ListedProbePost extends ProbePost
+{
+    protected array $searchable = [
+        'columns'   => ['title' => 10, 'author.company.name' => 5],
+        'algorithm' => 'like',
+    ];
+}
+
 class RelationPathSafetyTest extends TestCase
 {
     use CreatesRelationTables;
@@ -60,32 +98,58 @@ class RelationPathSafetyTest extends TestCase
         parent::setUp();
         $this->createRelationTables();
         $this->seedRelationFixtures();
-        ProbePost::$calls = 0;
+
+        Schema::dropIfExists('companies');
+        Schema::create('companies', function ($table) {
+            $table->id();
+            $table->string('name');
+        });
+        Schema::table('authors', function ($table) {
+            $table->unsignedBigInteger('company_id')->nullable();
+        });
+        Author::query()->where('name', 'Tolkien')->update(['company_id' => Company::create(['name' => 'Allen Unwin'])->id]);
+
+        ProbePost::$calls   = 0;
+        ProbeAuthor::$calls = 0;
     }
 
     protected function tearDown(): void
     {
         Model::reguard();
+        Schema::dropIfExists('companies');
         $this->dropRelationTables();
         parent::tearDown();
     }
 
-    /** Runs the search and returns what it threw; the caller checks the side effects first. */
-    private function attempt(string $column): ?\Throwable
+    /**
+     * Runs the search and returns what it threw; the caller checks the side effects first. The
+     * rejection must come before any SQL: never a raw "no such column" from the database.
+     */
+    private function attempt(string $column, string $model = ProbePost::class): ?\Throwable
     {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
         try {
-            ProbePost::search('ring')->searchIn([$column])->get();
+            $model::searchOn($model::query(), 'ring', [$column])->get();
         } catch (\Throwable $e) {
             return $e;
+        } finally {
+            $queries = DB::getQueryLog();
+            DB::disableQueryLog();
+            $this->assertSame([], $queries, "SQL ran for [{$column}]");
         }
 
         return null;
     }
 
-    private function assertRejection(?\Throwable $e): void
+    private function assertRejection(?\Throwable $e, string $segment): void
     {
         $this->assertInstanceOf(\InvalidArgumentException::class, $e);
-        $this->assertStringContainsString('must be a relation method with a Relation return type', $e->getMessage());
+        $this->assertStringContainsString(
+            "{$segment} is not a relation: declare a Relation return type or list the path in \$searchable['columns']",
+            $e->getMessage()
+        );
     }
 
     public function test_unguard_is_never_called(): void
@@ -93,7 +157,7 @@ class RelationPathSafetyTest extends TestCase
         $e = $this->attempt('unguard.body');
 
         $this->assertFalse(Model::isUnguarded());
-        $this->assertRejection($e);
+        $this->assertRejection($e, ProbePost::class . '::unguard');
     }
 
     public function test_save_is_never_called(): void
@@ -108,7 +172,7 @@ class RelationPathSafetyTest extends TestCase
 
         $this->assertSame(0, $saves, 'save() was called');
         $this->assertSame($before, Post::query()->count());
-        $this->assertRejection($e);
+        $this->assertRejection($e, ProbePost::class . '::save');
     }
 
     public function test_app_methods_typed_void_or_bool_are_never_called(): void
@@ -117,8 +181,8 @@ class RelationPathSafetyTest extends TestCase
         $bool = $this->attempt('isFlagged.body');
 
         $this->assertSame(0, ProbePost::$calls);
-        $this->assertRejection($void);
-        $this->assertRejection($bool);
+        $this->assertRejection($void, ProbePost::class . '::purgeEverything');
+        $this->assertRejection($bool, ProbePost::class . '::isFlagged');
     }
 
     public function test_an_untyped_undeclared_method_is_never_called(): void
@@ -126,7 +190,7 @@ class RelationPathSafetyTest extends TestCase
         $e = $this->attempt('helper.name');
 
         $this->assertSame(0, ProbePost::$calls);
-        $this->assertRejection($e);
+        $this->assertRejection($e, ProbePost::class . '::helper');
     }
 
     public function test_every_path_rejects_before_calling(): void
@@ -143,7 +207,7 @@ class RelationPathSafetyTest extends TestCase
                 $this->fail("{$path} accepted the path");
             } catch (\Throwable $e) {
                 $this->assertSame(0, ProbePost::$calls, $path);
-                $this->assertRejection($e);
+                $this->assertRejection($e, ProbePost::class . '::purgeEverything');
             }
         }
     }
@@ -162,6 +226,16 @@ class RelationPathSafetyTest extends TestCase
     public function test_a_nested_typed_path_works(): void
     {
         $this->assertSame(['Cooking'], Post::search('tolkien')->searchIn(['comments.author.name'])->get()->pluck('title')->all());
+    }
+
+    public function test_a_nested_path_is_rejected_at_its_untyped_segment_unless_the_model_lists_it(): void
+    {
+        $e = $this->attempt('author.company.name');
+
+        $this->assertSame(0, ProbeAuthor::$calls, 'company() was called');
+        $this->assertRejection($e, ProbeAuthor::class . '::company');
+
+        $this->assertSame(['The Ring'], ListedProbePost::search('allen')->get()->pluck('title')->all());
     }
 
     public function test_a_name_that_is_not_a_method_is_still_a_table_column(): void

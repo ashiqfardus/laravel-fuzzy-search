@@ -88,7 +88,7 @@ class RelationColumnResolutionTest extends TestCase
         // $searchable['columns'], so isRelationPath() throws before calling it (it would throw a
         // RuntimeException if it ran). It is never mistaken for the v2.0 table.column.
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('[brokenRelation] on ' . Post::class . ' must be a relation method with a Relation return type');
+        $this->expectExceptionMessage(Post::class . "::brokenRelation is not a relation: declare a Relation return type or list the path in \$searchable['columns']");
 
         Post::search('x')->searchIn(['brokenRelation.name'])->getDebugInfo();
     }
