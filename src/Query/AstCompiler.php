@@ -44,13 +44,17 @@ class AstCompiler
         });
     }
 
-    private function visit(AstNode $node, Builder $builder, array $columns, array $relations, string $boolean = 'and'): void
+    /**
+     * $negated: the node is inside a NOT, whose predicate must be true or false, never NULL — see
+     * leafCondition().
+     */
+    private function visit(AstNode $node, Builder $builder, array $columns, array $relations, string $boolean = 'and', bool $negated = false): void
     {
         if ($node instanceof AndNode) {
             $method = $boolean === 'or' ? 'orWhere' : 'where';
-            $builder->$method(function (Builder $q) use ($node, $columns, $relations) {
+            $builder->$method(function (Builder $q) use ($node, $columns, $relations, $negated) {
                 foreach ($node->children as $child) {
-                    $this->visit($child, $q, $columns, $relations, 'and');
+                    $this->visit($child, $q, $columns, $relations, 'and', $negated);
                 }
             });
             return;
@@ -58,9 +62,9 @@ class AstCompiler
 
         if ($node instanceof OrNode) {
             $method = $boolean === 'or' ? 'orWhere' : 'where';
-            $builder->$method(function (Builder $q) use ($node, $columns, $relations) {
+            $builder->$method(function (Builder $q) use ($node, $columns, $relations, $negated) {
                 foreach ($node->children as $i => $child) {
-                    $this->visit($child, $q, $columns, $relations, $i === 0 ? 'and' : 'or');
+                    $this->visit($child, $q, $columns, $relations, $i === 0 ? 'and' : 'or', $negated);
                 }
             });
             return;
@@ -69,14 +73,14 @@ class AstCompiler
         if ($node instanceof NotNode) {
             $method = $boolean === 'or' ? 'orWhereNot' : 'whereNot';
             $builder->$method(function (Builder $q) use ($node, $columns, $relations) {
-                $this->visit($node->child, $q, $columns, $relations, 'and');
+                $this->visit($node->child, $q, $columns, $relations, 'and', true);
             });
             return;
         }
 
         if ($node instanceof FieldTerm) {
             [$fieldColumns, $fieldRelations] = $this->resolveField($node->field, $columns, $relations);
-            $this->visit($node->term, $builder, $fieldColumns, $fieldRelations, $boolean);
+            $this->visit($node->term, $builder, $fieldColumns, $fieldRelations, $boolean, $negated);
             return;
         }
 
@@ -85,20 +89,20 @@ class AstCompiler
         $pattern = $this->patternFor($node, $term);
 
         $method = $boolean === 'or' ? 'orWhere' : 'where';
-        $builder->$method(function (Builder $q) use ($columns, $relations, $node, $pattern, $term) {
+        $builder->$method(function (Builder $q) use ($columns, $relations, $node, $pattern, $term, $negated) {
             $first = true;
             foreach ($columns as $column) {
-                $this->leafCondition($q, ($this->qualified[$column] ?? '') . $column, $node, $pattern, $term, $first ? 'and' : 'or');
+                $this->leafCondition($q, ($this->qualified[$column] ?? '') . $column, $node, $pattern, $term, $first ? 'and' : 'or', $negated);
                 $first = false;
             }
             foreach ($relations as $relation => $leafColumns) {
                 // $q is guaranteed to be an Eloquent builder whenever $relations is non-empty:
                 // SearchBuilder only ever compiles relation paths against an Eloquent source
                 // (it rejects them upfront on a plain Query Builder — see resolveColumnTarget()).
-                $q->{$first ? 'whereHas' : 'orWhereHas'}($relation, function (Builder $related) use ($leafColumns, $node, $pattern, $term) {
+                $q->{$first ? 'whereHas' : 'orWhereHas'}($relation, function (Builder $related) use ($leafColumns, $node, $pattern, $term, $negated) {
                     $inner = true;
                     foreach ($leafColumns as $column) {
-                        $this->leafCondition($related, $column, $node, $pattern, $term, $inner ? 'and' : 'or');
+                        $this->leafCondition($related, $column, $node, $pattern, $term, $inner ? 'and' : 'or', $negated);
                         $inner = false;
                     }
                 });
@@ -160,8 +164,15 @@ class AstCompiler
         throw QuerySyntaxException::unknownSearchField($field, $known);
     }
 
-    /** One column's condition for a leaf term (the pre-Phase-2 loop body, parameterised on the boolean). */
-    private function leafCondition(Builder $q, string $column, AstNode $node, string $pattern, string $term, string $boolean): void
+    /**
+     * One column's condition for a leaf term (the pre-Phase-2 loop body, parameterised on the
+     * boolean). Under a NOT ($negated) a NULL column is read as '': NOT (a LIKE x OR b LIKE x) is
+     * NULL, not true, when b is NULL, so `pro !banned` dropped every row with a NULL searchable
+     * column. The fuzzy driver takes a column name, not an expression, so a ~term gets
+     * `col IS NOT NULL AND (...)` instead, which is false for NULL in the same way. SQL without a
+     * NOT is unchanged.
+     */
+    private function leafCondition(Builder $q, string $column, AstNode $node, string $pattern, string $term, string $boolean, bool $negated = false): void
     {
         $rawMethod = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
@@ -169,18 +180,31 @@ class AstCompiler
             // The fuzzy driver builds the omission/substitution/transposition patterns for
             // $typoDistance (0 = plain substring); it wants the underlying query builder.
             $target = $q instanceof \Illuminate\Database\Eloquent\Builder ? $q->getQuery() : $q;
-            app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)->applyFuzzyWhere(
-                $target, $column, $term, 'fuzzy', ['max_distance' => $this->typoDistance] + $this->fuzzyOptions, $boolean
+            $fuzzy  = fn ($query, string $bool) => app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)->applyFuzzyWhere(
+                $query, $column, $term, 'fuzzy', ['max_distance' => $this->typoDistance] + $this->fuzzyOptions, $bool
             );
+
+            $negated
+                ? $target->where(fn ($g) => $fuzzy($g->whereNotNull($column), 'and'), null, null, $boolean)
+                : $fuzzy($target, $boolean);
             return;
         }
 
         if ($node instanceof ExactTerm) {
             // Case-insensitive exact: LOWER(quoted_col) = LOWER(?) on all drivers
-            $q->$rawMethod('LOWER(' . $this->quoteColumn($column, $q) . ') = LOWER(?)', [$term]);
+            $q->$rawMethod('LOWER(' . $this->nullSafe($this->quoteColumn($column, $q), $negated) . ') = LOWER(?)', [$term]);
+        } elseif ($negated) {
+            // whereLike()'s predicate, the column wrapped as where() writes it
+            $q->$rawMethod(DbDialect::like($this->nullSafe($q->getGrammar()->wrap($column), true), $this->dbDriver, DbDialect::likeOperator($this->dbDriver)), [$pattern]);
         } else {
             DbDialect::whereLike($q, $column, $pattern, $this->dbDriver, $boolean);
         }
+    }
+
+    /** COALESCE(col, '') under a NOT (see leafCondition()), the column as written otherwise. */
+    private function nullSafe(string $sql, bool $negated): string
+    {
+        return $negated ? "COALESCE({$sql}, '')" : $sql;
     }
 
     private function quoteColumn(string $column, Builder $q): string
