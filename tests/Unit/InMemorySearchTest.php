@@ -145,4 +145,60 @@ class InMemorySearchTest extends TestCase
         $this->assertCount(2, FuzzySearch::on($items)->search('')->get());
         $this->assertCount(2, FuzzySearch::on($items)->search('')->searchIn(['name'])->get());
     }
+
+    // -------------------------------------------------------------------------
+    // similar_text() compares at most 255 characters of each side (as SearchBuilder::similarity())
+    // -------------------------------------------------------------------------
+
+    public function test_similar_text_compares_only_the_first_255_characters_of_a_value(): void
+    {
+        // 127 shared characters: against the first 255 of the value that is a 66% match, against
+        // the whole 20,127-character value it was about 1%, and every such value cost O(term × 20KB).
+        $term  = 'q' . str_repeat('a', 127);
+        $value = str_repeat('a', 127) . str_repeat('z', 20000);
+
+        $row = FuzzySearch::on([['name' => $value]])->search($term)->searchIn(['name'])->get()->first();
+        $cut = FuzzySearch::on([['name' => mb_substr($value, 0, 255)]])->search($term)->searchIn(['name'])->get()->first();
+
+        $this->assertNotNull($cut);
+        $this->assertSame(66, $cut['_raw_score']);
+        $this->assertSame($cut['_raw_score'], $row['_raw_score'] ?? null, 'a long value is scored on its first 255 characters');
+
+        // Characters, never bytes: 300 two-byte letters compare as 255 letters.
+        $score = fn (int $letters) => FuzzySearch::on([['name' => str_repeat('é', $letters)]])
+            ->search('b' . str_repeat('é', 127))->searchIn(['name'])->get()->first()['_raw_score'] ?? null;
+
+        $this->assertSame(66, $score(255));
+        $this->assertSame(66, $score(300));
+    }
+
+    /** _raw_score before the cap: values of 255 characters or fewer score exactly as they did. */
+    public function test_values_within_255_characters_score_exactly_as_before(): void
+    {
+        $items = [
+            ['name' => 'John Doe'], ['name' => 'Jonathan'], ['name' => 'Johnny Bravo'], ['name' => 'Jon Snow'],
+            ['name' => str_repeat('a', 127) . str_repeat('z', 73)], // 200 characters
+            ['name' => 'Joh' . str_repeat('n', 252)],   // exactly 255
+        ];
+
+        $scores = fn (string $term) => FuzzySearch::on($items)->search($term)->searchIn(['name'])->get()
+            ->mapWithKeys(fn ($row) => [mb_substr($row['name'], 0, 12) => $row['_raw_score']])->all();
+
+        $this->assertSame(['Jonathan' => 66], $scores('jonh'));
+        $this->assertSame([str_repeat('a', 12) => 77], $scores('q' . str_repeat('a', 127)));
+        $this->assertSame(['Joh' . str_repeat('n', 9) => 64], $scores('Joh' . str_repeat('n', 120) . 'x'));
+    }
+
+    public function test_300_items_of_20kb_score_in_bounded_time(): void
+    {
+        $value = substr(str_repeat('the quick brown fox jumps over the lazy dog ', 460), 0, 20000);
+        $items = array_map(fn (int $i) => ['name' => $value . $i], range(1, 300));
+        $term  = substr(str_repeat('quackbrawnfaxjumpt', 8), 0, 127);
+
+        $started = microtime(true);
+        FuzzySearch::on($items)->search($term)->searchIn(['name'])->get();
+
+        $this->assertLessThan(3.0, microtime(true) - $started);
+    }
 }
+

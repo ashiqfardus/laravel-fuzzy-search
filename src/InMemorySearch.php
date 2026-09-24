@@ -13,6 +13,9 @@ use Illuminate\Support\Collection;
  */
 class InMemorySearch
 {
+    /** The most characters of a value, and of the term, that similar_text() compares — see get(). */
+    private const SCORING_MAX_CHARS = 255;
+
     private Collection $items;
     private string     $term          = '';
     /** Only invalid UTF-8: cleaned to '' but not empty, so it matches nothing instead of listing everything. */
@@ -113,7 +116,14 @@ class InMemorySearch
         // ASCII-only, so "ÉCOLE" was only a near-miss for "école" and "МОСКВА" no match for "москва".
         $needle = mb_strtolower($term, 'UTF-8');
 
-        $scored = $this->items->map(function ($item) use ($needle) {
+        // similar_text() is O(n·m): it compares at most the first 255 characters of each side, as
+        // SearchBuilder::similarity() does (SCORING_MAX_CHARS), so a 20KB value costs what a
+        // 255-character one does. A value within the cap scores exactly as before.
+        $cut = fn (string $s) => mb_strlen($s, 'UTF-8') > self::SCORING_MAX_CHARS
+            ? mb_substr($s, 0, self::SCORING_MAX_CHARS, 'UTF-8')
+            : $s;
+
+        $scored = $this->items->map(function ($item) use ($needle, $cut) {
             $score = 0;
             foreach ($this->columns as $col) {
                 $value = mb_strtolower((string) data_get($item, $col, ''), 'UTF-8');
@@ -124,7 +134,7 @@ class InMemorySearch
                 } elseif (str_contains($value, $needle)) {
                     $score = max($score, 30);
                 } else {
-                    similar_text($needle, $value, $pct);
+                    similar_text($cut($needle), $cut($value), $pct);
                     $minPct = (int) config('fuzzy-search.in_memory.min_similarity', 60);
                     if ($pct >= $minPct) {
                         $score = max($score, (int) $pct);
