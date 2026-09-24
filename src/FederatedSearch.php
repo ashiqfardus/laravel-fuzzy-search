@@ -33,7 +33,8 @@ class FederatedSearch
     protected array $options = [];
     protected int $limit = 15;
     protected bool $withRelevance = true;
-    protected int $typoTolerance = 2;
+    /** null: each model's own $searchable typo tolerance. */
+    protected ?int $typoTolerance = null;
     protected ?int $limitPerModel = null;
     protected array $modelOrder = [];
 
@@ -78,7 +79,8 @@ class FederatedSearch
     }
 
     /**
-     * Set search algorithm
+     * Set search algorithm for every model. Without it, each model uses its own
+     * $searchable['algorithm'] (models without the Searchable trait: LIKE).
      */
     public function using(string $algorithm): self
     {
@@ -87,7 +89,8 @@ class FederatedSearch
     }
 
     /**
-     * Set typo tolerance
+     * Set typo tolerance for every model. Without it, each model uses its own
+     * $searchable['typo_tolerance'].
      */
     public function typoTolerance(int $level): self
     {
@@ -242,10 +245,10 @@ class FederatedSearch
      * searchIn() appends to a builder rather than replacing its defaults, so
      * $modelClass::search()->searchIn() cannot narrow the columns the model's own
      * `$searchable['columns']` already applied. When the caller restricted the columns
-     * (and at least one of them exists on this table), build from a bare query instead
-     * so only the requested columns are searched. Otherwise fall back to the model's
-     * own defaults exactly as before. Returns null when a non-Searchable model has no
-     * matching columns — the caller should skip it, not query a nonexistent column.
+     * (and at least one of them exists on this table), build with Searchable::searchOn()
+     * and those columns instead, so only the requested columns are searched. Otherwise use
+     * the model's own defaults. Returns null when a non-Searchable model has no matching
+     * columns — the caller should skip it, not query a nonexistent column.
      */
     private function queryFor(string $modelClass): SearchBuilder|EloquentBuilder|null
     {
@@ -253,43 +256,25 @@ class FederatedSearch
         $hasSearchable = in_array(Traits\Searchable::class, $modelTraits);
 
         if ($hasSearchable) {
-            $instance = new $modelClass();
-            $weighted = $this->weightedColumnsExistingOn($instance);
+            $weighted = $this->weightedColumnsExistingOn(new $modelClass());
 
-            if (!empty($weighted)) {
-                $builder = (new SearchBuilder($modelClass::query(), app(FuzzySearch::class)))
-                    ->search($this->searchTerm)
-                    ->searchIn($weighted)
-                    ->using($this->algorithm ?? 'fuzzy')
-                    ->typoTolerance($this->typoTolerance);
+            // searchOn() applies the model's own $searchable configuration — algorithm, typo
+            // tolerance, stop words, synonyms, accents, options — with the narrowed columns
+            // replacing the configured ones. An algorithm or tolerance set on this federated
+            // search overrides the model's; unset, each model searches the way it is configured.
+            $builder = empty($weighted)
+                ? $modelClass::search($this->searchTerm)
+                : $modelClass::searchOn($modelClass::query(), $this->searchTerm, $weighted);
 
-                // A bare SearchBuilder skips the extras Searchable::search() applies from
-                // $searchable — apply them here too, so narrowing with searchIn() doesn't
-                // silently drop the model's configured stop words/synonyms/accent handling.
-                $extras = $instance->getSearchableExtras();
-
-                if (!empty($extras['stop_words'])) {
-                    $builder->ignoreStopWords($extras['stop_words']);
-                }
-
-                if (!empty($extras['synonyms'])) {
-                    $builder->withSynonyms($extras['synonyms']);
-                }
-
-                if (!empty($extras['accent_insensitive'])) {
-                    $builder->accentInsensitive();
-                }
-
-                if (!empty($extras['options'])) {
-                    $builder->options($extras['options']);
-                }
-
-                return $builder;
+            if ($this->algorithm !== null) {
+                $builder->using($this->algorithm);
             }
 
-            return $modelClass::search($this->searchTerm)
-                ->using($this->algorithm ?? 'fuzzy')
-                ->typoTolerance($this->typoTolerance);
+            if ($this->typoTolerance !== null) {
+                $builder->typoTolerance($this->typoTolerance);
+            }
+
+            return $builder;
         }
 
         // Fall back to query builder approach
@@ -303,8 +288,12 @@ class FederatedSearch
             return null;
         }
 
-        return $modelClass::query()
-            ->whereFuzzyMultiple($columns, $this->searchTerm, $this->algorithm ?? 'like');
+        return $modelClass::query()->whereFuzzyMultiple(
+            $columns,
+            $this->searchTerm,
+            $this->algorithm ?? 'like',
+            $this->typoTolerance === null ? [] : ['max_distance' => $this->typoTolerance]
+        );
     }
 
     /**

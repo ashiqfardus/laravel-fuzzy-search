@@ -7,6 +7,7 @@ require_once __DIR__ . '/../TestModels.php';
 require_once __DIR__ . '/../SameNameModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\LikeUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
 use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
@@ -507,6 +508,74 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | Each Model Keeps Its Own Algorithm and Typo Tolerance
+    |--------------------------------------------------------------------------
+    */
+
+    /** String bindings of the queries $call runs against $table. */
+    private function stringBindingsOn(string $table, \Closure $call): array
+    {
+        $bindings = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use ($table, &$bindings) {
+            if (preg_match('/\b' . $table . '\b/', $query->sql)) {
+                array_push($bindings, ...array_filter($query->bindings, 'is_string'));
+            }
+        });
+
+        $call();
+
+        return array_values(array_unique($bindings));
+    }
+
+    public function test_each_model_is_searched_with_its_own_configured_algorithm(): void
+    {
+        // LikeUser: $searchable algorithm 'like'. Product: 'fuzzy'. The typo "jonh" is on purpose:
+        // LIKE's only patterns are the term itself, fuzzy adds typo variants.
+        foreach ([[], ['name' => 10, 'title' => 10]] as $searchIn) {
+            $federated = FederatedSearch::across([LikeUser::class, Product::class])->search('jonh');
+            if ($searchIn !== []) {
+                $federated->searchIn($searchIn);
+            }
+
+            $users    = $this->stringBindingsOn('users', fn () => $federated->get());
+            $products = $this->stringBindingsOn('products', fn () => $federated->get());
+
+            $label = $searchIn === [] ? 'model columns' : 'searchIn()';
+            $this->assertNotEmpty($users, $label);
+            $this->assertSame([], array_diff($users, ['jonh', 'jonh%', '%jonh%']), "{$label}: LikeUser was not searched with LIKE");
+            $this->assertNotEmpty(array_diff($products, ['jonh', 'jonh%', '%jonh%']), "{$label}: Product was not searched with fuzzy");
+
+            $this->assertSame([], $federated->get()->where('_model_type', 'LikeUser')->all(), "{$label}: LIKE matched a typo");
+        }
+    }
+
+    public function test_each_model_keeps_its_own_typo_tolerance(): void
+    {
+        // TypoZeroUser: fuzzy with typo_tolerance 0, so "jonh" matches nothing. User: fuzzy with the
+        // default tolerance, so it finds John Doe.
+        foreach ([[], ['name' => 10]] as $searchIn) {
+            $federated = FederatedSearch::across([TypoZeroUser::class, User::class])->search('jonh');
+            if ($searchIn !== []) {
+                $federated->searchIn($searchIn);
+            }
+
+            $types = $federated->limit(50)->get()->pluck('_model_type')->unique()->values()->all();
+            $this->assertSame(['User'], $types, $searchIn === [] ? 'model columns' : 'searchIn()');
+            $this->assertSame(0, $federated->getCounts()['TypoZeroUser']);
+        }
+    }
+
+    public function test_an_explicit_algorithm_or_typo_tolerance_still_overrides_every_model(): void
+    {
+        $withAlgorithm = FederatedSearch::across([LikeUser::class])->search('jonh')->using('fuzzy')->limit(50)->get();
+        $this->assertContains('John Doe', $withAlgorithm->pluck('name')->all());
+
+        $withTolerance = FederatedSearch::across([TypoZeroUser::class])->search('jonh')->typoTolerance(2)->limit(50)->get();
+        $this->assertContains('John Doe', $withTolerance->pluck('name')->all());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */
@@ -550,5 +619,20 @@ class SynonymUserFixture extends Model
     protected array $searchable = [
         'columns'  => ['name' => 1],
         'synonyms' => ['jon' => ['john']],
+    ];
+}
+
+/** Fuzzy with no typo tolerance: a typo never matches on its own configuration. */
+class TypoZeroUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = [
+        'columns'        => ['name' => 10],
+        'algorithm'      => 'fuzzy',
+        'typo_tolerance' => 0,
     ];
 }
