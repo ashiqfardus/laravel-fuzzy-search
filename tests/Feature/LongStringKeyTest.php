@@ -75,12 +75,17 @@ class LongStringKeyTest extends TestCase
 
     public function test_the_migration_widens_model_id_and_rolls_back(): void
     {
-        $path = realpath(__DIR__ . '/../../database/migrations');
-        $long = ['model_type' => 'App\\Models\\Long', 'model_id' => $this->key('c'), 'doc_length' => 1];
+        // Run the migration's own down() and up(): a migrate:rollback --step would leave the rest
+        // of the batch recorded for the test teardown's rollback, which only undoes the last batch.
+        $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $long      = ['model_type' => 'App\\Models\\Long', 'model_id' => $this->key('c'), 'doc_length' => 1];
 
-        $this->artisan('migrate:rollback', ['--path' => $path, '--realpath' => true, '--step' => 1])->assertExitCode(0);
+        DB::table('fuzzy_index_documents')->insert($long);
+        $migration->down();
 
-        if ($this->dbDriver !== 'sqlite') { // SQLite stores any length in a varchar column
+        if ($this->dbDriver !== 'sqlite') { // SQLite stores any length in a varchar column: down() leaves it be
+            $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_id', $long['model_id'])->count()); // dropped: too long for 36
+
             try {
                 DB::table('fuzzy_index_documents')->insert($long);
                 $this->fail('model_id should be 36 characters wide again after the rollback');
@@ -89,8 +94,9 @@ class LongStringKeyTest extends TestCase
             }
         }
 
-        $this->artisan('migrate', ['--path' => $path, '--realpath' => true])->assertExitCode(0);
+        $migration->up();
 
+        DB::table('fuzzy_index_documents')->where('model_id', $long['model_id'])->delete();
         DB::table('fuzzy_index_documents')->insert($long);
         DB::table('fuzzy_index_postings')->insert([
             'term_id'     => DB::table('fuzzy_index_terms')->insertGetId(['term' => 'widget', 'doc_count' => 1, 'term_length' => 6]),
