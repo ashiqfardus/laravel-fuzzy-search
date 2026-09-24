@@ -651,6 +651,26 @@ class ScoutEngineTest extends TestCase
         }
     }
 
+    public function test_scout_order_by_reads_the_ordered_rows_in_bounded_pages(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        config(['fuzzy-search.bm25.candidate_chunk' => 2]);
+
+        // cursor() fetched the whole ordered key column, and pdo_mysql and pdo_pgsql buffer all of
+        // it before the first row; each statement of the walk now reads at most 1,000 rows (SQL
+        // Server writes the first page as TOP 1000, later ones as FETCH NEXT 1000 ROWS).
+        $walk = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->get());
+
+        $this->assertNotEmpty($walk);
+        foreach ($walk as [$sql]) {
+            $this->assertMatchesRegularExpression('/\blimit 1000\b|\btop 1000\b|\bfetch next 1000 rows\b/i', $sql, "an unbounded walk: {$sql}");
+        }
+    }
+
     // -------------------------------------------------------------------------
     // query.max_term_length: the engine binds one parameter per query term, so an uncapped
     // query of a few thousand words passed SQL Server's 2,100-parameter limit

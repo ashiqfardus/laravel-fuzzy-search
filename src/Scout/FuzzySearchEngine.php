@@ -135,8 +135,12 @@ class FuzzySearchEngine extends Engine
      *
      * Up to one bm25.candidate_chunk of matches, the ids restrict the query and the database
      * returns only them. Past that, binding every id could exceed SQL Server's 2,100-parameter
-     * limit, so the ordered rows are read one by one until $needed of them are ranked — the
-     * database still decides the order, and a broad match fills its page early in the walk.
+     * limit, so the ordered keys are read a page of 1,000 at a time (lazy(), never one buffered
+     * result set: pdo_mysql and pdo_pgsql fetch a whole result before its first row) until $needed
+     * of them are ranked. The database still decides the order, and the key tie-break makes it
+     * total, so no key moves between one page of the walk and the next. The walk costs up to one
+     * sorted page query per 1,000 rows it passes, so a search that matches few of a large table's
+     * rows is cheapest within one chunk.
      *
      * @param  array<int, array{column: string, direction: string}> $orders
      * @param  array<int|string, float>                             $ranked
@@ -167,7 +171,7 @@ class FuzzySearchEngine extends Engine
 
         $keys = [];
 
-        foreach ($query->cursor() as $row) {
+        foreach ($query->lazy(1000) as $row) {
             $key = $row->{$model->getKeyName()};
 
             if (isset($ranked[$key])) {
