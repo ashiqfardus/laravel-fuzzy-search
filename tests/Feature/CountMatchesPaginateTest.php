@@ -125,4 +125,31 @@ class CountMatchesPaginateTest extends TestCase
         $this->assertSame($make()->get()->count(), $make()->count());
         $this->assertSame($make()->count(), $make()->paginate(2)->total());
     }
+    /**
+     * The index path capped the term only in get() (executeSearch()): count() and paginate()
+     * processed every word of it, one bound parameter each — 3,001 for a 3,000-word term, past
+     * SQL Server's 2,100 limit. Every index terminal now caps it where they all build their terms.
+     */
+    public function test_max_term_length_caps_the_term_on_every_index_path_terminal(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $term = implode(' ', array_map(fn (int $i) => 'word' . $i, range(1, 3000)));
+
+        $bound = [];
+        foreach ([
+            'get'            => fn ($b) => $b->get(),
+            'first'          => fn ($b) => $b->first(),
+            'count'          => fn ($b) => $b->count(),
+            'paginate'       => fn ($b) => $b->paginate(5),
+            'simplePaginate' => fn ($b) => $b->simplePaginate(5),
+        ] as $terminal => $run) {
+            \Illuminate\Support\Facades\DB::flushQueryLog();
+            \Illuminate\Support\Facades\DB::enableQueryLog();
+            $run(User::search($term)->useInvertedIndex());
+            $bound[$terminal] = max(array_map(fn (array $q) => count($q['bindings']), \Illuminate\Support\Facades\DB::getQueryLog()) ?: [0]);
+            \Illuminate\Support\Facades\DB::disableQueryLog();
+        }
+
+        $this->assertSame([], array_filter($bound, fn (int $n) => $n >= 2100), json_encode($bound));
+    }
 }

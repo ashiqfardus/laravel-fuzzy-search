@@ -1362,6 +1362,9 @@ class SearchBuilder
      */
     protected function indexedQueryTerms(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager $indexManager): array
     {
+        // Every index terminal builds its terms here; count() and paginate() never pass executeSearch().
+        $this->capSearchTerm();
+
         $modelClass = $this->resolveIndexModelClass();
         $override   = $this->stopWordsOverridden ? $this->stopWords : null;
         $terms      = $indexManager->processTerms($this->searchTerm, $override, $modelClass);
