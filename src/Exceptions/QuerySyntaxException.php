@@ -56,6 +56,11 @@ class QuerySyntaxException extends LaravelFuzzySearchException
         );
     }
 
+    public static function notAfterFieldScope(string $field): self
+    {
+        return new self("The NOT operator (!) goes before the field scope, not after the colon: write !{$field}:john, not {$field}:!john.");
+    }
+
     public static function fieldNeedsTerm(string $field): self
     {
         return new self("The field scope \"{$field}:\" needs a term after the colon, for example {$field}:john.");

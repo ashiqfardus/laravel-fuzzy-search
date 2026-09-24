@@ -291,7 +291,8 @@ so `extended('yahoo!mail')` meant `yahoo !mail` (excluding the row it named), `=
 for `John`, and a `!` right after another operator dropped that operator: `^!a`, `'!a`, `=!a` and
 `!!a` all meant NOT `a`, and `~!a` threw. Anywhere but a token's first character `!` is now part of
 the term: `^!a` is a prefix search for `!a`, `~!a` a typo-tolerant term, `!!a` excludes `!a`. For
-the old meaning, start the token with the `!`: `yahoo !mail`, `!a`.
+the old meaning, start the token with the `!`: `yahoo !mail`, `!a`. `name:!john` still throws; its
+message now says to write `!name:john`.
 
 `useInvertedIndex()` combined with `extended()` still runs the query on the LIKE path — that was
 already true in v2.0, it's just visible now: `getDebugInfo()` reports `'algorithm' => 'extended'`

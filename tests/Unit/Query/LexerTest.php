@@ -251,6 +251,14 @@ class LexerTest extends TestCase
             self::shape($this->lexer->tokenize('(x !)'))
         );
 
+        // `!` is the one operator that does not follow the colon: the error says where it goes.
+        try {
+            $this->lexer->tokenize('name:!john');
+            $this->fail('name:!john should throw');
+        } catch (QuerySyntaxException $e) {
+            $this->assertStringContainsString('!name:john', $e->getMessage());
+        }
+
         foreach (['!(a)', 'a !(b)', 'name:!a'] as $query) {
             try {
                 $this->lexer->tokenize($query);

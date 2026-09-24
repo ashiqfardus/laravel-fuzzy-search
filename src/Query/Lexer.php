@@ -77,7 +77,10 @@ class Lexer
                 if (preg_match('/\G([A-Za-z_][A-Za-z0-9_.]*):/', $query, $m, 0, $i) === 1) {
                     $field = $m[1];
                     $i    += strlen($m[0]);
-                    if ($i >= $len || self::isSpace($query[$i]) || in_array($query[$i], ['|', '(', ')', '!'], true)) {
+                    if ($i < $len && $query[$i] === '!') {
+                        throw QuerySyntaxException::notAfterFieldScope($field);
+                    }
+                    if ($i >= $len || self::isSpace($query[$i]) || in_array($query[$i], ['|', '(', ')'], true)) {
                         throw QuerySyntaxException::fieldNeedsTerm($field);
                     }
                 }
