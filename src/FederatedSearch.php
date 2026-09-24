@@ -151,7 +151,7 @@ class FederatedSearch
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): LengthAwarePaginator
     {
         $perPage = $this->clampPerPage($perPage);
-        $page    = max(1, (int) ($page ?: request()->input($pageName, 1)));
+        $page    = $this->resolvePage($page, $pageName, $perPage);
         $offset  = ($page - 1) * $perPage;
 
         $total  = $this->countAll();
@@ -167,7 +167,7 @@ class FederatedSearch
     public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): Paginator
     {
         $perPage = $this->clampPerPage($perPage);
-        $page    = max(1, (int) ($page ?: request()->input($pageName, 1)));
+        $page    = $this->resolvePage($page, $pageName, $perPage);
         $offset  = ($page - 1) * $perPage;
 
         $ranked = $this->fetchRanked($offset + $perPage + 1); // +1 lets Paginator detect a next page
@@ -452,6 +452,17 @@ class FederatedSearch
     private function clampPerPage(int $perPage): int
     {
         return max(1, min($perPage, $this->maxCandidates()));
+    }
+
+    /**
+     * SearchBuilder::resolvePage()'s rule, which is protected on the builder: $page, else the
+     * request's $pageName, and 1 for anything that is not a whole number of at least 1 (?page=abc,
+     * ?page=0, ?page=-3, ?page[]=1). Capped so that no offset it gives (simplePaginate() reads
+     * one row past the page) overflows into a float: past that, every page is empty anyway.
+     */
+    private function resolvePage(?int $page, string $pageName, int $perPage): int
+    {
+        return min(max(1, (int) ($page ?: request()->input($pageName, 1))), intdiv(PHP_INT_MAX, $perPage + 1));
     }
 
     private function maxCandidates(): int

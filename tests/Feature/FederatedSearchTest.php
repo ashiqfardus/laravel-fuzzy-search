@@ -677,6 +677,28 @@ class FederatedSearchTest extends TestCase
         }
     }
 
+    public function test_a_page_too_large_for_an_offset_is_capped_instead_of_overflowing(): void
+    {
+        // ($page - 1) * $perPage overflowed into a float for a page near PHP_INT_MAX, and
+        // fetchRanked(int) threw a TypeError: a 500 for ?page=9223372036854775807.
+        $federated = fn () => FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like');
+
+        foreach ([(string) PHP_INT_MAX, '99999999999999999999', (string) intdiv(PHP_INT_MAX, 15)] as $value) {
+            $this->app['request']->query->set('page', $value);
+
+            $page = $federated()->paginate(15);
+            $this->assertSame([], $page->items(), "paginate() ?page={$value}");
+            $this->assertGreaterThan(1, $page->currentPage());
+            $this->assertGreaterThan(0, $page->total());
+
+            $this->assertSame([], $federated()->simplePaginate(15)->items(), "simplePaginate() ?page={$value}");
+        }
+
+        $this->assertSame([], $federated()->paginate(15, 'page', PHP_INT_MAX)->items());
+        $this->assertSame([], $federated()->simplePaginate(1, 'page', PHP_INT_MAX)->items());
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Declared Columns of Models Without the Searchable Trait
