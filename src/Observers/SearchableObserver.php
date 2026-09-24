@@ -31,7 +31,11 @@ class SearchableObserver
         // Shadow columns are on the same row — deletion removes them automatically.
     }
 
-    protected function populateShadowColumns(Model $model): void
+    /**
+     * Also run by fuzzy-search:rebuild (and each --async batch job) for every row, to fill a
+     * shadow column added after the rows were saved. A query update: no model events fire.
+     */
+    public function populateShadowColumns(Model $model): void
     {
         if (!method_exists($model, 'getSearchableColumns')) {
             return;

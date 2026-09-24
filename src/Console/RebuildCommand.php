@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Console;
 use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RebuildIndexJob;
+use Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver;
 use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Illuminate\Bus\Batch;
 use Illuminate\Console\Command;
@@ -59,10 +60,12 @@ class RebuildCommand extends Command
 
         $keyName = (new $modelClass)->getKeyName();
         $indexed = 0;
+        $shadows = app(SearchableObserver::class);
         // chunkById() is keyset-based: rows inserted or deleted while the rebuild runs cannot
         // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
-        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed) {
+        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed, $shadows) {
             $indexed += $indexManager->indexBatch($models);
+            $models->each(fn ($model) => $shadows->populateShadowColumns($model)); // fills *_metaphone for rows saved before it existed
             $bar->advance($models->count());
         }, $keyName);
 

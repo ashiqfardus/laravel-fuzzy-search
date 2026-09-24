@@ -32,5 +32,9 @@ class RebuildIndexJob implements ShouldQueue
             ->whereIn($keyName, $this->modelIds)
             ->get();
         $indexManager->indexBatch($models);
+
+        // Fill *_metaphone shadow columns for rows saved before they existed, as the sync rebuild does.
+        $shadows = app(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);
+        $models->each(fn ($model) => $shadows->populateShadowColumns($model));
     }
 }

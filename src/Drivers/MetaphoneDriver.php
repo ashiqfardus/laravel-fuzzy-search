@@ -7,9 +7,10 @@ use Illuminate\Database\Query\Builder;
 /**
  * Metaphone Driver
  *
- * Requires a precomputed shadow column `{column}_metaphone` populated
- * by SearchableObserver on model save. Without the shadow column this
- * driver throws with instructions to run the artisan command.
+ * Requires a precomputed shadow column `{column}_metaphone`, filled by
+ * SearchableObserver on model save and, for rows saved before the column
+ * existed, by fuzzy-search:rebuild. Without the shadow column this driver
+ * throws with instructions to run the artisan commands.
  *
  * Run: php artisan fuzzy-search:add-shadow-column {Model} {column} --type=metaphone
  */
@@ -71,8 +72,8 @@ class MetaphoneDriver extends BaseDriver
                 "[{$shadowColumn}] to be populated at write time. " .
                 "Generate and run the migration with:\n" .
                 "  php artisan fuzzy-search:add-shadow-column <ModelClass> {$originalColumn} --type=metaphone\n" .
-                "Then trigger model saves to populate the shadow column, or run:\n" .
-                "  php artisan fuzzy-search:rebuild <ModelClass> --fresh"
+                "Then fill it for the existing rows (saves fill it from then on) with:\n" .
+                "  php artisan fuzzy-search:rebuild <ModelClass>"
             );
         }
     }
