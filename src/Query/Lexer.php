@@ -126,14 +126,16 @@ class Lexer
                     throw QuerySyntaxException::typoOperatorCombination();
                 }
 
-                // Read bare word — stop at whitespace, grouping chars, OR '!' (prefix operator)
+                // Read bare word — stop at whitespace, | or a parenthesis, and at a ! that would start
+                // the word (the next pass reads it as NOT). Inside or at the end of a word a ! is
+                // literal: like ~ and field:, it is an operator only at the start of a token.
                 $start = $i;
                 while ($i < $len
                     && !self::isSpace($query[$i])
                     && $query[$i] !== '|'
                     && $query[$i] !== '('
                     && $query[$i] !== ')'
-                    && $query[$i] !== '!'
+                    && ($query[$i] !== '!' || $i > $start)
                 ) {
                     $i++;
                 }

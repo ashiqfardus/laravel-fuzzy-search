@@ -7,6 +7,7 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Support\Facades\DB;
 
 class ExtendedSyntaxTest extends TestCase
 {
@@ -160,5 +161,45 @@ class ExtendedSyntaxTest extends TestCase
         $names = User::search('x')->extended('name:jane | email:^bob')->get()->pluck('name')->sort()->values()->all();
 
         $this->assertSame(['Bob Johnson', 'Jane Doe'], $names);
+    }
+
+    /**
+     * ER-44: a ! inside or at the end of a word is part of the word. It used to start a NOT, so
+     * "yahoo!mail" excluded the one row it named and "'wow!" matched "wowX great".
+     */
+    public function test_a_bang_inside_a_word_is_searched_not_negated(): void
+    {
+        DB::table('users')->insert(array_map(
+            fn (string $name) => ['name' => $name, 'email' => md5($name) . '@bang.test', 'created_at' => now(), 'updated_at' => now()],
+            ['Yahoo!Mail', 'Yahoo Mail', 'Yahoo great', 'yahoo', 'wow! great', 'wowX great']
+        ));
+        $names = fn (string $query) => User::search('')->searchIn(['name'])->extended($query)->get()->pluck('name')->sort()->values()->all();
+
+        $this->assertSame(['Yahoo!Mail'], $names('yahoo!mail'));
+        $this->assertSame(['Yahoo!Mail'], $names('"yahoo!mail"'));
+        $this->assertSame(['wow! great'], $names("'wow!"));
+        $this->assertSame(['wow! great'], $names('wow!'));
+        // A ! at the start of a term still negates, in every documented form.
+        $this->assertSame(['Yahoo great', 'yahoo'], $names('yahoo !mail'));
+        $this->assertSame(['Yahoo great', 'yahoo'], $names('(yahoo) !mail'));
+        $this->assertSame(['Yahoo Mail', 'Yahoo great', 'yahoo'], $names('yahoo !^yahoo!'));
+        $this->assertSame(['Yahoo Mail', 'Yahoo!Mail', 'yahoo'], $names('yahoo !great$'));
+        $this->assertSame(['Yahoo Mail', 'Yahoo great', 'yahoo'], $names('yahoo !name:yahoo!mail'));
+        $this->assertSame(['Yahoo Mail', 'Yahoo great', 'yahoo'], $names('yahoo !"yahoo!mail"'));
+    }
+
+    public function test_a_query_of_nothing_but_a_bang_or_an_operator_still_throws(): void
+    {
+        foreach (['!', '! !', '|', '()', '!(john)', 'name:!john'] as $query) {
+            try {
+                User::search('')->extended($query)->get();
+                $this->fail("{$query} should throw");
+            } catch (QuerySyntaxException) {
+                $this->addToAssertionCount(1);
+            }
+        }
+
+        // A trailing ! is skipped, as before.
+        $this->assertSame(['John Doe'], User::search('')->searchIn(['name'])->extended('"john doe" !')->get()->pluck('name')->all());
     }
 }

@@ -102,8 +102,9 @@ class LiteralLikeCharactersTest extends TestCase
             'typo (~), short term' => ['~50%', ['50% off']],
             'backslash'            => ['back\\slash', ['back\\slash']],
             'backslash suffix'     => ['back\\slash$', ['back\\slash']],
-            // A bare ! starts a NOT term, so a literal one is written inside a quoted phrase.
+            // A ! negates only at the start of a term; a leading literal one goes in a phrase.
             'bang in a phrase'     => ['"wow!"', ['wow! deal']],
+            'bang ending a word'   => ["'wow!", ['wow! deal']],
         ];
     }
 

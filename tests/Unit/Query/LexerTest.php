@@ -158,21 +158,83 @@ class LexerTest extends TestCase
         $this->lexer->tokenize('a b c d e f g'); // 7 tokens, max 5
     }
 
-    /**
-     * Regression: alpha.4 fix — '!' must act as a word boundary.
-     * Before the fix, 'john!banned' was a single FUZZY token; it should split into
-     * FUZZY('john') + NOT_FUZZY('banned').
-     */
-    public function test_bang_is_word_boundary_in_embedded_position(): void
+    /** @param Token[] $tokens */
+    private static function shape(array $tokens): array
     {
-        $tokens = $this->lexer->tokenize('john!banned');
+        return array_map(fn (Token $t) => [$t->type, $t->value, $t->field], $tokens);
+    }
 
-        $this->assertCount(2, $tokens,
-            "'john!banned' should split into 2 tokens — FUZZY('john') + NOT_FUZZY('banned')");
-        $this->assertEquals(Token::TYPE_FUZZY, $tokens[0]->type);
-        $this->assertEquals('john', $tokens[0]->value);
-        $this->assertEquals(Token::TYPE_NOT_FUZZY, $tokens[1]->type);
-        $this->assertEquals('banned', $tokens[1]->value);
+    /**
+     * ER-44: ! negates only at the start of a token, as ~ and field: are operators only there.
+     * Inside or at the end of a word it is part of the word: 2.0 split "yahoo!mail" into
+     * yahoo AND NOT mail, which excluded the very row typed, and read "wow!" as "wow".
+     */
+    public function test_a_bang_inside_or_after_a_word_is_part_of_the_word(): void
+    {
+        $cases = [
+            'yahoo!mail'  => [[Token::TYPE_FUZZY, 'yahoo!mail', null]],
+            'john!banned' => [[Token::TYPE_FUZZY, 'john!banned', null]],
+            'wow!'        => [[Token::TYPE_FUZZY, 'wow!', null]],
+            "'wow!"       => [[Token::TYPE_INCLUDE_MATCH, 'wow!', null]],
+            '=John!!!'    => [[Token::TYPE_EXACT, 'John!!!', null]],
+            '^a!b'        => [[Token::TYPE_PREFIX, 'a!b', null]],
+            'a!b$'        => [[Token::TYPE_SUFFIX, 'a!b', null]],
+            '~a!b'        => [[Token::TYPE_TYPO, 'a!b', null]],
+            'name:a!b'    => [[Token::TYPE_FUZZY, 'a!b', 'name']],
+            '!a!b'        => [[Token::TYPE_NOT_FUZZY, 'a!b', null]],
+            'a! b'        => [[Token::TYPE_FUZZY, 'a!', null], [Token::TYPE_FUZZY, 'b', null]],
+            'a!|b'        => [[Token::TYPE_FUZZY, 'a!', null], [Token::TYPE_OR, '', null], [Token::TYPE_FUZZY, 'b', null]],
+        ];
+
+        foreach ($cases as $query => $expected) {
+            $this->assertSame($expected, self::shape($this->lexer->tokenize($query)), $query);
+        }
+    }
+
+    public function test_a_bang_at_the_start_of_a_token_still_negates(): void
+    {
+        $cases = [
+            '!john'         => [[Token::TYPE_NOT_FUZZY, 'john', null]],
+            '!^word'        => [[Token::TYPE_NOT_PREFIX, 'word', null]],
+            '!word$'        => [[Token::TYPE_NOT_SUFFIX, 'word', null]],
+            "!'word"        => [[Token::TYPE_NOT_INCLUDE_MATCH, 'word', null]],
+            '!=word'        => [[Token::TYPE_NOT_EXACT, 'word', null]],
+            '!~word'        => [[Token::TYPE_NOT_TYPO, 'word', null]],
+            '!name:bob'     => [[Token::TYPE_NOT_FUZZY, 'bob', 'name']],
+            '!"john doe"'   => [[Token::TYPE_NOT_FUZZY, 'john doe', null]],
+            'a !b'          => [[Token::TYPE_FUZZY, 'a', null], [Token::TYPE_NOT_FUZZY, 'b', null]],
+            '(a) !b'        => [[Token::TYPE_LPAREN, '', null], [Token::TYPE_FUZZY, 'a', null], [Token::TYPE_RPAREN, '', null], [Token::TYPE_NOT_FUZZY, 'b', null]],
+            'a|!b'          => [[Token::TYPE_FUZZY, 'a', null], [Token::TYPE_OR, '', null], [Token::TYPE_NOT_FUZZY, 'b', null]],
+            '(!b)'          => [[Token::TYPE_LPAREN, '', null], [Token::TYPE_NOT_FUZZY, 'b', null], [Token::TYPE_RPAREN, '', null]],
+            '"a b"!c'       => [[Token::TYPE_FUZZY, 'a b', null], [Token::TYPE_NOT_FUZZY, 'c', null]],
+            '"yahoo!mail"'  => [[Token::TYPE_FUZZY, 'yahoo!mail', null]],
+        ];
+
+        foreach ($cases as $query => $expected) {
+            $this->assertSame($expected, self::shape($this->lexer->tokenize($query)), $query);
+        }
+    }
+
+    public function test_a_bang_with_no_term_after_it_is_skipped_or_rejected_as_before(): void
+    {
+        // A lone or trailing ! is skipped (a query of nothing else then has no terms: the parser
+        // throws); ! before a group throws.
+        $this->assertSame([], $this->lexer->tokenize('!'));
+        $this->assertSame([[Token::TYPE_FUZZY, 'x', null]], self::shape($this->lexer->tokenize('x !')));
+        $this->assertSame([[Token::TYPE_FUZZY, 'x', null]], self::shape($this->lexer->tokenize('! x')));
+        $this->assertSame(
+            [[Token::TYPE_LPAREN, '', null], [Token::TYPE_FUZZY, 'x', null], [Token::TYPE_RPAREN, '', null]],
+            self::shape($this->lexer->tokenize('(x !)'))
+        );
+
+        foreach (['!(a)', 'a !(b)', 'name:!a'] as $query) {
+            try {
+                $this->lexer->tokenize($query);
+                $this->fail("{$query} should throw");
+            } catch (QuerySyntaxException) {
+                $this->addToAssertionCount(1);
+            }
+        }
     }
 
     public function test_tilde_marks_a_typo_term(): void
