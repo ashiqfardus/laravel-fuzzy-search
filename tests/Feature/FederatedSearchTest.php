@@ -679,6 +679,45 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | Declared Columns of Models Without the Searchable Trait
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_a_scout_only_model_is_searched_without_running_scouts_searchable(): void
+    {
+        // $model->searchable, read from outside the model, reached Eloquent's __isset(), which took
+        // Scout's searchable() method for a relation: it ran it on a blank model (an index write),
+        // then threw LogicException.
+        ScoutOnlyUser::$searchableCalls = 0;
+
+        $results = FederatedSearch::across([ScoutOnlyUser::class])->search('john')->using('like')->get();
+
+        $this->assertSame(0, ScoutOnlyUser::$searchableCalls, "Scout's searchable() ran");
+        $this->assertEqualsCanonicalizing(['John Doe', 'Johnny Bravo', 'Bob Johnson'], $results->pluck('name')->all());
+        $this->assertSame(['ScoutOnlyUser' => 3], FederatedSearch::across([ScoutOnlyUser::class])->search('john')->using('like')->getCounts());
+        $this->assertSame(0, ScoutOnlyUser::$searchableCalls, "Scout's searchable() ran");
+    }
+
+    public function test_a_fuzzy_trait_model_is_searched_on_its_declared_columns(): void
+    {
+        // "smartphone" is only in a description. FuzzyProduct declares protected $fuzzySearchable =
+        // ['description'], which isset() from outside the model could not see: the search ran on
+        // the guessed "title" and found nothing.
+        $results = FederatedSearch::across([FuzzyProduct::class])->search('smartphone')->using('like')->get();
+
+        $this->assertSame(['iPhone 15 Pro'], $results->pluck('title')->all());
+        $this->assertSame(['FuzzyProduct' => 1], FederatedSearch::across([FuzzyProduct::class])->search('smartphone')->using('like')->getCounts());
+    }
+
+    public function test_a_plain_model_is_searched_on_its_protected_searchable_columns(): void
+    {
+        $results = FederatedSearch::across([DeclaredPlainProduct::class])->search('smartphone')->using('like')->get();
+
+        $this->assertSame(['iPhone 15 Pro'], $results->pluck('title')->all());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */
@@ -753,4 +792,46 @@ class PlainTag extends Model
     protected $table = 'federated_tags';
     protected $guarded = [];
     public $timestamps = false;
+}
+
+/**
+ * Only Scout's Searchable, and no $searchable property: `$model->searchable` from outside the
+ * model resolves Scout's searchable() method. It is wrapped to count the calls.
+ */
+class ScoutOnlyUser extends Model
+{
+    use \Laravel\Scout\Searchable {
+        searchable as scoutSearchable;
+    }
+
+    public static int $searchableCalls = 0;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    public function searchable(): void
+    {
+        static::$searchableCalls++;
+        $this->scoutSearchable();
+    }
+}
+
+/** Only the (deprecated) Fuzzy trait, declaring its columns the way that trait documents. */
+class FuzzyProduct extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Fuzzy;
+
+    protected $table = 'products';
+    protected $guarded = [];
+
+    protected array $fuzzySearchable = ['description'];
+}
+
+/** No trait at all, but a protected $searchable declaration. */
+class DeclaredPlainProduct extends Model
+{
+    protected $table = 'products';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['description' => 5]];
 }

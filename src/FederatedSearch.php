@@ -27,7 +27,6 @@ class FederatedSearch
     protected string $searchTerm = '';
     /** Only invalid UTF-8 (`?q=%FF`): cleaned to '' but not empty, so it matches nothing — see SearchBuilder. */
     protected bool $invalidBytesOnly = false;
-    protected array $searchableColumns = [];
     protected array $columnWeights = [];
     protected ?string $algorithm = null;
     protected array $options = [];
@@ -68,10 +67,8 @@ class FederatedSearch
         foreach ($columns as $key => $value) {
             self::validateColumns([is_string($key) ? $key : $value]);
             if (is_string($key)) {
-                $this->searchableColumns[] = $key;
                 $this->columnWeights[$key] = (int) $value;
             } else {
-                $this->searchableColumns[] = $value;
                 $this->columnWeights[$value] = 1;
             }
         }
@@ -401,23 +398,26 @@ class FederatedSearch
     }
 
     /**
-     * Get searchable columns for a model
+     * The columns a model without the Searchable trait is searched on when searchIn() names none:
+     * its declared $searchable['columns'], else the Fuzzy trait's getFuzzySearchableColumns() (its
+     * $fuzzySearchable, `name` by default), else whichever of `name` and `title` its table has.
      */
     protected function getColumnsForModel(Model $instance): array
     {
-        // If custom columns specified, use those
-        if (!empty($this->searchableColumns)) {
-            return $this->searchableColumns;
+        $searchable = self::declaredProperty($instance, 'searchable');
+
+        if (!empty($searchable['columns'])) {
+            return self::validateColumns(SearchableColumns::names($searchable['columns']));
         }
 
-        // Try to get from model's searchable property
-        if (isset($instance->searchable['columns'])) {
-            return self::validateColumns(Support\SearchableColumns::names($instance->searchable['columns']));
-        }
+        // The Fuzzy trait's public accessor runs in the model's own scope, where its protected
+        // $fuzzySearchable is visible.
+        $fuzzy = method_exists($instance, 'getFuzzySearchableColumns')
+            ? $instance->getFuzzySearchableColumns()
+            : self::declaredProperty($instance, 'fuzzySearchable');
 
-        // Try to get from fuzzySearchable property
-        if (isset($instance->fuzzySearchable)) {
-            return self::validateColumns($instance->fuzzySearchable);
+        if (!empty($fuzzy)) {
+            return self::validateColumns($fuzzy);
         }
 
         // Guessed columns: only those the table has. None means nothing to search — the model
@@ -426,6 +426,23 @@ class FederatedSearch
         $listing = SearchableColumns::onTable($instance->getConnection(), $instance->getTable());
 
         return $listing === [] ? ['name', 'title'] : array_values(array_intersect(['name', 'title'], $listing));
+    }
+
+    /**
+     * A property the model itself declares, of any visibility, read through Reflection — never
+     * through Eloquent's __get()/__isset(). From outside the model those cannot see a protected
+     * property, and on a model with Scout's Searchable `$model->searchable` resolves Scout's
+     * searchable() method as a relation: it indexes the blank model, then throws.
+     */
+    private static function declaredProperty(Model $instance, string $name): mixed
+    {
+        if (!property_exists($instance, $name)) {
+            return null;
+        }
+
+        $property = new \ReflectionProperty($instance, $name);
+
+        return $property->isInitialized($instance) ? $property->getValue($instance) : null;
     }
 
     /**
