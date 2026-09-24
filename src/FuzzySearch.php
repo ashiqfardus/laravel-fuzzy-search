@@ -64,9 +64,7 @@ class FuzzySearch
         ?array $options = [],
         string $boolean = 'and'
     ): Builder {
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
-            throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
-        }
+        $this->assertValidColumn($column);
 
         $value = Utf8::clean($value); // every macro and Fuzzy scope binds its term here or in applyFuzzyOrder()
 
@@ -105,6 +103,8 @@ class FuzzySearch
 
     public function applyFuzzyOrder(Builder $query, string $column, string $value, string $direction = 'asc'): Builder
     {
+        $this->assertValidColumn($column);
+
         $direction = strtolower(trim($direction));
         if (!in_array($direction, ['asc', 'desc'], true)) {
             throw new \InvalidArgumentException("Invalid sort direction [{$direction}]: must be 'asc' or 'desc'.");
@@ -165,6 +165,17 @@ class FuzzySearch
 
             return $query;
         };
+    }
+
+    /**
+     * Both public entry points write $column into raw SQL (SQLite leaves a bare column as written),
+     * so a caller who passes user input as the column must get an exception, not an injection.
+     */
+    private function assertValidColumn(string $column): void
+    {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
+            throw new \InvalidArgumentException("Invalid column name [{$column}]: only letters, digits, underscores, and dots allowed.");
+        }
     }
 
     public static function levenshteinDistance(string $str1, string $str2, array $options = []): int

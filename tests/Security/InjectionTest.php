@@ -6,7 +6,11 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use PHPUnit\Framework\Attributes\DataProvider;
+
+require_once __DIR__ . '/../TestModels.php';
 
 /**
  * Verifies that no user-supplied input is interpolated directly into SQL.
@@ -14,6 +18,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
  */
 class InjectionTest extends TestCase
 {
+    use FakesDriverConnections;
+
     private FuzzySearch $fuzzySearch;
     private int $baseline;
 
@@ -160,5 +166,58 @@ class InjectionTest extends TestCase
     public static function trailingNewlineColumns(): array
     {
         return ['bare' => ["name\n"], 'qualified' => ["users.name\n"]];
+    }
+
+    /**
+     * orderByFuzzy() writes its column into raw SQL — on SQLite a bare column goes in exactly as
+     * written — so it takes whereFuzzy()'s column check: an app that passes a request's sort
+     * field through must get an exception, never an injected subquery, on every grammar.
+     */
+    #[DataProvider('injectedOrderColumns')]
+    public function test_order_by_fuzzy_rejects_an_injected_column(string $column): void
+    {
+        $calls = [
+            'eloquent' => fn () => User::query()->orderByFuzzy($column, 'john'),
+            'facade'   => fn () => $this->fuzzySearch->applyFuzzyOrder($this->app['db']->table('users'), $column, 'john'),
+        ];
+        foreach (['sqlite', 'mysql', 'mariadb', 'pgsql', 'sqlsrv'] as $driver) {
+            if ($this->fakeDriverAvailable($driver)) {
+                $calls[$driver] = fn () => $this->fakeConnectionTable($driver, 'users')->orderByFuzzy($column, 'john');
+            }
+        }
+
+        $accepted = [];
+        foreach ($calls as $label => $call) {
+            try {
+                $accepted[$label] = $call()->toSql();
+            } catch (\InvalidArgumentException) {
+            }
+        }
+
+        $this->assertSame([], $accepted, 'accepted ' . json_encode($column));
+    }
+
+    public static function injectedOrderColumns(): array
+    {
+        return [
+            'subquery'  => ['name) , (select 1'],
+            'quote'     => ["name'"],
+            'semicolon' => ['name; DROP TABLE users'],
+            'newline'   => ["name\n"],
+            'comment'   => ['name --'],
+        ];
+    }
+
+    public function test_order_by_fuzzy_still_takes_a_bare_or_qualified_column(): void
+    {
+        foreach (['name', 'users.name'] as $column) {
+            foreach (['sqlite', 'mysql', 'mariadb', 'pgsql', 'sqlsrv'] as $driver) {
+                if ($this->fakeDriverAvailable($driver)) {
+                    $this->assertStringContainsString('name', $this->fakeConnectionTable($driver, 'users')->orderByFuzzy($column, 'john')->toSql(), $driver);
+                }
+            }
+
+            $this->assertCount($this->baseline, User::query()->orderByFuzzy($column, 'john', 'desc')->get(), $column);
+        }
     }
 }
