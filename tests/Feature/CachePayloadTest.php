@@ -96,11 +96,17 @@ class CachePayloadTest extends TestCase
             'query builder'  => fn () => (new SearchBuilder(DB::table('users'), app(FuzzySearch::class)))->search('john')->searchIn(['name', 'email'])->highlight()->debugScore()->cache(),
             'builder index'  => fn () => (new SearchBuilder(DB::table('users'), app(FuzzySearch::class)))->search('john')->useInvertedIndex(User::class)->highlight()->cache(),
             'simplePaginate' => fn () => User::search('jo')->cache(),
+            'first'          => fn () => User::search('jane')->highlight()->cache(),
         ];
+        $run = fn (string $label, \Closure $make) => match ($label) {
+            'simplePaginate' => collect($make()->simplePaginate(2, 'page', 2)->items()),
+            'first'          => collect([$make()->first()]),
+            default          => $make()->get(),
+        };
 
         foreach ($searches as $label => $make) {
-            $miss = $label === 'simplePaginate' ? collect($make()->simplePaginate(2, 'page', 2)->items()) : $make()->get();
-            $hit  = $label === 'simplePaginate' ? collect($make()->simplePaginate(2, 'page', 2)->items()) : $make()->get();
+            $miss = $run($label, $make);
+            $hit  = $run($label, $make);
 
             $this->assertNotSame([], $this->rows($miss), $label);
             $this->assertEquals($this->rows($miss), $this->rows($hit), $label);
@@ -112,23 +118,32 @@ class CachePayloadTest extends TestCase
 
     public function test_each_viewer_gets_their_own_visibility_and_highlighting_on_a_hit(): void
     {
+        app(IndexManager::class)->indexBatch(CacheViewerUser::all());
         CacheViewerUser::retrieved(fn (CacheViewerUser $user) => CacheViewerUser::$admin && $user->makeVisible('email'));
-        $search = fn () => CacheViewerUser::search('john')->highlight()->debugScore()->cache()->get()->firstWhere('name', 'John Doe');
 
-        foreach (['admin first' => [true, false], 'viewer first' => [false, true]] as $order => $viewers) {
-            Cache::store('fuzzy_file')->flush();
+        $paths = [
+            'like'  => fn () => CacheViewerUser::search('john')->highlight()->debugScore()->cache(),
+            'index' => fn () => CacheViewerUser::search('john')->useInvertedIndex()->highlight()->debugScore()->cache(),
+        ];
 
-            foreach ($viewers as $admin) {
-                CacheViewerUser::$admin = $admin;
-                $row  = $search();
-                $data = $row->toArray();
-                $who  = "{$order}, " . ($admin ? 'admin' : 'viewer');
+        foreach ($paths as $path => $make) {
+            foreach (['admin first' => [true, false], 'viewer first' => [false, true]] as $order => $viewers) {
+                Cache::store('fuzzy_file')->flush();
 
-                $this->assertSame($admin, array_key_exists('email', $data), "{$who}: email in toArray()");
-                $this->assertSame($admin, array_key_exists('email', $row->_highlighted), "{$who}: _highlighted");
-                $this->assertSame($admin, in_array('email', array_column($row->_matches, 'column'), true), "{$who}: _matches");
-                $this->assertSame($admin, in_array('email', $row->_debug['columns'], true), "{$who}: _debug.columns");
-                $this->assertSame($admin, array_key_exists('email', $row->_debug['column_scores']), "{$who}: _debug.column_scores");
+                foreach ($viewers as $admin) {
+                    CacheViewerUser::$admin = $admin;
+                    $row  = $make()->get()->firstWhere('name', 'John Doe');
+                    $data = $row->toArray();
+                    $who  = "{$path}, {$order}, " . ($admin ? 'admin' : 'viewer');
+
+                    $this->assertSame($admin, array_key_exists('email', $data), "{$who}: email in toArray()");
+                    $this->assertSame($admin, array_key_exists('email', $row->_highlighted), "{$who}: _highlighted");
+                    $this->assertSame($admin, in_array('email', array_column($row->_matches, 'column'), true), "{$who}: _matches");
+                    $this->assertSame($admin, in_array('email', $row->_debug['columns'], true), "{$who}: _debug.columns");
+                    if ($path === 'like') { // the index path scores in SQL, with no per-column scores
+                        $this->assertSame($admin, array_key_exists('email', $row->_debug['column_scores']), "{$who}: _debug.column_scores");
+                    }
+                }
             }
         }
     }
