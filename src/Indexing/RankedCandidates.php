@@ -161,12 +161,13 @@ final class RankedCandidates
         $key   = self::keyColumn($base) . ' as ' . self::KEY_ALIAS;
 
         // The key alone, unless a HAVING may name an alias of the select list (withCount()'s
-        // posts_count, which MySQL and MariaDB accept there).
+        // posts_count, which MySQL and MariaDB accept there). select(), not the column list alone:
+        // it drops the dropped columns' bindings (a constrained withCount()) too.
         if ($query->havings) {
             $query->columns ??= ['*'];
             $query->addSelect($key);
         } else {
-            $query->columns = [$key];
+            $query->select($key);
         }
 
         $accepted = [];

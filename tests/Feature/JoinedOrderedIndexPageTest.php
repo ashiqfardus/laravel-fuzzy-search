@@ -136,6 +136,39 @@ class JoinedOrderedIndexPageTest extends TestCase
         }
     }
 
+    /**
+     * A select with bindings of its own (a constrained withCount()) beside the read of the keys:
+     * the key read drops that select, and so must its bindings, or every later one binds one
+     * place early.
+     */
+    public function test_a_select_with_bindings_survives_the_key_reads(): void
+    {
+        $this->seedSagas(60);
+        config(['fuzzy-search.bm25.candidate_chunk' => 5]);
+
+        $make = fn ($search) => $search
+            ->withCount(['comments as late_comments' => fn ($q) => $q->where('body', '>=', 'c50000')])
+            ->where('posts.title', '>=', 'Saga 0030');
+        $posts = fn () => Post::search('saga')->typoTolerance(0)->useInvertedIndex();
+
+        $late = fn (string $title) => count(array_filter($this->comments[$title] ?? [], fn ($body) => $body >= 'c50000'));
+
+        $cases = [
+            'rank order' => fn () => $make($posts()),
+            'own column' => fn () => $make($posts()->join('comments', 'comments.post_id', '=', 'posts.id')->select('posts.*'))->orderBy('posts.title'),
+        ];
+
+        foreach ($cases as $case => $search) {
+            $rows = $search()->take(100)->get();
+            $this->assertNotEmpty($rows, $case);
+
+            foreach ($rows as $post) {
+                $this->assertGreaterThanOrEqual('Saga 0030', $post->title, $case);
+                $this->assertSame($late($post->title), (int) $post->late_comments, "{$case}: {$post->title}");
+            }
+        }
+    }
+
     /** @return int the number of statements $call runs */
     private function queries(\Closure $call): int
     {
