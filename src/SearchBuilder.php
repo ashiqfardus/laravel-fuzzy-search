@@ -156,9 +156,7 @@ class SearchBuilder
     public function searchIn(array $columns): self
     {
         foreach (SearchableColumns::weights($columns) as $col => $weight) {
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $col)) {
-                throw new \InvalidArgumentException("Invalid column name [{$col}]: only letters, digits, underscores, and dots allowed.");
-            }
+            SearchableColumns::validate([$col], SearchableColumns::INVALID_NAME_BRACKETED);
             if (!in_array($col, $this->searchableColumns, true)) {
                 $this->searchableColumns[] = $col;
             }
@@ -844,11 +842,7 @@ class SearchBuilder
      */
     public function facet(string $column): self
     {
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
-            throw new \InvalidArgumentException(
-                "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
-            );
-        }
+        SearchableColumns::validate([$column]);
         $this->facets[] = $column;
         return $this;
     }

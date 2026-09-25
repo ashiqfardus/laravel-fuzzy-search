@@ -2,11 +2,11 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Scout;
 
-use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -128,7 +128,7 @@ class FuzzySearchEngine extends Engine
     {
         $orders = $builder->orders ?? [];
 
-        FederatedSearch::validateColumns(array_column($orders, 'column'));
+        SearchableColumns::validate(array_column($orders, 'column'));
 
         return $orders;
     }

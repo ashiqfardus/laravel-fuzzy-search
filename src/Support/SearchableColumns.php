@@ -39,6 +39,12 @@ final class SearchableColumns
         'date', 'datetime', 'immutable_date', 'immutable_datetime', 'timestamp',
     ];
 
+    /** searchIn()'s and the FuzzySearch query macros' wording for validate(). */
+    public const INVALID_NAME_BRACKETED = 'Invalid column name [%s]: only letters, digits, underscores, and dots allowed.';
+
+    /** FederatedSearch's, facet()'s and the Scout engine's wording for validate(). */
+    public const INVALID_NAME_QUOTED = "Invalid column name: '%s'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* .";
+
     /** @var array<string, array<string, int>> "class|connection|table" => column => weight */
     private static array $detected = [];
 
@@ -59,6 +65,27 @@ final class SearchableColumns
             array_keys($columns),
             $columns
         );
+    }
+
+    /**
+     * Throws InvalidArgumentException for any column that is not an identifier (a dotted
+     * table.column is allowed): the one rule every column name the package writes into SQL
+     * follows. /D anchors at the very end, since `$` alone matches before a final newline.
+     * $message is the caller's wording, a sprintf() format for the name.
+     *
+     * @internal
+     * @param  string[] $columns
+     * @return string[] $columns, unchanged
+     */
+    public static function validate(array $columns, string $message = self::INVALID_NAME_QUOTED): array
+    {
+        foreach ($columns as $column) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
+                throw new \InvalidArgumentException(sprintf($message, $column));
+            }
+        }
+
+        return $columns;
     }
 
     /**

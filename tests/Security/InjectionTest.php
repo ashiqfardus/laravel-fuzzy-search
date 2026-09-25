@@ -149,6 +149,36 @@ class InjectionTest extends TestCase
         $this->assertSame([], $accepted, 'accepted ' . json_encode($column));
     }
 
+    /**
+     * One rule checks every column name the package writes into SQL (SearchableColumns::validate());
+     * each entry point keeps the exception type and wording it has always had.
+     */
+    public function test_every_entry_point_rejects_a_bad_column_with_its_own_message(): void
+    {
+        $quoted    = "Invalid column name: 'name; drop'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* .";
+        $bracketed = 'Invalid column name [name; drop]: only letters, digits, underscores, and dots allowed.';
+        $builder   = fn () => new SearchBuilder($this->app['db']->table('users'), $this->fuzzySearch);
+
+        $entryPoints = [
+            'searchIn'           => [$bracketed, fn () => $builder()->searchIn(['name; drop' => 5])],
+            'facet'              => [$quoted, fn () => $builder()->facet('name; drop')],
+            'whereFuzzy'         => [$bracketed, fn () => $this->app['db']->table('users')->whereFuzzy('name; drop', 'john')],
+            'orderByFuzzy'       => [$bracketed, fn () => User::query()->orderByFuzzy('name; drop', 'john')],
+            'federated searchIn' => [$quoted, fn () => FederatedSearch::across([])->searchIn(['name; drop'])],
+            'federated $searchable' => [$quoted, fn () => FederatedSearch::across([BadColumnPlainModel::class])->search('john')->get()],
+        ];
+
+        foreach ($entryPoints as $label => [$message, $call]) {
+            try {
+                $call();
+                $this->fail("{$label} accepted the column");
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame(\InvalidArgumentException::class, $e::class, $label);
+                $this->assertSame($message, $e->getMessage(), $label);
+            }
+        }
+    }
+
     public static function trailingNewlineColumns(): array
     {
         return ['bare' => ["name\n"], 'qualified' => ["users.name\n"]];
@@ -206,4 +236,12 @@ class InjectionTest extends TestCase
             $this->assertCount($this->baseline, User::query()->orderByFuzzy($column, 'john', 'desc')->get(), $column);
         }
     }
+}
+
+/** A model without the Searchable trait whose declared column is not an identifier. */
+class BadColumnPlainModel extends \Illuminate\Database\Eloquent\Model
+{
+    protected $table = 'users';
+
+    protected array $searchable = ['columns' => ['name; drop' => 1]];
 }

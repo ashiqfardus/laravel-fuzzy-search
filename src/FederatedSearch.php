@@ -65,7 +65,7 @@ class FederatedSearch
     public function searchIn(array $columns): self
     {
         foreach ($columns as $key => $value) {
-            self::validateColumns([is_string($key) ? $key : $value]);
+            SearchableColumns::validate([is_string($key) ? $key : $value]);
             if (is_string($key)) {
                 $this->columnWeights[$key] = (int) $value;
             } else {
@@ -422,7 +422,7 @@ class FederatedSearch
         $searchable = self::declaredProperty($instance, 'searchable');
 
         if (!empty($searchable['columns'])) {
-            return self::validateColumns(SearchableColumns::names($searchable['columns']));
+            return SearchableColumns::validate(SearchableColumns::names($searchable['columns']));
         }
 
         // The Fuzzy trait's public accessor runs in the model's own scope, where its protected
@@ -432,7 +432,7 @@ class FederatedSearch
             : self::declaredProperty($instance, 'fuzzySearchable');
 
         if (!empty($fuzzy)) {
-            return self::validateColumns($fuzzy);
+            return SearchableColumns::validate($fuzzy);
         }
 
         // Guessed columns: only those the table has. None means nothing to search — the model
@@ -483,24 +483,6 @@ class FederatedSearch
     private function maxCandidates(): int
     {
         return (int) config('fuzzy-search.max_candidates', 1000);
-    }
-
-    /**
-     * Throws for any column that is not an identifier (dotted table.column allowed) — the rule every
-     * column name the package writes into SQL follows. Also used by the Scout engine for orderBy().
-     *
-     * @internal
-     */
-    public static function validateColumns(array $columns): array
-    {
-        foreach ($columns as $column) {
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
-                throw new \InvalidArgumentException(
-                    "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
-                );
-            }
-        }
-        return $columns;
     }
 
     /**
