@@ -16,6 +16,11 @@ use Illuminate\Support\Facades\Schema;
  * COMPACT row format; on SQL Server (nvarchar, 2 bytes) it is 8 + 382 + 382 + 128 = 900 bytes
  * of a nonclustered index's 1,700, and the documents primary key 764 of a clustered one's 900.
  *
+ * On MySQL/MariaDB model_id also takes utf8mb4_bin, as term has since 2026_09_17_000002: under
+ * the connection's case-insensitive collation, keys that differ only by case (sqids, hashids,
+ * base62: aBc and AbC) were one key, so the second overwrote the first's document. PostgreSQL and
+ * SQLite compare it byte-wise already; SQL Server keeps its default collation, a documented limit.
+ *
  * Raw ALTERs, not ->change(): Laravel 10 needs doctrine/dbal for that. SQLite does not enforce a
  * varchar length, so there is nothing to change there. SQL Server refuses to alter a column a
  * primary key covers, so the documents primary key is dropped and recreated around the ALTER; it
@@ -41,13 +46,17 @@ return new class extends Migration
         // A table already gone (a test that dropped it) has nothing to narrow.
         $tables = array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
 
-        // Keys longer than 36 characters do not fit the old column. Those models leave the index
-        // the way a deleted model does, giving back their doc_count and meta totals; rebuild
-        // them after rolling back if they must stay searchable. Postings with no document row
-        // left (none in a consistent index) are then dropped as they are.
+        // Keys longer than 36 characters do not fit the old column, and on MySQL/MariaDB keys that
+        // differ only by case are one key again under the old collation, which would violate the
+        // documents primary key. Those models leave the index the way a deleted model does, giving
+        // back their doc_count and meta totals; rebuild them after rolling back if they must stay
+        // searchable. Postings with no document row left (none in a consistent index) are then
+        // dropped as they are.
         $tooLong = DbDialect::lengthFunction($driver) . '(model_id) > 36';
         if (in_array('fuzzy_index_documents', $tables, true)) {
-            foreach (DB::table('fuzzy_index_documents')->whereRaw($tooLong)->get(['model_type', 'model_id']) as $document) {
+            $documents = DB::table('fuzzy_index_documents')->whereRaw($tooLong)->get(['model_type', 'model_id'])
+                ->concat(DbDialect::isMySqlFamily($driver) ? $this->caseCollisions() : []);
+            foreach ($documents as $document) {
                 app(IndexManager::class)->removeFromIndex($document->model_type, $document->model_id);
             }
         }
@@ -56,6 +65,32 @@ return new class extends Migration
         }
 
         $this->resize(36, $tables);
+    }
+
+    /**
+     * MySQL/MariaDB: the documents whose key equals another key of the same model type under the
+     * collation down() gives model_id back, the table's default, which model_type still has.
+     *
+     * @return list<object{model_type: string, model_id: string}>
+     */
+    private function caseCollisions(): array
+    {
+        $column = DB::selectOne(
+            'select character_set_name as charset, collation_name as collation from information_schema.columns'
+            . ' where table_schema = database() and table_name = ? and column_name = ?',
+            [DB::connection()->getTablePrefix() . 'fuzzy_index_documents', 'model_type']
+        );
+        if ($column === null || !preg_match('/^\w+$/', (string) $column->charset) || !preg_match('/^\w+$/', (string) $column->collation)) {
+            return [];
+        }
+
+        $table  = DbDialect::rawIdentifier('fuzzy_index_documents');
+        $folded = fn (string $key) => "CAST({$key} AS CHAR CHARACTER SET {$column->charset}) COLLATE {$column->collation}";
+
+        return DB::select(
+            "select d.model_type, d.model_id from {$table} d join (select model_type, {$folded('model_id')} as folded from {$table}"
+            . " group by model_type, folded having count(*) > 1) g on g.model_type = d.model_type and g.folded = {$folded('d.model_id')}"
+        );
     }
 
     /** @param list<string> $tables */
@@ -77,11 +112,15 @@ return new class extends Migration
             Schema::table('fuzzy_index_documents', fn (Blueprint $table) => $table->dropPrimary(['model_type', 'model_id']));
         }
 
+        // MySQL/MariaDB: up() compares model_id byte-wise; down() leaves out the character set and
+        // collation, so the column takes the table's default back, as v2.0.1 created it.
+        $binary = $length > 36 ? ' CHARACTER SET utf8mb4 COLLATE utf8mb4_bin' : '';
+
         foreach ($tables as $table) {
             $table = DbDialect::rawIdentifier($table);
 
             match (true) {
-                DbDialect::isMySqlFamily($driver) => DB::statement("ALTER TABLE {$table} MODIFY model_id VARCHAR({$length}) NOT NULL"),
+                DbDialect::isMySqlFamily($driver) => DB::statement("ALTER TABLE {$table} MODIFY model_id VARCHAR({$length}){$binary} NOT NULL"),
                 $driver === DbDialect::PGSQL      => DB::statement("ALTER TABLE {$table} ALTER COLUMN model_id TYPE VARCHAR({$length})"),
                 $driver === DbDialect::SQLSRV     => DB::statement("ALTER TABLE {$table} ALTER COLUMN model_id NVARCHAR({$length}) NOT NULL"),
                 default                           => null, // SQLite: varchar lengths are not enforced
