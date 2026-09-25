@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 
@@ -51,6 +52,23 @@ class PhpScoringCapTest extends TestCase
 
         similar_text("caf\xE9 latin1", 'caf? latin1', $percent);
         $this->assertSame($percent, FuzzySearch::similarityPercentage("caf\xE9 latin1", 'caf? latin1'));
+    }
+
+    /**
+     * The one cut every PHP scorer applies (FuzzySearch, the Fuzzy trait through it, SearchBuilder's
+     * rescoring, InMemorySearch): 255 characters, never bytes; a string within the cap is returned
+     * byte for byte, invalid UTF-8 included.
+     */
+    public function test_one_helper_cuts_every_scoring_input(): void
+    {
+        $this->assertSame(255, Utf8::SCORING_MAX_CHARS);
+
+        foreach (['', 'john', "caf\xE9", str_repeat('é', 255), str_repeat("\xE9", 255)] as $short) {
+            $this->assertSame($short, Utf8::scoringInput($short));
+        }
+
+        $this->assertSame(str_repeat('é', 255), Utf8::scoringInput(str_repeat('é', 256)));
+        $this->assertSame(str_repeat('a', 255), Utf8::scoringInput(str_repeat('a', 20000)));
     }
 
     public function test_strings_of_255_characters_or_fewer_score_exactly_as_before(): void

@@ -7,6 +7,9 @@ namespace Ashiqfardus\LaravelFuzzySearch\Support;
  */
 final class Utf8
 {
+    /** The most characters of a string that PHP scoring compares — see scoringInput(). */
+    public const SCORING_MAX_CHARS = 255;
+
     /**
      * Drop every byte that is not part of a well-formed UTF-8 sequence (RFC 3629: no overlong
      * forms, no surrogates, nothing above U+10FFFF); valid characters stay byte-identical.
@@ -37,5 +40,17 @@ final class Utf8
     public static function lowerAscii(string $value): string
     {
         return strtr($value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz');
+    }
+
+    /**
+     * levenshtein() is O(n·m) and similar_text() worse: on whole values a 127-character term
+     * against 300 rows of 20KB took seconds. Every PHP scorer (FuzzySearch::levenshteinDistance()
+     * and similarityPercentage(), SearchBuilder's rescoring, InMemorySearch) hands them only the
+     * first SCORING_MAX_CHARS characters, never bytes. A string within the cap is returned byte
+     * for byte (mb_substr() would turn an invalid byte into "?"), so it scores exactly as before.
+     */
+    public static function scoringInput(string $value): string
+    {
+        return mb_strlen($value, 'UTF-8') <= self::SCORING_MAX_CHARS ? $value : mb_substr($value, 0, self::SCORING_MAX_CHARS, 'UTF-8');
     }
 }

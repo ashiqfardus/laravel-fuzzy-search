@@ -997,8 +997,6 @@ class SearchBuilder
      */
     private const WHITESPACE = '/[ \t\n\r\x0B\f]+/';
 
-    /** The most characters of a value, and of a term, that similar_text() and levenshtein() compare — see similarity(). */
-    private const SCORING_MAX_CHARS = 255;
 
     /** The alias the ordered index walk reads the key under — see orderedIndexedKeys(). */
     private const WALK_KEY = 'fuzzy_walk_key';
@@ -2655,14 +2653,14 @@ class SearchBuilder
 
         // Ruling ER-55, the per-row similarity budget: a group gets the similarity/Levenshtein floor
         // only while the groups' total length, each counted by its longest member, stays within
-        // SCORING_MAX_CHARS (the first always does, so one term scores as it always has); the rest
-        // score by tier alone. It bounds a many-leaf extended query to about one capped comparison
-        // per value and form.
+        // Utf8::SCORING_MAX_CHARS (the first always does, so one term scores as it always has); the
+        // rest score by tier alone. It bounds a many-leaf extended query to about one capped
+        // comparison per value and form.
         $fuzzy = [];
         $spent = 0;
         foreach ($groups as $i => $group) {
             $spent    += max(array_map(fn (string $term) => mb_strlen($term, 'UTF-8'), $group));
-            $fuzzy[$i] = $i === 0 || $spent <= self::SCORING_MAX_CHARS;
+            $fuzzy[$i] = $i === 0 || $spent <= Utf8::SCORING_MAX_CHARS;
         }
 
         $results = $results->map(function ($item) use ($groups, $fuzzy) {
@@ -2682,7 +2680,7 @@ class SearchBuilder
                 }
 
                 // Each value lowered and cut once, not once per term.
-                $values = array_map(fn (string $value) => [$lower = mb_strtolower($value, 'UTF-8'), self::cut($lower)], $values);
+                $values = array_map(fn (string $value) => [$lower = mb_strtolower($value, 'UTF-8'), Utf8::scoringInput($lower)], $values);
 
                 // A to-many relation contributes its best related row, never an average.
                 foreach ($groups as $i => $group) {
@@ -2899,12 +2897,12 @@ class SearchBuilder
     {
         $value = mb_strtolower($value, 'UTF-8');
 
-        return $this->scoreLowered($value, self::cut($value), $term, $weight);
+        return $this->scoreLowered($value, Utf8::scoringInput($value), $term, $weight);
     }
 
     /**
-     * scoreValue() for a value already lowered, with its cut (see cut()) made once by the
-     * caller. $fuzzy false (past the similarity budget) scores the tiers only.
+     * scoreValue() for a value already lowered, with its Utf8::scoringInput() cut made once by
+     * the caller. $fuzzy false (past the similarity budget) scores the tiers only.
      */
     private function scoreLowered(string $value, string $cut, string $term, float|int $weight, bool $fuzzy = true): float
     {
@@ -2931,26 +2929,20 @@ class SearchBuilder
 
     /**
      * similar_text()'s percentage and the Levenshtein distance between $value and $term, each
-     * cut to its first SCORING_MAX_CHARS characters: both are O(n·m) (similar_text() worse), and
-     * on whole values a 127-character term against 300 rows of 20KB took seconds, a CPU DoS. A
-     * value or term within the cap is compared as it is, so it scores exactly as before. Every
-     * call PHP rescoring makes to either function goes through here.
+     * cut by Utf8::scoringInput() to its first 255 characters: both are O(n·m) (similar_text()
+     * worse), and on whole values a 127-character term against 300 rows of 20KB took seconds, a
+     * CPU DoS. A value or term within the cap is compared as it is, so it scores exactly as before.
+     * Every call PHP rescoring makes to either function goes through here.
      *
      * @return array{0: float, 1: int}
      */
     protected function similarity(string $value, string $term): array
     {
-        $value = self::cut($value);
-        $term  = self::cut($term);
+        $value = Utf8::scoringInput($value);
+        $term  = Utf8::scoringInput($term);
         similar_text($term, $value, $percent);
 
         return [$percent, FuzzySearch::levenshteinDistance($value, $term)];
-    }
-
-    /** The first SCORING_MAX_CHARS characters of $s; a string within the cap is returned as it is. */
-    private static function cut(string $s): string
-    {
-        return mb_strlen($s, 'UTF-8') > self::SCORING_MAX_CHARS ? mb_substr($s, 0, self::SCORING_MAX_CHARS, 'UTF-8') : $s;
     }
 
     /**
