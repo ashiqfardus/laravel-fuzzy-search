@@ -15,8 +15,8 @@ use Illuminate\Support\Facades\Schema;
  * A1 (round 8), ruling ER-106. On index tables PostgreSQL has never analyzed, the planner takes
  * about one posting per term, and the postings subquery of a constrained or ordered index search
  * ran as a nested loop over every posting for every row: 60–120 s at 50k rows, until autovacuum's
- * first ANALYZE. The first index write into such tables, and every rebuild, now analyze them. The
- * assertions read pg_class.reltuples, never a timing.
+ * first ANALYZE. The first index write, and every rebuild, that leaves the postings table at 16 pages
+ * or more (ruling ER-112) now analyze them. The assertions read pg_class.reltuples, never a timing.
  */
 class PostgresIndexStatisticsTest extends TestCase
 {
@@ -60,23 +60,49 @@ class PostgresIndexStatisticsTest extends TestCase
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_documents'));
     }
 
+    /** The postings table's size now, in pages: what the package compares with its 16-page minimum. */
+    private function postingsPages(): int
+    {
+        return (int) DB::selectOne(
+            "select pg_relation_size(to_regclass(?)) / current_setting('block_size')::int as pages",
+            [DB::connection()->getQueryGrammar()->wrapTable('fuzzy_index_postings')]
+        )->pages;
+    }
+
     /**
-     * Ruling ER-110. A first index write of one row analyzed the tables at one row, and that was
-     * cached: after 50k more rows were indexed without a rebuild, the planner still took every term
-     * to have one posting, and every search took about 100 s (indexing 7× longer) until autovacuum.
-     * The statistics are taken again once the postings table has doubled since they were.
+     * Ruling ER-112. A one-row first write analyzed the tables at one row, and a bulk index inside one
+     * transaction after it planned every posting's foreign-key check as a full scan of the terms table
+     * (127 s at 50k rows, 10 s before). Under 16 pages the tables stay unanalyzed; once the table has
+     * grown past that, a write analyzes it (ruling ER-110's doubling rule then takes over).
      */
-    public function test_statistics_taken_on_a_one_row_first_write_are_retaken_as_the_table_grows(): void
+    public function test_a_one_row_first_write_leaves_the_tables_unanalyzed(): void
     {
         app(IndexManager::class)->indexBatch(User::query()->where('name', 'Zebra 1')->get());
-        $one = $this->reltuples('fuzzy_index_postings');
-        $this->assertGreaterThan(0, $one, 'the one-row write analyzed the tables');
+
+        $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_postings'), 'the one-row write left the postings unanalyzed');
+        $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_terms'), 'and the terms');
 
         app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', 'Zebra%')->get());
 
         $postings = DB::table('fuzzy_index_postings')->count();
-        $this->assertGreaterThan(20 * $one, $postings, 'the table grew well past the one-row statistics');
-        $this->assertGreaterThanOrEqual($postings / 2, $this->reltuples('fuzzy_index_postings'), 'statistics taken again on the grown table');
+        $this->assertGreaterThanOrEqual($postings / 2, $this->reltuples('fuzzy_index_postings'), 'statistics taken on the grown table');
+    }
+
+    /** Ruling ER-112: no write analyzes the tables while the postings table is under 16 pages, and the one that takes it there does. */
+    public function test_the_write_that_takes_the_postings_table_to_sixteen_pages_analyzes_it(): void
+    {
+        foreach (User::query()->where('name', 'like', 'Zebra%')->orderBy('id')->get()->chunk(10) as $users) {
+            app(IndexManager::class)->indexBatch($users);
+            if ($this->postingsPages() >= 16) {
+                break;
+            }
+            $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_postings'), 'unanalyzed at ' . $this->postingsPages() . ' pages');
+        }
+
+        $this->assertGreaterThanOrEqual(16, $this->postingsPages(), 'the 300 zebras take the table past the minimum');
+        $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'));
+        $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_terms'));
+        $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_documents'));
     }
 
     /** Ruling ER-110: once the statistics describe at least 10,000 postings, an index write reads the catalog no more. */
@@ -133,15 +159,16 @@ class PostgresIndexStatisticsTest extends TestCase
         $inside = null;
         $checks = $this->checks(function () use (&$inside) {
             DB::transaction(function () use (&$inside) {
-                foreach (['Zebra 1%', 'Zebra 2%', 'Zebra 3%'] as $names) {
-                    app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', $names)->get());
+                // Three writes of 100 zebras: about 20 pages, past the 16-page minimum (ER-112).
+                foreach (User::query()->where('name', 'like', 'Zebra%')->orderBy('id')->get()->chunk(100) as $users) {
+                    app(IndexManager::class)->indexBatch($users);
                 }
                 $inside = $this->reltuples('fuzzy_index_postings');
             });
         });
 
         $this->assertLessThanOrEqual(0, $inside, 'nothing analyzed inside the transaction');
-        $this->assertCount(2, $checks, 'one catalog read and one ANALYZE, at the commit: ' . implode(' | ', $checks));
+        $this->assertCount(3, $checks, 'the check\'s catalog read, analyzeIndex()\'s size read and one ANALYZE, at the commit: ' . implode(' | ', $checks));
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'));
     }
 
@@ -177,6 +204,23 @@ class PostgresIndexStatisticsTest extends TestCase
         // ANALYZE reads every row of a table this small, so the estimate is the count.
         $this->assertSame((float) DB::table('fuzzy_index_postings')->count(), $this->reltuples('fuzzy_index_postings'));
         $this->assertSame((float) DB::table('fuzzy_index_documents')->count(), $this->reltuples('fuzzy_index_documents'));
+    }
+
+    /**
+     * Ruling ER-112, for a rebuild: analyzed at one row by fuzzy-search:rebuild (a deploy step on a
+     * fresh install), a bulk index inside one transaction after it took 127 s at 50k rows, as after a
+     * one-row first write. A rebuild that leaves the postings table under 16 pages leaves it unanalyzed.
+     */
+    public function test_a_rebuild_that_leaves_the_postings_table_under_sixteen_pages_leaves_the_tables_unanalyzed(): void
+    {
+        DB::table('users')->where('name', 'like', 'Zebra%')->delete();
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
+
+        $this->assertGreaterThan(0, DB::table('fuzzy_index_postings')->count(), 'the rebuild indexed the remaining users');
+        $this->assertLessThan(16, $this->postingsPages());
+        $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_postings'));
+        $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_terms'));
     }
 
     public function test_an_async_rebuild_analyzes_the_index_tables_once_its_batch_finishes(): void

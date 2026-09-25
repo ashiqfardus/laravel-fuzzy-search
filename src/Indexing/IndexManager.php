@@ -292,6 +292,12 @@ class IndexManager
      * at 50k rows until autovacuum's first ANALYZE (ruling ER-106). A rebuild ends with this, and an
      * index write runs it while the statistics do not describe the table (analyzeUnanalyzedIndex()).
      * A user that does not own a table gets a WARNING, which skips that table and throws nothing.
+     *
+     * Not while the postings table is under 16 pages (128 kB, about 1,000 postings; ruling ER-112).
+     * Statistics from a tiny first write or rebuild planned the writes after it as if the index held
+     * a few rows: inside one transaction, where nothing re-plans until the commit, every posting's
+     * foreign-key check scanned the whole terms table, and a 50k-row index took 127 s instead of
+     * 10 s. PostgreSQL costs a never-analyzed table at 10 pages at least, which plans them well.
      */
     public function analyzeIndex(): void
     {
@@ -302,6 +308,15 @@ class IndexManager
         }
 
         $grammar = $connection->getQueryGrammar();
+        $pages   = $connection->selectOne(
+            "select pg_relation_size(to_regclass(?)) / current_setting('block_size')::int as pages",
+            [$grammar->wrapTable('fuzzy_index_postings')]
+        )->pages;
+
+        if ((int) $pages < 16) {
+            return;
+        }
+
         $connection->statement('ANALYZE ' . implode(', ', array_map(
             fn (string $table) => $grammar->wrapTable($table),
             ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']
@@ -312,10 +327,11 @@ class IndexManager
      * After an index write on PostgreSQL: analyzeIndex() while the statistics do not describe the
      * postings table, because it has none (pg_class.reltuples <= 0: -1, never analyzed, on PostgreSQL
      * 14+; 0, analyzed or indexed while empty) or has more than doubled since they were taken (its
-     * pages against relpages). Statistics taken on a one-row first write said every term had one
-     * posting, and after 50k more rows every search took about 100 s (ruling ER-110). This process
-     * stops reading the catalog once they describe 10,000 postings or more: autovacuum's 10% scale
-     * factor keeps them in proportion from there.
+     * pages against relpages), and not before the table reaches analyzeIndex()'s 16 pages. Statistics
+     * taken on a small table stood for the table it grew into: after a one-row first write and 50k
+     * more rows, every search took about 100 s (ruling ER-110). This process stops reading the
+     * catalog once they describe 10,000 postings or more: autovacuum's 10% scale factor keeps them
+     * in proportion from there.
      *
      * Inside the caller's transaction ANALYZE would hold its lock until the commit, so the check
      * waits for the commit (ruling ER-111): once, however many index writes the transaction held,
