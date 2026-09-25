@@ -230,8 +230,8 @@ class SearchBuilder
             return ['relation' => null, 'column' => $column]; // a table of the query (ER-57)
         }
 
-        if ($model !== null && $this->isRelationPath($model, $segments, $column)) {
-            return ['relation' => implode('.', $segments), 'column' => $leaf];
+        if ($model !== null && ($relation = $this->relationPath($model, $segments, $column)) !== null) {
+            return ['relation' => $relation, 'column' => $leaf];
         }
 
         if (count($segments) === 1) {
@@ -273,14 +273,20 @@ class SearchBuilder
     }
 
     /**
-     * True when every segment is a relation method, following the chain model by model. A first
-     * segment that names no method is not a relation (a two-segment name is then table.column).
+     * The relation path when every segment is a relation method, following the chain model by
+     * model; null when the first segment names no method (a two-segment name is then table.column).
      * Any other segment is called only when isReachableRelation() allows it, and must return a
      * Relation; anything else throws, naming that segment, without calling it (ruling ER-50):
      * searchIn() can carry request input, and `unguard.body` or `save.body` would otherwise run
      * that method.
+     *
+     * Each segment is returned as its method declares it: PHP finds `Author()` for author(), but
+     * whereHas(), the eager load that keeps the caller's own (eagerLoadRelationPaths()),
+     * relationLoaded(), $hidden and the suggest and message filters all compare the name as
+     * written, so `Author.name` loaded a second, unconstrained relation beside the caller's
+     * `with('author:id,name')` and passed `$hidden = ['author']`.
      */
-    protected function isRelationPath(Model $model, array $segments, string $column): bool
+    protected function relationPath(Model $model, array $segments, string $column): ?string
     {
         $current = $model;
         // Declared config only: auto-detected columns never hold a dotted path, and detecting them
@@ -289,9 +295,11 @@ class SearchBuilder
             && $model->hasDeclaredSearchableColumns()
             && in_array($column, $model->getSearchableColumns(), true);
 
+        $path = [];
+
         foreach ($segments as $i => $segment) {
             if ($i === 0 && !method_exists($current, $segment)) {
-                return false;
+                return null;
             }
 
             $relation = method_exists($current, $segment) && $this->isReachableRelation($current, $segment, $declared)
@@ -302,10 +310,11 @@ class SearchBuilder
                 throw self::notARelation($column, $current, $segment);
             }
 
+            $path[]  = (new \ReflectionMethod($current, $segment))->getName();
             $current = $relation->getRelated();
         }
 
-        return true;
+        return implode('.', $path);
     }
 
     private static function notARelation(string $column, Model $model, string $segment): \InvalidArgumentException

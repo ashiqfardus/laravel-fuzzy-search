@@ -28,6 +28,20 @@ class RequiredParameterPost extends Post
     }
 }
 
+/** Declares its untyped relation in another case than the method: the declared route. */
+class DeclaredCaseWriterPost extends Post
+{
+    protected array $searchable = [
+        'columns'   => ['title' => 10, 'Writer.name' => 5],
+        'algorithm' => 'like',
+    ];
+
+    public function writer()
+    {
+        return $this->belongsTo(Author::class, 'author_id');
+    }
+}
+
 /**
  * Ruling ER-50's two sub-checks no other test isolates: a method the framework or this package
  * declares is never called, even on a path the model lists in $searchable['columns']; and a method
@@ -73,6 +87,22 @@ class RelationPathMethodCheckTest extends TestCase
         $this->assertSame(0, $saves, 'save() was called');
         $this->assertInstanceOf(\InvalidArgumentException::class, $e, $e->getMessage());
         $this->assertStringContainsString(DeclaredSavePost::class . '::save is not a relation', $e->getMessage());
+    }
+
+    public function test_a_relation_path_is_resolved_to_each_methods_declared_name(): void
+    {
+        $this->assertSame(
+            ['relation' => 'comments.author', 'column' => 'name'],
+            Post::search('tolkien')->searchIn(['COMMENTS.Author.name'])->getDebugInfo()['column_targets']['COMMENTS.Author.name']
+        );
+        $this->assertSame(
+            ['relation' => 'writer', 'column' => 'name'],
+            DeclaredCaseWriterPost::search('tolkien')->getDebugInfo()['column_targets']['Writer.name']
+        );
+
+        $post = DeclaredCaseWriterPost::search('tolkien')->get()->first();
+        $this->assertSame('The Ring', $post->title);
+        $this->assertSame(['writer'], array_keys($post->getRelations()));
     }
 
     public function test_a_method_with_a_required_parameter_is_rejected_by_name(): void

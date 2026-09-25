@@ -39,6 +39,11 @@ class EagerPost extends Post
     }
 }
 
+class HiddenAuthorEagerPost extends EagerPost
+{
+    protected $hidden = ['author'];
+}
+
 /**
  * The caller's eager load of a relation that searchIn() also reads was replaced by an unconstrained
  * one: Eloquent's with() overwrites an entry of the same name, and a nested path resets its prefix.
@@ -139,6 +144,53 @@ class CallerEagerLoadTest extends TestCase
         }
 
         $this->assertSame(array_fill_keys(array_keys($this->paths()), [['company_id', 'id', 'name'], 'Allen Unwin']), $seen);
+    }
+
+    /**
+     * PHP method names are case-insensitive, so `Author.name` (request input, say) reached the
+     * relation author() but kept its own spelling: Eloquent loaded "Author" unconstrained beside the
+     * caller's "author", and toArray() serialised it as author.
+     */
+    public function test_a_relation_segment_typed_in_another_case_keeps_the_callers_constraint(): void
+    {
+        $seen = [];
+        foreach ($this->paths() as $path => $run) {
+            Cache::flush();
+            $post = $this->ring($run(fn () => EagerPost::search('ring')->using('like')
+                ->searchIn(['Author.name', 'Comments.body'])
+                ->with(['author:id,name', 'comments' => fn ($q) => $q->whereNotNull('author_id')])), $path);
+
+            $relations = array_keys($post->getRelations());
+            sort($relations);
+            $seen[$path] = [$relations, array_keys($post->toArray()['author']), array_column($post->toArray()['comments'], 'body')];
+        }
+
+        $this->assertSame(array_fill_keys(array_keys($this->paths()), [['author', 'comments'], ['id', 'name'], ['ring lore']]), $seen);
+    }
+
+    public function test_a_hidden_relation_typed_in_another_case_stays_hidden(): void
+    {
+        $post = HiddenAuthorEagerPost::search('ring')->searchIn(['Author.name'])->get()->firstWhere('title', 'The Ring');
+
+        try {
+            HiddenAuthorEagerPost::search('')->searchIn(['Author.name'])->extended('nope:ring')->get();
+            $message = null;
+        } catch (\Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException $e) {
+            $message = $e->getMessage();
+        }
+
+        $this->assertSame([
+            'relations'   => ['author'],
+            'serialised'  => false,
+            'suggestions' => [],
+            'message'     => 'Unknown search field "nope". Searchable fields: title.',
+        ], [
+            'relations'   => array_keys($post->getRelations()),
+            'serialised'  => array_key_exists('author', $post->toArray()),
+            'suggestions' => HiddenAuthorEagerPost::search('tol')->searchIn(['Author.name'])->suggestFrom('table')->suggest(),
+            'message'     => $message,
+        ]);
+        $this->assertSame(['Tolkien'], EagerPost::search('tol')->searchIn(['Author.name'])->suggestFrom('table')->suggest(), 'shown, it is offered');
     }
 
     /** @return string[] sorted: the order a database returns the selected columns in varies */
