@@ -6,6 +6,7 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Collection;
+use Illuminate\Support\LazyCollection;
 
 /**
  * In-memory search over a fixed PHP collection.
@@ -27,8 +28,15 @@ class InMemorySearch
 
     public function __construct(iterable $items)
     {
-        $cap   = (int) config('fuzzy-search.in_memory.max_items', 10000);
-        $items = $items instanceof Collection ? $items : collect($items);
+        $cap = (int) config('fuzzy-search.in_memory.max_items', 10000);
+
+        if ($items instanceof LazyCollection) {
+            // Pull at most cap + 1 (ruling ER-99): a lazy source can be huge, or infinite, so
+            // checking the cap must not first materialise the whole thing.
+            $items = collect($items->take($cap + 1)->all());
+        } elseif (!$items instanceof Collection) {
+            $items = collect($items);
+        }
 
         if ($items->count() > $cap) {
             throw new \InvalidArgumentException(
@@ -131,7 +139,16 @@ class InMemorySearch
             foreach ($this->columns as $col) {
                 // Never data_get() on a model: its relation fallback runs any method named like
                 // the column (ruling ER-84).
-                $value = mb_strtolower((string) SearchableColumns::read($item, $col), 'UTF-8');
+                $raw = SearchableColumns::read($item, $col);
+
+                // An array or JSON-cast value isn't text (ruling ER-99, in line with ER-90's
+                // auto-detection, which excludes json columns too): skip it instead of letting
+                // (string) $raw warn "Array to string conversion" and count it as a match.
+                if ($raw !== null && !is_scalar($raw)) {
+                    continue;
+                }
+
+                $value = mb_strtolower((string) $raw, 'UTF-8');
                 if ($value === $needle) {
                     $score = max($score, 100);
                 } elseif (str_starts_with($value, $needle)) {
