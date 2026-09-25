@@ -78,9 +78,9 @@ class IndexModelJobOverlapTest extends TestCase
     /**
      * Run $child in a forked process (its own connection to the same database) and $parent here,
      * $delay microseconds later. Each process pauses once, $pause microseconds, after its first
-     * statement matching $at. Returns [the child's error, the parent's error, the parent's seconds].
+     * statement matching $at. Returns [the child's error, the parent's error].
      *
-     * @return array{0: ?string, 1: ?string, 2: float}
+     * @return array{0: ?string, 1: ?string}
      */
     private function race(\Closure $child, \Closure $parent, string $at, int $pause, int $delay, bool $pauseParent = true): array
     {
@@ -125,20 +125,106 @@ class IndexModelJobOverlapTest extends TestCase
         }
 
         usleep($delay);
-        $started     = microtime(true);
         $parentError = null;
         try {
             $parent();
         } catch (\Throwable $e) {
             $parentError = (string) $e;
         }
-        $elapsed = microtime(true) - $started;
         pcntl_waitpid($pid, $status);
 
         $childError = is_file($failed) ? file_get_contents($failed) : null;
         @unlink($failed);
 
-        return [$childError, $parentError, $elapsed];
+        return [$childError, $parentError];
+    }
+
+    /**
+     * The race by handshake, for two writes that must not wait on each other. The child pauses
+     * after its first statement matching $at until the parent has run its own; the parent starts
+     * once the child holds that point, and at its own first $at statement records whether the
+     * child is still running, then waits there for the child to finish. Returns [the child's
+     * error, the parent's error, whether the parent reached $at while the child was still
+     * running (it did not wait for the child's commit), whether the child finished while the
+     * parent held $at (it did not wait for the parent's)]. $timeout bounds only a failing run:
+     * a passing one never waits it out.
+     *
+     * @return array{0: ?string, 1: ?string, 2: ?bool, 3: ?bool}
+     */
+    private function raceOrdered(\Closure $child, \Closure $parent, string $at, float $timeout = 5.0): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
+            $this->markTestSkipped('The race needs two processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
+        }
+        config(['database.connections.race' => config('database.connections.' . config('database.default'))]);
+
+        $base = sys_get_temp_dir() . '/fuzzy-race-' . getmypid() . '-' . uniqid();
+        [$childHeld, $parentHeld, $childDone, $failed] = ["{$base}.child-held", "{$base}.parent-held", "{$base}.child-done", "{$base}.child-error"];
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            $this->markTestSkipped('pcntl_fork() failed.');
+        }
+
+        if ($pid === 0) {
+            try {
+                DB::setDefaultConnection('race');
+                $paused = false;
+                DB::listen(function ($query) use (&$paused, $at, $childHeld, $parentHeld, $timeout) {
+                    if (!$paused && preg_match($at, $query->sql)) {
+                        $paused = true;
+                        touch($childHeld);
+                        self::waitFor($parentHeld, $timeout);
+                    }
+                });
+                $child();
+            } catch (\Throwable $e) {
+                file_put_contents($failed, (string) $e);
+            } finally {
+                touch($childDone);
+                posix_kill(getmypid(), SIGKILL); // no destructors, no PHPUnit shutdown: they belong to the parent
+            }
+        }
+
+        self::waitFor($childHeld, $timeout);
+        $parentFirst = $childFinished = null;
+        $paused      = false;
+        DB::listen(function ($query) use (&$paused, &$parentFirst, &$childFinished, $at, $parentHeld, $childDone, $timeout) {
+            if (!$paused && preg_match($at, $query->sql)) {
+                $paused        = true;
+                $parentFirst   = !file_exists($childDone);
+                touch($parentHeld);
+                $childFinished = self::waitFor($childDone, $timeout);
+            }
+        });
+        $parentError = null;
+        try {
+            $parent();
+        } catch (\Throwable $e) {
+            $parentError = (string) $e;
+        }
+        pcntl_waitpid($pid, $status);
+
+        $childError = is_file($failed) ? file_get_contents($failed) : null;
+        foreach ([$childHeld, $parentHeld, $childDone, $failed] as $file) {
+            @unlink($file);
+        }
+
+        return [$childError, $parentError, $parentFirst, $childFinished];
+    }
+
+    /** Wait until $file exists, at most $seconds; true if it appeared. */
+    private static function waitFor(string $file, float $seconds): bool
+    {
+        $until = microtime(true) + $seconds;
+        while (!file_exists($file)) {
+            if (microtime(true) >= $until) {
+                return false;
+            }
+            usleep(5_000);
+        }
+
+        return true;
     }
 
     /**
@@ -211,28 +297,30 @@ class IndexModelJobOverlapTest extends TestCase
         }
 
         $at = $pauseAt === 'select'
-            ? '/^\s*select\b.*fuzzy_index_documents/is'           // the claim's FOR UPDATE read
+            ? '/^\s*\(?\s*select\b.*fuzzy_index_documents/is'      // the claim's FOR UPDATE read (MySQL/MariaDB: a UNION ALL of point reads)
             : '/^\s*(insert|merge)\b.*fuzzy_index_documents/is';   // the claim's placeholder upsert
 
-        $batch = fn (array $ids) => fn () => app(IndexManager::class)->indexBatch(User::whereKey($ids)->get());
-        $job   = fn ($id) => fn () => (new IndexModelJob(User::class, $id))->handle(app(IndexManager::class));
+        $batch  = fn (array $ids) => fn () => app(IndexManager::class)->indexBatch(User::whereKey($ids)->get());
+        $job    = fn ($id) => fn () => (new IndexModelJob(User::class, $id))->handle(app(IndexManager::class));
+        $child  = $batches ? $batch($first) : $job($john);
+        $parent = $batches ? $batch($second) : $job($jane);
 
-        [$childError, $parentError, $elapsed] = $this->race(
-            $batches ? $batch($first) : $job($john),
-            $batches ? $batch($second) : $job($jane),
-            $at,
-            1_000_000,
-            300_000,
-        );
+        // SQLite has one writer at a time, and on SQL Server a batch's placeholder MERGE into a
+        // documents table with few rows scans it, so on a first index it waits for the other
+        // batch's uncommitted placeholders: a wait at the upsert, not at the claim, and no
+        // deadlock (see the parallel batch test). There the writes only have to succeed.
+        $ordered = !($this->dbDriver === 'sqlite' || ($batches && !$reindex && $this->dbDriver === 'sqlsrv'));
+        [$childError, $parentError, $parentFirst, $childFinished] = $ordered
+            ? $this->raceOrdered($child, $parent, $at)
+            : [...$this->race($child, $parent, $at, 1_000_000, 300_000), null, null];
 
         $this->assertNull($childError);
         $this->assertNull($parentError);
-        // SQL Server: a batch's placeholder MERGE into a documents table with few rows scans it,
-        // so on a first index it waits for the other batch's uncommitted placeholders. That is
-        // a wait at the upsert, not at the claim, and no deadlock (see the parallel batch test).
-        if ($this->dbDriver !== 'sqlite' && !($batches && !$reindex && $this->dbDriver === 'sqlsrv')) {
-            // Its own 1 s pause, plus the work: not the child's remaining 0.7 s on top.
-            $this->assertLessThan(1.5, $elapsed);
+        if ($ordered) {
+            // Each write holds its claim while the other runs, in both orders: a write that
+            // waited for the other's commit fails the handshake, with no time bound on a pass.
+            $this->assertTrue($parentFirst, "the parent's write waited for the other write's commit");
+            $this->assertTrue($childFinished, "the other write waited for the parent's claim");
         }
         $this->assertSame($batches ? 24 : ($reindex ? 7 : 2), (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
     }
@@ -468,8 +556,10 @@ class IndexModelJobOverlapTest extends TestCase
      * mike (+2), and each waited on the other's word. A write inserts its new words in one sorted
      * statement, so Q waits on lima until P commits. The parallel-batch race above meets this
      * only by chance; here each batch pauses after its first dictionary insert. PostgreSQL
-     * deadlocked on every run without ER-74; SQL Server's MERGE waited on P's first words
-     * instead, so there this guards only that neither batch retries.
+     * deadlocked on every run without ER-74. SQL Server's second batch waits at its document
+     * claim (a MERGE into a documents table with few rows scans it) or, with more documents, at
+     * its locking read of the dictionary, before it inserts any word, so there this guards only
+     * that neither batch retries.
      */
     public function test_batches_whose_new_words_take_different_increments_neither_deadlock_nor_retry(): void
     {
