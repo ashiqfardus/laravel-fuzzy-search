@@ -413,8 +413,9 @@ class IndexManagerTest extends TestCase
 
     public function test_term_upsert_increment_is_table_qualified_for_postgres(): void
     {
-        // PostgreSQL rejects an unqualified "doc_count + 1" inside ON CONFLICT DO UPDATE
-        // (SQLSTATE 42702, ambiguous between the target row and EXCLUDED).
+        // PostgreSQL rejects an unqualified "doc_count + ..." inside ON CONFLICT DO UPDATE
+        // (SQLSTATE 42702, ambiguous between the target row and EXCLUDED). The raise is "+ 1" on
+        // MySQL/MariaDB and the inserted row's own doc_count elsewhere (ER-74).
         //
         // DB::pretend() can't drive this to completion: indexModel() upserts terms and then
         // immediately reads their generated ids back within the same call, but pretend() makes
@@ -440,13 +441,13 @@ class IndexManagerTest extends TestCase
         // The upsert that inserts new terms and, on a conflict, raises doc_count: an INSERT, or
         // on SQL Server a MERGE.
         $termUpserts = array_values(array_filter($queries, fn ($q) =>
-            preg_match('/^\s*(insert|merge)\b/i', $q['query']) && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], '+ 1')
+            preg_match('/^\s*(insert|merge)\b/i', $q['query']) && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], 'doc_count + ')
         ));
 
         $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
         foreach ($termUpserts as $q) {
-            $this->assertStringContainsString('fuzzy_index_terms.doc_count + 1', $q['query']);
-            $this->assertStringNotContainsString('= doc_count + 1', $q['query']);
+            $this->assertStringContainsString('fuzzy_index_terms.doc_count + ', $q['query']);
+            $this->assertStringNotContainsString('= doc_count + ', $q['query']);
         }
     }
 

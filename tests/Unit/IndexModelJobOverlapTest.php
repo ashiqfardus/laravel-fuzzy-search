@@ -324,6 +324,87 @@ class IndexModelJobOverlapTest extends TestCase
         }
     }
 
+    /**
+     * Parallel batches into an empty dictionary (parallel rebuild --async workers, scout:import)
+     * insert the same new words. Inserted one statement per doc_count increment, each sorted
+     * only within itself, two batches locked the words in opposite orders across statements
+     * (P: lima at +1, kilo at +2; Q: kilo at +1, lima at +2), and on PostgreSQL many batches
+     * deadlocked on all three attempts. A write now inserts its new words in one sorted order
+     * (ER-74). MySQL/MariaDB keep one statement per increment: there InnoDB's duplicate-key gap
+     * locks cycle in any order, so a batch may still retry, and only the index is checked.
+     */
+    public function test_parallel_batches_that_add_the_same_new_words_do_not_lose_all_their_attempts(): void
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
+            $this->markTestSkipped('The race needs several processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
+        }
+        if ($this->dbDriver === 'sqlite') {
+            $this->markTestSkipped('SQLite runs one writer at a time, so there is no lock order to race.');
+        }
+        config(['database.connections.race' => config('database.connections.' . config('database.default'))]);
+
+        DB::table('users')->insert(array_fill(0, 100, ['name' => 'race', 'email' => 'race', 'created_at' => now(), 'updated_at' => now()]));
+        $ids        = DB::table('users')->where('name', 'race')->orderBy('id')->pluck('id')->all();
+        $vocabulary = array_map(fn ($i) => 'zq' . strtr((string) $i, '0123456789', 'abcdefghij'), range(100, 159)); // 60 words
+        $log        = sys_get_temp_dir() . '/fuzzy-race-batches-' . getmypid() . '-' . uniqid();
+
+        mt_srand(74);
+        $words = fn (int $n) => implode(' ', array_map(fn () => $vocabulary[mt_rand(0, 59)], range(1, $n)));
+
+        for ($round = 0; $round < 5; $round++) {
+            foreach ($ids as $id) {
+                DB::table('users')->where('id', $id)->update(['name' => $words(4), 'email' => $words(2)]);
+            }
+            app(IndexManager::class)->flush(User::class); // every word is new again
+
+            $pids = [];
+            foreach (array_chunk($ids, 25) as $batch) {
+                $pid = pcntl_fork();
+                if ($pid === -1) {
+                    $this->markTestSkipped('pcntl_fork() failed.');
+                }
+                if ($pid === 0) {
+                    try {
+                        DB::setDefaultConnection('race');
+                        \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback\n", FILE_APPEND));
+                        app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
+                    } catch (\Throwable $e) {
+                        file_put_contents($log, 'failed: ' . strtok($e->getMessage(), "\n") . "\n", FILE_APPEND);
+                    } finally {
+                        posix_kill(getmypid(), SIGKILL); // no destructors, no PHPUnit shutdown: they belong to the parent
+                    }
+                }
+                $pids[] = $pid;
+            }
+            foreach ($pids as $pid) {
+                pcntl_waitpid($pid, $status);
+            }
+        }
+
+        $lines = is_file($log) ? file($log, FILE_IGNORE_NEW_LINES) : [];
+        @unlink($log);
+        $failed = array_values(preg_grep('/^failed/', $lines));
+        $report = count($failed) . ' of 20 batches failed, ' . (count($lines) - 2 * count($failed)) . ' retried: ' . ($failed[0] ?? '');
+
+        if ($this->dbDriver === 'pgsql') {
+            $this->assertSame([], $failed, $report);
+            $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
+        }
+
+        // Whatever failed rolled back whole: every term counts the rows posting it, and meta the documents.
+        $holders = [];
+        foreach (DB::table('fuzzy_index_postings')->get(['term_id', 'model_id']) as $posting) {
+            $holders[(int) $posting->term_id][(string) $posting->model_id] = true;
+        }
+        foreach (DB::table('fuzzy_index_terms')->get(['id', 'term', 'doc_count']) as $term) {
+            $this->assertSame(count($holders[(int) $term->id] ?? []), (int) $term->doc_count, "doc_count of {$term->term}; {$report}");
+        }
+        $this->assertSame(
+            DB::table('fuzzy_index_documents')->where('model_type', User::class)->count(),
+            (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'),
+        );
+    }
+
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
     public function test_the_indexer_binds_model_ids_as_strings(): void
     {

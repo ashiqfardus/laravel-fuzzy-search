@@ -338,9 +338,9 @@ class IndexManager
     /**
      * Index a collection of models (one class) in a single transaction: RebuildCommand's and
      * RebuildIndexJob's per-chunk write. Saved models are reloaded inside it, one query for the
-     * chunk (see write()); unsaved instances are indexed as given. The dictionary is upserted
-     * with one chunked statement per distinct doc_count increment, not one per term, and the
-     * postings and document rows in chunked upserts.
+     * chunk (see write()); unsaved instances are indexed as given. New dictionary terms go out
+     * in chunked upserts, not one per term (on MySQL/MariaDB one per distinct doc_count
+     * increment), and so do the postings and document rows.
      *
      * $scout: the Scout engine's update() (ER-72). The rows are re-read as Scout's own jobs read
      * them, without global scopes, and a trashed row stays indexed while scout.soft_delete is on,
@@ -456,28 +456,48 @@ class IndexManager
             // lookups still work because PHP normalises numeric-string keys the same way on read.
             //
             // Terms the dictionary lacks are inserted, sorted by term. A write that inserts one of
-            // them first turns this insert into an update of its row: the conflict branch raises it.
-            $byIncrement = [];
+            // them first turns this insert into an update of its row: the conflict branch raises it
+            // by this write's increment, the inserted row's own doc_count (EXCLUDED, or the MERGE
+            // source). So every write takes its new words in one sorted order (ER-74); a
+            // statement per increment, each sorted only within itself, let two batches take them
+            // in opposite orders. MySQL/MariaDB keep a statement per increment with a literal raise
+            // (VALUES() there is deprecated): InnoDB's duplicate-key gap locks cycle in any order.
+            $missing = [];
             foreach ($counts as $term => $increment) {
                 if (!isset($existing[$term])) {
-                    $byIncrement[$increment][] = (string) $term;
+                    $missing[(string) $term] = $increment;
                 }
             }
-            foreach ($byIncrement as $increment => $terms) {
-                sort($terms, SORT_STRING);
-                foreach (array_chunk($terms, self::ROWS_PER_UPSERT) as $chunk) {
+            ksort($missing, SORT_STRING);
+
+            $driver = DB::connection()->getDriverName();
+            $source = match (true) { // the inserted row's doc_count, as the conflict branch sees it
+                DbDialect::isMySqlFamily($driver) => null,
+                $driver === 'sqlsrv'              => DbDialect::rawIdentifier('laravel_source.doc_count'), // Laravel's MERGE source alias
+                default                           => 'excluded.doc_count',
+            };
+            $runs = []; // raise => term => increment
+            foreach ($missing as $term => $increment) {
+                $runs[$source ?? (string) $increment][$term] = $increment;
+            }
+            foreach ($runs as $raise => $terms) {
+                foreach (array_chunk($terms, self::ROWS_PER_UPSERT, true) as $chunk) {
+                    $rows = [];
+                    foreach ($chunk as $term => $increment) {
+                        $rows[] = ['term' => (string) $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)];
+                    }
                     DB::table('fuzzy_index_terms')->upsert(
-                        array_map(fn ($term) => ['term' => $term, 'doc_count' => $increment, 'term_length' => mb_strlen($term)], $chunk),
+                        $rows,
                         ['term'],
                         // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
                         // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
                         // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
-                        ['doc_count' => DB::raw(DbDialect::rawIdentifier('fuzzy_index_terms.doc_count') . " + {$increment}")]
+                        ['doc_count' => DB::raw(DbDialect::rawIdentifier('fuzzy_index_terms.doc_count') . " + {$raise}")]
                     );
                 }
             }
 
-            $termIds = $existing + $this->termIds(array_merge(...array_values($byIncrement)));
+            $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)));
 
             // One posting per (term, column); a term missing from $termIds means a pre-migration
             // MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
