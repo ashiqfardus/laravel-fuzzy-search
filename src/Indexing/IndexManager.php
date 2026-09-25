@@ -352,13 +352,13 @@ class IndexManager
         foreach ($models as $model) {
             $modelType ??= get_class($model);
             if ($model->exists) {
-                $keys[] = $model->getKey();
+                $keys[(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
             } else {
                 $unsaved[(string) $model->getKey()] = $model;
             }
         }
 
-        return $modelType === null ? 0 : $this->write($modelType, $keys, $unsaved);
+        return $modelType === null ? 0 : $this->write($modelType, array_values($keys), $unsaved);
     }
 
     /**

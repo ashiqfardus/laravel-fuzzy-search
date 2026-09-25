@@ -83,4 +83,15 @@ class IndexLatestRowTest extends TestCase
         $this->assertSame([], $this->terms(SoftDeletedUser::class, $john->id));
         $this->assertSame(5, $this->totalDocs(SoftDeletedUser::class));
     }
+
+    /** The same saved model twice in a batch is one row: PostgreSQL rejects an upsert that hits a row twice. */
+    public function test_a_batch_that_holds_the_same_model_twice_indexes_it_once(): void
+    {
+        $john = User::where('name', 'John Doe')->first();
+
+        $this->assertSame(1, app(IndexManager::class)->indexBatch(collect([$john, $john, User::find($john->id)])));
+
+        $this->assertSame(1, $this->totalDocs(User::class));
+        $this->assertSame(['doe', 'john'], $this->terms(User::class, $john->id));
+    }
 }
