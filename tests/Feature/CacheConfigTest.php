@@ -175,6 +175,24 @@ class CacheConfigTest extends TestCase
 
     // --- the cache.* config ---------------------------------------------------------------
 
+    /** unicode.accent_insensitive is read once, into the builder: folding on and off are two searches. */
+    public function test_the_global_accent_folding_default_is_part_of_the_key(): void
+    {
+        User::create(['name' => 'Muller', 'email' => 'muller@example.com']);
+
+        $search = function (bool $fold) {
+            config(['fuzzy-search.unicode.accent_insensitive' => $fold]);
+
+            return $this->probe(User::query())->search('Müller')->searchIn(['name'])->using('like');
+        };
+
+        $this->assertNotSame($search(true)->key(), $search(false)->key());
+
+        $folded = $search(true)->cache()->get()->pluck('_raw_score', 'name')->all();
+        $this->assertSame(['Muller' => 100.0], $folded);
+        $this->assertNotSame($folded, $search(false)->cache()->get()->pluck('_raw_score', 'name')->all(), 'folding off was served the folded entry');
+    }
+
     private function addJohn(): void
     {
         User::create(['name' => 'John Newman', 'email' => 'newman@example.com']);

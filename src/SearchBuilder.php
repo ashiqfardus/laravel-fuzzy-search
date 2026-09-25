@@ -3254,6 +3254,7 @@ class SearchBuilder
             'synonym_groups'         => $this->synonymGroups,
             'locale'                 => $this->locale,
             'accent_insensitive'     => $this->accentInsensitiveEnabled,
+            'accent_folding_default' => $this->accentFoldingDefault,
             'unicode_normalize'      => $this->unicodeNormalizeEnabled,
             'tokenize_search'        => $this->tokenizeSearch,
             'token_match_mode'       => $this->tokenMatchMode,
