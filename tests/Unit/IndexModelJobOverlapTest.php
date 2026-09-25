@@ -146,10 +146,11 @@ class IndexModelJobOverlapTest extends TestCase
      * child is still running, then waits there for the child to finish. Returns [the child's
      * error, the parent's error, whether the parent reached $at while the child was still
      * running (it did not wait for the child's commit), whether the child finished while the
-     * parent held $at (it did not wait for the parent's)]. $timeout bounds only a failing run:
-     * a passing one never waits it out.
+     * parent held $at (it did not wait for the parent's), whether the child reached $at at all
+     * (false: the pattern matched nothing)]. $timeout bounds only a failing run: a passing one
+     * never waits it out.
      *
-     * @return array{0: ?string, 1: ?string, 2: ?bool, 3: ?bool}
+     * @return array{0: ?string, 1: ?string, 2: ?bool, 3: ?bool, 4: bool}
      */
     private function raceOrdered(\Closure $child, \Closure $parent, string $at, float $timeout = 5.0): array
     {
@@ -186,7 +187,7 @@ class IndexModelJobOverlapTest extends TestCase
             }
         }
 
-        self::waitFor($childHeld, $timeout);
+        $childPaused = self::waitFor($childHeld, $timeout);
         $parentFirst = $childFinished = null;
         $paused      = false;
         DB::listen(function ($query) use (&$paused, &$parentFirst, &$childFinished, $at, $parentHeld, $childDone, $timeout) {
@@ -210,7 +211,7 @@ class IndexModelJobOverlapTest extends TestCase
             @unlink($file);
         }
 
-        return [$childError, $parentError, $parentFirst, $childFinished];
+        return [$childError, $parentError, $parentFirst, $childFinished, $childPaused];
     }
 
     /** Wait until $file exists, at most $seconds; true if it appeared. */
@@ -310,15 +311,16 @@ class IndexModelJobOverlapTest extends TestCase
         // batch's uncommitted placeholders: a wait at the upsert, not at the claim, and no
         // deadlock (see the parallel batch test). There the writes only have to succeed.
         $ordered = !($this->dbDriver === 'sqlite' || ($batches && !$reindex && $this->dbDriver === 'sqlsrv'));
-        [$childError, $parentError, $parentFirst, $childFinished] = $ordered
+        [$childError, $parentError, $parentFirst, $childFinished, $childPaused] = $ordered
             ? $this->raceOrdered($child, $parent, $at)
-            : [...$this->race($child, $parent, $at, 1_000_000, 300_000), null, null];
+            : [...$this->race($child, $parent, $at, 1_000_000, 300_000), null, null, null];
 
         $this->assertNull($childError);
         $this->assertNull($parentError);
         if ($ordered) {
             // Each write holds its claim while the other runs, in both orders: a write that
             // waited for the other's commit fails the handshake, with no time bound on a pass.
+            $this->assertTrue($childPaused, 'the child never reached its pause statement: the $at pattern matched nothing');
             $this->assertTrue($parentFirst, "the parent's write waited for the other write's commit");
             $this->assertTrue($childFinished, "the other write waited for the parent's claim");
         }
