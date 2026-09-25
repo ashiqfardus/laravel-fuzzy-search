@@ -143,7 +143,7 @@ class RelationPathSafetyTest extends TestCase
      * Runs the search and returns what it threw; the caller checks the side effects first. The
      * rejection must come before any SQL: never a raw "no such column" from the database.
      */
-    private function attempt(string $column, string $model = ProbePost::class): ?\Throwable
+    private function trySearchIn(string $column, string $model = ProbePost::class): ?\Throwable
     {
         DB::flushQueryLog();
         DB::enableQueryLog();
@@ -172,7 +172,7 @@ class RelationPathSafetyTest extends TestCase
 
     public function test_unguard_is_never_called(): void
     {
-        $e = $this->attempt('unguard.body');
+        $e = $this->trySearchIn('unguard.body');
 
         $this->assertFalse(Model::isUnguarded());
         $this->assertRejection($e, ProbePost::class . '::unguard');
@@ -186,7 +186,7 @@ class RelationPathSafetyTest extends TestCase
             $saves++;
         });
 
-        $e = $this->attempt('save.body');
+        $e = $this->trySearchIn('save.body');
 
         $this->assertSame(0, $saves, 'save() was called');
         $this->assertSame($before, Post::query()->count());
@@ -195,8 +195,8 @@ class RelationPathSafetyTest extends TestCase
 
     public function test_app_methods_typed_void_or_bool_are_never_called(): void
     {
-        $void = $this->attempt('purgeEverything.body');
-        $bool = $this->attempt('isFlagged.body');
+        $void = $this->trySearchIn('purgeEverything.body');
+        $bool = $this->trySearchIn('isFlagged.body');
 
         $this->assertSame(0, ProbePost::$calls);
         $this->assertRejection($void, ProbePost::class . '::purgeEverything');
@@ -205,7 +205,7 @@ class RelationPathSafetyTest extends TestCase
 
     public function test_an_untyped_undeclared_method_is_never_called(): void
     {
-        $e = $this->attempt('helper.name');
+        $e = $this->trySearchIn('helper.name');
 
         $this->assertSame(0, ProbePost::$calls);
         $this->assertRejection($e, ProbePost::class . '::helper');
@@ -248,7 +248,7 @@ class RelationPathSafetyTest extends TestCase
 
     public function test_a_nested_path_is_rejected_at_its_untyped_segment_unless_the_model_lists_it(): void
     {
-        $e = $this->attempt('author.company.name');
+        $e = $this->trySearchIn('author.company.name');
 
         $this->assertSame(0, ProbeAuthor::$calls, 'company() was called');
         $this->assertRejection($e, ProbeAuthor::class . '::company');
