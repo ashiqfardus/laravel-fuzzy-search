@@ -430,7 +430,12 @@ class IndexManager
                     $deltas[$existing[$term]] = ($deltas[$existing[$term]] ?? 0) + $increment;
                 }
             }
-            $this->adjustDocCounts($deltas);
+            // A word the locking read no longer finds was swept since the read above: a flush of
+            // any model deletes every word no posting holds, which a word this write reuses after
+            // re-indexing dropped it can be. It is inserted again below, as a missing one (ER-75).
+            $gone     = array_flip($this->adjustDocCounts($deltas));
+            $existing = array_filter($existing, fn ($id) => !isset($gone[$id]));
+
             // No DELETE when nothing is posted: on MySQL/MariaDB one that matches nothing still
             // gap-locks the end of postings_model_idx, where another first index's postings
             // insert then waits while that write waits on a new word this one inserted first: a
@@ -497,7 +502,10 @@ class IndexManager
                 }
             }
 
-            $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)));
+            // After a sweep, a current read: MySQL's snapshot still shows a swept word's old row
+            // beside the one just inserted (ER-75). This write holds every one of these rows, so
+            // it waits on none.
+            $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
 
             // One posting per (term, column); a term missing from $termIds means a pre-migration
             // MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
@@ -671,13 +679,23 @@ class IndexManager
      * locked already rather than wait for it behind another write.
      * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
      *
-     * @param array<int, int> $deltas
+     * @param  array<int, int> $deltas
+     * @return list<int> the ids the locking read did not find: terms deleted since the caller
+     *                   read them, by a flush's orphan sweep (ER-75)
      */
-    private function adjustDocCounts(array $deltas): void
+    private function adjustDocCounts(array $deltas): array
     {
         ksort($deltas);
+        $gone = [];
 
         foreach (array_chunk($deltas, 1000, true) as $chunk) {
+            $found = DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('id')->all();
+            $gone  = [...$gone, ...array_values(array_diff(array_keys($chunk), $found))];
+            $chunk = array_intersect_key($chunk, array_flip($found));
+            if ($chunk === []) {
+                continue;
+            }
+
             $cases = '';
             foreach ($chunk as $termId => $delta) {
                 $termId = (int) $termId;
@@ -686,26 +704,27 @@ class IndexManager
                     ? " WHEN {$termId} THEN doc_count + {$delta}"
                     : " WHEN {$termId} THEN CASE WHEN doc_count >= " . -$delta . ' THEN doc_count - ' . -$delta . ' ELSE 0 END';
             }
-            DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('id');
-
             $inList = implode(',', array_map('intval', array_keys($chunk)));
             DB::statement(
                 'UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
             );
         }
+
+        return $gone;
     }
 
     /**
-     * term => id for $terms, 1,000 bindings a query.
+     * term => id for $terms, 1,000 bindings a query. $current reads the rows as they are now,
+     * with a locking read, rather than from MySQL/MariaDB's REPEATABLE READ snapshot.
      *
      * @param  string[] $terms
      * @return array<string, int>
      */
-    private function termIds(array $terms): array
+    private function termIds(array $terms, bool $current = false): array
     {
         $ids = [];
         foreach (array_chunk($terms, 1000) as $chunk) {
-            $ids += DB::table('fuzzy_index_terms')->whereIn('term', $chunk)->pluck('id', 'term')->all();
+            $ids += DB::table('fuzzy_index_terms')->whereIn('term', $chunk)->when($current, fn ($q) => $q->lockForUpdate())->pluck('id', 'term')->all();
         }
 
         return $ids;

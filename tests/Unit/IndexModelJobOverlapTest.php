@@ -405,6 +405,55 @@ class IndexModelJobOverlapTest extends TestCase
         );
     }
 
+    public static function orphanSweepPauses(): array
+    {
+        return [
+            'after the dictionary read' => ['/^\s*select\b.*\bfrom\W+fuzzy_index_terms\W+where\W+term\W+in\b/is'],
+            'after the reload'          => ['/^\s*select\b.*\busers\b/is'], // MySQL's snapshot then still serves the swept word
+        ];
+    }
+
+    /**
+     * A flush of any model sweeps every word no posting holds, and re-indexing leaves a dropped
+     * word in the dictionary with no postings. A write that reuses such a word read it as
+     * existing; when the sweep deleted it before the write locked it, the write only updated the
+     * other words and its posting then failed the term foreign key. A word the locking read no
+     * longer finds is inserted again (ER-75).
+     */
+    #[DataProvider('orphanSweepPauses')]
+    public function test_a_flush_of_another_model_mid_write_does_not_fail_it_on_a_swept_word(string $pauseAt): void
+    {
+        if ($this->dbDriver === 'sqlite') {
+            $this->markTestSkipped('SQLite runs one writer at a time, so no flush commits between the write\'s reads.');
+        }
+        $a = User::where('name', 'John Doe')->value('id');
+        foreach (['kilo', 'lima'] as $name) {
+            DB::table('users')->where('id', $a)->update(['name' => $name, 'email' => 'qa']);
+            app(IndexManager::class)->syncModel(User::class, $a);
+        }
+        // "kilo" is in the dictionary with no posting; the row's text needs it again.
+        DB::table('users')->where('id', $a)->update(['name' => 'kilo lima']);
+
+        [$childError, $parentError] = $this->race(
+            fn () => (new IndexModelJob(User::class, $a))->handle(app(IndexManager::class)),
+            fn () => app(IndexManager::class)->flush(\Ashiqfardus\LaravelFuzzySearch\Tests\Product::class),
+            $pauseAt,
+            1_000_000,
+            300_000,
+            pauseParent: false,
+        );
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $terms = DB::table('fuzzy_index_postings as p')
+            ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+            ->where('p.model_type', User::class)->where('p.model_id', (string) $a)->where('p.column_name', 'name')
+            ->orderBy('t.term')->pluck('t.term')->all();
+        $this->assertSame(['kilo', 'lima'], $terms);
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'kilo')->value('doc_count'));
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'lima')->value('doc_count'));
+    }
+
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
     public function test_the_indexer_binds_model_ids_as_strings(): void
     {
