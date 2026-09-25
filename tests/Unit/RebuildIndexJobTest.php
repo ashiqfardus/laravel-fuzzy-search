@@ -80,18 +80,29 @@ class RebuildIndexJobTest extends TestCase
      */
     public function test_rebuild_job_applies_the_models_search_index_query_hook(): void
     {
-        $hooked = RebuildHookTestUser::create(['name' => 'hooked alpha', 'email' => 'h1@test.com']);
-        $plain  = RebuildHookTestUser::create(['name' => 'plain beta',   'email' => 'h2@test.com']);
+        $hooked  = RebuildHookTestUser::create(['name' => 'hooked alpha', 'email' => 'h1@test.com']);
+        $hooked2 = RebuildHookTestUser::create(['name' => 'hooked omega', 'email' => 'h7@test.com']);
+        $plain   = RebuildHookTestUser::create(['name' => 'plain beta',   'email' => 'h2@test.com']);
         RebuildHookTestUser::$hookCalls = 0;
 
-        (new RebuildIndexJob(RebuildHookTestUser::class, [$hooked->id, $plain->id]))
+        $reads = 0;
+        $this->app['db']->listen(function ($query) use (&$reads) {
+            if (preg_match('/^\s*select\b.*\busers\b/is', $query->sql)) {
+                $reads++;
+            }
+        });
+
+        (new RebuildIndexJob(RebuildHookTestUser::class, [$hooked->id, $hooked2->id, $plain->id]))
             ->handle($this->makeManager());
 
-        // Once for the job's load, once for the reload under the claim (ER-68): per job, never per row.
+        // Once for the job's load, once for the reload under the claim (ER-68): per job, never
+        // per row. Two rows pass the hook, so a reload per row would count three.
         $this->assertSame(2, RebuildHookTestUser::$hookCalls, 'searchIndexQuery() must be called twice per job.');
+        $this->assertSame(2, $reads, 'the job must read its rows twice, not once per row.');
 
         // The hook constrained the query to names starting with "hooked", proving it was applied.
         $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id]);
+        $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked2->id]);
         $this->assertDatabaseMissing('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id]);
     }
 
