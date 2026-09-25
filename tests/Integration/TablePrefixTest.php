@@ -67,6 +67,16 @@ class TablePrefixTest extends TestCase
         $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
     }
 
+    /** Ruling ER-82: past one candidate chunk the ordered walk restricts itself with raw SQL on the postings alias and the key. */
+    public function test_the_ordered_index_walk_reads_the_prefixed_postings(): void
+    {
+        $this->index();
+        config(['fuzzy-search.bm25.candidate_chunk' => 1]);
+
+        $this->assertSame(['John Doe', 'Johnny Bravo', 'Jon Snow'], User::search('john')->useInvertedIndex()->orderBy('name')->get()->pluck('name')->all());
+        $this->assertSame(['Jon Snow'], User::search('john')->useInvertedIndex()->orderBy('name')->paginate(2, 'page', 2)->pluck('name')->all());
+    }
+
     public function test_did_you_mean_and_suggest_read_the_prefixed_dictionary(): void
     {
         $this->index();
