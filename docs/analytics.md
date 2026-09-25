@@ -29,7 +29,8 @@ Each row holds: `term` (the raw search term, or `''` when `hash_terms` is on), `
 One row per executed search **attempt**, which is not always one row per user query:
 
 - `fallback()` writes one row per algorithm it tries — a query that misses on `fuzzy` and then matches on `soundex` is two rows (two `popular()` searches, and the miss's latency is mixed into `averageLatency()`).
-- `FederatedSearch` writes one row per inner model — "laptop" across three models is three rows.
+- `FederatedSearch` writes one row per inner model that uses the `Searchable` trait — "laptop" across three such models is three rows. A model without the trait is searched through the query macros, which fire no event, so it writes no row.
+- Scout searches (the `fuzzy-search` Scout driver) never fire `FuzzySearchExecuted`, so they write no row.
 - Nothing is recorded for a cache hit — a `cache()` call, or any search while `cache.enabled` is on — (the search never runs), for `count()` or `exists`-style calls (only `get()`, `paginate()` and `simplePaginate()` fire the event), for terms shorter than `min_search_length`, or for an in-memory search with an empty term or no `searchIn()` columns (on a single-model search; `FederatedSearch::simplePaginate()` records each inner model's own fetch).
 - `simplePaginate($n)` records the page size, not the `$n + 1` rows it fetches to look ahead for a next page.
 
