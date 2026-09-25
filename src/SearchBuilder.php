@@ -3390,23 +3390,8 @@ class SearchBuilder
             }
         });
 
-        if ($suggestQuery instanceof EloquentBuilder) {
-            // NF-1: a statically hidden column is not selected either — narrowed only where that is
-            // safe: the caller selected nothing and nothing is eager-loaded (a relation needs keys
-            // a narrowed list could leave out). A table that cannot be listed keeps its select.
-            if ($suggestQuery->getQuery()->columns === null && $suggestQuery->getEagerLoads() === [] && $paths === []) {
-                $model   = $suggestQuery->getModel();
-                $columns = SearchableColumns::onTable($model->getConnection(), $model->getTable());
-                $shown   = array_filter($columns, fn (string $c) => $c === $model->getKeyName() || self::shows($model, $c));
-
-                if ($shown !== [] && count($shown) < count($columns)) {
-                    $suggestQuery->select(array_map(fn (string $c) => ($own[$c] ?? '') . $c, array_values($shown)));
-                }
-            }
-
-            if ($paths !== []) {
-                $suggestQuery->with($paths);
-            }
+        if ($suggestQuery instanceof EloquentBuilder && $paths !== []) {
+            $suggestQuery->with($paths);
         }
 
         return $suggestQuery;
@@ -3417,7 +3402,8 @@ class SearchBuilder
      * hide by its class-level $hidden/$visible (for a relation column, each segment on the model
      * that holds it, then the leaf on the related model). A row that matches only through a
      * hidden column can yield no suggestion (ER-51), so matching it would only use up the rows
-     * the scan fetches (NF-1).
+     * the scan fetches (NF-1). Only the WHERE narrows (ruling ER-67): the SELECT stays as it is,
+     * so an accessor that reads a hidden attribute still has it (Q13).
      *
      * @return array<string, array{relation: ?string, column: string}>
      */

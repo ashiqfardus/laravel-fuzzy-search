@@ -59,6 +59,26 @@ class HiddenEverythingUser extends Model
     ];
 }
 
+/** A visible column whose accessor reads a hidden attribute (Q13: query-time reads keep accessors). */
+class AccessorReadsHiddenUser extends Model
+{
+    use Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+    protected $hidden  = ['email'];
+
+    protected array $searchable = [
+        'columns'   => ['name' => 10, 'email' => 5],
+        'algorithm' => 'like',
+    ];
+
+    public function getNameAttribute($value): string
+    {
+        return ($this->getAttributes()['email'] ?? null) === null ? '(no email loaded)' : $value;
+    }
+}
+
 class HiddenNameAuthor extends Author
 {
     protected $hidden = ['name'];
@@ -210,7 +230,7 @@ class HiddenColumnHighlightTest extends TestCase
     /**
      * NF-1: rows that match only through a hidden column used up the scan's limit x 3 rows, so a
      * visible match behind them was never reached. Statically hidden columns are left out of the
-     * scan's WHERE and SELECT.
+     * scan's WHERE (ruling ER-67: WHERE only; the SELECT is unchanged).
      */
     public function test_hidden_only_matches_do_not_use_up_the_suggestion_scan(): void
     {
@@ -227,8 +247,7 @@ class HiddenColumnHighlightTest extends TestCase
 
         $this->assertSame(['Zqarlo'], $suggestions);
         $this->assertCount(1, $scan);
-        $this->assertStringNotContainsStringIgnoringCase('email', $scan[0], 'the hidden column is neither matched nor selected');
-        $this->assertStringNotContainsString('*', $scan[0]);
+        $this->assertStringNotContainsStringIgnoringCase('email', $scan[0], 'the hidden column is not matched');
     }
 
     public function test_with_every_searchable_column_hidden_suggest_runs_no_query(): void
@@ -256,6 +275,16 @@ class HiddenColumnHighlightTest extends TestCase
             DB::disableQueryLog();
 
             $this->assertSame($exists, substr_count(strtolower($scan), 'exists'), $model);
+        }
+    }
+    /** Ruling ER-67: the scan's SELECT stays as it was, so an accessor reading a hidden attribute still has it. */
+    public function test_an_accessor_reading_a_hidden_attribute_still_suggests(): void
+    {
+        $suggestions = AccessorReadsHiddenUser::search('john')->suggestFrom('table')->suggest(5);
+
+        $this->assertContains('John Doe', $suggestions, json_encode($suggestions));
+        foreach ($suggestions as $suggestion) {
+            $this->assertStringNotContainsString('@', $suggestion);
         }
     }
 }
