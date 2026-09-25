@@ -174,36 +174,37 @@ Each search algorithm is implemented as a driver extending `BaseDriver`:
 
 ### Adding a New Search Algorithm
 
-1. Create a new driver in `src/Drivers/`:
+The package has no runtime driver registration: an algorithm is added in the source, in three
+places. A name must be lower-case letters and underscores.
+
+1. Create a new driver in `src/Drivers/`. `apply()` adds the algorithm's predicate to the query.
+   Build a LIKE with `escapeLike()` and `DbDialect::whereLike()`, as the bundled drivers do, so it
+   carries the `ESCAPE` clause each database needs. Relevance ordering and PHP rescoring are the
+   `SearchBuilder`'s job, so a driver needs nothing else (`getRelevanceExpression()` and
+   `getRelevanceBindings()` are deprecated and never called).
 
 ```php
 <?php
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Query\Builder;
 
 class MyAlgorithmDriver extends BaseDriver
 {
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
-        // Implement your search logic
+        // Example: values that start with the term. $this->config is the merged
+        // fuzzy-search config; your own options live under $this->config['myalgorithm'].
+        DbDialect::whereLike($query, $column, $this->escapeLike($value) . '%', $this->driver, $boolean);
+
         return $query;
-    }
-
-    public function getRelevanceExpression(string $column, string $value): string
-    {
-        return "CASE WHEN {$column} = ? THEN 100 ELSE 0 END";
-    }
-
-    public function getRelevanceBindings(string $value): array
-    {
-        return [$value];
     }
 }
 ```
 
-2. Register in `FuzzySearch.php` in the `$registry` array:
+2. Register it in `FuzzySearch::$registry` (`src/FuzzySearch.php`):
 
 ```php
 protected array $registry = [
@@ -212,19 +213,32 @@ protected array $registry = [
 ];
 ```
 
-3. Add configuration defaults in `config/fuzzy-search.php` if needed
+   That is enough for the paths that hand a name straight to the registry: the `whereFuzzy`-style
+   macros (`whereFuzzy('name', $term, 'myalgorithm')`) and `fallback('myalgorithm')`.
 
-4. Write tests in `tests/Unit/` and `tests/Feature/`
+3. Add the name to the list `SearchBuilder::using()` checks (`$supportedAlgorithms` in
+   `src/SearchBuilder.php`) and to the message in `src/Exceptions/InvalidAlgorithmException.php`.
+   `using()`, a model's `$searchable['algorithm']` and a preset's `algorithm` go through that list
+   first, and throw `InvalidAlgorithmException` for a name that is not on it.
 
-5. Update documentation
+4. Add configuration defaults under `'myalgorithm' => [...]` in `config/fuzzy-search.php` if the
+   driver reads any. A caller's `options()` are merged into that section.
+
+5. Write tests in `tests/Unit/` and `tests/Feature/`, including one through `using()` and one
+   through a macro.
+
+6. Update the algorithm tables in the README (Available Algorithms and Algorithm × Database
+   Compatibility).
 
 ### Database Compatibility
 
-When adding features, ensure compatibility with:
-- MySQL 5.7+
-- PostgreSQL 9.6+
-- SQLite 3.x
-- SQL Server 2016+
+When adding features, ensure compatibility with the databases CI runs (see `.github/workflows/ci.yml`
+and the README's Requirements):
+- MySQL 8.0
+- MariaDB 11.4 (10.6+ expected)
+- PostgreSQL 14
+- SQLite 3
+- SQL Server 2022
 
 Use the `getDriver()` method to handle database-specific logic:
 
@@ -319,6 +333,10 @@ Use conventional commit prefixes:
 
 All new features must include tests. We use PHPUnit with Orchestra Testbench.
 
+The suite runs on `config/fuzzy-search.php` exactly as it ships: `tests/TestCase.php` loads the file whole, and `tests/Unit/ShippedConfigTest.php` fails if the test config drifts from it. A test that needs a different value sets it itself, with `config([...])` in the test or in its class's `defineEnvironment()`, and a one-line comment saying why. Don't add an override to `TestCase`. If the test environment really can't run a shipped value, list it in `ShippedConfigTest::OVERRIDES` with its reason.
+
+Name test methods `test_*` (PHPUnit 12 and 13 no longer read the `@test` annotation).
+
 #### Unit Tests
 
 Test individual components in isolation:
@@ -331,8 +349,7 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 
 class MyFeatureTest extends TestCase
 {
-    /** @test */
-    public function it_does_something_correctly()
+    public function test_it_does_something_correctly(): void
     {
         $result = // ... test code
         
@@ -350,19 +367,21 @@ Test complete workflows:
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
-use Ashiqfardus\LaravelFuzzySearch\Tests\TestModels\User;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+
+require_once __DIR__ . '/../TestModels.php'; // the shared test models (User, Product, ...)
 
 class SearchTest extends TestCase
 {
-    /** @test */
-    public function it_searches_with_typo_tolerance()
+    public function test_it_searches_with_typo_tolerance(): void
     {
-        User::create(['name' => 'John Doe']);
-        
-        $results = User::search('jonh')->get();
-        
+        // TestCase seeds a few users; add the row this test is about.
+        User::create(['name' => 'Zelda Quill', 'email' => 'zelda@example.com']);
+
+        $results = User::search('zedla')->get();   // a transposition of "zelda"
+
         $this->assertCount(1, $results);
-        $this->assertEquals('John Doe', $results->first()->name);
+        $this->assertEquals('Zelda Quill', $results->first()->name);
     }
 }
 ```
@@ -423,7 +442,7 @@ vendor/bin/phpunit tests/Unit/SearchBuilderTest.php
 # Run specific test method
 vendor/bin/phpunit --filter test_it_searches_correctly
 
-# Run benchmarks
+# Run the Performance suite (timing and memory bounds; CI does not run it)
 composer benchmark
 ```
 

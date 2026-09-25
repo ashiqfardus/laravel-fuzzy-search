@@ -45,7 +45,7 @@
     "scripts": {
         "test": "vendor/bin/phpunit",
         "test-coverage": "vendor/bin/phpunit --coverage-html coverage",
-        "benchmark": "php artisan fuzzy-search:benchmark"
+        "benchmark": "vendor/bin/phpunit --testsuite Performance"
     },
     "extra": {
         "laravel": {
