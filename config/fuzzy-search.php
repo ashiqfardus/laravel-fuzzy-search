@@ -24,10 +24,14 @@ return [
     | Candidate ceiling for PHP-side rescoring
     |--------------------------------------------------------------------------
     |
-    | executeSearch() fetches up to this many rows from SQL before PHP rescoring
-    | and slicing to the requested limit/offset. Higher = more accurate top-N
-    | at the cost of fetching more rows. For indexed search (Phase 1), this
-    | ceiling is replaced by BM25 scoring in SQL.
+    | The LIKE and extended paths fetch up to this many rows from SQL before PHP
+    | rescoring and slicing to the requested limit/offset; paginate() serves the
+    | rows past it in database order. Higher = more accurate top-N at the cost
+    | of fetching more rows. The index path (useInvertedIndex()) ranks every
+    | match with BM25 instead. There, a model that overrides getSearchScore()
+    | has its first max_candidates matches re-ranked by it (deeper pages keep
+    | the BM25 order), and an orderBy() on a model whose connection is not the
+    | index's is ordered over its top max_candidates matches.
     |
     | Also the largest page size on every path (paginate/simplePaginate clamp
     | perPage to it) and the most rows one model contributes to a federated search.
@@ -157,9 +161,11 @@ return [
     | Synonyms
     |--------------------------------------------------------------------------
     |
-    | Default synonym mappings for every search. A model's $searchable['synonyms']
-    | and a query's withSynonyms() are merged on top: a word they map replaces
-    | its mapping here.
+    | Every search's default synonyms: a lower-case word => the words it also
+    | finds, as if withSynonyms() were called first. A model's
+    | $searchable['synonyms'] and a query's withSynonyms() are merged on top;
+    | a word they also set takes their synonyms. The Scout engine, FuzzySearch::on()
+    | and the query-builder macros apply none.
     |
     */
     'synonyms' => [
