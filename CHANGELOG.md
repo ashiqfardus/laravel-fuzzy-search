@@ -17,6 +17,7 @@ Upgrading from 2.0.x: read the [upgrade guide](https://github.com/ashiqfardus/la
 - `min_search_length` applies on every path: a one-character term matches nothing on `paginate()`, `count()` and `getFacets()` too. A model with no searchable column matches nothing instead of every row.
 - `orderBy()` on the builder replaces the relevance order on every path; it used to be re-sorted away or ignored. On the index path, a model on another connection than the index is ordered over its top `max_candidates` matches.
 - `similar_text` enforces `similar_text.min_percentage` (70): far fewer rows on long columns. `0` restores 2.0's results.
+- The trigram LIKE fallback drops one- and two-character grams: fewer rows, and a short-word typo such as `jhon` needs `fuzzy` or `levenshtein`.
 - Accent folding (`unicode.accent_insensitive`, on by default) searches the accent-free form beside the typed term; it used to replace it. PostgreSQL's `unaccent()` runs only on an explicit opt-in.
 - Auto-detection picks text columns only, and never a hidden or secret-named column; zero-config models are now indexed.
 - `searchIn()` relation paths need a `Relation` return type or a path declared in `$searchable['columns']`.
@@ -87,6 +88,7 @@ Upgrading from 2.0.x: read the [upgrade guide](https://github.com/ashiqfardus/la
 - suggest() on an indexed model returns dictionary completions (lower-case terms) instead of column values; use suggestFrom('table') for the v2.0 behaviour.
 - `WhitespaceTokenizer` keeps combining marks (`\p{M}`) inside tokens. Indexes built from Bengali, Hindi, Thai or decomposed-accent text need one `fuzzy-search:rebuild --fresh`.
 - The trigram fallback's whole-term pattern is the term itself; previously it was a concatenation of the trigrams and never matched.
+- The trigram LIKE fallback no longer matches almost every row. It pads the term and trims each trigram, so the edge grams were one or two characters long: `using('trigram')` with `xyzq` bound `%x%` and `%xy%` and returned every row holding an `x`. A gram shorter than three characters is now dropped, unless the term itself is shorter, so the fallback returns fewer rows; a near-match (`smiht` for `Smith`) is still found, and a one- or two-letter term still matches as a substring. A typo that leaves no three-character run in common with the word (`jhon` for `John`) is no longer matched by the fallback; use `fuzzy` or `levenshtein` for typos in short words. PostgreSQL's native `similarity()` path (`use_native_functions`) is unchanged.
 - A model whose searchable columns include an accessor is reindexed on every save unless it declares `reindex_on` (previously such models never reindexed after an update).
 - Synchronous indexing (`indexing.async = false`) reloads the model from the database before indexing, exactly like the queued job, so relations loaded before the change are not written to the index.
 - `paginate()` now ranks across up to max_candidates rows before slicing (previously scored within the current page only) and works with extended()/searchBoolean().

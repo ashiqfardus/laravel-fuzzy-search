@@ -263,7 +263,7 @@ The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `
 | `levenshtein` | Strict typo matching | Configurable | Medium |
 | `soundex` | Phonetic matching (English names) | Phonetic | Fast |
 | `metaphone` | Phonetic matching (more accurate) | Phonetic | Fast |
-| `trigram` | Similarity matching | High | Medium |
+| `trigram` | Similarity matching | Medium (a shared three-letter run) | Medium |
 | `similar_text` | Percentage similarity (`similar_text.min_percentage`, default 70) | None (the value must contain the term) | Medium |
 | `simple` / `like` | Exact substring (LIKE) | None | Fastest |
 
@@ -1302,7 +1302,7 @@ php artisan fuzzy-search:explain User --term="john"
 | **simple** | Fastest | None | Exact matches, SKUs | Any size |
 | **fuzzy** | Very Fast | High | General purpose | < 100K rows |
 | **soundex** | Very Fast | Phonetic | Name searches | < 100K rows |
-| **trigram** | Fast | Very High | Similarity matching | < 50K rows |
+| **trigram** | Fast | Medium (a shared three-letter run) | Similarity matching | < 50K rows |
 | **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
 | **BM25 index** | Fast at scale | Native (dictionary expansion) | Large tables, ranked results | 10K+ rows |
 
