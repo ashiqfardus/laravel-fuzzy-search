@@ -36,6 +36,24 @@ class RescoringCapTest extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * Seconds $search spends outside the database. The bound is on PHP rescoring: the SQL for a
+     * many-leaf LIKE over long text is the database's own cost (about 30 s on SQL Server under
+     * emulation, well under a second on SQLite) and would make a wall-clock bound flaky.
+     */
+    private function phpSeconds(callable $search): float
+    {
+        $sqlMs = 0.0;
+        DB::listen(function ($query) use (&$sqlMs) {
+            $sqlMs += $query->time;
+        });
+
+        $started = microtime(true);
+        $search();
+
+        return microtime(true) - $started - $sqlMs / 1000;
+    }
+
     /** A builder whose protected scorers the test can call. */
     private function scorer(): SearchBuilder
     {
@@ -139,13 +157,12 @@ class RescoringCapTest extends TestCase
 
         $search = fn () => (new SearchBuilder(LongDoc::query(), app(FuzzySearch::class)))->searchIn(['title', 'body'])->take(10);
 
-        $started = microtime(true);
-        $like    = $search()->search($term)->using('like')->get();
-        $likeSeconds = microtime(true) - $started;
-
-        $started  = microtime(true);
-        $extended = $search()->extended($term . ' | zzzz')->get();
-        $extendedSeconds = microtime(true) - $started;
+        $likeSeconds     = $this->phpSeconds(function () use ($search, $term, &$like) {
+            $like = $search()->search($term)->using('like')->get();
+        });
+        $extendedSeconds = $this->phpSeconds(function () use ($search, $term, &$extended) {
+            $extended = $search()->extended($term . ' | zzzz')->get();
+        });
 
         $this->assertCount(10, $like);
         $this->assertCount(10, $extended);
@@ -209,9 +226,9 @@ class RescoringCapTest extends TestCase
         $leaves = array_map(fn (int $i) => substr(str_repeat("brawnfaxjumptlazi{$i}", 8), 0, 120), range(1, 15));
         $query  = 'quick | ' . implode(' | ', $leaves);
 
-        $started = microtime(true);
-        $rows    = (new SearchBuilder(LongDoc::query(), app(FuzzySearch::class)))->searchIn(['title', 'body'])->extended($query)->take(10)->get();
-        $seconds = microtime(true) - $started;
+        $seconds = $this->phpSeconds(function () use ($query, &$rows) {
+            $rows = (new SearchBuilder(LongDoc::query(), app(FuzzySearch::class)))->searchIn(['title', 'body'])->extended($query)->take(10)->get();
+        });
 
         $this->assertCount(10, $rows);
         $this->assertLessThan(2.0, $seconds, '16-leaf extended rescoring over 1,000 rows x 2 x 2KB (about 0.4 s; 3 s before ER-55)');
