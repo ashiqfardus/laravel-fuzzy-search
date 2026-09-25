@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Observers;
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Model;
 
@@ -53,7 +54,10 @@ class SearchableObserver
      * fuzzy-search:rebuild's backfill (and each --async batch job's): fill the shadow columns of
      * rows saved before a column existed, or changed without model events. One UPDATE ... CASE
      * per shadow column and 600 rows (1,800 bindings, under SQL Server's 2,100), none for a row
-     * whose shadow value is already right, and no model events.
+     * whose shadow value is already right, and no model events. The values are keyed by model
+     * key, and PHP turns an all-digit key ('12') into an int: a string key is bound as a string
+     * (RankedCandidates::keysFor()), or SQL Server converts the key column to int and fails on
+     * its first other key (22018).
      *
      * @param iterable<Model> $models one model class
      */
@@ -79,11 +83,12 @@ class SearchableObserver
 
         foreach ($byColumn as $shadow => $values) {
             foreach (array_chunk($values, 600, true) as $chunk) {
+                $ids      = RankedCandidates::keysFor($first, array_keys($chunk));
                 $bindings = [];
-                foreach ($chunk as $id => $value) {
-                    array_push($bindings, $id, $value);
+                foreach (array_values($chunk) as $i => $value) {
+                    array_push($bindings, $ids[$i], $value);
                 }
-                array_push($bindings, ...array_keys($chunk));
+                array_push($bindings, ...$ids);
 
                 $connection->update(
                     "update {$table} set {$grammar->wrap($shadow)} = case {$key}"
