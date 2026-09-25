@@ -93,7 +93,9 @@ class IndexManager
             $posted = $this->postedTerms($modelType, [$modelId]);
 
             $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
-            $this->deletePostings($modelType, [$modelId]);
+            if ($posted !== []) { // see write()
+                $this->deletePostings($modelType, [$modelId]);
+            }
 
             // The document row, or the placeholder the claim just inserted.
             DB::table('fuzzy_index_documents')
@@ -429,7 +431,15 @@ class IndexManager
                 }
             }
             $this->adjustDocCounts($deltas);
-            $this->deletePostings($modelType, $ids);
+            // No DELETE when nothing is posted: on MySQL/MariaDB one that matches nothing still
+            // gap-locks the end of postings_model_idx, where another first index's postings
+            // insert then waits while that write waits on a new word this one inserted first: a
+            // deadlock on every pair of first indexes sharing a new word. $posted is every
+            // posting of these rows (the term foreign key cascades), and under the claim only a
+            // flush (ER-69) can change them.
+            if ($posted !== []) {
+                $this->deletePostings($modelType, $ids);
+            }
 
             // Rows leaving the index (gone, soft-deleted, no text left) lose their document row,
             // and rows never indexed lose the placeholder the claim inserted.

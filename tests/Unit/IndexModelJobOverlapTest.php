@@ -249,25 +249,56 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertSame(['john', 'waited'], $terms);
     }
 
+    public static function crossedTerms(): array
+    {
+        return [
+            // Each row's new word is the other row's old one, all in the dictionary already.
+            'words in the dictionary, texts swapped' => [
+                [['alpha', 'qa'], ['bravo', 'qb']], [['bravo', 'qa'], ['alpha', 'qb']],
+                '/^\s*update\b.*fuzzy_index_terms/is', // the first change to the dictionary
+                ['alpha' => 1, 'bravo' => 1],
+            ],
+            // First index, every word new to the dictionary.
+            'first index, new words' => [
+                null, [['kilo lima', 'mike'], ['lima kilo', 'november']],
+                '/^\s*(insert|merge)\b.*fuzzy_index_terms/is', // the first insert into the dictionary
+                ['kilo' => 2, 'lima' => 2],
+            ],
+        ];
+    }
+
     /**
-     * Two writes for different rows whose dictionary terms cross (row A's old words are row B's
-     * new ones and the other way round) must not deadlock (ER-71). Each write used to lock its
-     * old terms first (the doc_count give-back) and its new ones after (the upsert), so A held
-     * "alpha" waiting for "bravo" while B held "bravo" waiting for "alpha". A write now locks
-     * all its terms, old and new, in one sorted order before it changes any, so the second
-     * write waits for the first instead. No attempt may roll back: a retry would hide a deadlock.
+     * Two writes for different rows whose dictionary terms cross must not deadlock (ER-71).
+     * - Words already in the dictionary: each write used to lock its old terms first (the
+     *   doc_count give-back) and its new ones after (the upsert), so A held "alpha" waiting for
+     *   "bravo" while B held "bravo" waiting for "alpha". A write now locks the existing terms
+     *   it touches in one id order before it changes any, so the second write waits instead.
+     * - New words on a first index: on MySQL/MariaDB a postings DELETE that matched nothing took
+     *   a gap lock at the end of postings_model_idx, which the other write's postings insert
+     *   then waited on while that write waited on this one's new word. A write with nothing
+     *   posted sends no DELETE.
+     * No attempt may roll back: a retry would hide a deadlock.
+     *
+     * @param array{array{string, string}, array{string, string}}|null $before [name, email] of rows A and B, indexed first
+     * @param array{array{string, string}, array{string, string}}      $after  [name, email] of rows A and B, indexed in the race
+     * @param array<string, int>                                        $counts expected doc_count per term afterwards
      */
-    public function test_writes_whose_terms_cross_neither_deadlock_nor_retry(): void
+    #[DataProvider('crossedTerms')]
+    public function test_writes_whose_terms_cross_neither_deadlock_nor_retry(?array $before, array $after, string $pauseAt, array $counts): void
     {
         $a = User::where('name', 'John Doe')->value('id');
         $b = User::where('name', 'Jane Doe')->value('id');
-        DB::table('users')->where('id', $a)->update(['name' => 'alpha', 'email' => 'qa']);
-        DB::table('users')->where('id', $b)->update(['name' => 'bravo', 'email' => 'qb']);
-        app(IndexManager::class)->indexBatch(User::whereKey([$a, $b])->get());
+        $set = function (array $texts) use ($a, $b) {
+            foreach ([$a => $texts[0], $b => $texts[1]] as $id => [$name, $email]) {
+                DB::table('users')->where('id', $id)->update(['name' => $name, 'email' => $email]);
+            }
+        };
 
-        // The texts swap: each row's new word is the other row's old one.
-        DB::table('users')->where('id', $a)->update(['name' => 'bravo']);
-        DB::table('users')->where('id', $b)->update(['name' => 'alpha']);
+        if ($before !== null) {
+            $set($before);
+            app(IndexManager::class)->indexBatch(User::whereKey([$a, $b])->get());
+        }
+        $set($after);
 
         $rollbacks = sys_get_temp_dir() . '/fuzzy-race-rollbacks-' . getmypid() . '-' . uniqid();
         $count     = function () use ($rollbacks) {
@@ -277,7 +308,7 @@ class IndexModelJobOverlapTest extends TestCase
         [$childError, $parentError] = $this->race(
             function () use ($count, $a) { $count(); (new IndexModelJob(User::class, $a))->handle(app(IndexManager::class)); },
             function () use ($count, $b) { $count(); (new IndexModelJob(User::class, $b))->handle(app(IndexManager::class)); },
-            '/^\s*update\b.*fuzzy_index_terms/is', // the first change to the dictionary
+            $pauseAt,
             1_000_000,
             300_000,
         );
@@ -288,8 +319,9 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertNull($childError);
         $this->assertNull($parentError);
         $this->assertSame(0, $retried, 'a write rolled back and retried');
-        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'alpha')->value('doc_count'));
-        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'bravo')->value('doc_count'));
+        foreach ($counts as $term => $count) {
+            $this->assertSame($count, (int) DB::table('fuzzy_index_terms')->where('term', $term)->value('doc_count'), $term);
+        }
     }
 
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
