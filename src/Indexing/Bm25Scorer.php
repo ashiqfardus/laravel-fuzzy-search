@@ -112,6 +112,13 @@ class Bm25Scorer
      * column, so the key is compared as a string (PostgreSQL has no integer = varchar operator);
      * only for a query on the connection the index lives on, the default one.
      *
+     * On MySQL and MariaDB a string cast takes the connection's collation, and a connection whose
+     * collation differs from model_id's failed with 1267 "Illegal mix of collations". The key is
+     * cast into model_id's own character set and collation (see modelIdCollation()), explicitly, so
+     * the comparison is the column's own whatever the connection says, and the index on model_id is
+     * still used. A binary comparison (CAST AS BINARY, COLLATE utf8mb4_bin) is also
+     * collation-free, but MySQL then reads every posting of the term for each row.
+     *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
      */
@@ -121,7 +128,7 @@ class Bm25Scorer
         $driver = $query->getConnection()->getDriverName();
         $key    = $query->getGrammar()->wrap($qualifiedKey);
         $key    = match (true) {
-            DbDialect::isMySqlFamily($driver) => "CAST({$key} AS CHAR)",
+            DbDialect::isMySqlFamily($driver) => self::castToModelId($query->getConnection(), $key),
             $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191))",
             $driver === DbDialect::SQLITE     => "CAST({$key} AS TEXT)",
             default                           => "CAST({$key} AS VARCHAR)",
@@ -135,6 +142,43 @@ class Bm25Scorer
                 ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_name', $cols))
                 ->whereRaw($postings->getGrammar()->wrap('fzr.model_id') . " = {$key}");
         });
+    }
+
+    /** @var array<string, array{string, string}|null> connection => [charset, collation] of fuzzy_index_postings.model_id */
+    private static array $modelIdCollations = [];
+
+    /** MySQL/MariaDB: $key cast into model_id's character set and collation, or plain CAST AS CHAR if they cannot be read. */
+    private static function castToModelId(\Illuminate\Database\ConnectionInterface $connection, string $key): string
+    {
+        $collation = self::modelIdCollation($connection);
+
+        return $collation === null ? "CAST({$key} AS CHAR)" : "CAST({$key} AS CHAR CHARACTER SET {$collation[0]}) COLLATE {$collation[1]}";
+    }
+
+    /**
+     * fuzzy_index_postings.model_id's character set and collation, read from information_schema
+     * once per connection, database and table prefix for the process. Names that are not plain
+     * identifiers are never written into SQL.
+     *
+     * @return array{string, string}|null
+     */
+    private static function modelIdCollation(\Illuminate\Database\ConnectionInterface $connection): ?array
+    {
+        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+
+        if (!array_key_exists($id, self::$modelIdCollations)) {
+            $column = $connection->selectOne(
+                'select character_set_name as charset, collation_name as collation from information_schema.columns'
+                . ' where table_schema = database() and table_name = ? and column_name = ?',
+                [$connection->getTablePrefix() . 'fuzzy_index_postings', 'model_id']
+            );
+
+            self::$modelIdCollations[$id] = $column !== null && preg_match('/^\w+$/', (string) $column->charset) && preg_match('/^\w+$/', (string) $column->collation)
+                ? [(string) $column->charset, (string) $column->collation]
+                : null;
+        }
+
+        return self::$modelIdCollations[$id];
     }
 
     /**

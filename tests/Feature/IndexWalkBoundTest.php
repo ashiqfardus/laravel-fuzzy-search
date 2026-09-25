@@ -169,6 +169,29 @@ class IndexWalkBoundTest extends TestCase
     }
 
     /**
+     * N3: the postings subquery compares model_id with the key cast to a string. CAST(... AS CHAR)
+     * took the connection's collation, so a connection whose collation differs from the index
+     * table's failed with 1267 "Illegal mix of collations" on every ordered search past one chunk.
+     */
+    public function test_the_ordered_walk_runs_when_the_connection_collation_differs_from_the_index_tables(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('collation_connection is MySQL/MariaDB-only; the CI MySQL and MariaDB jobs run this.');
+        }
+
+        $this->seedLateMatches();
+        app(IndexManager::class)->indexBatch(WalkScoutUser::query()->where('name', 'like', 'Zebra%')->get());
+        config(['fuzzy-search.bm25.candidate_chunk' => 20, 'scout.driver' => 'fuzzy-search']);
+
+        $table = DB::selectOne("select collation_name as c from information_schema.columns where table_schema = database() and table_name = 'fuzzy_index_postings' and column_name = 'model_id'")->c;
+        DB::statement('SET collation_connection = ' . ($table === 'utf8mb4_general_ci' ? "'utf8mb4_unicode_ci'" : "'utf8mb4_general_ci'"));
+
+        $expected = array_map(fn ($i) => sprintf('Zebra %03d', $i), range(15, 29));
+        $this->assertSame($expected, User::search('zebra')->typoTolerance(0)->useInvertedIndex()->orderBy('name')->paginate(15, 'page', 2)->pluck('name')->all());
+        $this->assertSame($expected, collect((new \Laravel\Scout\Builder(new WalkScoutUser, 'zebra'))->orderBy('name')->paginate(15, 'page', 2)->items())->pluck('name')->all());
+    }
+
+    /**
      * Ruling ER-82: an index on another connection than the model's cannot be joined, so the
      * ordered window is the top max_candidates ranked ids, listed.
      */
