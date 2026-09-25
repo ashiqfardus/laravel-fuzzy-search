@@ -61,7 +61,7 @@ analytics, `suggest()` and the tokenizers.
   `tableSearch()` are unaffected.
 - **A term made only of stop words matches nothing.** With `ignoreStopWords()`, `search('the')`
   applied no condition on the LIKE path and returned every row (the index path returned none); it
-  now returns no rows and a total of 0 everywhere.
+  now returns no rows and a total of 0 on both. An `extended()` query drops no stop words, so it is unchanged.
 - **A search on a model with no searchable column now returns nothing instead of every row.**
   When a model declares no `$searchable['columns']`, auto-detection finds none (every text column
   hidden, say) and `searchIn()` is not called, `search()`, `searchOn()`, the `searchFuzzy()` scope
