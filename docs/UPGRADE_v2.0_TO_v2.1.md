@@ -407,10 +407,9 @@ through `get()`) now agree.
 - **A plain query builder keeps its `where()`s on the index path.** `new SearchBuilder(DB::table('notes')->where(...), app(FuzzySearch::class))`
   with `useInvertedIndex(Note::class)` used to search every row the model can see. It now runs inside
   the model's query, so the builder's wheres and joins apply alongside the model's global scopes.
-  The builder must select from the model's table, unaliased (`DB::table('notes as n')` is a SQL
-  error), and a narrowed `select()` must include the primary key: the ranked rows are matched back
-  by it, so without it the search returns no rows while `count()` and `paginate()->total()` still
-  count them.
+  The builder must select from the model's table (an alias works: `DB::table('notes as n')`), and
+  a narrowed `select()` must include the primary key: the ranked rows are matched back by it, so
+  without it the search returns no rows while `count()` and `paginate()->total()` still count them.
 - **A `join()` that narrows the rows counts as a constraint, like a `where()`.** On the index path,
   `count()` and `paginate()->total()` now count only the models the join lets through (each once,
   however many rows it joins), and `suggest()` / `didYouMean()` treat the query as constrained
