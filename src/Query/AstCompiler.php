@@ -25,12 +25,17 @@ class AstCompiler
      * @param array<string, string> $qualified    direct column => "table." prefix it is written
      *                                            with in SQL (SearchBuilder::qualifiedColumnMap());
      *                                            field scopes still resolve against the bare names
+     * @param string[]|null         $listed       the fields the unknown-field message may name, as it
+     *                                            names them ("email", "author.name"): SearchBuilder
+     *                                            leaves out those the model hides (ruling ER-95). It
+     *                                            narrows the message only; null names every field
      */
     public function __construct(
         private readonly string $dbDriver = 'mysql',
         private readonly int $typoDistance = 0,
         private readonly array $fuzzyOptions = [],
         private readonly array $qualified = [],
+        private readonly ?array $listed = null,
     ) {}
 
     /**
@@ -160,6 +165,9 @@ class AstCompiler
             foreach ($leaves as $leaf) {
                 $known[] = $path . '.' . $leaf;
             }
+        }
+        if ($this->listed !== null) {
+            $known = array_values(array_intersect($known, $this->listed));
         }
         throw QuerySyntaxException::unknownSearchField($field, $known);
     }

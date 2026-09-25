@@ -50,7 +50,7 @@ class Post extends Model
         return $this->belongsTo(Author::class, 'author_id');
     }
 
-    /** Untyped method that fails when invoked: isRelationPath() must reject it without calling it (ER-50). */
+    /** Untyped method that fails when invoked: relationPath() must reject it without calling it (ER-50). */
     public function brokenRelation()
     {
         throw new \RuntimeException('relation construction failed');
