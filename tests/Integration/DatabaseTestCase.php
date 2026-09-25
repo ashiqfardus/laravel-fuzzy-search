@@ -33,10 +33,9 @@ abstract class DatabaseTestCase extends BaseTestCase
     {
         $this->configureTestDatabaseConnection($app);
 
-        $app['config']->set('fuzzy-search', array_merge(
-            require __DIR__ . '/../../config/fuzzy-search.php',
-            ['use_native_functions' => false, 'legacy_dispatch' => false]
-        ));
+        // The shipped config, loaded whole, as in TestCase. Tests\Integration\ShippedConfigTest
+        // fails on any override here.
+        $app['config']->set('fuzzy-search', require __DIR__ . '/../../config/fuzzy-search.php');
     }
 
     protected function setUpSchema(): void
