@@ -88,16 +88,23 @@ git checkout -b fix/bug-description
 
 ```
 src/
+├── Analytics/            # Persisted search log (analytics.enabled)
+│   ├── RecordSearchLog.php
+│   └── SearchAnalytics.php
 ├── Console/              # Artisan commands
+│   ├── Concerns/ValidatesInput.php
 │   ├── AddShadowColumnCommand.php
+│   ├── AnalyticsCommand.php
+│   ├── AnalyticsPruneCommand.php
 │   ├── BenchmarkCommand.php
 │   ├── ClearCommand.php
 │   ├── ExplainCommand.php
 │   ├── FlushCommand.php
 │   ├── IndexCommand.php
 │   ├── RebuildCommand.php
-│   └── StatusCommand.php
-├── Drivers/              # Search algorithm drivers (8 total)
+│   ├── StatusCommand.php
+│   └── UpgradeV1Command.php
+├── Drivers/              # Search algorithm drivers (7 algorithm drivers + BaseDriver)
 │   ├── BaseDriver.php
 │   ├── FuzzyDriver.php
 │   ├── LevenshteinDriver.php
@@ -112,20 +119,36 @@ src/
 │   ├── EmptySearchTermException.php
 │   ├── InvalidAlgorithmException.php
 │   ├── InvalidConfigException.php
+│   ├── LaravelFuzzySearchException.php
+│   ├── QuerySyntaxException.php
 │   └── SearchableColumnsNotFoundException.php
 ├── Facades/              # Laravel facades
-│   └── FuzzySearch.php
+│   ├── FuzzySearch.php
+│   └── SearchAnalytics.php
+├── Http/Resources/       # JSON API resources
+│   ├── FuzzySearchCollection.php
+│   └── FuzzySearchResource.php
 ├── Indexing/             # BM25 inverted-index engine
 │   ├── Bm25Scorer.php
 │   ├── IndexManager.php
+│   ├── NgramTokenizer.php
 │   ├── NullStemmer.php
+│   ├── Pipeline.php
 │   ├── PorterStemmer.php
+│   ├── RankedCandidates.php
+│   ├── ScriptAwareTokenizer.php
 │   ├── StemmerInterface.php
+│   ├── TermExpander.php
 │   ├── TokenizerInterface.php
 │   └── WhitespaceTokenizer.php
+├── Integrations/Filament/
+│   └── HasFuzzyGlobalSearch.php
 ├── Jobs/                 # Queue jobs
+│   ├── Concerns/ConfiguresRetryLimits.php
 │   ├── IndexModelJob.php
-│   └── RebuildIndexJob.php
+│   ├── RebuildIndexJob.php
+│   ├── RecordSearchLogJob.php
+│   └── ReindexModelJob.php
 ├── Observers/            # Eloquent model observers for auto-indexing
 │   ├── SearchableIndexingObserver.php
 │   └── SearchableObserver.php
@@ -137,6 +160,13 @@ src/
 │   └── Token.php
 ├── Scout/                # Laravel Scout engine adapter
 │   └── FuzzySearchEngine.php
+├── Support/              # Shared helpers (dialects, accents, UTF-8, stop words, columns)
+│   ├── Accents.php
+│   ├── DbDialect.php
+│   ├── IndexQuery.php
+│   ├── SearchableColumns.php
+│   ├── StopWords.php
+│   └── Utf8.php
 ├── Traits/               # Model traits
 │   ├── Fuzzy.php
 │   └── Searchable.php
@@ -152,14 +182,14 @@ src/
 #### SearchBuilder
 The fluent API that users interact with (`Model::search('term')->...`). Handles query configuration, column weighting, algorithm selection, text processing (stop words, synonyms), caching, BM25 index routing, and result formatting.
 
-#### Drivers (8 algorithms)
+#### Drivers (7 algorithm drivers + BaseDriver)
 Each search algorithm is implemented as a driver extending `BaseDriver`:
 - `FuzzyDriver`: General-purpose LIKE-pattern fuzzy matching
-- `LevenshteinDriver`: PHP-side edit-distance filtering
+- `LevenshteinDriver`: LIKE patterns for up to `levenshtein.max_distance` edits (a native function with `use_native_functions`)
 - `SoundexDriver`: Phonetic matching via SOUNDEX()
-- `MetaphoneDriver`: Double-metaphone phonetic matching (requires shadow column)
-- `TrigramDriver`: N-gram similarity (PostgreSQL pg_trgm or PHP fallback)
-- `SimilarTextDriver`: PHP `similar_text()` percentage threshold
+- `MetaphoneDriver`: PHP `metaphone()` codes matched against a `{column}_metaphone` shadow column
+- `TrigramDriver`: N-gram similarity (PostgreSQL pg_trgm with `use_native_functions`, otherwise trigram LIKE patterns)
+- `SimilarTextDriver`: a contains-LIKE plus a SQL length bound that enforces `similar_text.min_percentage`
 - `SimpleDriver`: Basic LIKE `%term%` query
 - `like`: Alias for SimpleDriver
 
@@ -240,19 +270,13 @@ and the README's Requirements):
 - SQLite 3
 - SQL Server 2022
 
-Use the `getDriver()` method to handle database-specific logic:
+Inside a driver, branch on `$this->driver` and use `$this->isMySqlFamily()` for MySQL and MariaDB together (on Laravel 11+ a MariaDB connection reports `mariadb`); elsewhere use `DbDialect::isMySqlFamily($query->getConnection()->getDriverName())`.
 
 ```php
-$driver = $query->getConnection()->getDriverName();
-
-switch ($driver) {
-    case 'mysql':
-        // MySQL-specific code
-        break;
-    case 'pgsql':
-        // PostgreSQL-specific code
-        break;
-    // ...
+if ($this->isMySqlFamily()) {
+    // MySQL and MariaDB
+} elseif ($this->driver === 'pgsql') {
+    // PostgreSQL
 }
 ```
 
@@ -512,7 +536,7 @@ The package carries no version string — Packagist versions come from git tags,
 is a tag plus release notes, not a file edit.
 
 1. **CI green on the release commit.** Every row of `test-sqlite`, `test-mysql`, `test-pgsql`,
-   `test-mariadb`, `test-sqlsrv` and both `test-filament` legs.
+   `test-mariadb`, `test-sqlsrv`, `test-scout10` and both `test-filament` legs.
 2. **CHANGELOG.** Give `[x.y.z]` its date (`## [2.1.0] — 2026-09-18`, em-dash), keep the
    subsection order Added / Changed / Deprecated / Removed / Fixed / Security, and add the
    compare link at the bottom: `[x.y.z]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v<prev>...v<new>`.

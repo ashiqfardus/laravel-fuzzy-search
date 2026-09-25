@@ -10,6 +10,8 @@
 > | `create_fuzzy_index_documents_table` | Creates `fuzzy_index_documents` |
 >
 > The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
+>
+> Installing 2.1 also runs the later migrations on these tables (term_length, binary collation, column_name, model_id widening) and creates the `fuzzy_search_logs` analytics table (`analytics.table`); all are harmless if unused.
 
 ## Breaking changes
 
@@ -44,7 +46,7 @@ To tune the candidate ceiling:
 'max_candidates' => 500,  // lower for faster queries on large tables
 ```
 
-> **Note:** `paginate()` and `simplePaginate()` are not affected — they continue to use DB-level pagination.
+> **Note:** `paginate()` and `simplePaginate()` rank the same way: they rescore up to `max_candidates` rows and cut the page from that ranking. Lowering `max_candidates` also lowers the largest page size and how deep ranked pagination reaches.
 
 ---
 
@@ -70,9 +72,9 @@ php artisan fuzzy-search:rebuild "App\Models\User"   # fills name_metaphone for 
 
 ---
 
-### No changes for: levenshtein, soundex, simple, like
+### Also changed: `simple`, `like` and `soundex`
 
-These algorithm names behave identically to v1.x (same driver, same SQL).
+`using('simple')` and `using('like')` ran the Levenshtein pattern fallback in v1.x (`using()` turned `like` into `simple`, which had no driver). They now run `SimpleDriver`, a plain substring LIKE with no typo tolerance; use `using('levenshtein')` to keep v1.x's matching. On MySQL, MariaDB and PostgreSQL with native functions, `soundex` compares the SOUNDEX of the value's first and last word instead of the whole value. `levenshtein` is unchanged.
 
 ---
 
@@ -159,6 +161,8 @@ For large table rebuilds (>100k rows) use `--async`:
 php artisan fuzzy-search:rebuild "App\Models\User" --async --queue=indexing
 ```
 
+`--async` dispatches a job batch and needs Laravel's `job_batches` table: `php artisan make:queue-batches-table` (Laravel 10: `queue:batches-table`), then `php artisan migrate`.
+
 ### New Phase 1 config keys
 
 | Key | Default | Purpose |
@@ -230,14 +234,14 @@ $results = User::search("'john")->extended()->highlight()->get();
 
 foreach ($results as $result) {
     // e.g. [
-    //   ['column' => 'name',  'value' => 'John Doe',        'indices' => [[0, 4]]],
-    //   ['column' => 'email', 'value' => 'john@example.com', 'indices' => [[0, 4]]],
+    //   ['column' => 'name',  'value' => 'John Doe',        'indices' => [[0, 3]]],
+    //   ['column' => 'email', 'value' => 'john@example.com', 'indices' => [[0, 3]]],
     // ]
     dump($result->_matches);
 }
 ```
 
-Each entry has three keys: `column` (the column name), `value` (the raw column value), and `indices` (an array of `[start, end]` byte-offset pairs for each match).
+Each entry has three keys: `column` (the column name), `value` (the raw column value), and `indices` (an array of inclusive `[start, end]` byte-offset pairs: `substr($value, $start, $end - $start + 1)` is the matched text).
 
 > **Note:** `_matches` is populated only when `->highlight()` is also called. Calling `->extended()` alone does not populate `_matches`.
 
