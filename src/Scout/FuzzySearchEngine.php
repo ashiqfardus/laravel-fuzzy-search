@@ -26,6 +26,9 @@ use Laravel\Scout\Exceptions\NotSupportedException;
  */
 class FuzzySearchEngine extends Engine
 {
+    /** The alias the ordered walk reads the key under — see orderedKeys(). */
+    private const WALK_KEY = 'fuzzy_walk_key';
+
     public function __construct(
         private IndexManager $indexManager,
         private Bm25Scorer   $scorer,
@@ -164,7 +167,11 @@ class FuzzySearchEngine extends Engine
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
         }
 
-        $query = $query->toBase()->select($model->getQualifiedKeyName());
+        // The caller's select list stays, as in SearchBuilder's walk: an order may name its alias
+        // (withCount()'s posts_count, a selectRaw() column). The key is read through its own alias.
+        $query = $query->toBase();
+        $query->columns ??= ['*'];
+        $query->addSelect($model->getQualifiedKeyName() . ' as ' . self::WALK_KEY);
 
         foreach ($orders as $order) {
             $query->orderBy($order['column'], $order['direction']);
@@ -178,7 +185,7 @@ class FuzzySearchEngine extends Engine
         $keys = [];
 
         foreach ($query->lazy(1000) as $row) {
-            $key = $row->{$model->getKeyName()};
+            $key = $row->{self::WALK_KEY};
 
             if (isset($ranked[$key])) {
                 $keys[$key] = true; // a join may repeat a model
