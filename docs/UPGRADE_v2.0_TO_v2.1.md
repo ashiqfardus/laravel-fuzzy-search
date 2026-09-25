@@ -126,6 +126,7 @@ analytics, `suggest()` and the tokenizers.
 - **Commands exit 1 on bad input**, `rebuild` fills metaphone shadow columns, `rebuild --async` needs `job_batches`, and `flush <model>` is `clear <model>` — see [Inverted index](#inverted-index-bm25).
 - **BM25 searches are typo-tolerant by default** and the dictionary is read per model — see [Inverted index](#inverted-index-bm25).
 - **The Scout engine ranks with column weights** — see [Weighted BM25](#weighted-bm25-column-weights-on-the-index).
+- **Index-path totals count what the pages serve.** In relevance order, past `bm25.max_postings_per_term`, `paginate()->total()` and `count()` (and Scout's `total`) count the matches the BM25 ranking holds, where they counted every match while the pages past the ranking came back empty. With `orderBy()` every match is served and counted. The cap applies to the whole model before a filter, so a filtered relevance search can see fewer of its own matches than `orderBy()` does. Raise the cap if your corpus reaches it.
 - **The search log migration creates the `analytics.table` table** — see [Search analytics](#search-analytics-new).
 - **`restore()` re-indexes a soft-deleted model.** A change to the deleted-at column now triggers a reindex; the restored row used to stay out of `useInvertedIndex()` results until the next rebuild.
 - **Rebuild your index if you search non-Latin or accented text.** The BM25 tokenizer now keeps
