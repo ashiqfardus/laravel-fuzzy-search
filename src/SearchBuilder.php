@@ -586,11 +586,16 @@ class SearchBuilder
 
     /**
      * Add synonyms (word => its synonyms), on top of config('fuzzy-search.synonyms'); a word set
-     * again replaces its earlier synonyms.
+     * again replaces its earlier synonyms. Each word is folded as expandWithSynonyms() folds the
+     * term it looks up (Utf8::lowerAscii()), so 'Laptop' is the word 'laptop' — the config, the
+     * model's $searchable['synonyms'] and the query all come through here. The synonyms are kept as
+     * written: they are searched like the user's own words.
      */
     public function withSynonyms(array $synonyms): self
     {
-        $this->synonyms = array_merge($this->synonyms, $synonyms);
+        foreach ($synonyms as $word => $alternatives) {
+            $this->synonyms[Utf8::lowerAscii((string) $word)] = $alternatives;
+        }
         return $this;
     }
 
