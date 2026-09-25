@@ -122,7 +122,7 @@ analytics, `suggest()` and the tokenizers.
 - **Indexing waits for the transaction to commit**, and writes for one row wait for each other — see [Inverted index](#inverted-index-bm25).
 - **With `indexing.async` off, an index error no longer fails the save.** It is reported to your exception handler instead — see [Inverted index](#inverted-index-bm25).
 - **The indexer indexes the row as stored, not the instance you pass**, and index suggestions skip hidden columns — see [Inverted index](#inverted-index-bm25).
-- **Index terms are capped at 191 characters** and `model_id` widens to 191 by a new migration — see [Inverted index](#inverted-index-bm25).
+- **Index terms are capped at 191 characters**, and a new migration widens `model_id` to 191 and, on MySQL/MariaDB, moves it to `utf8mb4_bin`: rebuild a model whose string keys differ only by case or accents, and restart long-running workers after migrating — see [Inverted index](#inverted-index-bm25).
 - **Commands exit 1 on bad input**, `rebuild` fills metaphone shadow columns, `rebuild --async` needs `job_batches`, and `flush <model>` is `clear <model>` — see [Inverted index](#inverted-index-bm25).
 - **BM25 searches are typo-tolerant by default** and the dictionary is read per model — see [Inverted index](#inverted-index-bm25).
 - **The Scout engine ranks with column weights** — see [Weighted BM25](#weighted-bm25-column-weights-on-the-index).
