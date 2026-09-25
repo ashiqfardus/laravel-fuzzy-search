@@ -31,12 +31,12 @@ Build the index:
 php artisan fuzzy-search:rebuild "App\Models\User"
 ```
 
-**SQL Server:** turn on `READ_COMMITTED_SNAPSHOT` for the database (`ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON`), or set `scout.after_commit` to `true`, which defers Scout's own save and delete hooks until the commit. The indexer re-reads a row after it claims the row's index entry. Under SQL Server's default locking read committed, that read waits on a row another transaction has updated but not committed. That transaction may be one that indexes before it commits: Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`. Its index write in turn waits on the claim, so the two deadlock (error 1205). Snapshot reads do not wait. A `searchable()` you call yourself inside `DB::transaction()` still indexes at once, whatever `after_commit` says: call it after the commit, or turn on `READ_COMMITTED_SNAPSHOT`. If you run with `XACT_ABORT ON`, an index write that meets a new word (or a model's first document or meta row) that another write inserted at the same moment fails and is retried by the queue (or reported, when sync) instead of updating that row in place.
+**SQL Server:** turn on `READ_COMMITTED_SNAPSHOT` for the database (`ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON`), or set `scout.after_commit` to `true`, which defers Scout's own save and delete hooks until the commit. The indexer re-reads a row after it claims the row's index entry. Under SQL Server's default locking read committed, that read waits on a row another transaction has updated but not committed. That transaction may be one that indexes before it commits: Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`. Its index write in turn waits on the claim, so the two deadlock (error 1205). Snapshot reads do not wait. A `searchable()` you call yourself inside `DB::transaction()` still indexes at once, whatever `after_commit` says: call it after the commit, or turn on `READ_COMMITTED_SNAPSHOT`. If you run with `XACT_ABORT ON`, an index write that meets a new word (or a model's first document or meta row) that another write inserted at the same moment fails and rolls back whole: Scout's queue job retries it when `scout.queue` is on; otherwise it throws from `save()` or `searchable()`.
 
 ### Usage
 
 Add both traits to your model. Both traits declare `bootSearchable()`, so the conflict
-resolution below aliases the package's copy and runs Scout's from `booted()`:
+resolution below keeps the package's copy, aliases Scout's as `bootScoutSearchable()` and runs it from `booted()`:
 
 ```php
 use Laravel\Scout\Searchable;
@@ -73,31 +73,35 @@ $users = User::scoutSearch('john')->get();  // Scout's builder, when you need it
 
 The model needs no `$searchable` property; add one to choose the columns (and their weights) instead of relying on auto-detection.
 
+The engine does not call `toSearchableArray()`: it indexes the `$searchable` columns (declared or auto-detected) or a `searchableText()` hook.
+
 ### Relevance Scores
 
-Results include `_score` (BM25 relevance, higher = more relevant):
+Scout results include `_score` (the raw BM25 score, higher = more relevant):
 
 ```php
-foreach (User::search('laravel')->get() as $user) {
+foreach (User::scoutSearch('laravel')->get() as $user) {
     echo $user->name . ': ' . $user->_score;
 }
 ```
 
 ### Authorization
 
-Scout's default behavior bypasses Eloquent global scopes. Apply them explicitly:
+Scout applies the model's global scopes only when it loads the page's models, so a row a scope hides drops out of the page but still counts in `total()`. Put the constraints on the Scout query, where the engine counts and pages through them:
 
 ```php
-User::search('john')
-    ->query(fn($q) => $q->withoutTrashed()->where('tenant_id', auth()->user()->tenant_id))
+User::scoutSearch('john')
+    ->query(fn ($q) => $q->where('tenant_id', auth()->user()->tenant_id))
     ->get();
 ```
 
-With `scout.soft_delete` enabled, trashed models stay in the index as Scout expects; the engine filters them at query time through Scout's `__soft_deleted` constraint.
+Add `withoutTrashed()` to that query only for a model that uses `SoftDeletes`.
+
+With `scout.soft_delete` enabled, trashed models stay in the index as Scout expects, provided only Scout indexes the model; the engine filters them at query time through Scout's `__soft_deleted` constraint. With `indexing.enabled` on, the package's observer also re-indexes each saved or deleted model through the model's query (SoftDeletes and global scopes applied) and removes the trashed row Scout kept. Leave `indexing.enabled` off for Scout-indexed models, and build their index with `php artisan scout:import` (which keeps trashed rows), not `fuzzy-search:rebuild` (which skips them).
 
 ### How It Works
 
-The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables, with the model's `$searchable['columns']` weights, so a Scout search and `useInvertedIndex()` rank a term the same way. Typo expansion is the one difference: the engine matches exact terms only (see [docs/bm25.md](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)).
+The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables, with the model's `$searchable['columns']` weights, so a Scout search and `useInvertedIndex()` rank a term the same way. The engine matches the query's exact terms only: it applies none of the builder's expansions (typo tolerance, `asYouType()`, and the model's `$searchable['as_you_type']`, `synonyms` and `stop_words`; see [docs/bm25.md](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)).
 
 `raw()['total']` is the number of matches (after the builder's `where()`/`whereIn()`/`query()` constraints), not the size of the page returned. `scout:flush "App\Models\User"` clears that model's rows from the shared tables; `scout:delete-index {name}` clears every indexed model whose `indexableAs()` (by default `scout.prefix` + table) equals the name Scout resolves: a model class becomes its `indexableAs()`, and a bare name gets `scout.prefix` prepended unless it already starts with it. With `SCOUT_PREFIX=app_`, `scout:delete-index users` and `scout:delete-index "App\Models\User"` both target `app_users`. `scout:index` is a no-op — the tables come from the package migrations.
 
@@ -125,7 +129,7 @@ User::search($term)->useInvertedIndex()->typoTolerance(0)->cache(10)->simplePagi
 User::search($term)->useInvertedIndex()->typoTolerance(0)->cache(10)->paginate(15);   // not cached
 ```
 
-`typoTolerance(0)` keeps the engine's exact-term matching; without it the builder also expands typos.
+`typoTolerance(0)` turns off the builder's typo expansion; a model that declares `as_you_type`, `synonyms` or `stop_words` still has them applied on the builder, so its results can differ from the engine's.
 
 ---
 
@@ -269,9 +273,9 @@ A non-paginated response looks like:
 }
 ```
 
-`_score` is scaled against the best row the query can see; `_raw_score` counts every row in the model's index, other tenants' included (see [docs/bm25.md](bm25.md#how-it-works)).
+`_score` is scaled against the best row the query can see. On `useInvertedIndex()`, `_raw_score` is the unscaled BM25 value, whose idf counts every row in the model's index, other tenants' included (see [docs/bm25.md](bm25.md#how-it-works)); on the LIKE path it is the row's own match score.
 
-Pass `perPage` and the response also carries Laravel's usual pagination `meta` (`current_page`, `per_page`, `total`, …) and `links`, with the fields above merged into that same `meta` object. `suggestions` — `didYouMean()` terms — is only populated when the page is empty; otherwise it stays `[]`. They are the searched model's own dictionary terms. Under a `where()`, a `join()` or a global scope, only terms posted for a row that query can see are kept. `SoftDeletes` is not checked: the index drops a trashed row's terms, which with `indexing.async` (the default) happens once the queued index job has run. `filter()` does not narrow them. See "What scopes a suggestion" in the README.
+Pass `perPage` and the response also carries Laravel's usual pagination `meta` (`current_page`, `per_page`, `total`, …) and `links`, with the fields above merged into that same `meta` object. `suggestions` — `didYouMean()` terms — is only populated when the page is empty; otherwise it stays `[]`. They are the searched model's own dictionary terms. Under a `where()`, a `join()` or a global scope, only terms posted for a row that query can see are kept. `SoftDeletes` is not checked: with `indexing.enabled` on, the index drops a trashed row's terms, which with `indexing.async` (the default) happens once the queued index job has run. `filter()` does not narrow them. See "What scopes a suggestion" in the README.
 
 ### `lastExecution()`
 
@@ -307,7 +311,7 @@ class ProductSearch extends Component
 
     public function updatedQuery(): void
     {
-        if ($this->query === '') {
+        if (trim($this->query) === '') {
             $this->results     = [];
             $this->suggestions = [];
             return;
