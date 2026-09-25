@@ -114,6 +114,9 @@ class SearchBuilder
         $this->fuzzySearch = $fuzzySearch;
         $this->accentFoldingDefault     = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
         $this->unicodeNormalizeEnabled  = (bool) config('fuzzy-search.unicode.normalize', false);
+        // Ruling ER-80: the global synonyms, as if withSynonyms() came first; the model's
+        // $searchable['synonyms'] and the query's withSynonyms() merge on top of them.
+        $this->withSynonyms((array) config('fuzzy-search.synonyms', []));
         $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
         $this->maxPatterns = (int) config('fuzzy-search.performance.max_patterns', 100);
         // Forwarded through $options (merged into every applyFuzzyWhere() call) rather than
@@ -560,7 +563,8 @@ class SearchBuilder
     }
 
     /**
-     * Set synonyms
+     * Add synonyms (word => its synonyms), on top of config('fuzzy-search.synonyms'); a word set
+     * again replaces its earlier synonyms.
      */
     public function withSynonyms(array $synonyms): self
     {
