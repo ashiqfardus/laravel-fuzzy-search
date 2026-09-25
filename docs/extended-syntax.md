@@ -63,6 +63,8 @@ Relevance scores each positive leaf term on its own and adds the leaf scores up;
 
 `query.max_term_length` applies to the LIKE path, to every extended-syntax token, and to the `whereFuzzy`-style query macros, the `Fuzzy` scopes and `tableSearch()`: a longer term is silently truncated before the driver generates its LIKE patterns, and no driver builds more than `max_patterns` of them.
 
+A query's LIKE patterns share one budget: a search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds. Each `~word` leaf gets up to `max_patterns` patterns per column. When the leaves together would pass the budget, each leaf and column gets an equal share, always including its plain contains pattern. A query too large even for that throws `QuerySyntaxException`. The 32-token `query.max_tokens` limit on two columns fits. The `whereFuzzyMultiple()`-style macros, the `Fuzzy` scopes and `tableSearch()` share the same budget across their columns.
+
 ### Pagination with Extended Syntax
 
 `paginate()`, `simplePaginate()` and `get()` all work with `extended()` / `searchBoolean()`. `cursorPaginate()` is still unsupported.

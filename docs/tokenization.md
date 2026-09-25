@@ -52,6 +52,8 @@ User::search('laptop')
     ->get();
 ```
 
+Synonyms for every search go in the `synonyms` config key (lower-case word => its synonyms). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
+
 ### Language / Locale Awareness
 
 A locale selects a stop-word list — nothing else. Pass it where it is read: `ignoreStopWords()`
