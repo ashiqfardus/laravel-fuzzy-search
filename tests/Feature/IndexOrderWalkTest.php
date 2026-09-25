@@ -137,12 +137,12 @@ class IndexOrderWalkTest extends TestCase
         $this->assertSame(1, preg_match_all('/\bid\b/i', substr($sql, (int) strripos($sql, 'order by'))));
     }
 
-    /** @return string[] the ordered walk's queries: ORDER BY on the model's table, not the index's */
+    /** @return string[] the ordered walk's queries: those reading the key through the walk's alias */
     private function walkQueries(array $log): array
     {
         return array_values(array_filter(
             array_column($log, 'query'),
-            fn (string $sql) => stripos($sql, 'order by') !== false && stripos($sql, 'fuzzy_index') === false
+            fn (string $sql) => stripos($sql, 'order by') !== false && stripos($sql, 'fuzzy_walk_key') !== false
         ));
     }
 }

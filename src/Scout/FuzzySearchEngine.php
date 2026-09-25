@@ -110,7 +110,7 @@ class FuzzySearchEngine extends Engine
         }
 
         if ($orders !== []) {
-            return $this->orderedKeys($query ?? $builder->model->newQuery(), $orders, $ranked, $needed);
+            return $this->orderedKeys($query ?? $builder->model->newQuery(), $orders, $ranked, $needed, $this->terms($builder), $this->columnWeights($builder));
         }
 
         return $query === null
@@ -139,28 +139,35 @@ class FuzzySearchEngine extends Engine
      * descending for ties (Scout's database engine breaks them the same way, and a tie must not
      * move between one page's query and the next).
      *
-     * Up to one bm25.candidate_chunk of matches, the ids restrict the query and the database
-     * returns only them. Past that, binding every id could exceed SQL Server's 2,100-parameter
-     * limit, so the ordered keys are read a page of 1,000 at a time (lazy(), never one buffered
-     * result set: pdo_mysql and pdo_pgsql fetch a whole result before its first row) until $needed
-     * of them are ranked. The database still decides the order, and the key tie-break makes it
-     * total, so no key moves between one page of the walk and the next. The walk costs up to one
-     * sorted page query per 1,000 rows it passes, so a search that matches few of a large table's
-     * rows is cheapest within one chunk.
+     * The query reads only ranked documents, as SearchBuilder's ordered walk does (ruling ER-82):
+     * up to one bm25.candidate_chunk of matches the ids restrict it; past that, where binding every
+     * id could exceed SQL Server's 2,100-parameter limit, a subquery on the postings does
+     * (Bm25Scorer::whereRanked()). That needs the index on the model's connection; on another one
+     * the order covers the top max_candidates ranked ids (at least one chunk), listed. The keys are
+     * read a page of 1,000 at a time (lazy(), never one buffered result set: pdo_mysql and pdo_pgsql
+     * fetch a whole result before its first row) until $needed of them are ranked. The database
+     * still decides the order, and the key tie-break makes it total, so no key moves between one
+     * page of the walk and the next.
      *
      * @param  array<int, array{column: string, direction: string}> $orders
      * @param  array<int|string, float>                             $ranked
+     * @param  string[]                                             $terms   the terms $ranked was scored for
+     * @param  array<string, int|float>                             $weights the column weights it was scored with
      * @return array<int|string>
      */
-    private function orderedKeys(EloquentBuilder $query, array $orders, array $ranked, int $needed): array
+    private function orderedKeys(EloquentBuilder $query, array $orders, array $ranked, int $needed, array $terms, array $weights): array
     {
         $model = $query->getModel();
         $ids   = array_keys($ranked);
+        $chunk = max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200));
 
         $query = clone $query;
 
-        if (count($ids) <= max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200))) {
-            // Added the way RankedCandidates does, so a caller's where(A)->orWhere(B) is wrapped first.
+        // Added the way RankedCandidates does, so a caller's where(A)->orWhere(B) is wrapped first.
+        if (count($ids) > $chunk && $query->getQuery()->getConnection() === DB::connection()) {
+            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $this->scorer->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $terms, $model::class, $weights));
+        } else {
+            $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
         }
 

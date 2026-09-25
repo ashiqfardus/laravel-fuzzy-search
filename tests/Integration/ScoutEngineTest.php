@@ -611,7 +611,8 @@ class ScoutEngineTest extends TestCase
 
     /**
      * The ordered statements a Scout call runs: those that read users with an ORDER BY. Each is
-     * [sql, bindings, ids] where ids counts the key values it restricts to, inlined or bound.
+     * [sql, bindings, ids] where ids counts the key values it restricts to, inlined or bound. The
+     * postings subquery past one chunk (ruling ER-82) binds the model type and the terms, not ids.
      */
     private function orderedStatements(\Closure $call): array
     {
@@ -620,7 +621,8 @@ class ScoutEngineTest extends TestCase
             if (preg_match('/\busers\b/', $query->sql) && stripos($query->sql, 'order by') !== false) {
                 preg_match_all('/\bin \(([^)]*)\)/i', $query->sql, $lists);
                 $inlined = array_sum(array_map(fn ($list) => count(explode(',', $list)), $lists[1]));
-                $statements[] = [$query->sql, $query->bindings, $inlined + count($query->bindings)];
+                $ids     = stripos($query->sql, 'fuzzy_index_postings') === false ? $inlined + count($query->bindings) : 0;
+                $statements[] = [$query->sql, $query->bindings, $ids];
             }
         });
 

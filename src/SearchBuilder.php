@@ -1398,10 +1398,11 @@ class SearchBuilder
 
         $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
 
-        if (empty($ranked)) {
+        if (empty($ranked) || $this->offset >= count($ranked)) {
             // Fall through instead of returning early (the shape paginateIndexed() already
             // uses): a search that matched nothing must still dispatch FuzzySearchExecuted,
-            // or zero-result analytics never sees a miss on the index path.
+            // or zero-result analytics never sees a miss on the index path. A page that starts
+            // past every match is empty without a walk (ruling ER-82).
             $sorted = collect();
         } else {
             // Walk the ranking against the constrained query until the requested window is
@@ -1618,21 +1619,23 @@ class SearchBuilder
             return $this->attachBm25Scores($models, $ranked);
         }
 
-        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $this->orderedIndexedKeys($base, $ranked, $end));
+        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $this->orderedIndexedKeys($modelClass, $base, $ranked, $end));
 
         return $this->attachBm25Scores($models, $ranked, false);
     }
 
     /**
      * With orderBy(), the keys of the first $needed matches in that order: $base's rows sorted by
-     * applyExplicitOrder()'s columns and then the key, keeping those the ranking matched. Up to
-     * one bm25.candidate_chunk of matches the query is restricted to their ids; past that it walks
-     * the ordered table, so no id list can pass SQL Server's 2,100-parameter limit (as the Scout
-     * engine does), a page of 1,000 rows at a time: lazy(), never one buffered result (pdo_mysql
-     * and pdo_pgsql fetch a whole result set before its first row). The key ends the order, so it
-     * is total and no row moves between pages. It stops once $needed matches are found, so its
-     * cost is one sorted page query per 1,000 rows it passes: cheap when the matches come early
-     * in the order, up to the whole constrained table when they do not.
+     * applyExplicitOrder()'s columns and then the key, keeping those the ranking matched. The query
+     * reads only ranked documents (ruling ER-82): up to one bm25.candidate_chunk of matches it is
+     * restricted to their ids; past that, a subquery on the postings restricts it
+     * (Bm25Scorer::whereRanked()), so no id list can pass SQL Server's 2,100-parameter limit. That
+     * subquery needs the index on the model's connection; on another one the ordered window is the
+     * top max_candidates ranked ids (at least one chunk), listed, and deeper matches are not served.
+     * It reads a page of 1,000 rows at a time: lazy(), never one buffered result (pdo_mysql and
+     * pdo_pgsql fetch a whole result set before its first row). The key ends the order, so it is
+     * total and no row moves between pages. It stops once $needed matches are found: one ordered
+     * query per 1,000 matches it passes, never a row that did not match.
      *
      * The caller's select list stays — an order may name its alias (withCount()'s posts_count, a
      * selectRaw() column) — and the key is read through an alias of its own.
@@ -1640,14 +1643,19 @@ class SearchBuilder
      * @param  array<int|string, float> $ranked model_id => score
      * @return array<int|string>
      */
-    private function orderedIndexedKeys(EloquentBuilder $base, array $ranked, int $needed): array
+    private function orderedIndexedKeys(string $modelClass, EloquentBuilder $base, array $ranked, int $needed): array
     {
         $model = $base->getModel();
         $ids   = array_keys($ranked);
         $query = clone $base;
+        $chunk = max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200));
 
-        if (count($ids) <= max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200))) {
-            // A global scope, as RankedCandidates adds its ids, so a caller's where(A)->orWhere(B) is grouped first.
+        // Global scopes, as RankedCandidates adds its ids, so a caller's where(A)->orWhere(B) is grouped first.
+        if (count($ids) > $chunk && $base->getQuery()->getConnection() === DB::connection()) {
+            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class)
+                ->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $this->indexedTermWeights, $modelClass, $this->columnWeights));
+        } else {
+            $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
         }
 
@@ -2018,8 +2026,8 @@ class SearchBuilder
 
         ['total' => $total, 'ranked' => $ranked, 'base' => $base] = $this->indexedRankingAndTotal($modelClass);
 
-        if (empty($ranked)) {
-            $sorted = collect();
+        if (empty($ranked) || $offset >= count($ranked)) {
+            $sorted = collect(); // past every match: no walk (ruling ER-82)
         } else {
             // Page: walk the matches against the constrained query until offset + perPage
             // rows are collected, then slice.

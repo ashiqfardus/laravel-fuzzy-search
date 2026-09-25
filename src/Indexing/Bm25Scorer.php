@@ -105,6 +105,39 @@ class Bm25Scorer
     }
 
     /**
+     * Restrict $query, a query on $modelType's table, to the documents rank() can score for $terms,
+     * without binding their ids (ruling ER-82): EXISTS one of their postings under a column that is
+     * not weighted out, matched on $qualifiedKey. The bindings are the model type and the terms, so
+     * the ordered index walks read only matches, however many there are. model_id is a string
+     * column, so the key is compared as a string (PostgreSQL has no integer = varchar operator);
+     * only for a query on the connection the index lives on, the default one.
+     *
+     * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
+     * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
+     */
+    public function whereRanked(\Illuminate\Database\Query\Builder $query, string $qualifiedKey, array $terms, string $modelType, array $columnWeights = []): void
+    {
+        $terms  = $this->termBindings($this->weights($terms));
+        $driver = $query->getConnection()->getDriverName();
+        $key    = $query->getGrammar()->wrap($qualifiedKey);
+        $key    = match (true) {
+            DbDialect::isMySqlFamily($driver) => "CAST({$key} AS CHAR)",
+            $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191))",
+            $driver === DbDialect::SQLITE     => "CAST({$key} AS TEXT)",
+            default                           => "CAST({$key} AS VARCHAR)",
+        };
+
+        $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key) {
+            $postings->selectRaw('1')
+                ->from('fuzzy_index_postings as fzr')
+                ->where('fzr.model_type', $modelType)
+                ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
+                ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_name', $cols))
+                ->whereRaw($postings->getGrammar()->wrap('fzr.model_id') . " = {$key}");
+        });
+    }
+
+    /**
      * Run BM25 over the inverted index and return the top scored model IDs.
      *
      * @param  array<int, string>|array<string, float> $terms         Processed terms, or term => weight
