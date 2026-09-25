@@ -120,7 +120,8 @@ class AsYouTypeTest extends TestCase
         $builder = User::search('jo')->useInvertedIndex()->asYouType();
         $builder->get();
 
-        // 'jo' itself plus exactly one prefix expansion (the most common 'jo…' term).
-        $this->assertCount(2, $builder->getDebugInfo()['index_terms']);
+        // Exactly one prefix expansion (the most common 'jo…' term). 'jo' itself ran too, but the
+        // debug copy lists only words posted under a visible column (ruling ER-87), and no row holds 'jo'.
+        $this->assertCount(1, $builder->getDebugInfo()['index_terms']);
     }
 }

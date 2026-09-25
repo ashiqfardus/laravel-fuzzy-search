@@ -160,6 +160,26 @@ final class TermExpander
     }
 
     /**
+     * Which of $terms are posted under a column $modelType shows (see visibleColumnsOnly()):
+     * SearchBuilder::getDebugInfo() hands its index_terms back, so it lists only those (ER-87),
+     * while the search itself matched every column (ER-66).
+     *
+     * @param  array<int, string> $terms
+     * @return list<string>
+     */
+    public function visible(array $terms, string $modelType): array
+    {
+        if ($terms === []) {
+            return [];
+        }
+
+        return $this->postedUnder(DB::table('fuzzy_index_terms')->whereIn('term', array_map('strval', $terms)), $modelType, true)
+            ->pluck('term')
+            ->map(fn ($term) => (string) $term)
+            ->all();
+    }
+
+    /**
      * Restrict a fuzzy_index_terms query to terms posted under $modelType: a whereExists
      * semi-join against fuzzy_index_postings, which postings_term_model_idx (term_id,
      * model_type) covers. The dictionary is shared by every indexed model, so an unscoped

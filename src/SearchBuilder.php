@@ -691,12 +691,31 @@ class SearchBuilder
             'cache_ttl' => $this->cacheSeconds(), // seconds; 0 when get() does not cache
             'use_index' => $this->useSearchIndex,
             'index_ignored' => $this->extendedQuery !== null && $this->useSearchIndex,
-            'index_terms' => $this->indexedTermWeights,
+            'index_terms' => $this->visibleIndexTerms(),
             'as_you_type' => $this->asYouType,
             'stable_ranking' => $this->stableRankingEnabled,
             'fallback_algorithms' => $this->fallbackAlgorithms,
             'options' => $this->options,
         ];
+    }
+
+    /**
+     * The last index query's weighted terms that are posted under a column the model shows (ruling
+     * ER-87): a typo or prefix expansion found only in a hidden column is left out, as didYouMean()
+     * and suggest() leave it out. The search matched them all (ER-66); only this copy is filtered.
+     *
+     * @return array<string, float>
+     */
+    private function visibleIndexTerms(): array
+    {
+        if ($this->indexedTermWeights === []) {
+            return [];
+        }
+
+        $visible = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)
+            ->visible(array_map('strval', array_keys($this->indexedTermWeights)), (string) $this->resolveIndexModelClass());
+
+        return array_intersect_key($this->indexedTermWeights, array_flip($visible));
     }
 
     /**
