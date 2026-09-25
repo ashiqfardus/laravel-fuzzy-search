@@ -1914,8 +1914,10 @@ class SearchBuilder
      * never exceed the candidate window the ranking is built from, and a caller-supplied
      * per_page cannot make the index path hydrate an unbounded number of models. take()/limit()
      * stay the caller's explicit limit and are not clamped.
+     *
+     * @internal FederatedSearch's paginators apply it too
      */
-    protected function clampPerPage(int $perPage): int
+    public static function clampPerPage(int $perPage): int
     {
         return max(1, min($perPage, (int) config('fuzzy-search.max_candidates', 1000)));
     }
@@ -1926,8 +1928,10 @@ class SearchBuilder
      * request value is user input: unsanitised, the index path threw a TypeError on it and
      * served the wrong rows for 0. Capped so that no offset it gives (simplePaginate() reads one
      * row past the page) overflows into a float: past that, every page is empty anyway.
+     *
+     * @internal FederatedSearch's paginators apply it too
      */
-    protected function resolvePage(?int $page, string $pageName, int $perPage): int
+    public static function resolvePage(?int $page, string $pageName, int $perPage): int
     {
         return min(max(1, (int) ($page ?: request()->input($pageName, 1))), intdiv(PHP_INT_MAX, $perPage + 1));
     }

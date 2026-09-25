@@ -106,9 +106,9 @@ class InMemorySearch
 
         $startedAt = microtime(true);
 
-        // query.max_term_length characters (never bytes), as SearchBuilder::capSearchTerm() cuts
-        // the term: similar_text() below is O(term × value).
-        $term = mb_substr($this->term, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+        // query.max_term_length characters (never bytes), the cap every path applies: similar_text()
+        // below is O(term × value).
+        $term = FuzzySearch::capTerm($this->term);
 
         // Case-folded in every script, as SearchBuilder's PHP scoring folds: strtolower() is
         // ASCII-only, so "ÉCOLE" was only a near-miss for "école" and "МОСКВА" no match for "москва".

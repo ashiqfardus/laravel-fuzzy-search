@@ -181,7 +181,8 @@ class FuzzySearch
 
     /**
      * Truncate a term to query.max_term_length characters (never bytes). The one cap every path
-     * applies: SearchBuilder::capSearchTerm(), tableSearch() and the applyFuzzy*() entry points.
+     * applies: SearchBuilder::capSearchTerm(), tableSearch(), the applyFuzzy*() entry points,
+     * InMemorySearch and the Scout engine. (The Lexer cuts each extended token the same way.)
      *
      * @internal
      */

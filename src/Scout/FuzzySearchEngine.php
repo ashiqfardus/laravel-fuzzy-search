@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Scout;
 
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
@@ -213,10 +214,10 @@ class FuzzySearchEngine extends Engine
             return [];
         }
 
-        // query.max_term_length characters (never bytes), as SearchBuilder::capSearchTerm() cuts the
-        // term on the index path. It also bounds the term count: rank() binds one parameter per
+        // query.max_term_length characters (never bytes), the cap SearchBuilder::capSearchTerm()
+        // applies on the index path. It also bounds the term count: rank() binds one parameter per
         // term, and an uncapped query of a few thousand words passed SQL Server's 2,100 limit.
-        $query = mb_substr($query, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+        $query = FuzzySearch::capTerm($query);
 
         return $this->indexManager->processTerms($query, null, $builder->model::class);
     }
