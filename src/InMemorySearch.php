@@ -6,6 +6,7 @@ use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Collection;
+use Illuminate\Support\LazyCollection;
 
 /**
  * In-memory search over a fixed PHP collection.
@@ -27,8 +28,15 @@ class InMemorySearch
 
     public function __construct(iterable $items)
     {
-        $cap   = (int) config('fuzzy-search.in_memory.max_items', 10000);
-        $items = $items instanceof Collection ? $items : collect($items);
+        $cap = (int) config('fuzzy-search.in_memory.max_items', 10000);
+
+        if ($items instanceof LazyCollection) {
+            // Pull at most cap + 1 (ruling ER-99): a lazy source can be huge, or infinite, so
+            // checking the cap must not first materialise the whole thing.
+            $items = collect($items->take($cap + 1)->all());
+        } elseif (!$items instanceof Collection) {
+            $items = collect($items);
+        }
 
         if ($items->count() > $cap) {
             throw new \InvalidArgumentException(
@@ -131,7 +139,19 @@ class InMemorySearch
             foreach ($this->columns as $col) {
                 // Never data_get() on a model: its relation fallback runs any method named like
                 // the column (ruling ER-84).
-                $value = mb_strtolower((string) SearchableColumns::read($item, $col), 'UTF-8');
+                $raw = SearchableColumns::read($item, $col);
+
+                // An array or a non-Stringable object isn't text (ruling ER-99, in line with
+                // ER-90's auto-detection, which excludes json columns too): skip it instead of
+                // letting (string) $raw warn "Array to string conversion" (or fatal on an object
+                // with no __toString()) and count it as a match. A date/datetime cast — Carbon on
+                // created_at/updated_at included — implements \Stringable and keeps casting as
+                // before: ER-90 explicitly keeps those columns text-like.
+                if ($raw !== null && !is_scalar($raw) && !($raw instanceof \Stringable)) {
+                    continue;
+                }
+
+                $value = mb_strtolower((string) $raw, 'UTF-8');
                 if ($value === $needle) {
                     $score = max($score, 100);
                 } elseif (str_starts_with($value, $needle)) {
@@ -147,12 +167,11 @@ class InMemorySearch
                 }
             }
 
-            if ($this->withRelevance) {
-                if (is_object($item)) {
-                    $item->_score = $score;
-                } elseif (is_array($item)) {
-                    $item['_score'] = $score;
-                }
+            // A non-match is returned untouched — no _score, _raw_score or _raw_score_tmp is
+            // ever set on it — so an object item the caller's own collection still holds
+            // elsewhere is never mutated (ruling ER-98).
+            if ($score <= 0) {
+                return $item;
             }
 
             // Carry raw score in a local key for filtering/sorting regardless of withRelevance
@@ -163,7 +182,7 @@ class InMemorySearch
             }
             return $item;
         })
-        ->filter(fn($item) => (is_object($item) ? $item->_raw_score_tmp : $item['_raw_score_tmp']) > 0)
+        ->filter(fn($item) => is_object($item) ? isset($item->_raw_score_tmp) : (is_array($item) && array_key_exists('_raw_score_tmp', $item)))
         ->sortByDesc(fn($item) => is_object($item) ? $item->_raw_score_tmp : $item['_raw_score_tmp'])
         ->values();
 
