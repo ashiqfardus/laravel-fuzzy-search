@@ -41,6 +41,20 @@ class IndexCommandScoutUser extends Model
     }
 }
 
+/** Chooses its columns by overriding getSearchableColumns(), with no $searchable property. */
+class IndexCommandOverridingUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    public function getSearchableColumns(): array
+    {
+        return ['email'];
+    }
+}
+
 /**
  * The deprecated v1 `fuzzy-search:index` creates its search_index table with a FULLTEXT index,
  * which Laravel only builds on MySQL, MariaDB and PostgreSQL. Elsewhere it must stop with an
@@ -108,5 +122,18 @@ class IndexCommandTest extends TestCase
 
         $this->artisan('fuzzy-search:index', ['model' => IndexCommandNameOnlyUser::class])->assertExitCode(0);
         $this->assertSame('John Doe', DB::table('search_index')->where('model', IndexCommandNameOnlyUser::class)->orderBy('model_id')->value('content'));
+    }
+
+    /**
+     * A model that overrides getSearchableColumns() has chosen its columns
+     * (hasDeclaredSearchableColumns()), as the indexer reads them. The command skipped them for
+     * the common-column fallback whenever the model declared no $searchable property.
+     */
+    public function test_it_indexes_the_columns_an_overridden_get_searchable_columns_returns(): void
+    {
+        $this->createLegacyTable();
+
+        $this->artisan('fuzzy-search:index', ['model' => IndexCommandOverridingUser::class])->assertExitCode(0);
+        $this->assertSame('john@example.com', DB::table('search_index')->where('model', IndexCommandOverridingUser::class)->orderBy('model_id')->value('content'));
     }
 }
