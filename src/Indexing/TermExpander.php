@@ -161,8 +161,8 @@ final class TermExpander
 
     /**
      * Which of $terms are posted under a column $modelType shows (see visibleColumnsOnly()):
-     * SearchBuilder::getDebugInfo() hands its index_terms back, so it lists only those (ER-87),
-     * while the search itself matched every column (ER-66).
+     * SearchBuilder::getDebugInfo() hands its index_terms back, so it lists only those expansions
+     * (ER-87), while the search itself matched every column (ER-66).
      *
      * @param  array<int, string> $terms
      * @return list<string>

@@ -87,6 +87,8 @@ class SearchBuilder
     protected string $suggestSource = 'auto';
     /** @var array<string, float> Weighted terms of the last inverted-index query — see indexedQueryTerms(). */
     protected array $indexedTermWeights = [];
+    /** @var string[] The user's own words and their synonyms among $indexedTermWeights, not expansions — see visibleIndexTerms(). */
+    private array $indexedOwnTerms = [];
     protected ?string $extendedQuery = null;
     /** @var string[] Positive leaf terms of the compiled extended query — see positiveLeafTerms(). */
     protected array $extendedLeafTerms = [];
@@ -700,22 +702,23 @@ class SearchBuilder
     }
 
     /**
-     * The last index query's weighted terms that are posted under a column the model shows (ruling
-     * ER-87): a typo or prefix expansion found only in a hidden column is left out, as didYouMean()
-     * and suggest() leave it out. The search matched them all (ER-66); only this copy is filtered.
+     * The last index query's weighted terms for the debug output (ruling ER-87, amended): the user's
+     * own words and their synonyms always, since that is what they asked for; an expansion (a typo,
+     * prefix or as-you-type word) only when it is posted under a column the model shows, as
+     * didYouMean() and suggest() offer words. Only expansions come from the index, so only they can
+     * reveal a hidden column. The search matched them all (ER-66); only this copy is filtered.
      *
      * @return array<string, float>
      */
     private function visibleIndexTerms(): array
     {
-        if ($this->indexedTermWeights === []) {
-            return [];
-        }
+        $own        = array_flip($this->indexedOwnTerms);
+        $expansions = array_diff_key($this->indexedTermWeights, $own);
 
-        $visible = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)
-            ->visible(array_map('strval', array_keys($this->indexedTermWeights)), (string) $this->resolveIndexModelClass());
+        $visible = $expansions === [] ? [] : app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)
+            ->visible(array_map('strval', array_keys($expansions)), (string) $this->resolveIndexModelClass());
 
-        return array_intersect_key($this->indexedTermWeights, array_flip($visible));
+        return array_intersect_key($this->indexedTermWeights, $own + array_flip($visible));
     }
 
     /**
@@ -1634,6 +1637,8 @@ class SearchBuilder
                 }
             }
         }
+
+        $this->indexedOwnTerms = array_map('strval', $terms); // the processed words and synonyms, before any expansion
 
         return $this->indexedTermWeights = $weights;
     }
