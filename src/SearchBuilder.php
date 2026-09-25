@@ -100,6 +100,8 @@ class SearchBuilder
      * null otherwise, and applyHighlighting()/addDebugInfo() then decorate as they are called.
      */
     private ?array $decoration = null;
+    /** Whether get()'s last search attempt matched a row before its page cut: what fallback() decides on. */
+    private bool $matched = false;
     protected bool $stableRankingEnabled = false;
     protected array $fallbackAlgorithms = [];
     protected ?int $debounceMs = null;
@@ -1266,13 +1268,15 @@ class SearchBuilder
     }
 
     /**
-     * Run executeSearch(), retrying with each fallback() algorithm while the result is empty.
+     * Run executeSearch(), retrying with each fallback() algorithm while it matches nothing: the
+     * matches before the page cut decide, as total() does for paginate(), so a simplePaginate() or
+     * skip() page past the primary's matches is empty rather than another algorithm's rows.
      */
     protected function executeWithFallback(): Collection
     {
         return $this->withFallback(
             fn () => $this->executeSearch(),
-            fn (Collection $results) => $results->isEmpty()
+            fn (Collection $results) => $results->isEmpty() && !$this->matched
         );
     }
 
@@ -1422,7 +1426,8 @@ class SearchBuilder
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
 
         // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet
-        $candidates = $this->query->limit($maxCandidates)->get();
+        $candidates    = $this->query->limit($maxCandidates)->get();
+        $this->matched = $candidates->isNotEmpty();
 
         // Rescore ALL candidates before slicing
         if ($this->withRelevance && $this->searchTerm !== '') {
@@ -1470,19 +1475,25 @@ class SearchBuilder
 
         $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
 
+        $base = $this->indexedBaseQuery($modelClass);
+
         if (empty($ranked) || $this->offset >= count($ranked)) {
             // Fall through instead of returning early (the shape paginateIndexed() already
             // uses): a search that matched nothing must still dispatch FuzzySearchExecuted,
             // or zero-result analytics never sees a miss on the index path. A page that starts
-            // past every match is empty without a walk (ruling ER-82).
-            $sorted = collect();
+            // past every match is empty without a walk (ruling ER-82); only a fallback() asks
+            // whether the query sees any match at all.
+            $sorted        = collect();
+            $this->matched = !empty($ranked) && ($this->fallbackAlgorithms === []
+                || \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keys($base, array_keys($ranked), 1) !== []);
         } else {
             // Walk the ranking against the constrained query until the requested window is
             // full. Constraints (filters, wheres, scopes) are applied before the cut, so a
             // selective filter fills its page from lower-ranked matches instead of coming
             // back short or empty.
-            $sorted = $this->indexedWindow($modelClass, $this->indexedBaseQuery($modelClass), $ranked, $this->offset + $this->limit)
-                ->slice($this->offset, $this->limit)->values();
+            $window        = $this->indexedWindow($modelClass, $base, $ranked, $this->offset + $this->limit);
+            $this->matched = $window->isNotEmpty();
+            $sorted        = $window->slice($this->offset, $this->limit)->values();
         }
 
         if ($this->highlightTagOpen) {
@@ -1889,6 +1900,7 @@ class SearchBuilder
 
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
         $candidates = $this->query->limit($maxCandidates)->get();
+        $this->matched = $candidates->isNotEmpty();
 
         if ($this->withRelevance) {
             $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerms());
