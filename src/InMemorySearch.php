@@ -164,12 +164,11 @@ class InMemorySearch
                 }
             }
 
-            if ($this->withRelevance) {
-                if (is_object($item)) {
-                    $item->_score = $score;
-                } elseif (is_array($item)) {
-                    $item['_score'] = $score;
-                }
+            // A non-match is returned untouched — no _score, _raw_score or _raw_score_tmp is
+            // ever set on it — so an object item the caller's own collection still holds
+            // elsewhere is never mutated (ruling ER-98).
+            if ($score <= 0) {
+                return $item;
             }
 
             // Carry raw score in a local key for filtering/sorting regardless of withRelevance
@@ -180,7 +179,7 @@ class InMemorySearch
             }
             return $item;
         })
-        ->filter(fn($item) => (is_object($item) ? $item->_raw_score_tmp : $item['_raw_score_tmp']) > 0)
+        ->filter(fn($item) => is_object($item) ? isset($item->_raw_score_tmp) : (is_array($item) && array_key_exists('_raw_score_tmp', $item)))
         ->sortByDesc(fn($item) => is_object($item) ? $item->_raw_score_tmp : $item['_raw_score_tmp'])
         ->values();
 
