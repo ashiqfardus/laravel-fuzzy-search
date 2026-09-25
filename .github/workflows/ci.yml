@@ -294,6 +294,9 @@ jobs:
           PHP
       - name: Run tests (SQL Server)
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+      - name: SQL Server log (on failure)
+        if: failure()
+        run: docker logs ${{ job.services.sqlsrv.id }} 2>&1 | tail -300
 
   # ── Filament v4 / v5 ──────────────────────────────────────────────────────
   # require-dev pins Filament v3 (it spans the whole matrix); this job swaps in v4 and v5.
