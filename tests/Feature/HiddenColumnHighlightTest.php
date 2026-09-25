@@ -15,6 +15,7 @@ use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class HiddenEmailUser extends Model
 {
@@ -37,6 +38,20 @@ class VisibleNameUser extends Model
     protected $table   = 'users';
     protected $guarded = [];
     protected $visible = ['id', 'name'];
+
+    protected array $searchable = [
+        'columns'   => ['name' => 10, 'email' => 5],
+        'algorithm' => 'like',
+    ];
+}
+
+class HiddenEverythingUser extends Model
+{
+    use Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+    protected $hidden  = ['name', 'email'];
 
     protected array $searchable = [
         'columns'   => ['name' => 10, 'email' => 5],
@@ -191,5 +206,56 @@ class HiddenColumnHighlightTest extends TestCase
         }
 
         $this->assertSame([], VisibleNameUser::search('example')->suggestFrom('table')->suggest(10), 'only an email holds "example"');
+    }
+    /**
+     * NF-1: rows that match only through a hidden column used up the scan's limit x 3 rows, so a
+     * visible match behind them was never reached. Statically hidden columns are left out of the
+     * scan's WHERE and SELECT.
+     */
+    public function test_hidden_only_matches_do_not_use_up_the_suggestion_scan(): void
+    {
+        foreach ([1, 2, 3] as $i) {
+            HiddenEmailUser::create(['name' => "Alpha {$i}", 'email' => "zq{$i}@example.com"]);
+        }
+        HiddenEmailUser::create(['name' => 'Zqarlo Beta', 'email' => 'beta@example.com']);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $suggestions = HiddenEmailUser::search('zq')->suggestFrom('table')->suggest(1); // scans limit x 3 = 3 rows
+        $scan        = array_values(array_filter(array_column(DB::getQueryLog(), 'query'), fn (string $sql) => stripos($sql, 'like') !== false));
+        DB::disableQueryLog();
+
+        $this->assertSame(['Zqarlo'], $suggestions);
+        $this->assertCount(1, $scan);
+        $this->assertStringNotContainsStringIgnoringCase('email', $scan[0], 'the hidden column is neither matched nor selected');
+        $this->assertStringNotContainsString('*', $scan[0]);
+    }
+
+    public function test_with_every_searchable_column_hidden_suggest_runs_no_query(): void
+    {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $suggestions = HiddenEverythingUser::search('jo')->suggest(5);
+        $queries     = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertSame([], $suggestions);
+        $this->assertSame([], array_column($queries, 'query'));
+    }
+    /** NF-1 for a relation column: the related model hiding the leaf (or the post hiding the relation) leaves it out of the scan. */
+    public function test_a_hidden_relation_column_is_left_out_of_the_suggestion_scan(): void
+    {
+        $this->createRelationTables();
+        $this->seedRelationFixtures();
+
+        foreach ([Post::class => 1, PostWithHiddenAuthorName::class => 0, PostHidingItsAuthor::class => 0] as $model => $exists) {
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $model::search('to')->searchIn(['title', 'author.name'])->suggestFrom('table')->suggest(5);
+            $scan = implode(' ', array_filter(array_column(DB::getQueryLog(), 'query'), fn (string $sql) => stripos($sql, 'like') !== false));
+            DB::disableQueryLog();
+
+            $this->assertSame($exists, substr_count(strtolower($scan), 'exists'), $model);
+        }
     }
 }

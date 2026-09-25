@@ -3236,6 +3236,12 @@ class SearchBuilder
             return [];
         }
 
+        // NF-1: with every searchable column hidden there is nothing to suggest (ER-51) — no query.
+        $targets = $this->suggestTargets();
+        if ($targets === []) {
+            return [];
+        }
+
         // 'auto' leaves a constrained query (a where(), a join, a tenant scope) to the table scan:
         // the dictionary is scoped to the model, not to the query. suggestFrom('index') opts back
         // in. The check reads the query the table scan runs on, so it only switches when that helps.
@@ -3261,8 +3267,9 @@ class SearchBuilder
 
         // Extract unique suggestions from results
         foreach ($results as $result) {
-            foreach ($this->resolveColumnTargets() as $column => $target) {
-                // Ruling ER-51: never a word from a column the row hides (the #5 rule).
+            foreach ($targets as $column => $target) {
+                // Ruling ER-51: never a word from a column the row hides (the #5 rule) — this also
+                // catches a runtime makeHidden(), which suggestTargets() cannot see.
                 foreach ($this->columnValues($result, $column, $target, true) as $value) {
                     // Extract the matching word/phrase
                     $words = preg_split(self::WHITESPACE, $value);
@@ -3357,7 +3364,8 @@ class SearchBuilder
         // Clone query to avoid modifying the original
         $suggestQuery = clone $this->query;
 
-        $targets = $this->resolveColumnTargets();
+        $targets = $this->suggestTargets();
+        $paths   = array_values(array_unique(array_column(array_filter($targets, fn (array $t) => $t['relation'] !== null), 'relation')));
 
         // ILIKE on PostgreSQL (its LIKE is case-sensitive), ESCAPE '!' everywhere else;
         // a qualified column's table carries the connection's table prefix, as the FROM does.
@@ -3382,11 +3390,58 @@ class SearchBuilder
             }
         });
 
-        if ($suggestQuery instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $suggestQuery->with($this->relationPaths());
+        if ($suggestQuery instanceof EloquentBuilder) {
+            // NF-1: a statically hidden column is not selected either — narrowed only where that is
+            // safe: the caller selected nothing and nothing is eager-loaded (a relation needs keys
+            // a narrowed list could leave out). A table that cannot be listed keeps its select.
+            if ($suggestQuery->getQuery()->columns === null && $suggestQuery->getEagerLoads() === [] && $paths === []) {
+                $model   = $suggestQuery->getModel();
+                $columns = SearchableColumns::onTable($model->getConnection(), $model->getTable());
+                $shown   = array_filter($columns, fn (string $c) => $c === $model->getKeyName() || self::shows($model, $c));
+
+                if ($shown !== [] && count($shown) < count($columns)) {
+                    $suggestQuery->select(array_map(fn (string $c) => ($own[$c] ?? '') . $c, array_values($shown)));
+                }
+            }
+
+            if ($paths !== []) {
+                $suggestQuery->with($paths);
+            }
         }
 
         return $suggestQuery;
+    }
+
+    /**
+     * The searchIn() targets suggest()'s table scan matches and reads: those the model does not
+     * hide by its class-level $hidden/$visible (for a relation column, each segment on the model
+     * that holds it, then the leaf on the related model). A row that matches only through a
+     * hidden column can yield no suggestion (ER-51), so matching it would only use up the rows
+     * the scan fetches (NF-1).
+     *
+     * @return array<string, array{relation: ?string, column: string}>
+     */
+    private function suggestTargets(): array
+    {
+        $targets = $this->resolveColumnTargets();
+
+        if (!$this->query instanceof EloquentBuilder) {
+            return $targets;
+        }
+
+        $model = $this->query->getModel();
+
+        return array_filter($targets, function (array $target) use ($model): bool {
+            $current = $model;
+            foreach ($target['relation'] === null ? [] : explode('.', $target['relation']) as $segment) {
+                if (!self::shows($current, $segment)) {
+                    return false;
+                }
+                $current = $current->{$segment}()->getRelated(); // a relation resolveColumnTargets() allowed
+            }
+
+            return self::shows($current, $target['relation'] === null ? self::lastSegment($target['column']) : $target['column']);
+        });
     }
 
     /**
