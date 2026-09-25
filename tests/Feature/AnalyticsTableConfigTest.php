@@ -64,7 +64,8 @@ class AnalyticsTableConfigTest extends TestCase
         $schema = Schema::getConnection()->getSchemaBuilder();
         if ($this->dbDriver !== 'sqlite' && method_exists($schema, 'getColumns')) { // SQLite has no varchar length; Laravel 10 has no getColumns()
             $type = collect($schema->getColumns(self::TABLE))->firstWhere('name', 'normalized_term')['type'];
-            $this->assertStringContainsString('191', $type);
+            // Laravel reports SQL Server's max_length, in bytes: an nvarchar(191) reads nvarchar(382).
+            $this->assertMatchesRegularExpression($this->dbDriver === 'sqlsrv' ? '/^nvarchar\((191|382)\)$/' : '/\b191\b/', $type);
         }
     }
 }
