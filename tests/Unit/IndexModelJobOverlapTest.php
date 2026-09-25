@@ -432,10 +432,19 @@ class IndexModelJobOverlapTest extends TestCase
 
         $lines = is_file($log) ? file($log, FILE_IGNORE_NEW_LINES) : [];
         @unlink($log);
-        $failed = array_values(preg_grep('/^failed/', $lines));
-        $report = count($failed) . ' of 40 batches failed, ' . (count($lines) - 2 * count($failed)) . ' retried: ' . ($failed[0] ?? '');
+        $failed  = array_values(preg_grep('/^failed/', $lines));
+        $retried = count($lines) - 2 * count($failed); // a failed batch logs its last rollback and "failed"
+        $report  = count($failed) . ' of 40 batches failed, ' . $retried . ' retried: ' . ($failed[0] ?? '');
 
         $this->assertSame([], $failed, $report);
+        // PostgreSQL takes a write's new words in one sorted order (ER-74), and nothing else
+        // deadlocks there, so no batch even retries: three attempts would hide the deadlock.
+        // MySQL/MariaDB keep a statement per doc_count increment, and SQL Server still retries 1
+        // to 5 batches of the flushed shape in most local runs with ER-74 in place; both recover
+        // on retry, and the two-batch race below guards ER-74 without that noise.
+        if ($this->dbDriver === 'pgsql') {
+            $this->assertSame(0, $retried, $report);
+        }
         $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
 
         // Every term counts the rows posting it, and meta the documents.
@@ -449,6 +458,55 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertSame(
             DB::table('fuzzy_index_documents')->where('model_type', User::class)->count(),
             (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'),
+        );
+    }
+
+    /**
+     * Two batches whose new words take different doc_count increments must neither deadlock nor
+     * retry (ER-74). A statement per increment, each sorted only within itself, took them in
+     * opposite orders: P inserted kilo and mike (+1) and then lima (+2), Q lima (+1) and then
+     * mike (+2), and each waited on the other's word. A write inserts its new words in one sorted
+     * statement, so Q waits on lima until P commits. The parallel-batch race above meets this
+     * only by chance; here each batch pauses after its first dictionary insert. PostgreSQL
+     * deadlocked on every run without ER-74; SQL Server's MERGE waited on P's first words
+     * instead, so there this guards only that neither batch retries.
+     */
+    public function test_batches_whose_new_words_take_different_increments_neither_deadlock_nor_retry(): void
+    {
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL/MariaDB keep a statement per increment (the raise cannot name the inserted row on both), so this deadlock remains there and is retried.');
+        }
+
+        $ids   = User::whereIn('name', ['John Doe', 'Jane Doe', 'Jon Snow', 'Johnny Bravo'])->orderBy('id')->pluck('id')->all();
+        $names = ['kilo lima mike', 'lima', 'lima mike', 'mike']; // P: lima +2, kilo and mike +1; Q: mike +2, lima +1
+        foreach ($ids as $i => $id) {
+            DB::table('users')->where('id', $id)->update(['name' => $names[$i], 'email' => '']);
+        }
+        [$p, $q] = array_chunk($ids, 2);
+
+        $rollbacks = sys_get_temp_dir() . '/fuzzy-race-rollbacks-' . getmypid() . '-' . uniqid();
+        $index     = function (array $batch) use ($rollbacks) {
+            \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($rollbacks, 'x', FILE_APPEND));
+            app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
+        };
+
+        [$childError, $parentError] = $this->race(
+            fn () => $index($p),
+            fn () => $index($q),
+            '/^\s*(insert|merge)\b.*fuzzy_index_terms/is', // the first insert into the dictionary
+            1_000_000,
+            300_000,
+        );
+
+        $retried = is_file($rollbacks) ? strlen(file_get_contents($rollbacks)) : 0;
+        @unlink($rollbacks);
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $this->assertSame(0, $retried, 'a write rolled back and retried');
+        $this->assertSame(
+            ['kilo' => 1, 'lima' => 3, 'mike' => 3],
+            DB::table('fuzzy_index_terms')->orderBy('term')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->all(),
         );
     }
 
