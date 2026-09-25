@@ -29,6 +29,9 @@ return [
     | at the cost of fetching more rows. For indexed search (Phase 1), this
     | ceiling is replaced by BM25 scoring in SQL.
     |
+    | Also the largest page size on every path (paginate/simplePaginate clamp
+    | perPage to it) and the most rows one model contributes to a federated search.
+    |
     | Recommendation: lower to 200-500 on tables with 100k+ rows.
     |
     */
@@ -154,7 +157,9 @@ return [
     | Synonyms
     |--------------------------------------------------------------------------
     |
-    | Global synonym mappings
+    | Default synonym mappings for every search. A model's $searchable['synonyms']
+    | and a query's withSynonyms() are merged on top: a word they map replaces
+    | its mapping here.
     |
     */
     'synonyms' => [
