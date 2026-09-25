@@ -137,6 +137,7 @@ class OrderedIndexCapTest extends TestCase
         $this->seedZebras(1100);
         config(['fuzzy-search.bm25.candidate_chunk' => 10]);
         $make = fn () => User::search('zebra')->typoTolerance(0)->useInvertedIndex()->orderBy('name');
+        $make()->paginate(15); // warms the once-per-process reads, such as MySQL's model_id collation
 
         $first = $this->queries(fn () => $this->assertSame($this->zebras(0, 15), $make()->paginate(15, 'page', 1)->pluck('name')->all()));
         $deep  = $this->queries(fn () => $this->assertSame($this->zebras(1080, 15), $make()->paginate(15, 'page', 73)->pluck('name')->all()));
@@ -156,6 +157,7 @@ class OrderedIndexCapTest extends TestCase
         $this->seedZebras(1100, CapScoutUser::class);
         config(['scout.driver' => 'fuzzy-search', 'fuzzy-search.bm25.candidate_chunk' => 10]);
         $make = fn () => (new \Laravel\Scout\Builder(new CapScoutUser, 'zebra'))->orderBy('name');
+        $make()->paginate(15); // warms the once-per-process reads, such as MySQL's model_id collation
 
         $first = $this->queries(fn () => $this->assertSame($this->zebras(0, 15), collect($make()->paginate(15, 'page', 1)->items())->pluck('name')->all()));
         $deep  = $this->queries(fn () => $this->assertSame($this->zebras(1080, 15), collect($make()->paginate(15, 'page', 73)->items())->pluck('name')->all()));

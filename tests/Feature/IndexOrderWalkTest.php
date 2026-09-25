@@ -90,6 +90,29 @@ class IndexOrderWalkTest extends TestCase
     }
 
     /**
+     * H1 (round 8): a one-to-many join repeats a model once per joined row, so the ordered page is
+     * not one offset/limit read there. Each model is served once, at its first row, and total()
+     * counts models.
+     */
+    public function test_a_join_that_repeats_a_model_serves_it_once_in_the_order(): void
+    {
+        $this->seedSagas();
+
+        foreach ($this->walks() as $walk => $chunk) {
+            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+            $make = fn () => Post::search('saga')->useInvertedIndex()
+                ->join('comments', 'comments.post_id', '=', 'posts.id')->select('posts.*')->orderBy('posts.title');
+
+            $this->assertSame(['Saga Three', 'Saga Two'], $make()->get()->pluck('title')->all(), "{$walk} get");
+            $this->assertSame(2, $make()->count(), "{$walk} count");
+
+            $pages = array_map(fn ($page) => $make()->paginate(1, 'page', $page), [1, 2, 3]);
+            $this->assertSame([['Saga Three'], ['Saga Two'], []], array_map(fn ($p) => collect($p->items())->pluck('title')->all(), $pages), "{$walk} pages");
+            $this->assertSame(2, $pages[0]->total(), "{$walk} total");
+        }
+    }
+
+    /**
      * Finding 12: past one candidate chunk the ordered read is bounded, never one unbounded result.
      * H1 (round 8): it reads the page itself, get()'s 15 rows, not 1,000 rows at a time from the first.
      */
