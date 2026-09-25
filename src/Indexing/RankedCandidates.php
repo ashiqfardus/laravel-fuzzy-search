@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 
 /**
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
@@ -183,19 +184,62 @@ final class RankedCandidates
      * The keys of rows [$offset, $offset + $limit) of $query, a read of matches (see matches()) in an
      * order that ends on the key, so it is total and no row moves between pages. The caller's select
      * list stays — an order may name its alias (withCount()'s posts_count, a selectRaw() column) — and
-     * the key is read through an alias of its own. The page is one offset/limit read, however deep. A
-     * join may repeat a model, which is served once, at its first row: a joined query is read 1,000
-     * rows at a time from its first row until the page is complete (lazy(), never one buffered
-     * result: pdo_mysql and pdo_pgsql fetch a whole result set before its first row).
+     * the key is read through an alias of its own. The page is one offset/limit read, however deep.
+     *
+     * A join may repeat a model, which is served once, at its first row (ruling ER-108):
+     *  - an order on the model's own columns only reads the model's table, with no join, restricted
+     *    to the joined query's keys: one offset/limit read;
+     *  - an order on a joined column keeps each model's first row by the order, ROW_NUMBER() over
+     *    the key (every supported database has window functions): one offset/limit read;
+     *  - an order on a select alias, or a raw order, which a window's ORDER BY cannot name, or a
+     *    joined query with a HAVING, which may need the select list, is read 1,000 rows at a time
+     *    from its first row until the page is complete (lazy(), never one buffered result:
+     *    pdo_mysql and pdo_pgsql fetch a whole result set before its first row). Filtering with
+     *    whereHas() instead of a join keeps such an order on one read.
      *
      * @return array<int|string>
      */
     public static function orderedKeys(QueryBuilder $query, string $qualifiedKey, int $offset, int $limit): array
     {
-        $query->columns ??= ['*'];
-        $query->addSelect($qualifiedKey . ' as ' . self::KEY_ALIAS);
+        $order = empty($query->joins) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
+        $key   = $qualifiedKey . ' as ' . self::KEY_ALIAS;
 
-        if (empty($query->joins)) {
+        if ($order === 'own') {
+            $keys = (clone $query)->reorder()->select($qualifiedKey);
+            $page = $query->newQuery()->from($query->from)->select($key)->whereIn($qualifiedKey, $keys);
+
+            foreach ($query->orders as $sort) {
+                $page->orderBy($sort['column'], $sort['direction']);
+            }
+
+            return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+        }
+
+        if ($order === 'joined') {
+            $grammar = $query->getGrammar();
+            $columns = [$key];
+            $over    = [];
+
+            foreach ($query->orders as $i => $sort) {
+                $columns[] = $sort['column'] . ' as fuzzy_order_' . $i;
+                $over[]    = $grammar->wrap($sort['column']) . ' ' . $sort['direction'];
+            }
+
+            $rows = (clone $query)->reorder()->select($columns)
+                ->selectRaw('row_number() over (partition by ' . $grammar->wrap($qualifiedKey) . ' order by ' . implode(', ', $over) . ') as fuzzy_row');
+            $page = $query->newQuery()->fromSub($rows, 'fuzzy_rows')->where('fuzzy_row', 1);
+
+            foreach ($query->orders as $i => $sort) {
+                $page->orderBy('fuzzy_order_' . $i, $sort['direction']);
+            }
+
+            return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+        }
+
+        $query->columns ??= ['*'];
+        $query->addSelect($key);
+
+        if ($order === 'rows') {
             return $query->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
         }
 
@@ -210,6 +254,52 @@ final class RankedCandidates
         }
 
         return array_slice(array_keys($keys), $offset, $limit);
+    }
+
+    /**
+     * Where a joined query's order comes from (see orderedKeys()): 'own' when every order column is
+     * a column of the model's table, 'alias' when one is a select alias or no plain column (a raw
+     * order), or the query has a HAVING, and 'joined' otherwise. A column named without its table is
+     * the model's when its table has it; under fromSub() no column counts as the model's own.
+     */
+    private static function joinedOrder(QueryBuilder $query): string
+    {
+        if (!empty($query->havings)) {
+            return 'alias';
+        }
+
+        $grammar = $query->getGrammar();
+        $aliases = [];
+
+        foreach ($query->columns ?? [] as $column) {
+            $sql = $column instanceof \Illuminate\Contracts\Database\Query\Expression ? (string) $column->getValue($grammar) : (string) $column;
+
+            if (preg_match('/\s+as\s+(\S+)\s*$/i', $sql, $alias) === 1) {
+                $aliases[trim($alias[1], '"`[]')] = true;
+            }
+        }
+
+        $from = DbDialect::fromTable($query->from);
+        $own  = $from === null ? null : $from[1] ?? $from[0];
+        $all  = true;
+
+        foreach ($query->orders ?? [] as $sort) {
+            if (($sort['type'] ?? 'Basic') !== 'Basic' || !is_string($sort['column'])) {
+                return 'alias';
+            }
+
+            $dot = strrpos($sort['column'], '.');
+
+            if ($dot === false && isset($aliases[$sort['column']])) {
+                return 'alias';
+            }
+
+            $all = $all && $own !== null && ($dot === false
+                ? in_array($sort['column'], SearchableColumns::onTable($query->getConnection(), $from[0]), true)
+                : substr($sort['column'], 0, $dot) === $own);
+        }
+
+        return $all ? 'own' : 'joined';
     }
 
     /** $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a global scope. */

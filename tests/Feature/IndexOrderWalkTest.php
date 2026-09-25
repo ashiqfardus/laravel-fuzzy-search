@@ -90,9 +90,8 @@ class IndexOrderWalkTest extends TestCase
     }
 
     /**
-     * H1 (round 8): a one-to-many join repeats a model once per joined row, so the ordered page is
-     * not one offset/limit read there. Each model is served once, at its first row, and total()
-     * counts models.
+     * H1 (round 8): a one-to-many join repeats a model once per joined row. Each model is served
+     * once, at its first row, and total() counts models (every case: JoinedOrderedIndexPageTest).
      */
     public function test_a_join_that_repeats_a_model_serves_it_once_in_the_order(): void
     {
