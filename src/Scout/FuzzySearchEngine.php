@@ -33,6 +33,10 @@ class FuzzySearchEngine extends Engine
 
     public function update($models): void
     {
+        if ($models->isNotEmpty()) {
+            self::requirePackageTrait($models->first());
+        }
+
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
         // a trashed model kept while scout.soft_delete is on (ER-72).
         $this->indexManager->indexBatch($models, scout: true);
@@ -73,6 +77,8 @@ class FuzzySearchEngine extends Engine
      */
     private function results(Builder $builder, int $offset, int $limit): array
     {
+        self::requirePackageTrait($builder->model);
+
         $orders = $this->orders($builder);
         $terms  = $this->terms($builder);
         $ranked = $this->scorer->rank($terms, $builder->model::class, $this->columnWeights($builder));
@@ -90,6 +96,25 @@ class FuzzySearchEngine extends Engine
             'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
             'total'   => $total,
         ];
+    }
+
+    /**
+     * The engine indexes what the package's Searchable trait declares: getSearchableColumns() (or a
+     * searchableText() hook), which IndexManager::indexesModel() reads. A model with Scout's trait
+     * alone has neither, and was indexed as nothing and searched as nothing, silently, where v2.0.1
+     * threw on the missing method (ruling D3). Indexing and searching it throw again, naming the
+     * fix; delete() and flush() only remove rows, as in v2.0.1, so deleting a record still works.
+     *
+     * @throws \LogicException
+     */
+    private static function requirePackageTrait(\Illuminate\Database\Eloquent\Model $model): void
+    {
+        if (!method_exists($model, 'getSearchableColumns') && !method_exists($model, 'searchableText')) {
+            throw new \LogicException(sprintf(
+                '%s is on the fuzzy-search Scout driver without the package\'s trait, so it has nothing to index or search. Add `use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;` to the model, beside Scout\'s trait (see the Scout section of the README).',
+                $model::class
+            ));
+        }
     }
 
     /**
@@ -185,7 +210,7 @@ class FuzzySearchEngine extends Engine
     /**
      * The model's BM25F column weights, resolved exactly as Model::search() resolves them, so a
      * Scout search ranks identically to Model::search()->useInvertedIndex(). Empty for a model
-     * that does not use the package's Searchable trait — rank() then weighs every column 1.
+     * that declares its columns without the package's trait — rank() then weighs every column 1.
      *
      * @return array<string, int>
      */
