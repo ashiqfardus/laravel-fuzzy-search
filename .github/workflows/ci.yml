@@ -133,6 +133,8 @@ jobs:
         exclude:
           - { php: "8.2", laravel: "13.*" }  # testbench ^11 requires PHP ^8.3
           - { php: "8.5", laravel: "10.*" }  # Laravel 10 is not PHP 8.5 compatible
+        include:
+          - { php: "8.4", laravel: "13.*", scout: "^10.0" }  # this cell runs Scout 10; the rest resolve 11
     env:
       DB_TEST_DRIVER: pgsql
       DB_TEST_HOST: 127.0.0.1
@@ -160,6 +162,7 @@ jobs:
         run: |
           composer config policy.advisories.block false
           composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
+          if [ -n "${{ matrix.scout }}" ]; then composer require --dev "laravel/scout:${{ matrix.scout }}" --no-update --no-interaction; fi
           composer install --no-interaction --prefer-dist
       - name: Run tests (PostgreSQL)
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
@@ -301,12 +304,15 @@ jobs:
   # ── Filament v4 / v5 ──────────────────────────────────────────────────────
   # require-dev pins Filament v3 (it spans the whole matrix); this job swaps in v4 and v5.
   test-filament:
-    name: "Filament ${{ matrix.filament }} / PHP 8.4 / Laravel 12 / SQLite"
+    name: "Filament ${{ matrix.filament }} / PHP 8.4 / Laravel ${{ matrix.laravel }} / SQLite"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        filament: ["^4.0", "^5.0"]
+        include:
+          - { filament: "^4.0", laravel: "12.*" }
+          - { filament: "^5.0", laravel: "12.*" }
+          - { filament: "^5.0", laravel: "13.*" }
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -314,18 +320,21 @@ jobs:
           php-version: "8.4"
           extensions: pdo_sqlite, intl
           coverage: none
+      - name: Allow dev stability for Laravel 13.x
+        if: matrix.laravel == '13.*'
+        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
           composer config policy.advisories.block false
-          composer require "laravel/framework:12.*" --no-update --no-interaction
+          composer require "laravel/framework:${{ matrix.laravel }}" --no-update --no-interaction
           composer require --dev "filament/filament:${{ matrix.filament }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run the Filament integration tests
         run: vendor/bin/phpunit tests/Integration/Filament
 
   # ── Scout 10 ──────────────────────────────────────────────────────────────
-  # composer.json allows laravel/scout ^10.0|^11.0. Scout 10 also runs in the lowest-deps job;
-  # every other job resolves 11.x.
+  # composer.json allows laravel/scout ^10.0|^11.0. Scout 10 also runs in the PostgreSQL
+  # PHP 8.4 / Laravel 13 cell and in the lowest-deps job; every other cell resolves 11.x.
   test-scout10:
     name: "Scout ^10 / PHP 8.4 / Laravel 12 / SQLite"
     runs-on: ubuntu-latest
