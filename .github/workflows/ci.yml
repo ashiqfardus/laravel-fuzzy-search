@@ -324,7 +324,8 @@ jobs:
         run: vendor/bin/phpunit tests/Integration/Filament
 
   # ── Scout 10 ──────────────────────────────────────────────────────────────
-  # composer.json allows laravel/scout ^10.0|^11.0, and every other job resolves 11.x.
+  # composer.json allows laravel/scout ^10.0|^11.0. Scout 10 also runs in the lowest-deps job;
+  # every other job resolves 11.x.
   test-scout10:
     name: "Scout ^10 / PHP 8.4 / Laravel 12 / SQLite"
     runs-on: ubuntu-latest
@@ -342,4 +343,29 @@ jobs:
           composer require --dev "laravel/scout:^10.0" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
       - name: Run tests (SQLite, Scout 10)
+        run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+
+  # ── Lowest dependencies ───────────────────────────────────────────────────
+  # Every other job installs the newest versions composer.json allows; this one installs the
+  # oldest, so the declared floors are tested: the PHP floor (8.1) with the oldest packages, and
+  # Laravel 10, the only line that runs on PHP 8.1. Filament is removed: filament/filament ^3.3
+  # needs Laravel 10.45, and without it Laravel resolves to 10.0, which has no
+  # Schema::getColumns() (the Laravel 10 fallback in Searchable). The Filament tests skip here;
+  # every other job runs them.
+  test-lowest:
+    name: "Lowest deps / PHP 8.1 / Laravel 10 / SQLite"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.1"
+          extensions: pdo_sqlite, intl
+          coverage: none
+      - name: Install deps
+        run: |
+          composer config policy.advisories.block false
+          composer remove --dev filament/filament --no-update --no-interaction
+          composer update --prefer-lowest --prefer-stable --no-interaction --prefer-dist
+      - name: Run tests (SQLite, lowest deps)
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
