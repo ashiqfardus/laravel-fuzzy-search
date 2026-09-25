@@ -46,7 +46,7 @@ To tune the candidate ceiling:
 'max_candidates' => 500,  // lower for faster queries on large tables
 ```
 
-> **Note:** `paginate()` and `simplePaginate()` rank the same way: they rescore up to `max_candidates` rows and cut the page from that ranking. Lowering `max_candidates` also lowers the largest page size and how deep ranked pagination reaches.
+> **Note:** `paginate()` and `simplePaginate()` rank the same way within the window: they rescore up to `max_candidates` rows and cut the page from that ranking. `paginate()` then serves the rows past the window in database order; `simplePaginate()` (like `get()`) stops at the window on the LIKE and extended paths, so its last page ends at `max_candidates` rows. Lowering `max_candidates` also lowers the largest page size.
 
 ---
 

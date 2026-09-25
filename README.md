@@ -957,7 +957,7 @@ try {
 
 **Available Exceptions:**
 - `LaravelFuzzySearchException` - Base exception (catch all)
-- `EmptySearchTermException` - Search term is empty (or only whitespace) while `allow_empty_search` is false — thrown by every terminal: `get()`, `first()`, `paginate()`, `simplePaginate()`, `count()` and `getFacets()`, on the LIKE and index paths (with `allow_empty_search` on, every one of them lists every row); `extended()`/`searchBoolean()` queries are exempt
+- `EmptySearchTermException` - Search term is empty (or only whitespace) while `allow_empty_search` is false — thrown by every terminal: `get()`, `first()`, `paginate()`, `simplePaginate()`, `count()` and `getFacets()`, on the LIKE and index paths, and by `FuzzySearch::on()`'s `get()` (with `allow_empty_search` on, every one of them lists every row); `extended()`/`searchBoolean()` queries are exempt
 - `InvalidAlgorithmException` - Invalid algorithm specified
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
@@ -1047,7 +1047,7 @@ return [
     ],
     
     'synonyms' => [
-        // Every search's default synonyms (lower-case word => its synonyms):
+        // Every SearchBuilder search's default synonyms (lower-case word => its synonyms):
         // 'laptop' => ['notebook', 'computer'],
     ],
     
@@ -1394,7 +1394,7 @@ Regardless of algorithm, after SQL candidates are fetched:
 
 Top-N results are always the most relevant N from the candidate set (not just the first N SQL rows). Candidate set size is controlled by `max_candidates` (default: 1000).
 
-> **Pagination note:** `paginate()` ranks globally across up to `max_candidates` rows before slicing. Rows past that window are served in database order and scored within their page. That includes a page that runs across the boundary, so every match is on exactly one page. Add `stableRanking()` so the database order has no ties that two pages' queries could break differently.
+> **Pagination note:** `paginate()` ranks globally across up to `max_candidates` rows before slicing. Rows past that window are served in database order and scored within their page. That includes a page that runs across the boundary, so every match is on exactly one page. Add `stableRanking()` so the database order has no ties that two pages' queries could break differently. `simplePaginate()` runs through `get()`, so on the LIKE and extended paths it serves only that window: its last page ends at `max_candidates` rows.
 
 ---
 
