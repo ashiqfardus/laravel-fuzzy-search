@@ -777,7 +777,7 @@ Post::search('tolkien')->useInvertedIndex()->get();
 - **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
 - BM25 tends to beat LIKE once a table passes roughly 10k+ rows; below that, LIKE is simpler to operate.
-- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, not thrown from `save()`. On SQL Server, indexing inside an open transaction (Scout with `after_commit` off, or `searchable()` inside `DB::transaction()`) can deadlock; see [Production Setup](docs/bm25.md#production-setup).
+- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, not thrown from `save()`. On SQL Server, indexing inside an open transaction (Scout with `after_commit` off, or `searchable()` inside `DB::transaction()`) can deadlock; see [Production Setup](docs/bm25.md#production-setup). On PostgreSQL the package analyzes the index tables after a rebuild and as they grow; after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
 
 → Full guide: [docs/bm25.md](docs/bm25.md)
 
@@ -809,7 +809,9 @@ SCOUT_DRIVER=fuzzy-search
 
 It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync. Scout's semantic and hybrid search (`semantic()`, `hybrid()`, Scout 11.6+) are not supported by this engine: both throw `NotSupportedException`.
 
-`orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), and `_score` still carries each one's BM25 score. The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
+A model on this driver needs the package's `Searchable` trait beside Scout's, as the [recipe](docs/integrations.md#usage) shows. A model with Scout's trait alone has nothing to index: indexing or searching it throws `LogicException`, naming the trait.
+
+`orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), every match past `bm25.max_postings_per_term` included, and `_score` still carries each one's BM25 score (0 past that cap). The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
 
 Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty query matches nothing, with or without `allow_empty_search`. Scout searches fire no `FuzzySearchExecuted` event.
 
