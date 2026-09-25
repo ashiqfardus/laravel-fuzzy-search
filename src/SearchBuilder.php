@@ -1203,18 +1203,23 @@ class SearchBuilder
      * builder's rows as arrays — plus the columns searched and how the rows are decorated. No row
      * visibility, highlighting or relation is stored: those belong to the request that reads it.
      *
-     * Models are stored by key only when every row has a key of its own (ruling ER-92). Rows that
-     * share one (a one-to-many join) or have none (a select() without it) cannot be re-read by key,
-     * so each is stored as the attributes the database returned for it.
+     * Models are stored by key only when a re-read by key gives back exactly the cached rows: every
+     * row has a key of its own (ruling ER-92) and the query has no join and no union (ER-93; toBase(),
+     * so a global scope's join counts). A re-read returns every row the query holds for a key, and
+     * under a join or a union that can be another row than the one cached, even when the key is
+     * cached once (first(), take(), a page, a search on the joined column). Any other rows are
+     * stored as the attributes the database returned for them.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
         $scores = array_flip(['_score', '_column_scores', '_raw_score']);
         $keys   = $results->map(fn ($row) => $row instanceof Model ? $row->getKey() : null)->all();
+        $base   = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
         $models = match (true) {
-            !$results->first() instanceof Model                                         => false,
-            !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys) => 'key',
-            default                                                                     => 'attributes',
+            !$results->first() instanceof Model => false,
+            !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys)
+                && empty($base->joins) && empty($base->unions) => 'key',
+            default => 'attributes',
         };
 
         return [

@@ -33,6 +33,23 @@ class CacheViewerUser extends Model
     ];
 }
 
+/** Every query of it joins the user's posts, through a global scope. */
+class CacheScopedJoinUser extends Model
+{
+    use Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['name' => 10], 'algorithm' => 'like'];
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('posts', fn ($query) => $query->join('cache_posts', 'cache_posts.user_id', '=', 'users.id')
+            ->select('users.*', 'cache_posts.title as post_title'));
+    }
+}
+
 /**
  * H2 and F2 (rulings ER-83, ER-85). get() cached a Collection of models or stdClass rows. Laravel
  * 13's skeleton ships cache.serializable_classes = false, so every serialising store handed back
@@ -153,9 +170,12 @@ class CachePayloadTest extends TestCase
     }
 
     /**
-     * Ruling ER-92 (N1): rows that share a key (a one-to-many join) or carry none (a select without
-     * it) cannot be re-read by key: a hit returned the last joined row twice, or nothing. They are
-     * cached as attributes and hydrated on a hit, so it returns the miss's rows.
+     * Rulings ER-92 (N1) and ER-93 (P1): rows that share a key (a one-to-many join) or carry none (a
+     * select without it) cannot be re-read by key: a hit returned the last joined row twice, or
+     * nothing. Nor can a row of a search with a join or a union, even alone under its key: first(),
+     * take() or a page holding one of a key's joined rows, or a search on the joined column, got
+     * another joined row back. Those rows are cached as attributes and hydrated on a hit, so it
+     * returns the miss's rows.
      */
     public function test_a_hit_returns_joined_and_keyless_rows_as_the_miss_did(): void
     {
@@ -168,23 +188,42 @@ class CachePayloadTest extends TestCase
         $john = DB::table('users')->where('name', 'John Doe')->value('id');
         DB::table('cache_posts')->insert([['user_id' => $john, 'title' => 'First post'], ['user_id' => $john, 'title' => 'Second post']]);
 
+        $joined = fn (string $term, array $columns) => User::search($term)->join('cache_posts', 'cache_posts.user_id', '=', 'users.id')
+            ->select('users.*', 'cache_posts.title as post_title')->using('like')->searchIn($columns)->highlight()->cache();
+        $union  = fn () => User::searchOn(
+            User::query()->select('users.*', DB::raw("'main' as source"))
+                ->union(User::query()->select('users.*', DB::raw("'extra' as source"))->where('name', 'John Doe')),
+            'john doe'
+        )->using('like')->searchIn(['name'])->withRelevance(false)->cache();
+
         $searches = [
-            'one-to-many join' => fn () => User::search('john doe')->join('cache_posts', 'cache_posts.user_id', '=', 'users.id')
-                ->select('users.*', 'cache_posts.title as post_title')->using('like')->searchIn(['name'])->highlight()->cache(),
-            'no key selected'  => fn () => User::search('john')->select('name', 'email')->highlight()->debugScore()->cache(),
+            'one-to-many join'           => fn () => $joined('john doe', ['name'])->get(),
+            'no key selected'            => fn () => User::search('john')->select('name', 'email')->highlight()->debugScore()->cache()->get(),
+            // P1: one row per key in the result, but the join holds more rows for that key.
+            'join, first()'              => fn () => collect([$joined('john doe', ['name'])->first()]),
+            'join, take(1)'              => fn () => $joined('john doe', ['name'])->take(1)->get(),
+            'join, skip(1)->take(1)'     => fn () => $joined('john doe', ['name'])->skip(1)->take(1)->get(),
+            'join, simplePaginate page 2' => fn () => collect($joined('john doe', ['name'])->simplePaginate(1, 'page', 2)->items()),
+            'a search on the joined column' => fn () => $joined('first', ['cache_posts.title'])->get(),
+            'a join from a global scope' => fn () => CacheScopedJoinUser::search('first')->searchIn(['cache_posts.title'])->highlight()->cache()->get(),
+            'a union, first()'           => fn () => collect([$union()->first()]),
         ];
 
-        foreach ($searches as $label => $make) {
-            $miss = $make()->get();
-            $hit  = $make()->get();
+        $wrong = [];
+        foreach ($searches as $label => $run) {
+            $miss = $this->rows($run());
+            $hit  = $this->rows($run());
 
-            $this->assertNotSame([], $this->rows($miss), $label);
-            $this->assertEquals($this->rows($miss), $this->rows($hit), $label);
-            $this->assertContainsOnlyInstancesOf(User::class, $hit, $label);
+            $this->assertNotSame([], $miss, $label);
+            if ($miss != $hit) {
+                $wrong[$label] = ['miss' => array_column($miss, 'post_title') ?: array_column($miss, 'source'), 'hit' => array_column($hit, 'post_title') ?: array_column($hit, 'source') ?: count($hit) . ' rows'];
+            }
         }
+        $this->assertSame([], $wrong, 'a hit served other rows than its miss');
 
-        $make = $searches['one-to-many join'];
-        $this->assertEqualsCanonicalizing(['First post', 'Second post'], $make()->get()->pluck('post_title')->all());
+        $this->assertEqualsCanonicalizing(['First post', 'Second post'], $searches['one-to-many join']()->pluck('post_title')->all());
+        $this->assertSame(['First post'], $searches['a search on the joined column']()->pluck('post_title')->all());
+        $this->assertSame(['First post'], $searches['a join from a global scope']()->pluck('post_title')->all());
         $this->assertScalarPayload();
     }
 
