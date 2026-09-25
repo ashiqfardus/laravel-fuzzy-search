@@ -27,13 +27,13 @@ class FederatedSearch
     protected string $searchTerm = '';
     /** Only invalid UTF-8 (`?q=%FF`): cleaned to '' but not empty, so it matches nothing — see SearchBuilder. */
     protected bool $invalidBytesOnly = false;
-    protected array $searchableColumns = [];
     protected array $columnWeights = [];
     protected ?string $algorithm = null;
     protected array $options = [];
     protected int $limit = 15;
     protected bool $withRelevance = true;
-    protected int $typoTolerance = 2;
+    /** null: each model's own $searchable typo tolerance. */
+    protected ?int $typoTolerance = null;
     protected ?int $limitPerModel = null;
     protected array $modelOrder = [];
 
@@ -65,17 +65,10 @@ class FederatedSearch
     public function searchIn(array $columns): self
     {
         foreach ($columns as $key => $value) {
-            $column = is_string($key) ? $key : $value;
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
-                throw new \InvalidArgumentException(
-                    "Invalid column name: '{$column}'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* ."
-                );
-            }
+            self::validateColumns([is_string($key) ? $key : $value]);
             if (is_string($key)) {
-                $this->searchableColumns[] = $key;
                 $this->columnWeights[$key] = (int) $value;
             } else {
-                $this->searchableColumns[] = $value;
                 $this->columnWeights[$value] = 1;
             }
         }
@@ -83,7 +76,9 @@ class FederatedSearch
     }
 
     /**
-     * Set search algorithm
+     * Set search algorithm for every model. Without it, each model uses its own
+     * $searchable['algorithm'] — a model with only the Fuzzy trait its getFuzzyAlgorithm(), and
+     * any other model LIKE.
      */
     public function using(string $algorithm): self
     {
@@ -92,7 +87,8 @@ class FederatedSearch
     }
 
     /**
-     * Set typo tolerance
+     * Set typo tolerance for every model. Without it, each model uses its own
+     * $searchable['typo_tolerance'].
      */
     public function typoTolerance(int $level): self
     {
@@ -119,7 +115,10 @@ class FederatedSearch
     }
 
     /**
-     * Set algorithm options
+     * Algorithm options for every model — the array SearchBuilder::options() and the
+     * whereFuzzyMultiple() macro take (max_distance, max_patterns, …), merged over each model's
+     * own $searchable['options'] (a Fuzzy-trait model's getFuzzyOptions()). typoTolerance() sets
+     * max_distance and wins over it here.
      */
     public function options(array $options): self
     {
@@ -155,8 +154,9 @@ class FederatedSearch
 
     public function paginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): LengthAwarePaginator
     {
-        $page   = max(1, (int) ($page ?: request()->input($pageName, 1)));
-        $offset = ($page - 1) * $perPage;
+        $perPage = $this->clampPerPage($perPage);
+        $page    = $this->resolvePage($page, $pageName, $perPage);
+        $offset  = ($page - 1) * $perPage;
 
         $total  = $this->countAll();
         $ranked = $this->fetchRanked($offset + $perPage);
@@ -170,8 +170,9 @@ class FederatedSearch
 
     public function simplePaginate(int $perPage = 15, string $pageName = 'page', ?int $page = null): Paginator
     {
-        $page   = max(1, (int) ($page ?: request()->input($pageName, 1)));
-        $offset = ($page - 1) * $perPage;
+        $perPage = $this->clampPerPage($perPage);
+        $page    = $this->resolvePage($page, $pageName, $perPage);
+        $offset  = ($page - 1) * $perPage;
 
         $ranked = $this->fetchRanked($offset + $perPage + 1); // +1 lets Paginator detect a next page
         $items  = $ranked->slice($offset, $perPage + 1)->values();
@@ -189,7 +190,8 @@ class FederatedSearch
     }
 
     /**
-     * Fetch up to $perModelCeiling rows from every model, tag them, and return the merged,
+     * Fetch up to $perModelCeiling rows from every model — never more than max_candidates, the
+     * most a ranked search reads (see countPerModel()) — tag them, and return the merged,
      * ranked collection (score DESC, then orderByModel() rank, then model type, then key).
      */
     protected function fetchRanked(int $perModelCeiling): Collection
@@ -202,7 +204,7 @@ class FederatedSearch
             throw new EmptySearchTermException();
         }
 
-        $perModel   = min($this->limitPerModel ?? PHP_INT_MAX, max(1, $perModelCeiling));
+        $perModel   = min($this->limitPerModel ?? PHP_INT_MAX, max(1, $perModelCeiling), $this->maxCandidates());
         $allResults = collect();
 
         foreach ($this->models as $modelClass) {
@@ -247,10 +249,10 @@ class FederatedSearch
      * searchIn() appends to a builder rather than replacing its defaults, so
      * $modelClass::search()->searchIn() cannot narrow the columns the model's own
      * `$searchable['columns']` already applied. When the caller restricted the columns
-     * (and at least one of them exists on this table), build from a bare query instead
-     * so only the requested columns are searched. Otherwise fall back to the model's
-     * own defaults exactly as before. Returns null when a non-Searchable model has no
-     * matching columns — the caller should skip it, not query a nonexistent column.
+     * (and at least one of them exists on this table), build with Searchable::searchOn()
+     * and those columns instead, so only the requested columns are searched. Otherwise use
+     * the model's own defaults. Returns null when a non-Searchable model has no matching
+     * columns — the caller should skip it, not query a nonexistent column.
      */
     private function queryFor(string $modelClass): SearchBuilder|EloquentBuilder|null
     {
@@ -258,43 +260,29 @@ class FederatedSearch
         $hasSearchable = in_array(Traits\Searchable::class, $modelTraits);
 
         if ($hasSearchable) {
-            $instance = new $modelClass();
-            $weighted = $this->weightedColumnsExistingOn($instance);
+            $weighted = $this->weightedColumnsExistingOn(new $modelClass());
 
-            if (!empty($weighted)) {
-                $builder = (new SearchBuilder($modelClass::query(), app(FuzzySearch::class)))
-                    ->search($this->searchTerm)
-                    ->searchIn($weighted)
-                    ->using($this->algorithm ?? 'fuzzy')
-                    ->typoTolerance($this->typoTolerance);
+            // searchOn() applies the model's own $searchable configuration — algorithm, typo
+            // tolerance, stop words, synonyms, accents, options — with the narrowed columns
+            // replacing the configured ones. An algorithm, options or a tolerance set on this
+            // federated search override the model's; unset, each model searches as configured.
+            $builder = empty($weighted)
+                ? $modelClass::search($this->searchTerm)
+                : $modelClass::searchOn($modelClass::query(), $this->searchTerm, $weighted);
 
-                // A bare SearchBuilder skips the extras Searchable::search() applies from
-                // $searchable — apply them here too, so narrowing with searchIn() doesn't
-                // silently drop the model's configured stop words/synonyms/accent handling.
-                $extras = $instance->getSearchableExtras();
-
-                if (!empty($extras['stop_words'])) {
-                    $builder->ignoreStopWords($extras['stop_words']);
-                }
-
-                if (!empty($extras['synonyms'])) {
-                    $builder->withSynonyms($extras['synonyms']);
-                }
-
-                if (!empty($extras['accent_insensitive'])) {
-                    $builder->accentInsensitive();
-                }
-
-                if (!empty($extras['options'])) {
-                    $builder->options($extras['options']);
-                }
-
-                return $builder;
+            if ($this->algorithm !== null) {
+                $builder->using($this->algorithm);
             }
 
-            return $modelClass::search($this->searchTerm)
-                ->using($this->algorithm ?? 'fuzzy')
-                ->typoTolerance($this->typoTolerance);
+            if ($this->options !== []) {
+                $builder->options($this->options);
+            }
+
+            if ($this->typoTolerance !== null) {
+                $builder->typoTolerance($this->typoTolerance);
+            }
+
+            return $builder;
         }
 
         // Fall back to query builder approach
@@ -308,8 +296,19 @@ class FederatedSearch
             return null;
         }
 
-        return $modelClass::query()
-            ->whereFuzzyMultiple($columns, $this->searchTerm, $this->algorithm ?? 'like');
+        // A model with the Fuzzy trait keeps its own algorithm and options, read through the trait's
+        // public accessors as its fuzzy() scope reads them; using(), options() and typoTolerance() on
+        // this federated search override them. Any other model is searched with LIKE.
+        $fuzzy = method_exists($instance, 'getFuzzyAlgorithm');
+
+        return $modelClass::query()->whereFuzzyMultiple(
+            $columns,
+            $this->searchTerm,
+            $this->algorithm ?? ($fuzzy ? $instance->getFuzzyAlgorithm() : 'like'),
+            ($this->typoTolerance === null ? [] : ['max_distance' => $this->typoTolerance])
+                + $this->options
+                + ($fuzzy && method_exists($instance, 'getFuzzyOptions') ? $instance->getFuzzyOptions() : [])
+        );
     }
 
     /**
@@ -347,10 +346,11 @@ class FederatedSearch
 
     /**
      * How many rows each model can actually contribute to this search: its match count, capped
-     * at limitPerModel() when set and at max_candidates on the SearchBuilder path (a ranked
-     * search reads at most that many candidates and slices the page out of them, so no model
-     * can ever hand over more). getCounts() reports these numbers and paginate()'s total() is
-     * their sum, so the two can never disagree and no page is promised that cannot be filled.
+     * at limitPerModel() when set and at max_candidates (a ranked search reads at most that many
+     * candidates and slices the page out of them, and a model without the Searchable trait is
+     * held to the same window, so no model can ever hand over more). getCounts() reports these
+     * numbers and paginate()'s total() is their sum, so the two can never disagree and no page
+     * is promised that cannot be filled.
      *
      * Keyed by class, not by basename: across([A\User::class, B\User::class]) is two models
      * and must be counted twice.
@@ -376,12 +376,9 @@ class FederatedSearch
                 continue;
             }
 
-            $counts[$modelClass] = $this->matchesNothing() ? 0 : min(
-                $query->count(),
-                $this->limitPerModel ?? PHP_INT_MAX,
-                // The plain whereFuzzyMultiple() fallback has no candidate window.
-                $query instanceof SearchBuilder ? (int) config('fuzzy-search.max_candidates', 1000) : PHP_INT_MAX
-            );
+            $counts[$modelClass] = $this->matchesNothing()
+                ? 0
+                : min($query->count(), $this->limitPerModel ?? PHP_INT_MAX, $this->maxCandidates());
         }
 
         return $counts;
@@ -416,30 +413,85 @@ class FederatedSearch
     }
 
     /**
-     * Get searchable columns for a model
+     * The columns a model without the Searchable trait is searched on when searchIn() names none:
+     * its declared $searchable['columns'], else the Fuzzy trait's getFuzzySearchableColumns() (its
+     * $fuzzySearchable, `name` by default), else whichever of `name` and `title` its table has.
      */
     protected function getColumnsForModel(Model $instance): array
     {
-        // If custom columns specified, use those
-        if (!empty($this->searchableColumns)) {
-            return $this->searchableColumns;
+        $searchable = self::declaredProperty($instance, 'searchable');
+
+        if (!empty($searchable['columns'])) {
+            return self::validateColumns(SearchableColumns::names($searchable['columns']));
         }
 
-        // Try to get from model's searchable property
-        if (isset($instance->searchable['columns'])) {
-            return $this->validateColumns(Support\SearchableColumns::names($instance->searchable['columns']));
+        // The Fuzzy trait's public accessor runs in the model's own scope, where its protected
+        // $fuzzySearchable is visible.
+        $fuzzy = method_exists($instance, 'getFuzzySearchableColumns')
+            ? $instance->getFuzzySearchableColumns()
+            : self::declaredProperty($instance, 'fuzzySearchable');
+
+        if (!empty($fuzzy)) {
+            return self::validateColumns($fuzzy);
         }
 
-        // Try to get from fuzzySearchable property
-        if (isset($instance->fuzzySearchable)) {
-            return $this->validateColumns($instance->fuzzySearchable);
-        }
+        // Guessed columns: only those the table has. None means nothing to search — the model
+        // matches nothing, as a Searchable model without a column does. A table that cannot be
+        // listed is not such a model: the guess is kept, and its database error surfaces.
+        $listing = SearchableColumns::onTable($instance->getConnection(), $instance->getTable());
 
-        // Default fallback columns
-        return ['name', 'title'];
+        return $listing === [] ? ['name', 'title'] : array_values(array_intersect(['name', 'title'], $listing));
     }
 
-    private function validateColumns(array $columns): array
+    /**
+     * A property the model itself declares, of any visibility, read through Reflection — never
+     * through Eloquent's __get()/__isset(). From outside the model those cannot see a protected
+     * property, and on a model with Scout's Searchable `$model->searchable` resolves Scout's
+     * searchable() method as a relation: it indexes the blank model, then throws.
+     */
+    private static function declaredProperty(Model $instance, string $name): mixed
+    {
+        if (!property_exists($instance, $name)) {
+            return null;
+        }
+
+        $property = new \ReflectionProperty($instance, $name);
+
+        return $property->isInitialized($instance) ? $property->getValue($instance) : null;
+    }
+
+    /**
+     * SearchBuilder::clampPerPage()'s rule, [1, max_candidates] — that method is protected on the
+     * builder. paginate(0) divided by zero, and a negative size gave a negative offset.
+     */
+    private function clampPerPage(int $perPage): int
+    {
+        return max(1, min($perPage, $this->maxCandidates()));
+    }
+
+    /**
+     * SearchBuilder::resolvePage()'s rule, which is protected on the builder: $page, else the
+     * request's $pageName, and 1 for anything that is not a whole number of at least 1 (?page=abc,
+     * ?page=0, ?page=-3, ?page[]=1). Capped so that no offset it gives (simplePaginate() reads
+     * one row past the page) overflows into a float: past that, every page is empty anyway.
+     */
+    private function resolvePage(?int $page, string $pageName, int $perPage): int
+    {
+        return min(max(1, (int) ($page ?: request()->input($pageName, 1))), intdiv(PHP_INT_MAX, $perPage + 1));
+    }
+
+    private function maxCandidates(): int
+    {
+        return (int) config('fuzzy-search.max_candidates', 1000);
+    }
+
+    /**
+     * Throws for any column that is not an identifier (dotted table.column allowed) — the rule every
+     * column name the package writes into SQL follows. Also used by the Scout engine for orderBy().
+     *
+     * @internal
+     */
+    public static function validateColumns(array $columns): array
     {
         foreach ($columns as $column) {
             if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {

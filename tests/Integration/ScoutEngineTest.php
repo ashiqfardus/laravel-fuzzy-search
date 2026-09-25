@@ -449,6 +449,394 @@ class ScoutEngineTest extends TestCase
         $this->assertSame($productPostings, $postings(Product::class));
     }
 
+    // -------------------------------------------------------------------------
+    // orderBy(): an explicit order replaces the relevance order, as on Scout's database engine
+    // -------------------------------------------------------------------------
+
+    /**
+     * Three matches whose relevance, name and id orders all differ. Inserted in this order, so
+     * by id: top ("widget" 3×), bottom (1×), middle (2×); relevance is top > middle > bottom.
+     *
+     * @return array{int, int, int} the ids of the top, bottom and middle match
+     */
+    private function seedOrderableWidgets(): array
+    {
+        $ids = [];
+        foreach (['widget widget widget one', 'widget beta', 'widget widget gamma'] as $name) {
+            $ids[] = $this->app['db']->table('users')->insertGetId([
+                'name' => $name, 'email' => 'order_' . uniqid() . '@test.com', 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        $this->makeEngine()->update(ScoutIndexedUser::whereIn('id', $ids)->get());
+        config(['scout.driver' => 'fuzzy-search']);
+
+        return $ids;
+    }
+
+    private function scoutBuilder(string $query = 'widget'): \Laravel\Scout\Builder
+    {
+        return new \Laravel\Scout\Builder(new ScoutIndexedUser, $query);
+    }
+
+    /** @return array<int> the ids of a Scout result, a paginator's page or a collection, in order */
+    private function resultIds(iterable $results): array
+    {
+        return collect($results instanceof \Illuminate\Contracts\Pagination\Paginator ? $results->items() : $results)
+            ->map(fn ($model) => (int) $model->getKey())
+            ->all();
+    }
+
+    public function test_scout_order_by_name_replaces_the_relevance_order_on_get_and_every_paginator(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+
+        $this->assertSame([$top, $middle, $bottom], $this->resultIds($this->scoutBuilder()->get()), 'baseline: relevance order');
+
+        $byName = [$bottom, $middle, $top]; // widget beta < widget widget gamma < widget widget widget one
+
+        $this->assertSame($byName, $this->resultIds($this->scoutBuilder()->orderBy('name')->get()));
+        $this->assertSame([$bottom, $middle], $this->resultIds($this->scoutBuilder()->orderBy('name')->take(2)->get()));
+        $this->assertSame($bottom, (int) $this->scoutBuilder()->orderBy('name')->first()->getKey());
+
+        $page1 = $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1);
+        $page2 = $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 2);
+        $this->assertSame([$bottom, $middle], $this->resultIds($page1));
+        $this->assertSame([$top], $this->resultIds($page2));
+        $this->assertSame(3, $page1->total());
+
+        $simple = $this->scoutBuilder()->orderBy('name')->simplePaginate(2, 'page', 1);
+        $this->assertSame([$bottom, $middle], $this->resultIds($simple));
+        $this->assertTrue($simple->hasMorePages());
+        $this->assertSame([$top], $this->resultIds($this->scoutBuilder()->orderBy('name')->simplePaginate(2, 'page', 2)));
+    }
+
+    public function test_scout_order_by_id_desc_replaces_the_relevance_order_on_paginate(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+
+        $page1 = $this->scoutBuilder()->orderBy('id', 'desc')->paginate(2, 'page', 1);
+        $page2 = $this->scoutBuilder()->orderBy('id', 'desc')->paginate(2, 'page', 2);
+
+        $this->assertSame([$middle, $bottom], $this->resultIds($page1));
+        $this->assertSame([$top], $this->resultIds($page2));
+        $this->assertSame(3, $page1->total());
+        $this->assertSame([$middle, $bottom, $top], $this->resultIds($this->scoutBuilder()->orderBy('id', 'desc')->get()));
+    }
+
+    public function test_scout_order_by_applies_after_the_builder_constraints(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+
+        $page = $this->scoutBuilder()->whereIn('id', [$top, $bottom])->orderBy('name')->paginate(1, 'page', 1);
+        $this->assertSame([$bottom], $this->resultIds($page));
+        $this->assertSame(2, $page->total());
+
+        $callback = $this->scoutBuilder()->query(fn ($query) => $query->where('id', '!=', $bottom))->orderBy('name')->get();
+        $this->assertSame([$middle, $top], $this->resultIds($callback));
+    }
+
+    /**
+     * More matches than one bm25.candidate_chunk: binding every ranked id could pass SQL Server's
+     * 2,100-parameter limit, so the order must hold without them.
+     */
+    public function test_scout_order_by_holds_when_the_matches_exceed_one_candidate_chunk(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+        config(['fuzzy-search.bm25.candidate_chunk' => 2]);
+
+        $this->assertSame([$bottom, $middle, $top], $this->resultIds($this->scoutBuilder()->orderBy('name')->get()));
+        $this->assertSame([$top], $this->resultIds($this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 2)));
+        $this->assertSame(
+            [$middle, $top],
+            $this->resultIds($this->scoutBuilder()->whereIn('id', [$top, $middle])->orderBy('name')->paginate(2, 'page', 1))
+        );
+    }
+
+    public function test_scout_order_by_rejects_a_column_that_is_not_an_identifier(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        $engine = $this->makeEngine();
+
+        foreach (['name desc, (select 1)', 'name) --', 'data->"$.x"'] as $column) {
+            foreach (['search' => fn ($b) => $engine->search($b), 'paginate' => fn ($b) => $engine->paginate($b, 15, 1)] as $method => $call) {
+                try {
+                    $call($this->scoutBuilder()->orderBy($column));
+                    $this->fail("{$method}() ordered by [{$column}]");
+                } catch (\InvalidArgumentException $e) {
+                    $this->assertStringContainsString('Invalid column name', $e->getMessage());
+                }
+            }
+        }
+    }
+
+    public function test_scout_order_by_breaks_ties_by_key_descending(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+        $this->app['db']->table('users')->whereIn('id', [$top, $bottom, $middle])->update(['created_at' => '2026-01-01 00:00:00']);
+
+        // Every created_at is equal: orderBy('created_at', 'desc') — what latest() adds — leaves the
+        // whole order to the tie-break, the key descending, on the id-list query and on the walk alike.
+        foreach ([200, 2] as $chunk) {
+            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+
+            $this->assertSame([$middle, $bottom, $top], $this->resultIds($this->scoutBuilder()->orderBy('created_at', 'desc')->get()), "candidate_chunk {$chunk}");
+            $this->assertSame([$top], $this->resultIds($this->scoutBuilder()->orderBy('created_at', 'desc')->paginate(2, 'page', 2)), "candidate_chunk {$chunk}");
+        }
+    }
+
+    /**
+     * The ordered statements a Scout call runs: those that read users with an ORDER BY. Each is
+     * [sql, bindings, ids] where ids counts the key values it restricts to, inlined or bound.
+     */
+    private function orderedStatements(\Closure $call): array
+    {
+        $statements = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$statements) {
+            if (preg_match('/\busers\b/', $query->sql) && stripos($query->sql, 'order by') !== false) {
+                preg_match_all('/\bin \(([^)]*)\)/i', $query->sql, $lists);
+                $inlined = array_sum(array_map(fn ($list) => count(explode(',', $list)), $lists[1]));
+                $statements[] = [$query->sql, $query->bindings, $inlined + count($query->bindings)];
+            }
+        });
+
+        $call();
+
+        return $statements;
+    }
+
+    public function test_scout_order_by_restricts_by_the_ranked_ids_only_within_one_candidate_chunk(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+
+        // Within one chunk: one ordered statement, restricted to the three ranked ids.
+        $within = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1));
+        $this->assertCount(1, $within);
+        $this->assertSame(3, $within[0][2], 'the ordered query is restricted to the ranked ids');
+
+        // Past one chunk: no statement carries more ids than one chunk — the ids are not listed.
+        config(['fuzzy-search.bm25.candidate_chunk' => 2]);
+        $past = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1));
+        $this->assertNotEmpty($past);
+        foreach ($past as [$sql, , $ids]) {
+            $this->assertLessThanOrEqual(2, $ids, "an id list past one chunk: {$sql}");
+        }
+    }
+
+    public function test_scout_order_by_reads_the_ordered_rows_in_bounded_pages(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        config(['fuzzy-search.bm25.candidate_chunk' => 2]);
+
+        // cursor() fetched the whole ordered key column, and pdo_mysql and pdo_pgsql buffer all of
+        // it before the first row; each statement of the walk now reads at most 1,000 rows (SQL
+        // Server writes the first page as TOP 1000, later ones as FETCH NEXT 1000 ROWS).
+        $walk = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->get());
+
+        $this->assertNotEmpty($walk);
+        foreach ($walk as [$sql]) {
+            $this->assertMatchesRegularExpression('/\blimit 1000\b|\btop 1000\b|\bfetch next 1000 rows\b/i', $sql, "an unbounded walk: {$sql}");
+        }
+    }
+
+    public function test_scout_paginate_serves_an_empty_page_for_a_page_too_large_for_an_offset(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top] = $this->seedOrderableWidgets();
+
+        // ($page - 1) * $perPage overflowed into a float and resultKeys(int) threw a TypeError.
+        $builders = [
+            'unconstrained' => fn () => $this->scoutBuilder(),
+            'orderBy'       => fn () => $this->scoutBuilder()->orderBy('name'),
+            'where'         => fn () => $this->scoutBuilder()->where('id', $top),
+        ];
+
+        foreach ($builders as $label => $builder) {
+            $this->assertSame([], $this->resultIds($builder()->paginate(15, 'page', PHP_INT_MAX)), "{$label}: paginate()");
+            $this->assertSame([], $this->resultIds($builder()->simplePaginate(15, 'page', PHP_INT_MAX)), "{$label}: simplePaginate()");
+
+            $this->app['request']->query->set('page', (string) PHP_INT_MAX);
+            $this->assertSame([], $this->resultIds($builder()->paginate(15)), "{$label}: ?page");
+            $this->app['request']->query->remove('page');
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Caching a Scout search (the recipe in docs/integrations.md)
+    // -------------------------------------------------------------------------
+
+    public function test_the_documented_ways_to_cache_a_scout_search_cache_it(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
+        $cache = \Illuminate\Support\Facades\Cache::build(['driver' => 'array', 'serialize' => true]); // stores like file or redis
+
+        $queries = function (\Closure $call): array {
+            $count = 0;
+            \Illuminate\Support\Facades\DB::listen(function () use (&$count) {
+                $count++;
+            });
+            $result = $call();
+
+            return [$result, $count];
+        };
+
+        // Cache::remember() around Scout's own call.
+        $recipes = [
+            'Cache::remember() + Scout paginate()' => fn () => $cache->remember('users.search.widget.1', now()->addMinutes(10),
+                fn () => $this->scoutBuilder('widget')->paginate(2, 'page', 1)),
+            // The package builder's cache() caches get() (and simplePaginate(), which runs get()).
+            'SearchBuilder cache()->get()' => fn () => ScoutIndexedUser::search('widget')->useInvertedIndex()->typoTolerance(0)->cache(10)->get(),
+            'SearchBuilder cache()->simplePaginate()' => fn () => ScoutIndexedUser::search('widget')->useInvertedIndex()->typoTolerance(0)->cache(10)->simplePaginate(2),
+        ];
+
+        foreach ($recipes as $label => $recipe) {
+            if (!str_starts_with($label, 'Cache::')) {
+                \Illuminate\Support\Facades\Cache::flush();
+            }
+
+            [$first, $firstQueries]   = $queries($recipe);
+            [$second, $secondQueries] = $queries($recipe);
+
+            $this->assertGreaterThan(0, $firstQueries, "{$label}: the first call searches");
+            $this->assertSame(0, $secondQueries, "{$label}: the second call is served from the cache");
+            $this->assertSame($this->resultIds($first), $this->resultIds($second), $label);
+        }
+
+        $this->assertSame([$top, $middle], $this->resultIds($cache->get('users.search.widget.1')));
+    }
+
+    // -------------------------------------------------------------------------
+    // query.max_term_length: the engine binds one parameter per query term, so an uncapped
+    // query of a few thousand words passed SQL Server's 2,100-parameter limit
+    // -------------------------------------------------------------------------
+
+    /**
+     * Runs $call and returns every executed query's bindings.
+     *
+     * @return array<int, array<int, mixed>>
+     */
+    private function bindingsOf(\Closure $call): array
+    {
+        $bindings = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$bindings) {
+            $bindings[] = $query->bindings;
+        });
+
+        $call();
+
+        return $bindings;
+    }
+
+    /** The query words ("word1", "word2", …) each executed query bound, whichever table it read. */
+    private function boundWords(\Closure $call): array
+    {
+        $bound = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use (&$bound) {
+            $words = array_values(array_filter($query->bindings, fn ($b) => is_string($b) && preg_match('/^word\d*$/D', $b)));
+            if ($words !== []) {
+                $bound[] = $words;
+            }
+        });
+
+        $call();
+
+        return $bound;
+    }
+
+    public function test_scout_caps_a_5000_character_query_at_max_term_length(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        config(['fuzzy-search.query.max_term_length' => 128]);
+        $engine = $this->makeEngine();
+
+        // One 5,000-character word, and 1,000 distinct words of five characters or so.
+        $word  = str_repeat('widget', 834);
+        $words = 'widget ' . implode(' ', array_map(fn ($i) => 'w' . $i, range(1000, 1999)));
+        $this->assertGreaterThanOrEqual(5000, strlen($words));
+
+        foreach (['one word' => $word, 'many words' => $words] as $label => $query) {
+            foreach (['search' => fn () => $engine->search($this->scoutBuilder($query)), 'paginate' => fn () => $engine->paginate($this->scoutBuilder($query), 15, 1)] as $method => $call) {
+                foreach ($this->bindingsOf($call) as $bindings) {
+                    $this->assertLessThan(2100, count($bindings), "{$label}: {$method}() bound " . count($bindings) . ' parameters');
+
+                    foreach ($bindings as $binding) {
+                        $this->assertLessThanOrEqual(128, mb_strlen((string) $binding), "{$label}: {$method}() bound a term longer than max_term_length");
+                    }
+                }
+            }
+        }
+
+        // The capped query still searches: its first 128 characters start with "widget".
+        $this->assertSame(3, $engine->search($this->scoutBuilder($words))['total']);
+    }
+
+    public function test_scout_looks_up_only_the_words_within_max_term_length_of_a_500_word_query(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        config(['fuzzy-search.query.max_term_length' => 128]);
+        $engine = $this->makeEngine();
+
+        $query    = implode(' ', array_map(fn ($i) => 'word' . $i, range(1, 500)));
+        $expected = app(IndexManager::class)->processTerms(mb_substr($query, 0, 128), null, ScoutIndexedUser::class);
+        $this->assertLessThan(30, count($expected));
+
+        foreach (['search' => fn () => $engine->search($this->scoutBuilder($query)), 'paginate' => fn () => $engine->paginate($this->scoutBuilder($query), 15, 1)] as $method => $call) {
+            $bound = $this->boundWords($call);
+
+            $this->assertContains($expected, $bound, "{$method}() did not look up the words within max_term_length");
+            foreach ($bound as $words) {
+                $this->assertSame([], array_diff($words, $expected), "{$method}() looked up words past max_term_length");
+            }
+        }
+    }
+
     public function test_scout_paginate_total_and_page_reflect_builder_wheres(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

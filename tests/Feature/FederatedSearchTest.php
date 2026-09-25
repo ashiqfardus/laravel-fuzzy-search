@@ -7,6 +7,7 @@ require_once __DIR__ . '/../TestModels.php';
 require_once __DIR__ . '/../SameNameModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\LikeUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
 use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
@@ -507,6 +508,302 @@ class FederatedSearchTest extends TestCase
 
     /*
     |--------------------------------------------------------------------------
+    | Each Model Keeps Its Own Algorithm and Typo Tolerance
+    |--------------------------------------------------------------------------
+    */
+
+    /** String bindings of the queries $call runs against $table. */
+    private function stringBindingsOn(string $table, \Closure $call): array
+    {
+        $bindings = [];
+        \Illuminate\Support\Facades\DB::listen(function ($query) use ($table, &$bindings) {
+            if (preg_match('/\b' . $table . '\b/', $query->sql)) {
+                array_push($bindings, ...array_filter($query->bindings, 'is_string'));
+            }
+        });
+
+        $call();
+
+        return array_values(array_unique($bindings));
+    }
+
+    public function test_each_model_is_searched_with_its_own_configured_algorithm(): void
+    {
+        // LikeUser: $searchable algorithm 'like'. Product: 'fuzzy'. The typo "jonh" is on purpose:
+        // LIKE's only patterns are the term itself, fuzzy adds typo variants.
+        foreach ([[], ['name' => 10, 'title' => 10]] as $searchIn) {
+            $federated = FederatedSearch::across([LikeUser::class, Product::class])->search('jonh');
+            if ($searchIn !== []) {
+                $federated->searchIn($searchIn);
+            }
+
+            $users    = $this->stringBindingsOn('users', fn () => $federated->get());
+            $products = $this->stringBindingsOn('products', fn () => $federated->get());
+
+            $label = $searchIn === [] ? 'model columns' : 'searchIn()';
+            $this->assertNotEmpty($users, $label);
+            $this->assertSame([], array_diff($users, ['jonh', 'jonh%', '%jonh%']), "{$label}: LikeUser was not searched with LIKE");
+            $this->assertNotEmpty(array_diff($products, ['jonh', 'jonh%', '%jonh%']), "{$label}: Product was not searched with fuzzy");
+
+            $this->assertSame([], $federated->get()->where('_model_type', 'LikeUser')->all(), "{$label}: LIKE matched a typo");
+        }
+    }
+
+    public function test_each_model_keeps_its_own_typo_tolerance(): void
+    {
+        // TypoZeroUser: fuzzy with typo_tolerance 0, so "jonh" matches nothing. User: fuzzy with the
+        // default tolerance, so it finds John Doe.
+        foreach ([[], ['name' => 10]] as $searchIn) {
+            $federated = FederatedSearch::across([TypoZeroUser::class, User::class])->search('jonh');
+            if ($searchIn !== []) {
+                $federated->searchIn($searchIn);
+            }
+
+            $types = $federated->limit(50)->get()->pluck('_model_type')->unique()->values()->all();
+            $this->assertSame(['User'], $types, $searchIn === [] ? 'model columns' : 'searchIn()');
+            $this->assertSame(0, $federated->getCounts()['TypoZeroUser']);
+        }
+    }
+
+    public function test_an_explicit_algorithm_or_typo_tolerance_still_overrides_every_model(): void
+    {
+        $withAlgorithm = FederatedSearch::across([LikeUser::class])->search('jonh')->using('fuzzy')->limit(50)->get();
+        $this->assertContains('John Doe', $withAlgorithm->pluck('name')->all());
+
+        $withTolerance = FederatedSearch::across([TypoZeroUser::class])->search('jonh')->typoTolerance(2)->limit(50)->get();
+        $this->assertContains('John Doe', $withTolerance->pluck('name')->all());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Models Without the Searchable Trait Get the Same Limits
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_a_model_without_the_trait_is_capped_at_max_candidates(): void
+    {
+        // "jo" is in John Doe, Jon Snow, Johnny Bravo and Bob Johnson: four matches, two reachable.
+        config(['fuzzy-search.max_candidates' => 2]);
+
+        $federated = fn () => FederatedSearch::across([PlainUser::class])->search('jo')->searchIn(['name'])->using('like');
+
+        $this->assertCount(2, $federated()->limit(10)->get());
+        $this->assertSame(['PlainUser' => 2], $federated()->getCounts());
+
+        $page = $federated()->paginate(1, 'page', 1);
+        $this->assertSame(2, $page->total());
+        $this->assertCount(0, $federated()->paginate(1, 'page', 3)->items());
+        $this->assertCount(0, $federated()->simplePaginate(1, 'page', 3)->items());
+        $this->assertFalse($federated()->simplePaginate(1, 'page', 2)->hasMorePages());
+    }
+
+    public function test_a_model_without_the_trait_and_without_a_searchable_column_matches_nothing(): void
+    {
+        // PlainTag declares no columns and its table has neither of the guessed "name"/"title".
+        $schema = $this->app['db']->connection()->getSchemaBuilder();
+        $schema->dropIfExists('federated_tags');
+        $schema->create('federated_tags', function ($table) {
+            $table->id();
+            $table->string('label');
+        });
+        $this->app['db']->table('federated_tags')->insert([['label' => 'name tag'], ['label' => 'title tag']]);
+
+        try {
+            // The term is the guessed column's own name: were it written into the SQL, SQLite would
+            // read the unknown quoted identifier as a string and match every row, the others throw.
+            foreach (['name', 'title'] as $term) {
+                $federated = fn () => FederatedSearch::across([PlainTag::class, User::class])->search($term);
+
+                $this->assertSame([], $federated()->get()->where('_model_type', 'PlainTag')->all());
+                $this->assertArrayNotHasKey('PlainTag', $federated()->getCounts());
+                $this->assertSame($federated()->get()->count(), $federated()->paginate(15, 'page', 1)->total());
+            }
+        } finally {
+            $schema->dropIfExists('federated_tags');
+        }
+    }
+
+    public function test_a_model_without_the_trait_honours_min_search_length(): void
+    {
+        $federated = fn () => FederatedSearch::across([PlainUser::class])->search('j')->searchIn(['name'])->using('like');
+
+        $this->assertCount(0, $federated()->get());
+        $this->assertSame(['PlainUser' => 0], $federated()->getCounts());
+        $this->assertSame(0, $federated()->paginate(15, 'page', 1)->total());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | perPage and ?page Are Clamped
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_paginate_clamps_per_page_to_at_least_one_and_at_most_max_candidates(): void
+    {
+        $federated = fn () => FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like');
+
+        foreach ([0, -5] as $perPage) {
+            $page = $federated()->paginate($perPage, 'page', 1);
+            $this->assertSame(1, $page->perPage(), "paginate({$perPage})");
+            $this->assertCount(1, $page->items(), "paginate({$perPage})");
+            $this->assertSame($page->total(), $page->lastPage(), "paginate({$perPage})");
+
+            $simple = $federated()->simplePaginate($perPage, 'page', 1);
+            $this->assertSame(1, $simple->perPage(), "simplePaginate({$perPage})");
+            $this->assertCount(1, $simple->items(), "simplePaginate({$perPage})");
+        }
+
+        config(['fuzzy-search.max_candidates' => 2]);
+        $this->assertSame(2, $federated()->paginate(5000, 'page', 1)->perPage());
+        $this->assertSame(2, $federated()->simplePaginate(5000, 'page', 1)->perPage());
+    }
+
+    public function test_paginate_reads_a_non_numeric_or_non_positive_page_as_page_one(): void
+    {
+        $federated = fn () => FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like');
+
+        $first = collect($federated()->paginate(1, 'page', 1)->items())->map(fn ($r) => $r->_model_type . ':' . $r->getKey())->all();
+
+        foreach (['abc', '0', '-3', ['1'], '1abc'] as $value) {
+            $this->app['request']->query->set('page', $value);
+
+            $page = $federated()->paginate(1);
+            $this->assertSame(1, $page->currentPage(), 'paginate() ?page=' . json_encode($value));
+            $this->assertSame($first, collect($page->items())->map(fn ($r) => $r->_model_type . ':' . $r->getKey())->all());
+
+            $this->assertSame(1, $federated()->simplePaginate(1)->currentPage(), 'simplePaginate() ?page=' . json_encode($value));
+        }
+    }
+
+    public function test_a_page_too_large_for_an_offset_is_capped_instead_of_overflowing(): void
+    {
+        // ($page - 1) * $perPage overflowed into a float for a page near PHP_INT_MAX, and
+        // fetchRanked(int) threw a TypeError: a 500 for ?page=9223372036854775807.
+        $federated = fn () => FederatedSearch::across([User::class, Product::class])
+            ->search('on')->searchIn(['name', 'title'])->using('like');
+
+        foreach ([(string) PHP_INT_MAX, '99999999999999999999', (string) intdiv(PHP_INT_MAX, 15)] as $value) {
+            $this->app['request']->query->set('page', $value);
+
+            $page = $federated()->paginate(15);
+            $this->assertSame([], $page->items(), "paginate() ?page={$value}");
+            $this->assertGreaterThan(1, $page->currentPage());
+            $this->assertGreaterThan(0, $page->total());
+
+            $this->assertSame([], $federated()->simplePaginate(15)->items(), "simplePaginate() ?page={$value}");
+        }
+
+        $this->assertSame([], $federated()->paginate(15, 'page', PHP_INT_MAX)->items());
+        $this->assertSame([], $federated()->simplePaginate(1, 'page', PHP_INT_MAX)->items());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Declared Columns of Models Without the Searchable Trait
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_a_scout_only_model_is_searched_without_running_scouts_searchable(): void
+    {
+        // $model->searchable, read from outside the model, reached Eloquent's __isset(), which took
+        // Scout's searchable() method for a relation: it ran it on a blank model (an index write),
+        // then threw LogicException.
+        ScoutOnlyUser::$searchableCalls = 0;
+
+        $results = FederatedSearch::across([ScoutOnlyUser::class])->search('john')->using('like')->get();
+
+        $this->assertSame(0, ScoutOnlyUser::$searchableCalls, "Scout's searchable() ran");
+        $this->assertEqualsCanonicalizing(['John Doe', 'Johnny Bravo', 'Bob Johnson'], $results->pluck('name')->all());
+        $this->assertSame(['ScoutOnlyUser' => 3], FederatedSearch::across([ScoutOnlyUser::class])->search('john')->using('like')->getCounts());
+        $this->assertSame(0, ScoutOnlyUser::$searchableCalls, "Scout's searchable() ran");
+    }
+
+    public function test_a_fuzzy_trait_model_is_searched_on_its_declared_columns(): void
+    {
+        // "smartphone" is only in a description. FuzzyProduct declares protected $fuzzySearchable =
+        // ['description'], which isset() from outside the model could not see: the search ran on
+        // the guessed "title" and found nothing.
+        $results = FederatedSearch::across([FuzzyProduct::class])->search('smartphone')->using('like')->get();
+
+        $this->assertSame(['iPhone 15 Pro'], $results->pluck('title')->all());
+        $this->assertSame(['FuzzyProduct' => 1], FederatedSearch::across([FuzzyProduct::class])->search('smartphone')->using('like')->getCounts());
+    }
+
+    public function test_a_plain_model_is_searched_on_its_protected_searchable_columns(): void
+    {
+        $results = FederatedSearch::across([DeclaredPlainProduct::class])->search('smartphone')->using('like')->get();
+
+        $this->assertSame(['iPhone 15 Pro'], $results->pluck('title')->all());
+    }
+
+    public function test_a_fuzzy_trait_model_is_searched_with_its_own_algorithm_unless_using_overrides_it(): void
+    {
+        // FuzzySoundexUser declares $fuzzyAlgorithm = 'soundex'; the fallback searched it with LIKE.
+        // Soundex is native SOUNDEX() on MySQL and MariaDB, and phonetic LIKE patterns elsewhere,
+        // among them the consonant skeleton "%jnh%" of "jonh", which no other driver generates.
+        $soundex = function (\Closure $call): bool {
+            $seen = false;
+            \Illuminate\Support\Facades\DB::listen(function ($query) use (&$seen) {
+                if (preg_match('/\busers\b/', $query->sql)
+                    && (stripos($query->sql, 'soundex(') !== false || in_array('%jnh%', $query->bindings, true))) {
+                    $seen = true;
+                }
+            });
+            $call();
+
+            return $seen;
+        };
+
+        $own = fn () => FederatedSearch::across([FuzzySoundexUser::class])->search('jonh');
+
+        $this->assertTrue($soundex(fn () => $own()->get()), 'get() did not search with the model\'s soundex');
+        $this->assertTrue($soundex(fn () => $own()->getCounts()), 'getCounts() did not search with the model\'s soundex');
+        $this->assertContains('Jon Snow', $own()->limit(50)->get()->pluck('name')->all()); // "Jon" sounds like "jonh" everywhere
+
+        $this->assertFalse($soundex(fn () => $own()->using('fuzzy')->get()), 'an explicit using() must override the model\'s algorithm');
+        $this->assertFalse($soundex(fn () => $own()->using('fuzzy')->getCounts()));
+    }
+
+    public function test_a_fuzzy_trait_model_is_searched_with_its_own_options(): void
+    {
+        // FuzzyExactUser: fuzzy with $fuzzyOptions max_distance 0, so the typo "jonh" matches nothing,
+        // as its own fuzzy() scope finds nothing. typoTolerance() and options() still override it.
+        $federated = fn () => FederatedSearch::across([FuzzyExactUser::class])->search('jonh');
+
+        $this->assertCount(0, FuzzyExactUser::query()->fuzzy('jonh')->get(), 'baseline: the model\'s own scope');
+        $this->assertCount(0, $federated()->limit(50)->get());
+        $this->assertSame(['FuzzyExactUser' => 0], $federated()->getCounts());
+
+        $this->assertNotEmpty($federated()->typoTolerance(2)->limit(50)->get());
+        $this->assertNotEmpty($federated()->options(['max_distance' => 2])->limit(50)->get());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | options() Reaches Every Model
+    |--------------------------------------------------------------------------
+    */
+
+    public function test_options_apply_to_every_model(): void
+    {
+        // max_distance 0 leaves the fuzzy driver only the typed term, so the typo "jonh" matches
+        // nothing; options() used to be stored and never applied.
+        foreach ([User::class, PlainUser::class] as $class) {
+            $federated = fn () => FederatedSearch::across([$class])->search('jonh')->searchIn(['name'])->using('fuzzy');
+
+            $this->assertNotEmpty($federated()->limit(50)->get(), "{$class}: baseline, the typo matches");
+            $this->assertCount(0, $federated()->options(['max_distance' => 0])->limit(50)->get(), "{$class}: options() ignored");
+            $this->assertSame(0, array_sum($federated()->options(['max_distance' => 0])->getCounts()), "{$class}: getCounts() ignored options()");
+
+            // typoTolerance() sets the same option, and wins over it.
+            $this->assertNotEmpty($federated()->options(['max_distance' => 0])->typoTolerance(2)->limit(50)->get(), "{$class}: typoTolerance() lost to options()");
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Relation Columns (not supported yet)
     |--------------------------------------------------------------------------
     */
@@ -552,3 +849,101 @@ class SynonymUserFixture extends Model
         'synonyms' => ['jon' => ['john']],
     ];
 }
+
+/** Fuzzy with no typo tolerance: a typo never matches on its own configuration. */
+class TypoZeroUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = [
+        'columns'        => ['name' => 10],
+        'algorithm'      => 'fuzzy',
+        'typo_tolerance' => 0,
+    ];
+}
+
+/** Plain model over "users" with no Searchable/Fuzzy trait (FederatedSearch's fallback branch). */
+class PlainUser extends Model
+{
+    protected $table = 'users';
+    protected $guarded = [];
+}
+
+/** Plain model whose table has neither of the fallback's guessed columns, "name" and "title". */
+class PlainTag extends Model
+{
+    protected $table = 'federated_tags';
+    protected $guarded = [];
+    public $timestamps = false;
+}
+
+/**
+ * Only Scout's Searchable, and no $searchable property: `$model->searchable` from outside the
+ * model resolves Scout's searchable() method. It is wrapped to count the calls.
+ */
+class ScoutOnlyUser extends Model
+{
+    use \Laravel\Scout\Searchable {
+        searchable as scoutSearchable;
+    }
+
+    public static int $searchableCalls = 0;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    public function searchable(): void
+    {
+        static::$searchableCalls++;
+        $this->scoutSearchable();
+    }
+}
+
+/** Only the (deprecated) Fuzzy trait, declaring its columns the way that trait documents. */
+class FuzzyProduct extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Fuzzy;
+
+    protected $table = 'products';
+    protected $guarded = [];
+
+    protected array $fuzzySearchable = ['description'];
+}
+
+/** No trait at all, but a protected $searchable declaration. */
+class DeclaredPlainProduct extends Model
+{
+    protected $table = 'products';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['description' => 5]];
+}
+
+/** Only the Fuzzy trait, with its own algorithm. */
+class FuzzySoundexUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Fuzzy;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $fuzzySearchable = ['name'];
+    protected string $fuzzyAlgorithm = 'soundex';
+}
+
+/** Only the Fuzzy trait: fuzzy, and no typo distance in its own options. */
+class FuzzyExactUser extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Fuzzy;
+
+    protected $table = 'users';
+    protected $guarded = [];
+
+    protected array $fuzzySearchable = ['name'];
+    protected string $fuzzyAlgorithm = 'fuzzy';
+    protected array $fuzzyOptions = ['max_distance' => 0];
+}
+

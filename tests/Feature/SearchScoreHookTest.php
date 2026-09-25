@@ -36,7 +36,7 @@ class BoostedUser extends Model
 }
 
 /** The same table without the trait. */
-class PlainUser extends Model
+class ScoreHookPlainUser extends Model
 {
     protected $table   = 'users';
     protected $guarded = [];
@@ -116,7 +116,7 @@ class SearchScoreHookTest extends TestCase
     public function test_the_default_implementation_leaves_scores_unchanged(): void
     {
         $withTrait = User::search('john')->get()->pluck('_raw_score', 'name')->all();
-        $noTrait   = (new SearchBuilder(PlainUser::query(), app(FuzzySearch::class)))->search('john')->searchIn(['name' => 10, 'email' => 5])->using('fuzzy')->get()->pluck('_raw_score', 'name')->all();
+        $noTrait   = (new SearchBuilder(ScoreHookPlainUser::query(), app(FuzzySearch::class)))->search('john')->searchIn(['name' => 10, 'email' => 5])->using('fuzzy')->get()->pluck('_raw_score', 'name')->all();
 
         $this->assertSame($noTrait, $withTrait);
     }

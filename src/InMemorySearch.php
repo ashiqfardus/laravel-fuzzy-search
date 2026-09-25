@@ -13,6 +13,9 @@ use Illuminate\Support\Collection;
  */
 class InMemorySearch
 {
+    /** The most characters of a value, and of the term, that similar_text() compares — see get(). */
+    private const SCORING_MAX_CHARS = 255;
+
     private Collection $items;
     private string     $term          = '';
     /** Only invalid UTF-8: cleaned to '' but not empty, so it matches nothing instead of listing everything. */
@@ -93,18 +96,37 @@ class InMemorySearch
             return collect();
         }
 
-        $startedAt = microtime(true);
-
-        if ($this->term === '' || empty($this->columns)) {
+        if ($this->term === '') {
             return $this->items->slice($this->offset, $this->limit)->values();
         }
 
-        $needle = strtolower($this->term);
+        // No searchIn() column: nothing to search, so nothing matches (as SearchBuilder does
+        // without a column) — not every item.
+        if (empty($this->columns)) {
+            return collect();
+        }
 
-        $scored = $this->items->map(function ($item) use ($needle) {
+        $startedAt = microtime(true);
+
+        // query.max_term_length characters (never bytes), as SearchBuilder::capSearchTerm() cuts
+        // the term: similar_text() below is O(term × value).
+        $term = mb_substr($this->term, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+
+        // Case-folded in every script, as SearchBuilder's PHP scoring folds: strtolower() is
+        // ASCII-only, so "ÉCOLE" was only a near-miss for "école" and "МОСКВА" no match for "москва".
+        $needle = mb_strtolower($term, 'UTF-8');
+
+        // similar_text() is O(n·m): it compares at most the first 255 characters of each side, as
+        // SearchBuilder::similarity() does (SCORING_MAX_CHARS), so a 20KB value costs what a
+        // 255-character one does. A value within the cap scores exactly as before.
+        $cut = fn (string $s) => mb_strlen($s, 'UTF-8') > self::SCORING_MAX_CHARS
+            ? mb_substr($s, 0, self::SCORING_MAX_CHARS, 'UTF-8')
+            : $s;
+
+        $scored = $this->items->map(function ($item) use ($needle, $cut) {
             $score = 0;
             foreach ($this->columns as $col) {
-                $value = strtolower((string) data_get($item, $col, ''));
+                $value = mb_strtolower((string) data_get($item, $col, ''), 'UTF-8');
                 if ($value === $needle) {
                     $score = max($score, 100);
                 } elseif (str_starts_with($value, $needle)) {
@@ -112,7 +134,7 @@ class InMemorySearch
                 } elseif (str_contains($value, $needle)) {
                     $score = max($score, 30);
                 } else {
-                    similar_text($needle, $value, $pct);
+                    similar_text($cut($needle), $cut($value), $pct);
                     $minPct = (int) config('fuzzy-search.in_memory.min_similarity', 60);
                     if ($pct >= $minPct) {
                         $score = max($score, (int) $pct);
@@ -163,7 +185,7 @@ class InMemorySearch
         $results = $scored->slice($this->offset, $this->limit)->values();
 
         event(new \Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted(
-            searchTerm:     $this->term,
+            searchTerm:     $term,
             columns:        $this->columns,
             algorithm:      'in_memory',
             candidateCount: $this->items->count(),
