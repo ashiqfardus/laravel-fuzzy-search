@@ -382,6 +382,8 @@ foreach ($users as $user) {
 }
 ```
 
+Search results are read models. `_score`, `_raw_score` and the other underscore-prefixed values a search adds are real attributes on each row, so `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving.
+
 ### Prefix Boosting
 
 ```php
