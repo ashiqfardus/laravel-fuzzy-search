@@ -110,7 +110,7 @@ jobs:
   # ── PostgreSQL 14 ─────────────────────────────────────────────────────────
   # Representative subset: PHP 8.2/8.3/8.4 × Laravel 10/12/13
   test-pgsql:
-    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / PostgreSQL 14"
+    name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / PostgreSQL 14${{ matrix.scout && format(' / Scout {0}', matrix.scout) || '' }}"
     runs-on: ubuntu-latest
     services:
       pgsql:
