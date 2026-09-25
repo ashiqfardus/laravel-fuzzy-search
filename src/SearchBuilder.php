@@ -1958,8 +1958,8 @@ class SearchBuilder
      * Get paginated results.
      *
      * Ranks globally: fetches up to max_candidates rows, rescores in PHP, and slices the
-     * page from that ranked set. Pages whose offset falls beyond max_candidates fall back
-     * to database-level ordering for that page (see paginateRanked()). Works with
+     * page from that ranked set. Rows past max_candidates are served in database order,
+     * each on exactly one page (see paginateRanked()). Works with
      * extended()/searchBoolean() as well as the plain LIKE-driver path.
      *
      * $perPage is clamped to max_candidates (default 1000) on every path — see paginateOnce().
@@ -2034,8 +2034,9 @@ class SearchBuilder
 
     /**
      * Length-aware pagination that ranks globally: fetch up to max_candidates rows, rescore in
-     * PHP, slice the page. total() is the real DB count. For pages whose offset is beyond the
-     * candidate ceiling, fall back to DB-level ordering for that page (documented limitation).
+     * PHP, slice the page. total() is the real DB count. Rows past the candidate ceiling are served
+     * in DB order, scored within their page (documented limitation), whether the page starts past
+     * the ceiling or runs across it: every row is on exactly one page.
      */
     protected function paginateRanked(int $perPage, string $pageName, ?int $page): \Illuminate\Contracts\Pagination\LengthAwarePaginator
     {
@@ -2060,18 +2061,23 @@ class SearchBuilder
 
         if ($offset >= $maxCandidates) {
             // Deep page beyond the rescoring window: DB order for this page, score within it.
-            $items = collect($this->query->clone()->offset($offset)->limit($perPage)->get());
+            $items = collect();
+            $past  = $this->query->clone()->offset($offset)->limit($perPage)->get();
         } else {
-            $candidates = $this->query->clone()->limit($maxCandidates)->get();
+            // The window and, for a page that runs past it, the rows after it: one query, so the
+            // two never overlap. The rows past the window are served as a deep page is.
+            $candidates = $this->query->clone()->limit(max($maxCandidates, $offset + $perPage))->get();
+            $past       = $candidates->splice($maxCandidates);
             if ($this->withRelevance && $term !== '') {
                 $candidates = $this->calculateRelevanceScores($candidates, $this->extendedScoringTerms());
             }
             $items = $candidates->slice($offset, $perPage)->values();
         }
 
-        if ($this->withRelevance && $offset >= $maxCandidates && $term !== '') {
-            $items = $this->calculateRelevanceScores($items, $this->extendedScoringTerms());
+        if ($this->withRelevance && $past->isNotEmpty() && $term !== '') {
+            $past = $this->calculateRelevanceScores($past, $this->extendedScoringTerms());
         }
+        $items = $items->concat($past);
 
         if ($this->highlightTagOpen) {
             $items = $this->applyHighlighting($items, $this->extendedLeafTerms ?: null);
