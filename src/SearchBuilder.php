@@ -374,6 +374,18 @@ class SearchBuilder
     }
 
     /**
+     * Eager-load $paths on $query, keeping the caller's own eager loads: with() replaces an entry of
+     * the same name, and a nested path ("author.company") its prefix ("author") too, so a caller's
+     * `with('author:id,name')` or `with(['comments' => $approvedOnly])` became an unconstrained load
+     * that returned the columns and rows the caller had left out.
+     */
+    private function eagerLoadRelationPaths(EloquentBuilder $query, array $paths): void
+    {
+        $own = $query->getEagerLoads();
+        $query->with($paths)->setEagerLoads(array_merge($query->getEagerLoads(), $own));
+    }
+
+    /**
      * Under a join, every column of the FROM table => the FROM table's name, or its alias, and a
      * dot: the prefix a searched column is written with in SQL, so a joined table with a column
      * of the same name cannot make it ambiguous. A column on both tables is therefore the FROM
@@ -1260,7 +1272,7 @@ class SearchBuilder
         // Models come from the builder's own model, or from useInvertedIndex(Model::class) on a plain query builder.
         $query = $this->modelBaseQuery((string) $this->resolveIndexModelClass());
         if ($this->query instanceof EloquentBuilder && $this->relationPaths() !== []) {
-            $query->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($query, $this->relationPaths());
         }
 
         if ($payload['models'] === 'attributes') {
@@ -1566,7 +1578,7 @@ class SearchBuilder
         // highlighting on BM25 results read loaded relations instead of issuing one
         // query per row (mirrors buildQuery()'s LIKE/extended-path eager load).
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $base->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($base, $this->relationPaths());
         }
 
         foreach ($this->filters as $filter) {
@@ -1885,7 +1897,7 @@ class SearchBuilder
             ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $this->query->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($this->query, $this->relationPaths());
         }
 
         foreach ($this->filters as $filter) {
@@ -2457,7 +2469,7 @@ class SearchBuilder
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
         // highlighting read loaded relations instead of issuing one query per row.
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $this->query->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($this->query, $this->relationPaths());
         }
 
         // Apply filters
@@ -3708,7 +3720,7 @@ class SearchBuilder
         });
 
         if ($suggestQuery instanceof EloquentBuilder && $paths !== []) {
-            $suggestQuery->with($paths);
+            $this->eagerLoadRelationPaths($suggestQuery, $paths);
         }
 
         return $suggestQuery;
