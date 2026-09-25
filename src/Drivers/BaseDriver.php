@@ -72,11 +72,14 @@ abstract class BaseDriver
     }
 
     /**
-     * Lower-case and trim a search term without corrupting multibyte characters.
+     * Trim a search term and lower-case its ASCII letters only. The term becomes a LIKE pattern,
+     * and SQLite's LIKE folds ASCII only: a lower-cased 'Лев' ('%лев%') would no longer match a
+     * stored "Лев" there. Every other database folds case in LIKE itself. Multibyte characters
+     * stay byte-identical (strtolower() on PHP 8.1 could corrupt them, see Utf8::lowerAscii()).
      */
     protected function normalizeTerm(string $value): string
     {
-        return mb_strtolower(trim($value), 'UTF-8');
+        return \Ashiqfardus\LaravelFuzzySearch\Support\Utf8::lowerAscii(trim($value));
     }
 
     /**
