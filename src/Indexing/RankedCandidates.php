@@ -117,8 +117,9 @@ final class RankedCandidates
         $ids   = array_keys($ranked);
         $chunk = self::chunkSize(null);
 
-        // rank() reads one row per document and term, best first, up to max_postings_per_term: fewer
-        // than that many pairs in the ranking mean it read them all, and it holds every match.
+        // rank() reads one row per document and term, best first, up to max_postings_per_term. Its
+        // documents times the terms bound the rows it read: under the cap, it read them all, and
+        // the ranking holds every match.
         $whole = count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
         if ((count($ids) > $chunk || !$whole) && self::onIndexConnection($base)) {
