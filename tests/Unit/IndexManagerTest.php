@@ -408,7 +408,8 @@ class IndexManagerTest extends TestCase
         $reflection = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer::class, '__construct');
         $body = file_get_contents($reflection->getFileName());
         $this->assertStringContainsString('class_exists(StemmerFactory::class)', $body);
-        $this->assertStringContainsString('composer require wamania/php-stemmer', $body);
+        // A bare `composer require wamania/php-stemmer` installs v4, which has no Wamania\Snowball\English.
+        $this->assertStringContainsString('composer require "wamania/php-stemmer:^1.2"', $body);
     }
 
     public function test_term_upsert_increment_is_table_qualified_for_postgres(): void
