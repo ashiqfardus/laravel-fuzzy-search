@@ -71,6 +71,19 @@ class BindingBudgetTest extends TestCase
         $this->assertLessThanOrEqual(self::LIMIT, max($counts));
     }
 
+    /** N4: getFacets() builds the search through the same budget. */
+    public function test_get_facets_runs_within_the_limit(): void
+    {
+        LikeUser::query()->create(['name' => 'wordabcdefgh1 wordabcdefgh2 wordabcdefgh3', 'email' => 'w@example.com']);
+
+        $counts = $this->bindingCounts(function () use (&$facets) {
+            $facets = LikeUser::search('x')->extended($this->reviewQuery())->facet('email')->getFacets();
+        });
+
+        $this->assertSame(['email' => ['w@example.com' => 1]], array_map(fn (array $counts) => array_map('intval', $counts), $facets));
+        $this->assertLessThanOrEqual(self::LIMIT, max($counts));
+    }
+
     public function test_a_tokenized_accented_search_runs_within_the_limit(): void
     {
         config(['fuzzy-search.unicode.accent_insensitive' => true]);

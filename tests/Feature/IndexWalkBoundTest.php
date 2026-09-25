@@ -145,6 +145,35 @@ class IndexWalkBoundTest extends TestCase
         $this->assertCount(1, $this->ordered($queries), implode("\n", $queries));
     }
 
+    /**
+     * N4: past one candidate chunk, SearchBuilder's ordered query is restricted by the postings
+     * subquery, which binds the model type and the terms and no id, and serves every match the
+     * where() lets through, past max_candidates too (a list of the top ranked ids would stop there).
+     */
+    public function test_the_ordered_query_past_one_chunk_is_restricted_by_the_postings_subquery(): void
+    {
+        $this->seedLateMatches();
+        config(['fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.max_candidates' => 50]);
+
+        $make  = fn () => User::search('zebra')->typoTolerance(0)->useInvertedIndex()->where('email', 'like', '%@tenant-b.test')->orderBy('name');
+        $names = [];
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        for ($page = 1; $page <= 21; $page++) {
+            $names = [...$names, ...$make()->paginate(15, 'page', $page)->pluck('name')->all()];
+        }
+        $walks = array_values(array_filter(DB::getQueryLog(), fn (array $q) => str_contains($q['query'], 'fuzzy_walk_key')));
+        DB::disableQueryLog();
+
+        $this->assertSame(array_map(fn ($i) => sprintf('Zebra %03d', $i), range(5, 299)), $names);
+        $this->assertNotSame([], $walks);
+        foreach ($walks as $walk) {
+            $this->assertStringContainsString('fuzzy_index_postings', $walk['query']);
+            $this->assertSame(['%@tenant-b.test', User::class, 'zebra'], $walk['bindings']);
+        }
+    }
+
     public function test_scout_matches_that_sort_last_take_one_ordered_query(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {
