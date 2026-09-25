@@ -75,6 +75,8 @@ The model needs no `$searchable` property; add one to choose the columns (and th
 
 The engine does not call `toSearchableArray()`: it indexes the `$searchable` columns (declared or auto-detected) or a `searchableText()` hook.
 
+The engine indexes what the package's trait declares. A model with Scout's `Searchable` alone throws `LogicException` when it is indexed (`searchable()`, `scout:import`, a save) or searched. Deleting and flushing it still work.
+
 ### Relevance Scores
 
 Scout results include `_score` (the raw BM25 score, higher = more relevant):
