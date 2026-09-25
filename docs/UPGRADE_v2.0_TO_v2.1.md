@@ -209,6 +209,7 @@ analytics, `suggest()` and the tokenizers.
 - **TrigramDriver's LIKE fallback cap raised from 10 to 100.** It now caps its pattern list at
   `performance.max_patterns` (default 100) instead of a hard-coded 10, so long terms match more
   widely; lower the key or call `maxPatterns()` to restore the old cap.
+- **`SearchBuilder::first()` is declared `Model|\stdClass|array|null` (was `?Model`).** On a query-builder source it returns the row; it threw a `TypeError`. A subclass that overrides it with `?Model` still compiles.
 - **`debounce()`, `locale()` and `minMatchLength()` raise `E_USER_DEPRECATED`** — see [Deprecations](#deprecations).
 - **Protected `SearchBuilder` methods changed:** `calculateRelevanceScores()` takes an optional `?array $terms` second argument (an extended query's leaf terms, scored one by one), and `generateCacheKey()` returns `?string` (null when the search cannot be cached). A subclass overriding either must follow.
 

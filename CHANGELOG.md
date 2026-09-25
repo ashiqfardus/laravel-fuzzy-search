@@ -236,6 +236,7 @@ Upgrading from 2.0.x: read the [upgrade guide](https://github.com/ashiqfardus/la
 - `PorterStemmer`'s missing-package message named `composer require wamania/php-stemmer`, which installs v4, whose classes it cannot load; it now names `composer require "wamania/php-stemmer:^1.2"`.
 - **A cache hit on an aliased FROM or a `fromSub()` threw (new in 2.1).** The miss worked, but every hit re-read the models by the model's qualified key (`"users"."id"`), which such a FROM does not have, so it failed until the entry expired. Those rows are now stored as their attributes.
 - **A synonym word written with capitals never matched (present in 2.0 for `withSynonyms()` and `$searchable['synonyms']`).** `'Laptop' => ['notebook']` never expanded, because the lookup lower-cases the term and looked for that exact key. A word with a non-ASCII capital (`'Ägypten'`), in a map or a `synonymGroup()`, never matched on the index path either, and on the LIKE path only a term typed in the same case matched. The config, `$searchable['synonyms']`, `withSynonyms()` and `synonymGroup()` now lower-case each word as the lookup lower-cases the term (`mb_strtolower()`), so `'Laptop'` and `'laptop'`, or `'Ägypten'` and `'ägypten'`, are one word, and the later one replaces the earlier. A numeric word (`'5' => ['five']`) now matches too; it was renumbered away.
+- **`first()` on a query-builder source threw a `TypeError` (present in 2.0).** It was declared `?Model`, but a query builder's rows are `stdClass`. It now returns `Model|\stdClass|array|null`.
 
 ### Security
 
