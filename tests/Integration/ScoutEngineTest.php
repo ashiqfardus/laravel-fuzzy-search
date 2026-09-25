@@ -709,7 +709,17 @@ class ScoutEngineTest extends TestCase
         }
 
         [$top, $bottom, $middle] = $this->seedOrderableWidgets();
-        $cache = \Illuminate\Support\Facades\Cache::build(['driver' => 'array', 'serialize' => true]); // stores like file or redis
+
+        // A serialising store as Laravel 13's skeleton configures it: serializable_classes = false
+        // hands any cached object back as __PHP_Incomplete_Class, so only arrays survive a hit.
+        $path = sys_get_temp_dir() . '/fuzzy-scout-cache-' . getmypid();
+        config([
+            'cache.stores.scout_file'    => ['driver' => 'file', 'path' => $path],
+            'cache.serializable_classes' => false,
+            'fuzzy-search.cache.driver'  => 'scout_file',
+        ]);
+        $cache = \Illuminate\Support\Facades\Cache::store('scout_file');
+        $cache->flush();
 
         // A search query, that is: on PostgreSQL the cache key reads search_path (ruling ER-58),
         // one lookup that a cache hit makes too.
@@ -725,30 +735,58 @@ class ScoutEngineTest extends TestCase
             return [$result, $count];
         };
 
-        // Cache::remember() around Scout's own call.
+        // docs/integrations.md's recipe, as written there: Cache::remember() around Scout's own call,
+        // caching keys, scores and the total, then re-reading the page's models in the cached order.
+        $docsRecipe = function () use ($cache) {
+            [$term, $page] = ['widget', 1];
+            $hit = $cache->remember('users.search.' . md5(json_encode([$term, $page])), now()->addMinutes(10), function () use ($term, $page) {
+                $found = $this->scoutBuilder($term)->paginate(2, 'page', $page);
+
+                return ['scores' => $found->pluck('_score', 'id')->all(), 'total' => $found->total()];
+            });
+
+            $keys = array_keys($hit['scores']);
+
+            return new \Illuminate\Pagination\LengthAwarePaginator(
+                ScoutIndexedUser::findMany($keys)
+                    ->each(fn ($user) => $user->_score = $hit['scores'][$user->getKey()])
+                    ->sortBy(fn ($user) => array_search($user->getKey(), $keys))
+                    ->values(),
+                $hit['total'], 2, $page
+            );
+        };
+
         $recipes = [
-            'Cache::remember() + Scout paginate()' => fn () => $cache->remember('users.search.widget.1', now()->addMinutes(10),
-                fn () => $this->scoutBuilder('widget')->paginate(2, 'page', 1)),
+            'Cache::remember() + Scout paginate()' => $docsRecipe,
             // The package builder's cache() caches get() (and simplePaginate(), which runs get()).
             'SearchBuilder cache()->get()' => fn () => ScoutIndexedUser::search('widget')->useInvertedIndex()->typoTolerance(0)->cache(10)->get(),
             'SearchBuilder cache()->simplePaginate()' => fn () => ScoutIndexedUser::search('widget')->useInvertedIndex()->typoTolerance(0)->cache(10)->simplePaginate(2),
         ];
 
-        foreach ($recipes as $label => $recipe) {
-            if (!str_starts_with($label, 'Cache::')) {
-                \Illuminate\Support\Facades\Cache::flush();
+        try {
+            foreach ($recipes as $label => $recipe) {
+                $cache->flush();
+
+                [$first, $firstQueries]   = $queries($recipe);
+                [$second, $secondQueries] = $queries($recipe);
+
+                $this->assertGreaterThan(0, $firstQueries, "{$label}: the first call searches");
+                // Every hit re-reads its rows by key, one query (ruling ER-83); it never searches.
+                $this->assertSame(1, $secondQueries, "{$label}: the second call is served from the cache");
+                $this->assertSame($this->resultIds($first), $this->resultIds($second), $label);
+
+                if ($recipe === $docsRecipe) {
+                    // What it stored: plain arrays, readable with allowed_classes = false.
+                    $stored = $cache->get('users.search.' . md5(json_encode(['widget', 1])));
+                    $this->assertSame([$top, $middle], array_map('intval', array_keys($stored['scores'])));
+                    $this->assertSame([$top, $middle], $this->resultIds($second));
+                    array_walk_recursive($stored, fn ($leaf) => $this->assertFalse(is_object($leaf), 'the recipe caches an object'));
+                }
             }
-
-            [$first, $firstQueries]   = $queries($recipe);
-            [$second, $secondQueries] = $queries($recipe);
-
-            $this->assertGreaterThan(0, $firstQueries, "{$label}: the first call searches");
-            // A SearchBuilder hit re-reads its rows by key, one query (ruling ER-83); it never searches.
-            $this->assertSame(str_starts_with($label, 'Cache::') ? 0 : 1, $secondQueries, "{$label}: the second call is served from the cache");
-            $this->assertSame($this->resultIds($first), $this->resultIds($second), $label);
+        } finally {
+            $cache->flush();
+            @rmdir($path);
         }
-
-        $this->assertSame([$top, $middle], $this->resultIds($cache->get('users.search.widget.1')));
     }
 
     // -------------------------------------------------------------------------
