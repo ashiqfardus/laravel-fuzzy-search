@@ -392,7 +392,7 @@ foreach ($users as $user) {
 }
 ```
 
-Search results are read models. The values a search adds are real attributes on each row: `_score` and `_raw_score`; `_highlighted` and `_matches` with `highlight()` (or `highlighting.enabled`); `_debug` with `debugScore()`; and `_model_type` and `_model_class` on a `FederatedSearch` result. So `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving. `withRelevance(false)` adds no `_score` or `_raw_score`.
+Search results are read models. The values a search adds are real attributes on each row: `_score` and `_raw_score`; `_highlighted` and `_matches` with `highlight()` (or `highlighting.enabled`); `_debug` with `debugScore()`; and `_model_type` and `_model_class` on a `FederatedSearch` result. So `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving. `withRelevance(false)` adds no `_score` or `_raw_score`, except on the index path (`useInvertedIndex()`), which adds both whatever `withRelevance()` says.
 
 ### Prefix Boosting
 
