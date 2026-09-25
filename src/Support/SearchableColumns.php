@@ -232,6 +232,23 @@ final class SearchableColumns
         return self::declared($model) ? $model->getAttribute($column) : $model->getAttributes()[$column] ?? null;
     }
 
+    /**
+     * data_get() that never runs a model method (ruling ER-84), for a column name that may come
+     * from a request (searchIn()). On a model each segment is an attribute, cast or accessor
+     * (getAttributeValue()), or a relation already loaded; never getAttribute()'s relation
+     * fallback, which calls any method named like the segment (reindex(), an app's own methods).
+     */
+    public static function read(mixed $target, string $path): mixed
+    {
+        foreach (explode('.', $path) as $segment) {
+            $target = $target instanceof Model
+                ? $target->getAttributeValue($segment) ?? ($target->relationLoaded($segment) ? $target->getRelation($segment) : null)
+                : data_get($target, $segment);
+        }
+
+        return $target;
+    }
+
     /** False only for a Searchable model whose columns were auto-detected; a model without the trait chose its own. */
     public static function declared(Model $model): bool
     {

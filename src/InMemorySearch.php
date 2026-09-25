@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Collection;
 
@@ -121,7 +122,9 @@ class InMemorySearch
         $scored = $this->items->map(function ($item) use ($needle, $cutNeedle) {
             $score = 0;
             foreach ($this->columns as $col) {
-                $value = mb_strtolower((string) data_get($item, $col, ''), 'UTF-8');
+                // Never data_get() on a model: its relation fallback runs any method named like
+                // the column (ruling ER-84).
+                $value = mb_strtolower((string) SearchableColumns::read($item, $col), 'UTF-8');
                 if ($value === $needle) {
                     $score = max($score, 100);
                 } elseif (str_starts_with($value, $needle)) {

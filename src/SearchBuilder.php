@@ -2785,10 +2785,11 @@ class SearchBuilder
             if ($shownOnly && !self::shows($item, self::lastSegment($target['column']))) {
                 return []; // a qualified column (teams.name) is the row's attribute "name"
             }
-            // A table.column name is read off the attributes, never through getAttribute(): that
-            // calls a model method named like the table (ER-57: items.name must not run items()).
+            // Never through getAttribute(): its relation fallback calls a model method named like the
+            // column (ER-84: searchIn(['reindex']) must not run reindex()), or like the table of a
+            // table.column name, which is read off the attributes (ER-57: items.name must not run items()).
             $source = $item instanceof Model && str_contains($target['column'], '.') ? $item->getAttributes() : $item;
-            $value  = (string) data_get($source, $target['column'], '');
+            $value  = (string) SearchableColumns::read($source, $target['column']);
             return $value === '' ? [] : [$value];
         }
 
@@ -2821,7 +2822,7 @@ class SearchBuilder
 
         $values = [];
         foreach ($rows as $row) {
-            $value = $shownOnly && !self::shows($row, $target['column']) ? '' : (string) data_get($row, $target['column'], '');
+            $value = $shownOnly && !self::shows($row, $target['column']) ? '' : (string) SearchableColumns::read($row, $target['column']);
             if ($value !== '') {
                 $values[] = $value;
             }
