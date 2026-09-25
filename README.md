@@ -254,7 +254,7 @@ The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `
 | `soundex` | Phonetic matching (English names) | Phonetic | Fast |
 | `metaphone` | Phonetic matching (more accurate) | Phonetic | Fast |
 | `trigram` | Similarity matching | High | Medium |
-| `similar_text` | Percentage similarity (`similar_text.min_percentage`, default 70) | Medium | Medium |
+| `similar_text` | Percentage similarity (`similar_text.min_percentage`, default 70) | None (the value must contain the term) | Medium |
 | `simple` / `like` | Exact substring (LIKE) | None | Fastest |
 
 ```php
@@ -400,7 +400,9 @@ User::search('joh')->get();   // matches "john", "johnny", "johanna"
 
 `partialMatch()` is kept as a no-op for API compatibility — there is nothing to switch on.
 `minMatchLength()` is deprecated since v2.1.0 and does nothing; set the minimum term length with
-the `min_search_length` config key (whole term) or `typo_tolerance.min_word_length` (per word).
+the `min_search_length` config key; `typo_tolerance.min_word_length` is the shortest word the
+`fuzzy` algorithm and the BM25 typo expansion give typo tolerance to (shorter words still match,
+exactly).
 A plain term shorter than `min_search_length` characters (default 2) matches nothing on every
 search API — `get()`, `first()`, `paginate()` (total 0), `simplePaginate()`, `count()`,
 `getFacets()`, `FederatedSearch`, `FuzzySearch::on()` and the Scout engine — and fires no event.
@@ -474,7 +476,7 @@ Product::search('wireless mo')->suggest(5);
 // Returns: ['wireless monitor', 'wireless mouse', 'wireless modem', ...]
 ```
 
-`searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use `suggestFrom('table')` when the column matters — the table scan respects `searchIn()`.
+`searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use the table scan when the column matters, on a builder whose only column is that one: `User::searchOn(User::query(), $term, ['name'])->suggestFrom('table')->suggest(5)`. `searchIn()` adds to the model's columns, so `User::search($term)->searchIn(['name'])` still scans every column `$searchable` declares (or auto-detection found).
 
 **Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 2.1 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
 
@@ -490,7 +492,7 @@ User::search('joh')->searchIn(['name'])->suggest(5);
 **What scopes a suggestion.** `filter()` and `filterIn()` never do: they belong to the search itself, which `suggest()` and `didYouMean()` deliberately do not run. The constraints you put on the builder's base query — `where()`, `join()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — are honoured as follows. What counts as a constraint is a WHERE or a JOIN clause; a `having()`, a union or a from-subquery is not detected, and the dictionary treats such a query as unconstrained.
 
 - **The table scan** (an un-indexed model, `suggestFrom('table')`, or `'auto'` under a constraint) runs on the base query, so every one of those constraints narrows it.
-- **`suggest()` in `'auto'` mode on an indexed model** completes from the dictionary only when the base query is unconstrained. A `where()`, a `join()`, a forwarded scope or a global scope switches it to the table scan. The `SoftDeletes` scope does not count, because deleting a row drops its terms from the index. With `indexing.async` (the default) that happens when the queued `IndexModelJob` runs, so until then a trashed row's terms can still be offered; a query-builder `delete()` fires no model events, so its rows' terms stay until you rebuild. Use `suggestFrom('table')` or sync indexing if that matters.
+- **`suggest()` in `'auto'` mode on an indexed model** completes from the dictionary only when the base query is unconstrained. A `where()`, a `join()`, a forwarded scope or a global scope switches it to the table scan. The `SoftDeletes` scope does not count, because with `indexing.enabled` on, deleting a row drops its terms from the index. With `indexing.async` (the default) that happens when the queued `IndexModelJob` runs, so until then a trashed row's terms can still be offered; a query-builder `delete()` fires no model events, so its rows' terms stay until you rebuild. Use `suggestFrom('table')` or sync indexing if that matters.
 - **`suggestFrom('index')`** always completes from the model's dictionary. It is model-wide and ignores `where()` and every scope, so use it only where every caller may see every row's terms.
 - **`didYouMean()`** always offers the model's own dictionary terms only. Under a `where()`, a `join()` or a global scope (`SoftDeletes` excepted, with the same queue lag) it keeps only terms posted for at least one row the query can see. It checks up to `max_candidates` of each term's rows, and a term whose visible rows fall outside those is dropped rather than shown. It checks at most `max($limit * 3, 10)` terms, so a narrow query can get fewer alternatives than `$limit`.
 - **A plain query builder** given `useInvertedIndex(Model::class)` follows the same rules with its own `where()`s and joins, which its index search honours too. The model's global scopes apply to its index search and to `didYouMean()`, but not to its table scan (a query builder has no model scopes), so `'auto'` completes model-wide from the dictionary when the builder carries no constraint of its own.
@@ -584,7 +586,7 @@ $page = FederatedSearch::across([User::class, Product::class])
 
 Each model is searched the way `Model::search()` searches it, with its own `$searchable` configuration — algorithm, typo tolerance, stop words, synonyms, accent handling and options. `using()`, `typoTolerance()` and `options()` on the federated search override them for every model (`options()` takes the same driver options as `SearchBuilder::options()`, such as `max_distance`; `typoTolerance()` wins over its `max_distance`). Narrowing the columns with `searchIn()` overrides only the column list. A model without the `Searchable` trait is searched with LIKE — or, with the `Fuzzy` trait, with its own `getFuzzyAlgorithm()` and `getFuzzyOptions()` (its `$fuzzyAlgorithm`, default `default_algorithm`, and `$fuzzyOptions`), which `using()`, `options()` and `typoTolerance()` override — on the `searchIn()` columns its table has; without `searchIn()`, on its declared `$searchable['columns']`, else — with the `Fuzzy` trait — on `getFuzzySearchableColumns()` (its `$fuzzySearchable`, `name` by default), else on whichever of `name` and `title` its table has, and a model with none of these contributes nothing. Every model, with the trait or without, contributes at most `max_candidates` rows.
 
-Relation columns (`author.name`) are not supported in federated searches yet and are ignored.
+A relation column (`author.name`) passed to the federated `searchIn()` is ignored (a model left with no column is searched on its own columns). Relation columns a model declares in `$searchable['columns']` are searched, as `Model::search()` searches them.
 
 ### Search Analytics
 
@@ -614,10 +616,10 @@ $analytics = User::search('john')
 
 ## Text Processing
 
-- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query; built-in lists cover eight locales, or pass a custom list or file.
-- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms.
+- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale.
+- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key holds default mappings for every search; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top of them.
 - **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
-- **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. `unicodeNormalize()` matches `naïve`/`naive` forms. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
+- **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
 
 → Full guide: [docs/tokenization.md](docs/tokenization.md)
@@ -694,9 +696,9 @@ foreach ($users as $user) {
     ],
 ],
 
-// Re-index a single model (dispatches IndexModelJob to queue)
+// Re-index a single model
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
-IndexModelJob::dispatch(User::class, $user->id);
+IndexModelJob::dispatch(User::class, $user->id)->onQueue(config('fuzzy-search.indexing.queue')); // dispatch() alone uses the default queue
 ```
 
 ### Caching
@@ -740,10 +742,10 @@ A cached result stores no relations: each read, hit or miss, carries the current
 A real inverted index for large tables, across four tables: `fuzzy_index_terms`, `fuzzy_index_postings`, `fuzzy_index_documents`, `fuzzy_index_meta`.
 
 ```bash
-php artisan fuzzy-search:rebuild "App\Models\Post"    # build once, then stays in sync automatically
+php artisan fuzzy-search:rebuild "App\Models\Post"    # build once; with indexing.enabled on, saves keep it in sync
 ```
 
-The index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index those rows afterwards with `php artisan fuzzy-search:rebuild "App\Models\Post"`, or per row with `IndexModelJob::dispatch(Post::class, $id)`.
+With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild only reads the rows the model's query returns, so it does not remove a row such a write deleted, trashed or moved out of a global scope. For those, run `fuzzy-search:rebuild "App\Models\Post" --fresh`, or `IndexModelJob::dispatch(Post::class, $id)` per row: the job removes a row that is gone.
 
 ```php
 Post::search('tolkien')->useInvertedIndex()->get();
@@ -980,7 +982,7 @@ Properties:
 - `searchTerm` (string) — the user's query
 - `columns` (array) — columns being searched
 - `algorithm` (string) — algorithm used: `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, `simple` (`using('like')` reports `simple`), `like` (from `fallback('like')` or `default_algorithm => 'like'`, which keep the name as given), `bm25`, `extended` (extended-syntax searches) or `in_memory` (`FuzzySearch::on()`)
-- `candidateCount` (int) — rows fetched from SQL before scoring
+- `candidateCount` (int) — matches before the page/limit cut: on `get()`, the rows fetched for rescoring (at most `max_candidates`); on `paginate()`, the total match count; on the BM25 path, the ranked index matches
 - `latencyMs` (float) — total search time in milliseconds
 - `resultCount` (int) — rows returned to the caller; `-1` when unknown
 - `path` (string) — which code path answered: `like`, `bm25`, `extended`, or `in_memory`
@@ -1032,7 +1034,7 @@ return [
     ],
     
     'synonyms' => [
-        // Global synonyms
+        // Default synonyms for every search; a model's and a query's synonyms merge on top
     ],
     
     'indexing' => [
