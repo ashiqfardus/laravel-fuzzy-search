@@ -82,6 +82,24 @@ class IndexModelJobOverlapTest extends TestCase
      *
      * @return array{0: ?string, 1: ?string, 2: float}
      */
+    /**
+     * A forked child opens its own 'race' connection before it races. Several processes connecting
+     * at once to a busy CI database server can have the connection reset (SQL Server 08S01, TCP
+     * error 0x2746): that is the runner, not the lock order under test, so only the connect is
+     * retried, never the write.
+     */
+    private function connectRace(): void
+    {
+        retry(5, function () {
+            try {
+                return DB::connection('race')->getPdo();
+            } catch (\Throwable $e) {
+                DB::purge('race');
+                throw $e;
+            }
+        }, 200);
+    }
+
     private function race(\Closure $child, \Closure $parent, string $at, int $pause, int $delay, bool $pauseParent = true): array
     {
         // function_exists(), not extension_loaded(): disable_functions can remove them too.
@@ -113,6 +131,7 @@ class IndexModelJobOverlapTest extends TestCase
         if ($pid === 0) {
             try {
                 DB::setDefaultConnection('race');
+                $this->connectRace();
                 if (!$pauseParent) {
                     $listen();
                 }
@@ -408,6 +427,7 @@ class IndexModelJobOverlapTest extends TestCase
                 if ($pid === 0) {
                     try {
                         DB::setDefaultConnection('race');
+                        $this->connectRace();
                         \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback\n", FILE_APPEND));
                         app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
                     } catch (\Throwable $e) {
