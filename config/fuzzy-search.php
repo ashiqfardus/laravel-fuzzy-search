@@ -255,7 +255,8 @@ return [
     |--------------------------------------------------------------------------
     |
     | max_depth: maximum nesting depth of parentheses (DoS guard)
-    | max_tokens: maximum tokens in a single query (DoS guard)
+    | max_tokens: a query throws once it reaches this many tokens (words, | and
+    |   parentheses each count), so 32 allows 31 (DoS guard)
     | max_term_length: maximum character length of a single search term; longer
     |   terms are truncated before driver pattern generation to prevent O(n²)
     |   LIKE-pattern explosion on LevenshteinDriver and FuzzyDriver
@@ -287,9 +288,9 @@ return [
     |--------------------------------------------------------------------------
     */
     'cache' => [
-        'enabled' => false,
+        'enabled' => false,     // true: cache every get(), first() and simplePaginate() without ->cache()
         'driver' => 'default',  // Use default cache driver
-        'ttl' => 3600,          // 1 hour
+        'ttl' => 3600,          // seconds (1 hour); ->cache($minutes) counts minutes
         'prefix' => 'fuzzy_search_',
     ],
 
@@ -299,8 +300,8 @@ return [
     |--------------------------------------------------------------------------
     |
     | When enabled, every executed search attempt (get(), paginate(), in-memory) writes one row
-    | to fuzzy_search_logs through the FuzzySearchExecuted event — fallback() records one row
-    | per algorithm tried and a federated search one per inner model; cached and count() calls
+    | to the analytics table through the FuzzySearchExecuted event — fallback() records one row
+    | per algorithm tried and a federated search one per inner model; a cache hit and count()
     | record nothing. See "What counts as one row" in the README. Search terms are user input:
     | keep retention short, or set hash_terms to store only a keyed SHA-256 of the normalized
     | term (HMAC with APP_KEY, so the table alone cannot be brute-forced; rotating APP_KEY
@@ -309,6 +310,8 @@ return [
     | queue: null inserts inline; a queue name dispatches RecordSearchLogJob there instead.
     | sample_rate: 0.0–1.0 share of searches recorded.
     | retention_days: what `php artisan fuzzy-search:analytics:prune` deletes beyond.
+    | table: the table the migration creates and the recorder writes; set it before
+    |   `php artisan migrate`.
     |
     */
     'analytics' => [
