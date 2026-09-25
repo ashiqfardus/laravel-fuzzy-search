@@ -209,7 +209,7 @@ A relation you eager-load yourself keeps your constraint: `->with('author:id,nam
 
 Your constraint limits what is **loaded**, not which rows **match**. Relation matching sees every related row, so a post still matches through an unapproved comment. To match approved comments only, `searchIn()` a relation method that carries the constraint (`approvedComments.body`, where `approvedComments()` returns `$this->hasMany(Comment::class)->where('approved', true)`).
 
-A column select must include the searched column, and for a nested path the key the next relation needs (`author:id,name,company_id` for `author.company.name`). A column the select leaves out is scored and highlighted as empty.
+A column select must include the searched column, and for a nested path the key the next relation needs (`author:id,name,company_id` for `author.company.name`). A column the select leaves out scores nothing and is left out of `_highlighted` and `_matches`.
 
 A relation `searchIn()` reads is loaded even after `without()`. To keep it out of a response, constrain it with `with()`, hide it (`$hidden`/`makeHidden()`), or shape the response with an API resource.
 
