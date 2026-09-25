@@ -205,16 +205,16 @@ class FederatedSearchTest extends TestCase
             ->using('like')
             ->get();
 
-        if ($results->isEmpty()) {
-            $this->markTestSkipped('No federated results to test normalization on');
-            return;
-        }
+        // "john" is in John Doe's and Johnny Bravo's name and email, and in Bob Johnson's name.
+        $this->assertEqualsCanonicalizing(['Bob Johnson', 'John Doe', 'Johnny Bravo'], $results->pluck('name')->all());
 
-        foreach ($results as $row) {
-            $score = $row->_score ?? 0;
-            $this->assertGreaterThanOrEqual(0.0, $score);
+        $scores = $results->pluck('_score')->all();
+        $this->assertSame(1.0, max($scores)); // the best row sets the scale
+        foreach ($scores as $score) {
+            $this->assertGreaterThan(0.0, $score);
             $this->assertLessThanOrEqual(1.0, $score);
         }
+        $this->assertLessThan(1.0, min($scores)); // Bob Johnson matches on his name only
     }
 
     /*
