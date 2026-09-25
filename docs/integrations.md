@@ -241,7 +241,8 @@ Wraps one result row (Eloquent model or array) and adds the package's underscore
 use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchResource;
 
 Route::get('/search', function (Request $request) {
-    $user = User::search($request->query('q', ''))->highlight('mark')->first();
+    // An empty term throws EmptySearchTermException, a 500, so an empty box is a 404 here too
+    $user = $request->filled('q') ? User::search($request->query('q'))->highlight('mark')->first() : null;
     abort_unless($user, 404); // ->first() can return null; the resource would render {} for it
 
     return new FuzzySearchResource($user);
@@ -256,8 +257,11 @@ Build it from a builder instead of a collection — pass a `$perPage` to paginat
 use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
 
 Route::get('/search', function (Request $request) {
+    $q = $request->query('q');
+    abort_if(blank($q), 422, 'Enter a search term.'); // an empty term throws EmptySearchTermException, a 500
+
     return FuzzySearchCollection::fromBuilder(
-        User::search($request->query('q', ''))->highlight('mark'),
+        User::search($q)->highlight('mark'),
         perPage: 20,
     );
 });
