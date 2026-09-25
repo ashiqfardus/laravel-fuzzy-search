@@ -781,7 +781,7 @@ User::search('=John ^Doe !banned')->extended()->get();
 
 Operators: `'include`, `=exact`, `^prefix`, `suffix$`, `!exclude`, `|` (OR), `( )` (grouping), `~typo`, `field:term`, and quoted `"phrases"`.
 
-Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it. They apply no synonyms and drop no stop words: every word stays a term of the query.
+Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it. They apply no synonyms and drop no stop words: every word stays a term of the query. A `field:` scope reaches any searchable column, a hidden one included, so for untrusted input declare only public columns searchable or check the fields against an allowlist.
 
 → Full guide: [docs/extended-syntax.md](docs/extended-syntax.md)
 
