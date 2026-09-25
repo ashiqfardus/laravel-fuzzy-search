@@ -18,11 +18,14 @@ final class TermExpander
     /**
      * Dictionary terms within $maxDistance edits of $term, most common first.
      *
-     * @param  ?string $modelType Restrict to terms posted under this model_type (see postedUnder());
-     *                            null leaves the dictionary unscoped.
+     * @param  ?string $modelType   Restrict to terms posted under this model_type (see postedUnder());
+     *                              null leaves the dictionary unscoped.
+     * @param  bool    $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
+     *                              on for didYouMean(), which hands the words back; off for the typo
+     *                              expansion, which only matches.
      * @return list<array{term: string, doc_count: int, distance: int}>
      */
-    public function candidates(string $term, int $maxDistance, int $pool, ?string $modelType = null): array
+    public function candidates(string $term, int $maxDistance, int $pool, ?string $modelType = null, bool $visibleOnly = true): array
     {
         if ($term === '' || $pool <= 0) {
             return [];
@@ -31,7 +34,7 @@ final class TermExpander
         $term   = Pipeline::capTerm($term); // didYouMean() passes the raw search term
         $length = mb_strlen($term);
 
-        $rows = $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType)
+        $rows = $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly)
             ->select('term', 'doc_count')
             ->where('term', '!=', $term)
             ->whereBetween('term_length', [max(1, $length - $maxDistance), $length + $maxDistance])
@@ -77,7 +80,8 @@ final class TermExpander
                 continue;
             }
 
-            $candidates = $this->candidates((string) $term, $maxDistance, $pool, $modelType);
+            // Matching keeps hidden columns (ER-66): the rows a search returns do not depend on the path.
+            $candidates = $this->candidates((string) $term, $maxDistance, $pool, $modelType, visibleOnly: false);
             usort($candidates, fn ($a, $b) => [$a['distance'], $b['doc_count']] <=> [$b['distance'], $a['doc_count']]);
 
             $taken = 0;
@@ -111,11 +115,14 @@ final class TermExpander
      * scan unless fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there
      * if as-you-type latency matters on a large dictionary.
      *
-     * @param  ?string $modelType Restrict to terms posted under this model_type (see postedUnder());
-     *                            null leaves the dictionary unscoped.
+     * @param  ?string $modelType   Restrict to terms posted under this model_type (see postedUnder());
+     *                              null leaves the dictionary unscoped.
+     * @param  bool    $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
+     *                              on for suggest(), which hands the words back; off for asYouType(),
+     *                              which only matches.
      * @return array<string, float>
      */
-    public function prefix(string $prefix, int $max, ?string $modelType = null): array
+    public function prefix(string $prefix, int $max, ?string $modelType = null, bool $visibleOnly = true): array
     {
         if ($prefix === '' || $max <= 0) {
             return [];
@@ -142,7 +149,7 @@ final class TermExpander
                   ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
         }
 
-        $terms = $this->postedUnder($query, $modelType)->orderByDesc('doc_count')->limit($max)->pluck('term');
+        $terms = $this->postedUnder($query, $modelType, $visibleOnly)->orderByDesc('doc_count')->limit($max)->pluck('term');
 
         $weights = [];
         foreach ($terms as $term) {
@@ -158,16 +165,18 @@ final class TermExpander
      * model_type) covers. The dictionary is shared by every indexed model, so an unscoped
      * lookup offers other models' terms. Null leaves the query unscoped.
      */
-    private function postedUnder(Builder $query, ?string $modelType): Builder
+    private function postedUnder(Builder $query, ?string $modelType, bool $visibleOnly): Builder
     {
         if ($modelType !== null) {
-            $query->whereExists(function ($q) use ($modelType) {
+            $query->whereExists(function ($q) use ($modelType, $visibleOnly) {
                 $q->selectRaw('1')
                   ->from('fuzzy_index_postings as sp')
                   ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
                   ->where('sp.model_type', $modelType);
 
-                $this->visibleColumnsOnly($q, $modelType);
+                if ($visibleOnly) {
+                    $this->visibleColumnsOnly($q, $modelType);
+                }
             });
         }
 
@@ -175,9 +184,10 @@ final class TermExpander
     }
 
     /**
-     * Only postings of columns the model shows (ER-51): not one in $hidden, nor one left out of a
-     * non-empty $visible, so suggest(), didYouMean() and the expansions never offer a hidden
-     * column's words. A word that is also in a visible column is still offered. Postings written
+     * Only postings of columns the model shows (ER-51, ER-66): not one in $hidden, nor one left out
+     * of a non-empty $visible, so suggest() and didYouMean(), which hand words back, never offer a
+     * hidden column's words. The typo and prefix expansions only match, and keep every column, as
+     * the LIKE path does. A word that is also in a visible column is still offered. Postings written
      * before 2.1 carry no column name (''), so they are left out too, but only when the model
      * hides one of its searchable columns; rebuilding the index brings those words back.
      */

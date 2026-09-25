@@ -63,6 +63,24 @@ class HiddenColumnSuggestionTest extends TestCase
         $this->assertSame(['suggest' => ['example'], 'didYouMean' => ['example']], $this->offered($class));
     }
 
+    /**
+     * Matching keeps hidden columns (ER-66): a search's rows are the same on every path, and the
+     * LIKE path already matches a declared hidden column. Only the surfaces that hand words back
+     * to the caller, suggest() and didYouMean(), leave them out.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('hidingModels')]
+    public function test_the_typo_and_prefix_expansions_still_match_a_hidden_column(string $class): void
+    {
+        app(IndexManager::class)->indexBatch($class::all());
+        $all = $class::count();
+
+        $this->assertCount($all, $class::search('exampel')->useInvertedIndex()->typoTolerance(2)->get());
+        $this->assertCount($all, $class::search('exampl')->useInvertedIndex()->typoTolerance(0)->asYouType()->get());
+        $this->assertCount($all, $class::search('exampel')->get()); // the LIKE path agrees
+
+        $this->assertSame(['suggest' => [], 'didYouMean' => []], $this->offered($class));
+    }
+
     public function test_legacy_postings_are_left_out_only_for_a_model_that_hides_a_searchable_column(): void
     {
         foreach ([HiddenEmailUser::class, User::class] as $class) {
