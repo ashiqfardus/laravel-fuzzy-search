@@ -1670,17 +1670,18 @@ class SearchBuilder
      * every page and scores stay comparable across pages. Not the first entry of $ranked: a row
      * the query hides, such as another tenant's, would set the scale and reveal what it contains.
      *
-     * $rank false (an explicit orderBy()) keeps the window's own order.
+     * Only the first $rerank rows are re-ranked by their scores; the rest keep the window's order:
+     * BM25 past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
-    protected function attachBm25Scores(Collection $models, array $ranked, bool $rank = true): Collection
+    protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX): Collection
     {
         $scores = $models->mapWithKeys(fn ($item, $i) => [$i => $this->searchScore($item, (float) ($ranked[$item->getKey()] ?? 0))]);
         $top    = (float) ($scores->max() ?? 0);
 
         // arsort() is stable: rows the hook left tied keep their BM25 rank.
-        return ($rank ? $scores->sortDesc() : $scores)->map(function (float $raw, $i) use ($models, $top) {
+        return $scores->take($rerank)->sortDesc()->union($scores->slice($rerank))->map(function (float $raw, $i) use ($models, $top) {
             $item             = $models[$i];
             $item->_raw_score = round($raw, 6);
             $item->_score     = $top > 0 ? round($item->_raw_score / $top, 6) : $item->_raw_score;
@@ -1699,12 +1700,12 @@ class SearchBuilder
         if ($this->sortBy === []) {
             $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($ranked), $this->bm25Window($modelClass, $end));
 
-            return $this->attachBm25Scores($models, $ranked);
+            return $this->attachBm25Scores($models, $ranked, (int) config('fuzzy-search.max_candidates', 1000));
         }
 
         $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $this->orderedIndexedKeys($modelClass, $base, $ranked, $end));
 
-        return $this->attachBm25Scores($models, $ranked, false);
+        return $this->attachBm25Scores($models, $ranked, 0);
     }
 
     /**
@@ -1765,9 +1766,11 @@ class SearchBuilder
     }
 
     /**
-     * How many ranked rows the index path hydrates for a page that ends at $end: $end, or
-     * max_candidates when the model overrides getSearchScore(), whose scores can reorder the
-     * ranking, so the page is cut from the same window the LIKE path rescores.
+     * How many ranked rows the index path hydrates for a page that ends at $end: $end, or at least
+     * max_candidates when the model overrides getSearchScore(). Its scores re-rank a fixed window of
+     * the first max_candidates matches, the window the LIKE path rescores, so every page is cut from
+     * one ordering (ruling ER-88); rows past it keep the BM25 order, as the LIKE path serves its
+     * deeper pages in database order. Without a hook the scores are the BM25 order already.
      */
     private function bm25Window(string $modelClass, int $end): int
     {
