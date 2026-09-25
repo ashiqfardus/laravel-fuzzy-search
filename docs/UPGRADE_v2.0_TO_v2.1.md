@@ -207,8 +207,10 @@ analytics, `suggest()` and the tokenizers.
 - **`FuzzySearchExecuted` fires in more places.** A BM25 search that matches nothing fires it, in-memory searches fire it (see [Search analytics](#search-analytics-new)), and `simplePaginate()` reports the page size in `resultCount`, not the look-ahead row.
 - **Config keys that were documented but inert now take effect** (`scoring.*`, `highlighting.*`, `performance.max_patterns`, `unicode.normalize`, `similar_text.min_percentage`, `cache.*`, `synonyms`) — see [below](#config-keys-that-now-take-effect).
 - **New config keys:** `indexing.job` (`tries`, `backoff`, `timeout`) bounds retries of
-  `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) sets the chunk size used
-  when checking BM25 rankings against a constrained query.
+  `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) is the largest ranking an
+  ordered index search lists by id, the chunk the index path hydrates a page's rows and a cache hit
+  re-reads rows in, and, for a model on another connection than the index, the chunk its ranking is
+  checked against the constraints in.
 - **`indexing.table` was removed** — see [Removed config keys](#removed-config-keys).
 - **`FuzzySearch::$config` is now nullable (`?array`)** and is null when the class is container-built; subclasses that read `$this->config` must call `currentConfig()` instead.
 - **TrigramDriver's LIKE fallback cap raised from 10 to 100.** It now caps its pattern list at
