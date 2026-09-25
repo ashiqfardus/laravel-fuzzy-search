@@ -1371,6 +1371,7 @@ class SearchBuilder
                     (string) end($lastTerms),
                     (int) config('fuzzy-search.bm25.prefix.max_expansions', 10),
                     $modelClass,
+                    visibleOnly: false, // matching keeps hidden columns (ER-66); suggest() leaves them out
                 );
 
                 // A term reached twice keeps the higher weight (a prefix hit at 1.0 beats a
