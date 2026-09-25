@@ -58,16 +58,22 @@ class TrigramDriver extends BaseDriver
     }
 
     /**
-     * Generate trigrams from a string
+     * Generate trigrams from a string. The padding makes the edge grams one or two characters
+     * once trimmed ('x' and 'xy' of 'xyzq'), and as LIKE patterns those match almost every row,
+     * so a gram shorter than three characters is dropped, unless the term itself is shorter.
      */
     protected function generateTrigrams(string $value): array
     {
         $value    = '  ' . $this->normalizeTerm($value) . ' '; // Pad with spaces (PostgreSQL style)
         $chars    = $this->chars($value);
+        $minChars = min(3, count($chars) - 3);
         $trigrams = [];
 
         for ($i = 0; $i < count($chars) - 2; $i++) {
-            $trigrams[] = $this->slice($chars, $i, 3);
+            $trigram = $this->slice($chars, $i, 3);
+            if (mb_strlen(trim($trigram), 'UTF-8') >= $minChars) {
+                $trigrams[] = $trigram;
+            }
         }
 
         return array_unique($trigrams);
