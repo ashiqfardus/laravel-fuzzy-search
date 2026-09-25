@@ -414,8 +414,9 @@ class IndexManagerTest extends TestCase
 
     public function test_term_upsert_increment_is_table_qualified_for_postgres(): void
     {
-        // PostgreSQL rejects an unqualified "doc_count + 1" inside ON CONFLICT DO UPDATE
-        // (SQLSTATE 42702, ambiguous between the target row and EXCLUDED).
+        // PostgreSQL rejects an unqualified "doc_count + ..." inside ON CONFLICT DO UPDATE
+        // (SQLSTATE 42702, ambiguous between the target row and EXCLUDED). The raise is "+ 1" on
+        // MySQL/MariaDB and the inserted row's own doc_count elsewhere (ER-74).
         //
         // DB::pretend() can't drive this to completion: indexModel() upserts terms and then
         // immediately reads their generated ids back within the same call, but pretend() makes
@@ -438,14 +439,16 @@ class IndexManagerTest extends TestCase
 
         $manager->indexModel($model);
 
+        // The upsert that inserts new terms and, on a conflict, raises doc_count: an INSERT, or
+        // on SQL Server a MERGE.
         $termUpserts = array_values(array_filter($queries, fn ($q) =>
-            str_contains($q['query'], 'fuzzy_index_terms') && str_contains(strtolower($q['query']), 'doc_count')
+            preg_match('/^\s*(insert|merge)\b/i', $q['query']) && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], 'doc_count + ')
         ));
 
         $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
         foreach ($termUpserts as $q) {
-            $this->assertStringContainsString('fuzzy_index_terms.doc_count + 1', $q['query']);
-            $this->assertStringNotContainsString('= doc_count + 1', $q['query']);
+            $this->assertStringContainsString('fuzzy_index_terms.doc_count + ', $q['query']);
+            $this->assertStringNotContainsString('= doc_count + ', $q['query']);
         }
     }
 
@@ -463,6 +466,53 @@ class IndexManagerTest extends TestCase
 
         $this->assertSame(2, (int) $this->app['db']->table('fuzzy_index_terms')->where('term', 'hello')->value('doc_count'));
         $this->assertSame(1, (int) $this->app['db']->table('fuzzy_index_terms')->where('term', 'world')->value('doc_count'));
+    }
+
+    /**
+     * SQL Server re-runs a MERGE that lost a race for a new key (2601/2627), but only while
+     * XACT_ABORT is off. With it on, the error has rolled back the whole write already, and the
+     * driver silently opens a new transaction at the next statement: a re-run and everything
+     * after it would commit without what ran before. So the error must reach the caller, and
+     * nothing may commit. A MERGE whose source holds one new key twice fails this way every time.
+     */
+    public function test_a_duplicate_key_under_xact_abort_fails_the_write_instead_of_rerunning(): void
+    {
+        if ($this->dbDriver !== 'sqlsrv') {
+            $this->markTestSkipped('XACT_ABORT is SQL Server only.');
+        }
+
+        $upsert = new \ReflectionMethod(IndexManager::class, 'upsertShared');
+        $upsert->setAccessible(true); // a no-op since PHP 8.1, kept for readers
+        $merges = 0; // counted before each run: a failed statement fires no QueryExecuted
+        DB::connection()->beforeExecuting(function (string $sql) use (&$merges) {
+            $merges += (int) (bool) preg_match('/^\s*merge\b.*fuzzy_index_terms/is', $sql);
+        });
+
+        DB::unprepared('SET XACT_ABORT ON');
+        $reached = false;
+        try {
+            DB::transaction(function () use ($upsert, &$reached) {
+                DB::table('fuzzy_index_terms')->insert(['term' => 'before', 'doc_count' => 1, 'term_length' => 6]);
+                $upsert->invoke(
+                    $this->makeIndexManager(),
+                    'fuzzy_index_terms',
+                    [['term' => 'twice', 'doc_count' => 1, 'term_length' => 5], ['term' => 'twice', 'doc_count' => 1, 'term_length' => 5]],
+                    ['term'],
+                    ['doc_count' => DB::raw('fuzzy_index_terms.doc_count + 1')],
+                );
+                $reached = true;
+                DB::table('fuzzy_index_terms')->insert(['term' => 'after', 'doc_count' => 1, 'term_length' => 5]);
+            });
+            $this->fail('the duplicate key did not reach the caller');
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->assertContains($e->errorInfo[1] ?? null, [2601, 2627]);
+        } finally {
+            DB::unprepared('SET XACT_ABORT OFF');
+        }
+
+        $this->assertSame(1, $merges, 'the MERGE was re-run');
+        $this->assertFalse($reached);
+        $this->assertSame([], DB::table('fuzzy_index_terms')->whereIn('term', ['before', 'twice', 'after'])->pluck('term')->all());
     }
 
     public function test_meta_row_creation_does_not_use_insert_or_ignore(): void

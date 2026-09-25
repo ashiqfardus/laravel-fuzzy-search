@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
+use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\StopWords;
 
@@ -13,6 +14,25 @@ use Ashiqfardus\LaravelFuzzySearch\Support\StopWords;
  */
 class IndexManager
 {
+    /**
+     * Rows per upsert, so no statement passes SQL Server's 2,100 bindings: a posting row binds
+     * five values (2,000 a statement), a dictionary or document row three (1,500).
+     */
+    private const POSTING_ROWS_PER_UPSERT = 400;
+    private const ROWS_PER_UPSERT         = 500;
+
+    /**
+     * Tries per index write. Laravel retries a top-level transaction that fails on a deadlock
+     * or lock timeout (MySQL 1213/1205, PostgreSQL 40P01, SQL Server 1205, SQLite busy), and a
+     * write is safe to repeat: it claims, re-reads and rewrites the rows from scratch (ER-71).
+     */
+    private const ATTEMPTS = 3;
+
+    // Every model id is bound as a string: model_id is a varchar, and an integer bound against it
+    // makes MySQL/MariaDB compare numerically and SQL Server convert the column, so neither can
+    // seek the key. The claim's FOR UPDATE then scans, and locks, every document row of the
+    // model type: writes for different rows waited on each other and deadlocked (1213).
+
     private Pipeline $default;
 
     public function __construct(
@@ -38,9 +58,8 @@ class IndexManager
     }
 
     /**
-     * Index (or re-index) a single model instance.
-     * Removes old postings first, then writes fresh ones.
-     * Does NOT inflate total_docs on re-index.
+     * Index (or re-index) one model: the row as it is committed now, reloaded after its document
+     * row is claimed (see write()). An unsaved instance is indexed as given.
      */
     public function indexModel(Model $model): void
     {
@@ -48,151 +67,156 @@ class IndexManager
             return;
         }
 
-        $modelType = get_class($model);
-        $modelId   = $model->getKey();
-        $columns   = $model->getSearchableColumns();
+        $this->indexBatch([$model]);
+    }
 
-        $byColumn = $this->buildTokenFrequencyMap($model, $columns);
-        $tokens   = $this->mergeColumnFrequencies($byColumn);
-
-        if (empty($tokens)) {
-            // The model's indexable text became empty (tags/relations cleared, hook now
-            // returns nothing) — clear any stale postings from a previous index instead of
-            // silently leaving them searchable.
-            $this->removeFromIndex($modelType, $modelId);
-            return;
-        }
-
-        $docLength = array_sum($tokens);
-
-        DB::transaction(function () use ($modelType, $modelId, $tokens, $byColumn, $docLength) {
-            // Read old doc_length BEFORE removing so we can compute the delta for avg_doc_length (C11)
-            $oldDoc       = DB::table('fuzzy_index_documents')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->first(['doc_length']);
-            $wasIndexed   = $oldDoc !== null;
-            $oldDocLength = $wasIndexed ? (int) ($oldDoc->doc_length ?? 0) : 0;
-
-            $this->removeFromIndex($modelType, $modelId, updateMeta: false);
-
-            // PHP normalises numeric-string array keys (e.g. '10') to int keys, so
-            // array_keys($tokens) can yield an int for a purely numeric token. Cast back to
-            // string wherever a key becomes a query binding: SQL Server's MERGE ... USING
-            // (VALUES (...)) infers one type per column from the batch of bindings, so a
-            // mixed int/string 'term' column fails with "Conversion failed when converting
-            // the nvarchar value 'paginate' to data type int". $termIds[$term] lookups below
-            // still work because PHP normalises numeric-string keys the same way on read.
-            $termKeys = array_map('strval', array_keys($tokens));
-
-            // Batch upsert all terms
-            DB::table('fuzzy_index_terms')->upsert(
-                array_map(fn($term) => [
-                    'term'        => (string) $term,
-                    'doc_count'   => 1,
-                    'term_length' => mb_strlen((string) $term),
-                ], $termKeys),
-                ['term'],
-                // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
-                // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
-                // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
-                ['doc_count' => DB::raw('fuzzy_index_terms.doc_count + 1')]
-            );
-
-            // Fetch all term IDs in one query
-            $termIds = DB::table('fuzzy_index_terms')
-                ->whereIn('term', $termKeys)
-                ->pluck('id', 'term');
-
-            // Build posting rows — one per (term, column); a term missing from $termIds means
-            // a pre-migration MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
-            $postingRows = $this->postingRows($byColumn, $termIds, $modelType, $modelId);
-
-            // Upsert postings — INSERT ... ON DUPLICATE KEY UPDATE prevents concurrent-worker
-            // collisions on the UNIQUE (term_id, model_type, model_id, column_name) constraint (C9)
-            if (!empty($postingRows)) {
-                DB::table('fuzzy_index_postings')->upsert(
-                    $postingRows,
-                    ['term_id', 'model_type', 'model_id', 'column_name'],
-                    ['frequency']
-                );
-            }
-
-            // Upsert document length
-            DB::table('fuzzy_index_documents')->upsert(
-                [['model_type' => $modelType, 'model_id' => $modelId, 'doc_length' => $docLength]],
-                ['model_type', 'model_id'],
-                ['doc_length']
-            );
-
-            $this->upsertMeta($modelType, $docLength, isNewDoc: !$wasIndexed, oldDocLength: $oldDocLength);
-        });
+    /**
+     * Bring one model's index entries in line with its committed row: index the row as it is now,
+     * or remove its entries when it is gone or soft-deleted. IndexModelJob runs this, so a job
+     * never writes a row it loaded before a newer save.
+     */
+    public function syncModel(string $modelClass, int|string $key): void
+    {
+        $this->write($modelClass, [$key], []);
     }
 
     /**
      * Remove all index entries for a specific model instance.
      */
-    public function removeFromIndex(string $modelType, int|string $modelId, bool $updateMeta = true): void
+    public function removeFromIndex(string $modelType, int|string $modelId): void
     {
-        DB::transaction(function () use ($modelType, $modelId, $updateMeta) {
-            $termIds = DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->distinct()
-                ->pluck('term_id');
+        $modelId = (string) $modelId; // bound as a string: see the note at the top of the class
 
-            if ($termIds->isEmpty()) {
-                return;
+        DB::transaction(function () use ($modelType, $modelId) {
+            // Waits for a write to this row in flight; empty = it was not indexed.
+            $old    = $this->claimDocuments($modelType, [$modelId]);
+            $posted = $this->postedTerms($modelType, [$modelId]);
+
+            $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
+            if ($posted !== []) { // see write()
+                $this->deletePostings($modelType, [$modelId]);
             }
 
-            // Capture old doc_length before the document row is deleted — needed to keep
-            // total_tokens (and thus avg_doc_length) accurate when updateMeta=true (C11)
-            $oldDocLength = $updateMeta
-                ? (int) (DB::table('fuzzy_index_documents')
-                    ->where('model_type', $modelType)
-                    ->where('model_id', $modelId)
-                    ->value('doc_length') ?? 0)
-                : 0;
-
-            DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->delete();
-
-            // Guard against underflow on unsigned columns under concurrent deletes
-            DB::table('fuzzy_index_terms')
-                ->whereIn('id', $termIds)
-                ->update([
-                    'doc_count' => DB::raw('CASE WHEN doc_count > 0 THEN doc_count - 1 ELSE 0 END'),
-                ]);
-
+            // The document row, or the placeholder the claim just inserted.
             DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)
                 ->where('model_id', $modelId)
                 ->delete();
 
-            if ($updateMeta) {
-                // Two-step meta update wrapped in the enclosing transaction so no concurrent
-                // BM25 read can observe an inconsistent avg_doc_length between the two UPDATEs
-                DB::table('fuzzy_index_meta')
-                    ->where('model_type', $modelType)
-                    ->update([
-                        'total_docs'   => DB::raw('CASE WHEN total_docs > 0 THEN total_docs - 1 ELSE 0 END'),
-                        'total_tokens' => DB::raw(
-                            'CASE WHEN total_tokens >= ' . $oldDocLength .
-                            ' THEN total_tokens - ' . $oldDocLength . ' ELSE 0 END'
-                        ),
-                    ]);
+            $this->adjustMeta($modelType, -count($old), -array_sum($old), ensure: false);
+        }, self::ATTEMPTS);
+    }
 
-                DB::table('fuzzy_index_meta')
-                    ->where('model_type', $modelType)
-                    ->update([
-                        'avg_doc_length' => DB::raw(
-                            'CASE WHEN total_docs > 0 THEN 1.0 * total_tokens / total_docs ELSE 0 END'
-                        ),
-                    ]);
+    /**
+     * Claim the models' document rows for the enclosing transaction: insert a placeholder
+     * (doc_length 0) where none exists, then lock every row. Every write to a model's index
+     * entries (write() and removeFromIndex(), and so IndexModelJob, the Scout engine and the
+     * rebuild batches) starts here, so two writes for one model run one after the other: the
+     * second waits for the first to commit, then reads what it wrote. Without the
+     * claim both read "not indexed yet" and both added the model to doc_count and total_docs.
+     * The upsert also waits for a concurrent first insert of the row, which a lock on a missing
+     * row cannot; SQLite takes its database write lock on it. A crashed process releases the
+     * lock with its connection. Ids are claimed in sorted order, so two batches cannot deadlock.
+     *
+     * @param  array<int|string>  $modelIds
+     * @return array<int|string, int> model id => doc_length, for the models already indexed
+     */
+    private function claimDocuments(string $modelType, array $modelIds): array
+    {
+        $modelIds = array_map('strval', $modelIds);
+        sort($modelIds, SORT_STRING);
+        $indexed = [];
+        $driver  = DB::connection()->getDriverName();
+
+        foreach (array_chunk($modelIds, self::ROWS_PER_UPSERT) as $chunk) {
+            $this->upsertShared(
+                'fuzzy_index_documents',
+                array_map(fn ($id) => ['model_type' => $modelType, 'model_id' => $id, 'doc_length' => 0], $chunk),
+                ['model_type', 'model_id'],
+                ['model_type'] // a no-op update: the conflict branch only takes the row lock
+            );
+
+            $claim = DB::table('fuzzy_index_documents')->where('model_type', $modelType);
+
+            if (count($chunk) > 1 && DbDialect::isMySqlFamily($driver)) {
+                // MySQL/MariaDB: one point read per id, in the sorted order above, sent as one
+                // UNION ALL. Each is a const plan, which locks its own row only, whatever the
+                // table's statistics say. The IN list's plan followed them: while the table or
+                // the model type had few rows, MySQL scanned the table, and MariaDB (from about 12
+                // ids) the model type's key prefix, locking every row and gap they passed. So
+                // parallel batches for different rows waited on each other's claims, and on
+                // MariaDB deadlocked until they lost all their attempts (ER-77). One statement:
+                // a round trip per id added 30% to 300% to a 500-row write.
+                $point    = '(' . $claim->select('model_id', 'doc_length')->where('model_id', '')->lockForUpdate()->toSql() . ')';
+                $bindings = [];
+                foreach ($chunk as $id) {
+                    array_push($bindings, $modelType, $id); // the point read's two placeholders, in order
+                }
+                $rows = collect(DB::select(implode(' union all ', array_fill(0, count($chunk), $point)), $bindings, false))
+                    ->pluck('doc_length', 'model_id');
+            } else {
+                // SQL Server: UPDLOCK holds the row locks to commit; the rows exist (the upsert
+                // just wrote them), so Laravel's HOLDLOCK only added key-range locks, which reach
+                // the neighbouring keys: other writes' rows. FORCESEEK: for an IN list on a small
+                // table SQL Server scanned the model type's rows instead, locking them all. Either
+                // way parallel batches for different rows deadlocked.
+                $rows = $claim
+                    ->whereIn('model_id', $chunk)
+                    ->lock($driver === 'sqlsrv' ? 'with(rowlock,updlock,forceseek)' : true)
+                    ->pluck('doc_length', 'model_id');
             }
-        });
+
+            foreach ($rows as $id => $length) {
+                if ((int) $length > 0) {
+                    $indexed[$id] = (int) $length;
+                }
+            }
+        }
+
+        return $indexed;
+    }
+
+    /**
+     * The dictionary terms the models' postings hold: term => [term id, how many of the models
+     * hold it], COUNT(DISTINCT model_id) since a document has one posting per column a term is in.
+     *
+     * @param  array<int|string>              $modelIds
+     * @return array<string, array{int, int}>
+     */
+    private function postedTerms(string $modelType, array $modelIds): array
+    {
+        $posted = [];
+        foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
+            $rows = DB::table('fuzzy_index_postings as p')
+                ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+                ->where('p.model_type', $modelType)
+                ->whereIn('p.model_id', $chunk)
+                ->groupBy('t.id', 't.term')
+                ->select('t.id', 't.term')
+                ->selectRaw('COUNT(DISTINCT ' . DbDialect::rawIdentifier('p.model_id') . ') as cnt')
+                ->get();
+
+            foreach ($rows as $row) {
+                $posted[(string) $row->term] = [(int) $row->id, ($posted[(string) $row->term][1] ?? 0) + (int) $row->cnt];
+            }
+        }
+
+        return $posted;
+    }
+
+    /**
+     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts().
+     *
+     * @param array<int|string> $modelIds
+     */
+    private function deletePostings(string $modelType, array $modelIds): void
+    {
+        foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
+            DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelType)
+                ->whereIn('model_id', $chunk)
+                ->delete();
+        }
     }
 
     /**
@@ -201,6 +225,15 @@ class IndexManager
     public function flush(string $modelClass): void
     {
         DB::transaction(function () use ($modelClass) {
+            // Give back this model's share of every term's doc_count first. A term another model
+            // still uses survives the orphan sweep below, and it kept counting this model's
+            // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
+            DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelClass)
+                ->groupBy('term_id')
+                ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
+                ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
+
             // Bulk delete index data for this model type — DB-side, no PHP memory load.
             DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->delete();
             DB::table('fuzzy_index_documents')->where('model_type', $modelClass)->delete();
@@ -208,18 +241,20 @@ class IndexManager
 
             // Clean up orphan terms (those with no remaining postings) via DB-side JOIN
             // — avoids loading million-row term_id arrays into PHP memory.
-            $driver = DB::connection()->getDriverName();
+            $driver   = DB::connection()->getDriverName();
+            $terms    = DbDialect::rawIdentifier('fuzzy_index_terms');
+            $postings = DbDialect::rawIdentifier('fuzzy_index_postings');
 
             if (\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver)) {
                 DB::statement(
-                    'DELETE t FROM fuzzy_index_terms t ' .
-                    'LEFT JOIN fuzzy_index_postings p ON t.id = p.term_id ' .
+                    "DELETE t FROM {$terms} t " .
+                    "LEFT JOIN {$postings} p ON t.id = p.term_id " .
                     'WHERE p.id IS NULL'
                 );
             } elseif ($driver === 'pgsql') {
                 DB::statement(
-                    'DELETE FROM fuzzy_index_terms t ' .
-                    'WHERE NOT EXISTS (SELECT 1 FROM fuzzy_index_postings p WHERE p.term_id = t.id)'
+                    "DELETE FROM {$terms} t " .
+                    "WHERE NOT EXISTS (SELECT 1 FROM {$postings} p WHERE p.term_id = t.id)"
                 );
             } else {
                 DB::table('fuzzy_index_terms')
@@ -327,194 +362,239 @@ class IndexManager
     }
 
     /**
-     * Bulk-index a collection of models in a single transaction.
-     * Postings and document rows go out in 1000-row upserts and re-indexed models are cleared
-     * with set-based statements, but the dictionary is upserted once per distinct term (each
-     * term's doc_count increment differs): a 500-model chunk with 3,000 distinct terms costs
-     * ~3,000 term upserts plus about ten other queries — not indexModel()'s per-model reads,
-     * deletes and meta updates. Used by RebuildCommand for fast initial builds.
+     * Index a collection of models (one class) in a single transaction: RebuildCommand's and
+     * RebuildIndexJob's per-chunk write. Saved models are reloaded inside it, one query for the
+     * chunk (see write()); unsaved instances are indexed as given. New dictionary terms go out
+     * in chunked upserts, not one per term (on MySQL/MariaDB one per distinct doc_count
+     * increment), and so do the postings and document rows.
      *
-     * @param iterable<Model> $models
+     * $scout: the Scout engine's update() (ER-72). The rows are re-read as Scout's own jobs read
+     * them, without global scopes, and a trashed row stays indexed while scout.soft_delete is on,
+     * so Scout's onlyTrashed() and withTrashed() find it. Everything else reads through the
+     * model's query: its global scopes, and SoftDeletes, whose trashed rows leave the index.
+     *
+     * @param  iterable<Model> $models
+     * @return int the number of models indexed
      */
-    public function indexBatch(iterable $models): int
+    public function indexBatch(iterable $models, bool $scout = false): int
     {
-        $modelType      = null;
-        $tokensByModel  = []; // model_id => [term => freq] (merged across columns)
-        $columnsByModel = []; // model_id => [column => [term => freq]]
-        $allTerms       = []; // unique terms across batch
+        $modelType = null;
+        $keys      = [];
+        $unsaved   = [];
 
         foreach ($models as $model) {
-            if ($modelType === null) {
-                $modelType = get_class($model);
-            }
-
-            if (!self::indexesModel($model)) {
-                continue;
-            }
-            $columns = $model->getSearchableColumns();
-
-            $byColumn = $this->buildTokenFrequencyMap($model, $columns);
-            $tokens   = $this->mergeColumnFrequencies($byColumn);
-            if (empty($tokens)) {
-                // Same as indexModel(): a model whose text emptied out must lose its stale
-                // postings, not just be skipped from the batch's re-index.
-                $this->removeFromIndex($modelType, $model->getKey());
-                continue;
-            }
-
-            $tokensByModel[$model->getKey()]  = $tokens;
-            $columnsByModel[$model->getKey()] = $byColumn;
-            foreach (array_keys($tokens) as $term) {
-                $allTerms[$term] = true;
+            $modelType ??= get_class($model);
+            if ($model->exists) {
+                $keys[(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
+            } else {
+                $unsaved[(string) $model->getKey()] = $model;
             }
         }
 
-        if (empty($tokensByModel)) {
-            return 0;
-        }
+        return $modelType === null ? 0 : $this->write($modelType, array_values($keys), $unsaved, $scout);
+    }
 
-        // See the comment in indexModel(): numeric-string keys like '10' are normalised to
-        // int by PHP, and SQL Server's MERGE ... USING (VALUES (...)) fails when the 'term'
-        // column mixes int and string bindings. Cast back to string.
-        $allTerms = array_map('strval', array_keys($allTerms));
-        $modelIds = array_keys($tokensByModel);
+    /**
+     * The one index write, in one transaction:
+     *  1. claim the models' document rows (claimDocuments()), so a concurrent write for one of
+     *     them waits for this one, or this one for it;
+     *  2. reload the saved rows (reload()): the text indexed is the row as committed now, so
+     *     whichever write commits last leaves the latest save indexed (ruling ER-68);
+     *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
+     *     terms, in id order (giving back the old terms, C12; raising the new ones), and delete
+     *     the old postings;
+     *  4. insert the terms the dictionary lacks, sorted, then the postings, document rows and
+     *     meta (C11) of the rows with text.
+     * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
+     * A row that is gone, soft-deleted or left without text leaves the index instead.
+     *
+     * @param  list<int|string>     $keys    saved models, reloaded here
+     * @param  array<string, Model> $unsaved key => instance, indexed as given
+     * @param  bool                 $scout   re-read with Scout's visibility (see indexBatch())
+     * @return int the number of models indexed
+     */
+    private function write(string $modelType, array $keys, array $unsaved, bool $scout = false): int
+    {
+        return DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
+            $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
+            $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
-        return DB::transaction(function () use ($modelType, $tokensByModel, $columnsByModel, $allTerms, $modelIds) {
-            // Find which models in this batch are already indexed (for accurate meta)
-            $alreadyIndexed = DB::table('fuzzy_index_documents')
-                ->where('model_type', $modelType)
-                ->whereIn('model_id', $modelIds)
-                ->pluck('model_id')
-                ->flip();
+            $byModel = []; // id => [column => [term => frequency]]
+            foreach ($this->reload($modelType, $keys, $scout) + $unsaved as $id => $model) {
+                if (!self::indexesModel($model)) {
+                    continue;
+                }
+                $byColumn = $this->buildTokenFrequencyMap($model, $model->getSearchableColumns());
+                if ($this->mergeColumnFrequencies($byColumn) !== []) {
+                    $byModel[$id] = $byColumn;
+                }
+            }
 
-            // For re-indexed models: capture per-term model-counts and old total_tokens
-            // BEFORE deleting. We need per-term counts (not a flat -1) because N models
-            // may share a term — decrementing by 1 would under-correct doc_count. (C12)
-            // Old token sum is used to keep avg_doc_length accurate. (C11)
-            $oldReindexTermCounts = collect(); // term_id => number of re-indexed models that had it
-            $oldReindexTokens     = 0;
+            $lengths = [];
+            $counts  = []; // term => number of documents holding it: its doc_count increment
+            foreach ($byModel as $id => $byColumn) {
+                $tokens       = $this->mergeColumnFrequencies($byColumn);
+                $lengths[$id] = array_sum($tokens);
+                foreach (array_keys($tokens) as $term) {
+                    $counts[$term] = ($counts[$term] ?? 0) + 1;
+                }
+            }
 
-            if ($alreadyIndexed->isNotEmpty()) {
-                $reindexIds = $alreadyIndexed->keys()->toArray();
+            // Every doc_count change to a term the dictionary already holds (the old terms given
+            // back, the new ones raised) goes out as one UPDATE per 1,000 terms in id order, so a
+            // write takes its locks on existing terms in the order every other write takes them
+            // (ER-71): giving back old terms, then raising new ones in a second statement, let two
+            // writes whose terms cross each hold a row the other needed.
+            $posted   = $this->postedTerms($modelType, $ids);
+            $existing = $this->termIds(array_map('strval', array_keys($counts)));
+            $deltas   = [];
+            foreach ($posted as [$termId, $holders]) {
+                $deltas[$termId] = -$holders;
+            }
+            foreach ($counts as $term => $increment) {
+                if (isset($existing[$term])) {
+                    $deltas[$existing[$term]] = ($deltas[$existing[$term]] ?? 0) + $increment;
+                }
+            }
+            // A word the locking read no longer finds was swept since the read above: a flush of
+            // any model deletes every word no posting holds, which a word this write reuses after
+            // re-indexing dropped it can be. It is inserted again below, as a missing one (ER-75).
+            $gone     = array_flip($this->adjustDocCounts($deltas));
+            $existing = array_filter($existing, fn ($id) => !isset($gone[$id]));
 
-                // COUNT(DISTINCT model_id) per term_id = number of models in the batch that had
-                // this term (a term now has one posting row per column it appears in, so
-                // COUNT(*) would double-count a term that lives in two columns of one document).
-                $oldReindexTermCounts = DB::table('fuzzy_index_postings')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->groupBy('term_id')
-                    ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
-                    ->pluck('cnt', 'term_id');
+            // No DELETE when nothing is posted: on MySQL/MariaDB one that matches nothing still
+            // gap-locks the end of postings_model_idx, where another first index's postings
+            // insert then waits while that write waits on a new word this one inserted first: a
+            // deadlock on every pair of first indexes sharing a new word. $posted is every
+            // posting of these rows (the term foreign key cascades), and under the claim only a
+            // flush (ER-69) can change them.
+            if ($posted !== []) {
+                $this->deletePostings($modelType, $ids);
+            }
 
-                $oldReindexTokens = (int) DB::table('fuzzy_index_documents')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->sum('doc_length');
+            // Rows leaving the index (gone, soft-deleted, no text left) lose their document row,
+            // and rows never indexed lose the placeholder the claim inserted.
+            $leaving = array_values(array_diff($ids, array_map('strval', array_keys($byModel))));
+            foreach (array_chunk($leaving, 1000) as $chunk) {
+                DB::table('fuzzy_index_documents')->where('model_type', $modelType)->whereIn('model_id', $chunk)->delete();
+            }
 
-                DB::table('fuzzy_index_postings')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->delete();
-                DB::table('fuzzy_index_documents')
-                    ->where('model_type', $modelType)
-                    ->whereIn('model_id', $reindexIds)
-                    ->delete();
+            // PHP normalises numeric-string array keys (e.g. '10') to int keys, so a purely
+            // numeric token comes back an int. Cast back to string wherever a key becomes a query
+            // binding: SQL Server's MERGE ... USING (VALUES (...)) infers one type per column from
+            // the batch of bindings, so a mixed int/string 'term' column fails with "Conversion
+            // failed when converting the nvarchar value 'paginate' to data type int". $termIds[$term]
+            // lookups still work because PHP normalises numeric-string keys the same way on read.
+            //
+            // Terms the dictionary lacks are inserted, sorted by term. A write that inserts one of
+            // them first turns this insert into an update of its row: the conflict branch raises it
+            // by this write's increment, the inserted row's own doc_count (EXCLUDED, or the MERGE
+            // source). So every write takes its new words in one sorted order (ER-74); a
+            // statement per increment, each sorted only within itself, let two batches take them
+            // in opposite orders. MySQL/MariaDB keep a statement per increment with a literal raise:
+            // the raise cannot name the inserted row there on both (MySQL deprecates VALUES(),
+            // MariaDB has no row alias). Two batches there can still take a shared new word in
+            // opposite orders; that deadlock is rare and retried (0 of 40 parallel batches lost).
+            $missing = [];
+            foreach ($counts as $term => $increment) {
+                if (!isset($existing[$term])) {
+                    $missing[(string) $term] = $increment;
+                }
+            }
+            ksort($missing, SORT_STRING);
 
-                // Decrement doc_count per term in a single UPDATE to avoid N round-trips.
-                // $termId and $cnt are PHP ints sourced from the DB — not user input.
-                if ($oldReindexTermCounts->isNotEmpty()) {
-                    $cases   = '';
-                    $termIds = [];
-                    foreach ($oldReindexTermCounts as $termId => $cnt) {
-                        $termId  = (int) $termId;
-                        $cnt     = (int) $cnt;
-                        $cases  .= " WHEN {$termId} THEN CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END";
-                        $termIds[] = $termId;
+            $driver = DB::connection()->getDriverName();
+            $source = match (true) { // the inserted row's doc_count, as the conflict branch sees it
+                DbDialect::isMySqlFamily($driver) => null,
+                $driver === 'sqlsrv'              => DbDialect::rawIdentifier('laravel_source.doc_count'), // Laravel's MERGE source alias
+                default                           => 'excluded.doc_count',
+            };
+            $runs = []; // raise => term => increment
+            foreach ($missing as $term => $increment) {
+                $runs[$source ?? (string) $increment][$term] = $increment;
+            }
+            foreach ($runs as $raise => $terms) {
+                foreach (array_chunk($terms, self::ROWS_PER_UPSERT, true) as $chunk) {
+                    $rows = [];
+                    foreach ($chunk as $term => $increment) {
+                        $rows[] = ['term' => (string) $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)];
                     }
-                    $inList = implode(',', $termIds);
-                    DB::statement(
-                        "UPDATE fuzzy_index_terms SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
+                    $this->upsertShared(
+                        'fuzzy_index_terms',
+                        $rows,
+                        ['term'],
+                        // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
+                        // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
+                        // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
+                        ['doc_count' => DB::raw(DbDialect::rawIdentifier('fuzzy_index_terms.doc_count') . " + {$raise}")]
                     );
                 }
             }
 
-            // Count term occurrences across ALL models (new + re-indexed).
-            // Re-indexed models had their old doc_counts decremented above, so we must
-            // also increment for their new token sets to keep doc_count correct (C12).
-            $termOccurrences = [];
-            foreach ($tokensByModel as $modelId => $tokens) {
-                foreach (array_keys($tokens) as $term) {
-                    $termOccurrences[$term] = ($termOccurrences[$term] ?? 0) + 1;
-                }
-            }
+            // After a sweep, a current read: MySQL's snapshot still shows a swept word's old row
+            // beside the one just inserted (ER-75). This write holds every one of these rows, so
+            // it waits on none.
+            $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
 
-            // Upsert each term with its occurrence increment
-            foreach ($allTerms as $term) {
-                $increment = $termOccurrences[$term] ?? 0;
-                DB::table('fuzzy_index_terms')->upsert(
-                    [['term' => $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)]],
-                    ['term'],
-                    ['doc_count' => DB::raw("fuzzy_index_terms.doc_count + {$increment}")]
-                );
-            }
-
-            // Fetch term IDs
-            $termIds = DB::table('fuzzy_index_terms')
-                ->whereIn('term', $allTerms)
-                ->pluck('id', 'term');
-
-            // Build all postings rows
-            $postingRows      = [];
-            $documentRows     = [];
-            $totalNewDocs     = 0;
-            $totalNewTokens   = 0;
-            $reindexNewTokens = 0;
-
-            foreach ($tokensByModel as $modelId => $tokens) {
-                $docLength = array_sum($tokens);
-                $documentRows[] = [
-                    'model_type' => $modelType,
-                    'model_id'   => $modelId,
-                    'doc_length' => $docLength,
-                ];
-                foreach ($this->postingRows($columnsByModel[$modelId], $termIds, $modelType, $modelId) as $row) {
+            // One posting per (term, column); a term missing from $termIds means a pre-migration
+            // MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
+            $postingRows  = [];
+            $documentRows = [];
+            foreach ($byModel as $id => $byColumn) {
+                foreach ($this->postingRows($byColumn, $termIds, $modelType, $id) as $row) {
                     $postingRows[] = $row;
                 }
-                if (!$alreadyIndexed->has($modelId)) {
-                    $totalNewDocs++;
-                    $totalNewTokens += $docLength;
-                } else {
-                    $reindexNewTokens += $docLength;
+                $documentRows[] = ['model_type' => $modelType, 'model_id' => (string) $id, 'doc_length' => $lengths[$id]];
+            }
+
+            // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing (C9).
+            foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
+                DB::table('fuzzy_index_postings')->upsert($chunk, ['term_id', 'model_type', 'model_id', 'column_name'], ['frequency']);
+            }
+            foreach (array_chunk($documentRows, self::ROWS_PER_UPSERT) as $chunk) {
+                DB::table('fuzzy_index_documents')->upsert($chunk, ['model_type', 'model_id'], ['doc_length']);
+            }
+
+            $this->adjustMeta(
+                $modelType,
+                count(array_diff_key($byModel, $old)) - count(array_diff_key($old, $byModel)),
+                array_sum($lengths) - array_sum($old),
+                ensure: $byModel !== [],
+            );
+
+            return count($byModel);
+        }, self::ATTEMPTS);
+    }
+
+    /**
+     * The saved rows among $keys as committed now, keyed by id. Loaded through IndexQuery, so a
+     * model's searchIndexQuery() eager loads (the relations a searchableText() hook reads) apply
+     * to single-row writes as well as to rebuilds. The model's global scopes apply and a trashed
+     * row is left out, unless $scout: then no global scope applies, as in Scout's own jobs, and
+     * a trashed row is kept while scout.soft_delete is on (ER-72).
+     *
+     * @param  list<int|string>    $keys
+     * @return array<string, Model>
+     */
+    private function reload(string $modelType, array $keys, bool $scout): array
+    {
+        $keepTrashed = $scout && config('scout.soft_delete', false);
+        $rows        = [];
+
+        foreach (array_chunk($keys, 1000) as $chunk) {
+            $query = IndexQuery::for($modelType);
+            if ($scout) {
+                $query->withoutGlobalScopes();
+            }
+
+            foreach ($query->whereKey($chunk)->get() as $model) {
+                if ($keepTrashed || !(method_exists($model, 'trashed') && $model->trashed())) {
+                    $rows[(string) $model->getKey()] = $model;
                 }
             }
+        }
 
-            // Upsert postings — prevents concurrent-worker UNIQUE constraint failures (C9)
-            foreach (array_chunk($postingRows, 1000) as $chunk) {
-                DB::table('fuzzy_index_postings')->upsert(
-                    $chunk,
-                    ['term_id', 'model_type', 'model_id', 'column_name'],
-                    ['frequency']
-                );
-            }
-
-            // Upsert documents
-            foreach (array_chunk($documentRows, 1000) as $chunk) {
-                DB::table('fuzzy_index_documents')->upsert(
-                    $chunk,
-                    ['model_type', 'model_id'],
-                    ['doc_length']
-                );
-            }
-
-            // Update meta: add new docs and adjust total_tokens for both new and re-indexed docs (C11)
-            $reindexTokenDelta = $reindexNewTokens - $oldReindexTokens;
-            if ($totalNewDocs > 0 || $reindexTokenDelta !== 0) {
-                $this->upsertMetaBulk($modelType, $totalNewDocs, $totalNewTokens, $reindexTokenDelta);
-            }
-
-            return count($tokensByModel);
-        });
+        return $rows;
     }
 
     // -------------------------------------------------------------------------
@@ -597,7 +677,9 @@ class IndexManager
             $column = mb_substr((string) $name, 0, 64);
             foreach ($pipeline->tokens($value) as $stemmed) {
                 if (DbDialect::varcharLength($stemmed) > 255) {
-                    continue; // token exceeds term VARCHAR(255) on some driver — skip rather than truncate silently
+                    // Capped at 191 characters, but SQL Server's nvarchar(255) counts a character
+                    // outside the BMP as two: skip rather than truncate silently.
+                    continue;
                 }
                 if (!isset($byColumn[$column][$stemmed])) {
                     $distinct++;
@@ -614,6 +696,67 @@ class IndexManager
             }
         }
         return $byColumn;
+    }
+
+    /**
+     * Add term_id => delta (either sign; a result below 0 is floored at 0: unsigned column,
+     * concurrent deletes) to doc_count: one UPDATE per 1,000 terms, after a locking read that takes
+     * the rows in ascending id order, so every write locks the dictionary rows it touches in the
+     * same order (ER-71). The UPDATE alone would lock them in scan order, which on PostgreSQL is
+     * the rows' physical order and moves with every update. A delta of 0 still locks its row: a
+     * posting inserted later checks its term row (MySQL's foreign-key S lock), and must find it
+     * locked already rather than wait for it behind another write.
+     * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
+     *
+     * @param  array<int, int> $deltas
+     * @return list<int> the ids the locking read did not find: terms deleted since the caller
+     *                   read them, by a flush's orphan sweep (ER-75)
+     */
+    private function adjustDocCounts(array $deltas): array
+    {
+        ksort($deltas);
+        $gone = [];
+
+        foreach (array_chunk($deltas, 1000, true) as $chunk) {
+            $found = DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('id')->all();
+            $gone  = [...$gone, ...array_values(array_diff(array_keys($chunk), $found))];
+            $chunk = array_intersect_key($chunk, array_flip($found));
+            if ($chunk === []) {
+                continue;
+            }
+
+            $cases = '';
+            foreach ($chunk as $termId => $delta) {
+                $termId = (int) $termId;
+                $delta  = (int) $delta;
+                $cases .= $delta >= 0
+                    ? " WHEN {$termId} THEN doc_count + {$delta}"
+                    : " WHEN {$termId} THEN CASE WHEN doc_count >= " . -$delta . ' THEN doc_count - ' . -$delta . ' ELSE 0 END';
+            }
+            $inList = implode(',', array_map('intval', array_keys($chunk)));
+            DB::statement(
+                'UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"
+            );
+        }
+
+        return $gone;
+    }
+
+    /**
+     * term => id for $terms, 1,000 bindings a query. $current reads the rows as they are now,
+     * with a locking read, rather than from MySQL/MariaDB's REPEATABLE READ snapshot.
+     *
+     * @param  string[] $terms
+     * @return array<string, int>
+     */
+    private function termIds(array $terms, bool $current = false): array
+    {
+        $ids = [];
+        foreach (array_chunk($terms, 1000) as $chunk) {
+            $ids += DB::table('fuzzy_index_terms')->whereIn('term', $chunk)->when($current, fn ($q) => $q->lockForUpdate())->pluck('id', 'term')->all();
+        }
+
+        return $ids;
     }
 
     /** Per-document term frequencies (term => total across columns) — doc_length and doc_count use this. */
@@ -643,7 +786,7 @@ class IndexManager
                 $rows[] = [
                     'term_id'     => $termIds[$term],
                     'model_type'  => $modelType,
-                    'model_id'    => $modelId,
+                    'model_id'    => (string) $modelId,
                     'column_name' => (string) $column,
                     'frequency'   => $frequency,
                 ];
@@ -653,38 +796,33 @@ class IndexManager
     }
 
     /**
-     * Insert or atomically update the meta row for a model class after indexing a single model.
-     *
-     * @param bool $isNewDoc     true on first index, false on re-index
-     * @param int  $oldDocLength token count of the previous version (0 if new) — used to
-     *                           correct total_tokens drift on re-index (C11)
+     * Add $docs and $tokens (either may be negative, floored at 0) to the model type's meta row
+     * and recompute avg_doc_length from the now-consistent totals (C11), inside the enclosing
+     * transaction, so no BM25 read sees the totals and the average disagree. $ensure creates the
+     * row first (race-safe, C10); a removal only updates a row that exists.
      */
-    private function upsertMeta(string $modelType, int $docLength, bool $isNewDoc, int $oldDocLength = 0): void
+    private function adjustMeta(string $modelType, int $docs, int $tokens, bool $ensure): void
     {
-        // Ensure the row exists before updating (safe against concurrent first-insert race — C10)
-        $this->ensureMetaRow($modelType);
-
-        if ($isNewDoc) {
-            DB::table('fuzzy_index_meta')
-                ->where('model_type', $modelType)
-                ->update([
-                    'total_docs'   => DB::raw('total_docs + 1'),
-                    'total_tokens' => DB::raw("total_tokens + {$docLength}"),
-                ]);
-        } else {
-            $delta = $docLength - $oldDocLength;
-            if ($delta !== 0) {
-                $abs  = abs($delta);
-                $expr = $delta > 0
-                    ? "total_tokens + {$abs}"
-                    : "CASE WHEN total_tokens >= {$abs} THEN total_tokens - {$abs} ELSE 0 END";
-                DB::table('fuzzy_index_meta')
-                    ->where('model_type', $modelType)
-                    ->update(['total_tokens' => DB::raw($expr)]);
-            }
+        if ($ensure) {
+            $this->ensureMetaRow($modelType);
         }
 
-        // Recompute avg_doc_length from the now-consistent total_docs / total_tokens (C11)
+        if ($docs === 0 && $tokens === 0) {
+            return;
+        }
+
+        $add     = fn (string $column, int $delta) => DB::raw($delta >= 0
+            ? "{$column} + {$delta}"
+            : "CASE WHEN {$column} >= " . -$delta . " THEN {$column} - " . -$delta . ' ELSE 0 END');
+        $updates = [];
+        if ($docs !== 0) {
+            $updates['total_docs'] = $add('total_docs', $docs);
+        }
+        if ($tokens !== 0) {
+            $updates['total_tokens'] = $add('total_tokens', $tokens);
+        }
+
+        DB::table('fuzzy_index_meta')->where('model_type', $modelType)->update($updates);
         DB::table('fuzzy_index_meta')
             ->where('model_type', $modelType)
             ->update([
@@ -695,46 +833,28 @@ class IndexManager
     }
 
     /**
-     * Bulk-update meta after indexBatch().
-     *
-     * @param int $newDocs           number of genuinely new (never-before-indexed) models
-     * @param int $newTokens         total token count of the new models
-     * @param int $reindexTokenDelta net change in token count for re-indexed models
-     *                               (new total − old total); may be negative (C11)
+     * upsert() for a key another write may insert at the same moment: a new document row, a new
+     * word, a model type's meta row. SQL Server's MERGE decides "not matched" without locking the
+     * missing key, so two writes both insert it and the second fails (2601/2627) once the first
+     * commits; run again, the MERGE finds the row and updates it. That holds only while
+     * XACT_ABORT is off (@@OPTIONS & 16384 = 0, SQL Server's default): then only the failed
+     * statement rolls back, and the write keeps its transaction and its locks. With XACT_ABORT on,
+     * the error has rolled back the whole write, and the driver silently opens a new transaction
+     * at the next statement, so a re-run would commit the rest of the write without its start.
+     * The error is rethrown instead: the write fails and rolls back whole, and the queue retries
+     * it (ER-76). The other databases' upserts take the conflict branch instead.
      */
-    private function upsertMetaBulk(string $modelType, int $newDocs, int $newTokens, int $reindexTokenDelta = 0): void
+    private function upsertShared(string $table, array $rows, array $uniqueBy, array $update): void
     {
-        // Ensure the row exists (race-safe — C10)
-        $this->ensureMetaRow($modelType);
-
-        $tokenAdjustment = $newTokens + $reindexTokenDelta;
-
-        $updates = [];
-        if ($newDocs > 0) {
-            $updates['total_docs'] = DB::raw("total_docs + {$newDocs}");
-        }
-        if ($tokenAdjustment !== 0) {
-            $abs = abs($tokenAdjustment);
-            $updates['total_tokens'] = DB::raw(
-                $tokenAdjustment >= 0
-                    ? "total_tokens + {$abs}"
-                    : "CASE WHEN total_tokens >= {$abs} THEN total_tokens - {$abs} ELSE 0 END"
-            );
-        }
-
-        if (!empty($updates)) {
-            DB::table('fuzzy_index_meta')
-                ->where('model_type', $modelType)
-                ->update($updates);
-        }
-
-        DB::table('fuzzy_index_meta')
-            ->where('model_type', $modelType)
-            ->update([
-                'avg_doc_length' => DB::raw(
-                    'CASE WHEN total_docs > 0 THEN 1.0 * total_tokens / total_docs ELSE 0 END'
-                ),
-            ]);
+        retry(
+            self::ATTEMPTS,
+            fn () => DB::table($table)->upsert($rows, $uniqueBy, $update),
+            0,
+            fn (\Throwable $e) => $e instanceof \Illuminate\Database\QueryException
+                && in_array($e->errorInfo[1] ?? null, [2601, 2627], true)
+                && DB::connection()->getDriverName() === 'sqlsrv'
+                && (int) DB::selectOne('select @@options & 16384 as xa')->xa === 0,
+        );
     }
 
     /**
@@ -746,7 +866,8 @@ class IndexManager
      */
     private function ensureMetaRow(string $modelType): void
     {
-        DB::table('fuzzy_index_meta')->upsert(
+        $this->upsertShared(
+            'fuzzy_index_meta',
             [[
                 'model_type'     => $modelType,
                 'total_docs'     => 0,

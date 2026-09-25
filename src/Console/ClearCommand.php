@@ -2,17 +2,20 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 class ClearCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:clear
                             {model? : The model class to clear (e.g. "App\\Models\\User")}
                             {--all : Clear BM25 index for all models}';
 
-    protected $description = 'Clear the BM25 search index for a model';
+    protected $description = 'Clear the BM25 search index for a model (fuzzy-search:flush <model> does the same), or for every model with --all';
 
     public function handle(IndexManager $indexManager): int
     {
@@ -34,12 +37,9 @@ class ClearCommand extends Command
             return self::FAILURE;
         }
 
-        if (!class_exists($model)) {
-            $model = 'App\\Models\\' . $model;
-        }
+        $model = $this->modelName($model);
 
-        if (!class_exists($model)) {
-            $this->error("Model class [{$model}] not found.");
+        if (!$this->validModel($model)) {
             return self::FAILURE;
         }
 

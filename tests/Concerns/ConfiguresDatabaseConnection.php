@@ -149,9 +149,12 @@ trait ConfiguresDatabaseConnection
             $schema->dropIfExists($table);
         }
 
+        // The search log's migration too: its table is dropped above, and a row left behind
+        // would make migrate skip it.
         if ($schema->hasTable('migrations')) {
             $this->app['db']->table('migrations')
                 ->where('migration', 'like', '%fuzzy_index%')
+                ->orWhere('migration', 'like', '%fuzzy_search_logs%')
                 ->delete();
         }
     }

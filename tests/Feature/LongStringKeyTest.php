@@ -1,0 +1,182 @@
+<?php
+
+namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
+
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+class LongKeyNote extends Model
+{
+    use Searchable;
+
+    protected $table      = 'long_key_notes';
+    protected $primaryKey = 'code';
+    protected $keyType    = 'string';
+    protected $guarded    = [];
+    public $incrementing  = false;
+    public $timestamps    = false;
+
+    protected array $searchable = ['columns' => ['body' => 10]];
+}
+
+/**
+ * The index stores model_id as varchar(191) (owner decision Q17): a string primary key longer
+ * than 36 characters, the old width, indexes and searches. SQLite does not enforce a varchar
+ * length, so the failure this guards against shows on MySQL, MariaDB, PostgreSQL and SQL Server.
+ */
+class LongStringKeyTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Schema::dropIfExists('long_key_notes');
+        Schema::create('long_key_notes', function (Blueprint $table) {
+            $table->string('code', 100)->primary();
+            $table->string('body');
+        });
+    }
+
+    protected function tearDown(): void
+    {
+        Schema::dropIfExists('long_key_notes');
+
+        parent::tearDown();
+    }
+
+    private function key(string $char): string
+    {
+        return str_repeat($char, 99) . '1';
+    }
+
+    public function test_a_100_character_string_key_indexes_and_searches(): void
+    {
+        $first  = LongKeyNote::create(['code' => $this->key('a'), 'body' => 'quantum widget']);
+        $second = LongKeyNote::create(['code' => $this->key('b'), 'body' => 'plain widget']);
+
+        app(IndexManager::class)->indexBatch(LongKeyNote::all());
+        app(IndexManager::class)->indexModel($first);
+
+        $this->assertSame([$first->code], LongKeyNote::search('quantum')->useInvertedIndex()->typoTolerance(0)->get()->pluck('code')->all());
+        $this->assertEqualsCanonicalizing([$first->code, $second->code], LongKeyNote::search('widget')->useInvertedIndex()->typoTolerance(0)->get()->pluck('code')->all());
+
+        app(IndexManager::class)->removeFromIndex(LongKeyNote::class, $second->code);
+        $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_id', $second->code)->count());
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => LongKeyNote::class, '--fresh' => true])->assertExitCode(0);
+        $this->assertSame(2, DB::table('fuzzy_index_documents')->where('model_type', LongKeyNote::class)->count());
+    }
+
+    /**
+     * SQL Server lets ALTER COLUMN widen an nvarchar an ordinary or unique index covers, so up()
+     * drops and recreates only the documents primary key; rebuilding postings_unique_idx on a
+     * large table is the costly part it must not do. The SQL is pretended on a never-connected
+     * SQL Server connection, so this runs everywhere.
+     */
+    public function test_on_sql_server_up_only_rebuilds_the_documents_primary_key(): void
+    {
+        config(['database.connections.fake_sqlsrv' => [
+            'driver' => 'sqlsrv', 'host' => '127.0.0.1', 'port' => 1, 'database' => 'fake',
+            'username' => 'fake', 'password' => 'fake', 'prefix' => '',
+        ]]);
+        $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $default   = DB::getDefaultConnection();
+
+        DB::setDefaultConnection('fake_sqlsrv');
+        try {
+            $sql = array_column(DB::connection('fake_sqlsrv')->pretend(fn () => $migration->up()), 'query');
+        } finally {
+            DB::setDefaultConnection($default);
+        }
+
+        // Laravel's quoting of identifiers differs between versions: compare without it.
+        $sql = array_map(fn ($q) => str_replace(['[', ']', '"'], '', $q), $sql);
+
+        $this->assertSame([
+            'alter table fuzzy_index_documents drop constraint fuzzy_index_documents_model_type_model_id_primary',
+            'ALTER TABLE fuzzy_index_postings ALTER COLUMN model_id NVARCHAR(191) NOT NULL',
+            'ALTER TABLE fuzzy_index_documents ALTER COLUMN model_id NVARCHAR(191) NOT NULL',
+            'alter table fuzzy_index_documents add constraint fuzzy_index_documents_model_type_model_id_primary primary key (model_type, model_id)',
+        ], $sql);
+    }
+
+    /** down() drops the index rows whose key no longer fits, and gives back what they counted. */
+    public function test_rolling_back_gives_back_the_counts_of_the_rows_it_drops(): void
+    {
+        $long  = LongKeyNote::create(['code' => $this->key('a'), 'body' => 'shared widget']);
+        $short = LongKeyNote::create(['code' => 'short-key', 'body' => 'shared thing']);
+        app(IndexManager::class)->indexBatch(LongKeyNote::all());
+        $this->assertSame(2, (int) DB::table('fuzzy_index_terms')->where('term', 'shared')->value('doc_count'));
+
+        $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $migration->down();
+        $migration->up();
+
+        $meta = DB::table('fuzzy_index_meta')->where('model_type', LongKeyNote::class)->first();
+        if ($this->dbDriver === 'sqlite') { // no narrowing on SQLite, so nothing is dropped
+            $this->assertSame(2, (int) $meta->total_docs);
+            return;
+        }
+
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_id', $long->code)->count());
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'shared')->value('doc_count'));
+        $this->assertSame(0, (int) DB::table('fuzzy_index_terms')->where('term', 'widget')->value('doc_count'));
+        $this->assertSame(1, (int) $meta->total_docs);
+        $this->assertSame(2, (int) $meta->total_tokens); // "shared thing"
+        $this->assertSame([$short->code], LongKeyNote::search('shared')->useInvertedIndex()->typoTolerance(0)->get()->pluck('code')->all());
+    }
+
+    public function test_rolling_back_after_a_test_dropped_an_index_table_does_not_fail(): void
+    {
+        // Tests drop fuzzy_index_postings to simulate a missing dictionary; the teardown's
+        // rollback then runs this down() first, and a failure there left every later test's
+        // migrations half applied.
+        Schema::drop('fuzzy_index_postings');
+
+        (require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php')->down();
+
+        $this->assertFalse(Schema::hasTable('fuzzy_index_postings'));
+        $this->assertTrue(Schema::hasTable('fuzzy_index_documents'));
+    }
+
+    public function test_the_migration_widens_model_id_and_rolls_back(): void
+    {
+        // Run the migration's own down() and up(): a migrate:rollback --step would leave the rest
+        // of the batch recorded for the test teardown's rollback, which only undoes the last batch.
+        $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $long      = ['model_type' => 'App\\Models\\Long', 'model_id' => $this->key('c'), 'doc_length' => 1];
+
+        DB::table('fuzzy_index_documents')->insert($long);
+        $migration->down();
+
+        if ($this->dbDriver !== 'sqlite') { // SQLite stores any length in a varchar column: down() leaves it be
+            $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_id', $long['model_id'])->count()); // dropped: too long for 36
+
+            try {
+                DB::table('fuzzy_index_documents')->insert($long);
+                $this->fail('model_id should be 36 characters wide again after the rollback');
+            } catch (QueryException) {
+                // too long for varchar(36)
+            }
+        }
+
+        $migration->up();
+
+        DB::table('fuzzy_index_documents')->where('model_id', $long['model_id'])->delete();
+        DB::table('fuzzy_index_documents')->insert($long);
+        DB::table('fuzzy_index_postings')->insert([
+            'term_id'     => DB::table('fuzzy_index_terms')->insertGetId(['term' => 'widget', 'doc_count' => 1, 'term_length' => 6]),
+            'model_type'  => $long['model_type'],
+            'model_id'    => $long['model_id'],
+            'column_name' => 'body',
+            'frequency'   => 1,
+        ]);
+        $this->assertSame(1, DB::table('fuzzy_index_postings')->where('model_id', $long['model_id'])->count());
+    }
+}

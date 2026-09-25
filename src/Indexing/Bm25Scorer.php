@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -57,18 +58,20 @@ class Bm25Scorer
      */
     private function weightedFrequencySql(array $columnWeights): array
     {
-        $cases    = '';
-        $bindings = [];
+        // The builder writes the alias p with the connection's table prefix: pfx_p.
+        $frequency = DbDialect::rawIdentifier('p.frequency');
+        $cases     = '';
+        $bindings  = [];
         foreach ($columnWeights as $column => $weight) {
             $w = (float) $weight;
             if ($w <= 0 || $w == 1.0) {
                 continue; // excluded by whereNotIn() / default branch
             }
-            $cases     .= ' WHEN ? THEN p.frequency * ' . sprintf('%.6F', $w);
+            $cases     .= " WHEN ? THEN {$frequency} * " . sprintf('%.6F', $w);
             $bindings[] = (string) $column;
         }
 
-        return [$cases === '' ? 'SUM(p.frequency)' : "SUM(CASE p.column_name{$cases} ELSE p.frequency END)", $bindings];
+        return [$cases === '' ? "SUM({$frequency})" : 'SUM(CASE ' . DbDialect::rawIdentifier('p.column_name') . "{$cases} ELSE {$frequency} END)", $bindings];
     }
 
     /**
@@ -150,7 +153,7 @@ class Bm25Scorer
 
         $termData = DB::table('fuzzy_index_terms')
             ->whereIn('term', $this->termBindings($weights))
-            ->select('id', 'term', 'doc_count')
+            ->select('id', 'term')
             ->get()
             ->keyBy('id');
 
@@ -159,6 +162,22 @@ class Bm25Scorer
         }
 
         $termIds = $termData->keys()->toArray();
+
+        // Document frequency within $modelType, the population N counts. The dictionary's
+        // doc_count spans every model, so a word another model used more often than this one
+        // has rows gave a negative idf and ranked the best match last. DISTINCT model_id: a
+        // document has one posting per column it holds the term in. Chunked under SQL Server's
+        // 2,100 bindings; postings_unique_idx (term_id, model_type, model_id, …) covers it.
+        $df = [];
+        foreach (array_chunk($termIds, 1000) as $chunk) {
+            $df += DB::table('fuzzy_index_postings')
+                ->where('model_type', $modelType)
+                ->whereIn('term_id', $chunk)
+                ->groupBy('term_id')
+                ->selectRaw('term_id, COUNT(DISTINCT model_id) as df')
+                ->pluck('df', 'term_id')
+                ->all();
+        }
 
         // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
         // One row per (document, term), weighted in SQL, ordered by that weighted frequency DESC
@@ -195,15 +214,26 @@ class Bm25Scorer
             }
             $td     = $termData[$row->term_id];
             $weight = (float) ($weights[$td->term] ?? 1.0);
-            $idf    = log(($N - $td->doc_count + 0.5) / ($td->doc_count + 0.5) + 1);
+            $n      = min((float) ($df[$row->term_id] ?? 1), $N); // never above N: the idf stays positive
+            $idf    = log(($N - $n + 0.5) / ($n + 0.5) + 1);
             $tf     = ($f * ($this->k1 + 1))
                     / ($f + $this->k1 * (1 - $this->b + $this->b * (float) $row->doc_len / $avgdl));
 
             $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $weight * $idf * $tf;
         }
 
-        arsort($scores);
+        // Rounded before sorting: the sums' last bits depend on the order the database returned
+        // the postings in. Best first; a tie goes to the lower model key, so equal scores come
+        // back in one order on every database. A total order over mixed keys: integer keys first,
+        // as numbers, then string keys byte-wise (numbers-or-strings alone made 9 < 10 < "5x" < 9).
+        $scores = array_map(fn($score) => round($score, 6), $scores);
+        uksort($scores, fn ($a, $b) => ($scores[$b] <=> $scores[$a]) ?: match (true) {
+            is_int($a) && is_int($b) => $a <=> $b,
+            is_int($a)               => -1,
+            is_int($b)               => 1,
+            default                  => strcmp($a, $b),
+        });
 
-        return array_map(fn($score) => round($score, 6), $scores);
+        return $scores;
     }
 }

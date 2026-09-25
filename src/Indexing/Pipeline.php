@@ -12,6 +12,12 @@ use Ashiqfardus\LaravelFuzzySearch\Support\Accents;
  */
 final class Pipeline
 {
+    /**
+     * The longest term the dictionary stores, in characters. MySQL keys fuzzy_index_terms on
+     * term(191), where two longer terms that share their first 191 characters collide (ER-48).
+     */
+    public const MAX_TERM_LENGTH = 191;
+
     /** @var string[] lower-cased (and folded, when enabled) */
     private array $stopWords;
 
@@ -37,10 +43,20 @@ final class Pipeline
             if (in_array($word, $stop, true)) {
                 continue;
             }
-            $tokens[] = $this->stemmer->stem($word);
+            $tokens[] = self::capTerm($this->stemmer->stem($word));
         }
 
         return $tokens;
+    }
+
+    /**
+     * $term as the dictionary stores it: cut to MAX_TERM_LENGTH characters. Every token passes
+     * through here at index time and on the query side; a lookup that takes a term from
+     * elsewhere (TermExpander) caps it the same way, or a longer term never meets its own entry.
+     */
+    public static function capTerm(string $term): string
+    {
+        return mb_substr($term, 0, self::MAX_TERM_LENGTH, 'UTF-8');
     }
 
     public function tokenizer(): TokenizerInterface { return $this->tokenizer; }

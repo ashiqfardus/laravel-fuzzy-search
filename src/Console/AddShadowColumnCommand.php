@@ -29,6 +29,13 @@ class AddShadowColumnCommand extends Command
             return self::FAILURE;
         }
 
+        // The only shadow column the package maintains; another type would get a migration for a
+        // column nothing ever fills.
+        if ($type !== 'metaphone') {
+            $this->error("--type must be metaphone, the only shadow column type; got [{$type}].");
+            return self::FAILURE;
+        }
+
         if (!class_exists($modelClass)) {
             $this->error("Model class [{$modelClass}] not found.");
             return self::FAILURE;
@@ -89,8 +96,8 @@ PHP;
 
         $this->info("Migration created: {$filename}");
         $this->line("Run <comment>php artisan migrate</comment> to apply it.");
-        $this->line("Then trigger model saves to populate the shadow column (e.g. <comment>{$modelClass}::query()->each(fn(\$m) => \$m->touch())</comment>).");
-        $this->line("Or run <comment>php artisan fuzzy-search:rebuild \"{$modelClass}\" --fresh</comment> to rebuild the BM25 index.");
+        $this->line("Then fill it for the existing rows: <comment>php artisan fuzzy-search:rebuild \"{$modelClass}\"</comment> (this also rebuilds the model's BM25 index).");
+        $this->line('Rows saved from then on fill it themselves.');
 
         return self::SUCCESS;
     }

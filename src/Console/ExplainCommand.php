@@ -2,11 +2,14 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Illuminate\Console\Command;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 
 class ExplainCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:explain 
                             {model : The model class to explain}
                             {--term=test : Search term to explain}
@@ -18,13 +21,10 @@ class ExplainCommand extends Command
     {
         $model = $this->argument('model');
 
-        if (!class_exists($model)) {
-            $model = 'App\\Models\\' . $model;
-        }
+        $model = $this->modelName($model);
 
-        if (!class_exists($model)) {
-            $this->error("Model class not found: {$model}");
-            return 1;
+        if (!$this->validModel($model, 'searchable')) {
+            return self::FAILURE;
         }
 
         $term = $this->option('term');

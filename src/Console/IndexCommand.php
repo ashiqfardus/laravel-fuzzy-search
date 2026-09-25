@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -9,6 +10,8 @@ use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 
 class IndexCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:index 
                             {model? : The model class to index}
                             {--all : Index all searchable models}
@@ -22,6 +25,20 @@ class IndexCommand extends Command
         $this->warn('[DEPRECATED] fuzzy-search:index writes to the legacy v1 search_index table.');
         $this->warn('For v2 BM25 inverted index use: php artisan fuzzy-search:rebuild "App\Models\ModelName"');
         $this->newLine();
+
+        // Check the model before creating anything for it.
+        $model = (string) $this->argument('model');
+        if (!$this->option('all')) {
+            if ($model === '') {
+                $this->error('Please provide a model class or use --all flag');
+                return 1;
+            }
+
+            $model = $this->modelName($model);
+            if (!$this->validModel($model)) {
+                return 1;
+            }
+        }
 
         $table = config('fuzzy-search.indexing.table', 'search_index');
 
@@ -44,13 +61,6 @@ class IndexCommand extends Command
             return $this->indexAllModels();
         }
 
-        $model = $this->argument('model');
-
-        if (!$model) {
-            $this->error('Please provide a model class or use --all flag');
-            return 1;
-        }
-
         return $this->indexModel($model);
     }
 
@@ -70,11 +80,6 @@ class IndexCommand extends Command
 
     protected function indexModel(string $model): int
     {
-        if (!class_exists($model)) {
-            // Try to resolve short name
-            $model = 'App\\Models\\' . $model;
-        }
-
         if (!class_exists($model)) {
             $this->error("Model class not found: {$model}");
             return 1;
@@ -161,11 +166,12 @@ class IndexCommand extends Command
             return 0;
         }
 
+        $status = 0;
         foreach ($models as $model) {
-            $this->indexModel($model);
+            $status = max($status, $this->indexModel($model)); // one failed model fails the run
         }
 
-        return 0;
+        return $status;
     }
 
     protected function hasSearchableTrait(string $class): bool
@@ -176,8 +182,15 @@ class IndexCommand extends Command
 
     protected function getSearchableColumns($instance): array
     {
-        if (isset($instance->searchable['columns'])) {
-            return array_keys($instance->searchable['columns']);
+        // Through the model's own accessors, never $instance->searchable from outside: the property
+        // is protected, so that read went to Eloquent's __isset() and never saw the declared
+        // columns, and on a model that also uses Scout's Searchable, __isset() resolved Scout's
+        // searchable() method as a relation, which indexed the model and threw. property_exists()
+        // first: without the property, the accessor's own read of $this->searchable goes the same way.
+        if (property_exists($instance, 'searchable') && method_exists($instance, 'hasDeclaredSearchableColumns')
+            && $instance->hasDeclaredSearchableColumns()) {
+            // Real columns only: this command selects them, and a relation path is no column.
+            return array_values(array_filter($instance->getSearchableColumns(), fn ($column) => !str_contains($column, '.')));
         }
 
         // Fallback to common columns

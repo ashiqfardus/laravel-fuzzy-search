@@ -1,17 +1,22 @@
 <?php
 
+use Ashiqfardus\LaravelFuzzySearch\Analytics\SearchAnalytics;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    // analytics.table, the name SearchAnalytics writes and reads.
     public function up(): void
     {
-        Schema::create('fuzzy_search_logs', function (Blueprint $table) {
+        Schema::create(SearchAnalytics::table(), function (Blueprint $table) {
             $table->id();
             $table->string('term', 255);                 // '' when analytics.hash_terms is on
-            $table->string('normalized_term', 255);      // lower-cased, whitespace-collapsed (or its keyed sha256)
+            // Lower-cased, whitespace-collapsed (or its keyed sha256). 191, as every indexed
+            // string: 255 utf8mb4 characters made a 1,020-byte key, over MySQL's 767-byte limit
+            // for the COMPACT row format.
+            $table->string('normalized_term', 191);
             $table->string('model_type', 191)->nullable();
             $table->string('algorithm', 32);
             $table->string('path', 16);                  // like | bm25 | extended | in_memory
@@ -29,6 +34,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('fuzzy_search_logs');
+        Schema::dropIfExists(SearchAnalytics::table());
     }
 };

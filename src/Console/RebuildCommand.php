@@ -2,15 +2,20 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RebuildIndexJob;
+use Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver;
 use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Illuminate\Bus\Batch;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Schema;
 
 class RebuildCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:rebuild
                             {model : Fully-qualified model class e.g. App\\Models\\User}
                             {--fresh : Flush existing index before rebuilding}
@@ -23,8 +28,12 @@ class RebuildCommand extends Command
     {
         $modelClass = $this->argument('model');
 
-        if (!class_exists($modelClass)) {
-            $this->error("Model class [{$modelClass}] not found.");
+        if (!$this->validModel($modelClass, 'indexable')) {
+            return self::FAILURE;
+        }
+
+        // Before --fresh flushes anything: an --async run that cannot dispatch leaves no index.
+        if ($this->option('async') && !$this->batchTableExists()) {
             return self::FAILURE;
         }
 
@@ -51,10 +60,12 @@ class RebuildCommand extends Command
 
         $keyName = (new $modelClass)->getKeyName();
         $indexed = 0;
+        $shadows = app(SearchableObserver::class);
         // chunkById() is keyset-based: rows inserted or deleted while the rebuild runs cannot
         // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
-        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed) {
+        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed, $shadows) {
             $indexed += $indexManager->indexBatch($models);
+            $shadows->backfillShadowColumns($models); // fills *_metaphone for rows saved before it existed
             $bar->advance($models->count());
         }, $keyName);
 
@@ -74,6 +85,24 @@ class RebuildCommand extends Command
 
         $this->info("Done. Indexed {$indexed} of {$total} records.");
         return self::SUCCESS;
+    }
+
+    /**
+     * --async dispatches a job batch, which Laravel stores in queue.batching.table (job_batches)
+     * on queue.batching.database; DynamoDB-backed batching needs no table.
+     */
+    private function batchTableExists(): bool
+    {
+        $batching = (array) config('queue.batching', []);
+        if (($batching['driver'] ?? 'database') === 'dynamodb'
+            || Schema::connection($batching['database'] ?? null)->hasTable($batching['table'] ?? 'job_batches')) {
+            return true;
+        }
+
+        $this->error('--async dispatches a job batch, and the ' . ($batching['table'] ?? 'job_batches') . ' table that stores batches does not exist.');
+        $this->line('Create it with <comment>php artisan make:queue-batches-table</comment> (Laravel 10: <comment>php artisan queue:batches-table</comment>), then <comment>php artisan migrate</comment>.');
+
+        return false;
     }
 
     private function rebuildAsync(string $modelClass, int $chunkSize, string $queue, int $total): int

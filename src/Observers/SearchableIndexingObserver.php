@@ -37,14 +37,18 @@ class SearchableIndexingObserver
             return;
         }
 
+        $class = $model::class;
+        $key   = $model->getKey();
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 
-        if ($async) {
-            IndexModelJob::dispatch($model::class, $model->getKey())->onQueue($queue);
-        } else {
-            app(IndexManager::class)->removeFromIndex($model::class, $model->getKey());
-        }
+        $this->afterCommit($model, function () use ($class, $key, $async, $queue) {
+            if ($async) {
+                IndexModelJob::dispatch($class, $key)->onQueue($queue);
+            } else {
+                app(IndexManager::class)->removeFromIndex($class, $key);
+            }
+        });
     }
 
     /**
@@ -88,17 +92,42 @@ class SearchableIndexingObserver
 
     protected function reindex(Model $model): void
     {
+        $class = $model::class;
+        $key   = $model->getKey();
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 
-        if ($async) {
-            IndexModelJob::dispatch($model::class, $model->getKey())->onQueue($queue);
-            return;
-        }
+        $this->afterCommit($model, function () use ($class, $key, $async, $queue) {
+            if ($async) {
+                IndexModelJob::dispatch($class, $key)->onQueue($queue);
+                return;
+            }
 
-        // Run the job in-process rather than indexing $model directly: the job reloads the
-        // row from the database, so accessors that read relations see the current related
-        // rows instead of whatever was already loaded on this instance before the change.
-        (new IndexModelJob($model::class, $model->getKey()))->handle(app(IndexManager::class));
+            // Run the job in-process rather than indexing $model directly: the job reloads the
+            // row from the database, so accessors that read relations see the current related
+            // rows instead of whatever was already loaded on this instance before the change.
+            (new IndexModelJob($class, $key))->handle(app(IndexManager::class));
+        });
+    }
+
+    /**
+     * Run $callback once the model's transaction commits, at once outside a transaction.
+     * A rolled-back transaction discards it, so a rolled-back row is never indexed (the index may
+     * sit on another connection, whose writes the rollback would not undo), and a queued job is
+     * never pushed before the row it reloads is committed, where a worker could run it first.
+     *
+     * An error in it (a deadlock or lock-wait timeout on the sync path, an unreachable queue) is
+     * reported, not thrown: the caller's write has committed, and a throw here would also skip
+     * the application's own after-commit callbacks. fuzzy-search:rebuild repairs the index.
+     */
+    private function afterCommit(Model $model, \Closure $callback): void
+    {
+        $model->getConnection()->afterCommit(function () use ($callback) {
+            try {
+                $callback();
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        });
     }
 }

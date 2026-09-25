@@ -8,7 +8,8 @@ use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Persisted search analytics over the fuzzy_search_logs table. record()/rowFor() are used by
+ * Persisted search analytics over the analytics.table table (fuzzy_search_logs by default; the
+ * migration creates the same name). record()/rowFor() are used by
  * the listener and job; the query methods (popular(), zeroResults(), averageLatency(),
  * volume(), prune()) are the public API behind the SearchAnalytics facade.
  */
@@ -39,7 +40,7 @@ class SearchAnalytics
             // Keyed, not a bare sha256: search terms are low-entropy (names, product words),
             // so an unsalted digest can be confirmed by anyone who guesses the term. Equal
             // terms still hash equally, so popular()/zeroResults() group as before.
-            'normalized_term' => $hash ? hash_hmac('sha256', $normalized, (string) config('app.key')) : DbDialect::truncateToVarchar($normalized, 255),
+            'normalized_term' => $hash ? hash_hmac('sha256', $normalized, (string) config('app.key')) : DbDialect::truncateToVarchar($normalized, 191),
             // Every string is cut to its column width, counted the way SQL Server's nvarchar
             // counts it (UTF-16 units): the event is public API, so a third-party dispatcher
             // may pass a longer path or model class than the migration's columns hold.

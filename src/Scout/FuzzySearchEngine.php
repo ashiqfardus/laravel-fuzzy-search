@@ -33,9 +33,9 @@ class FuzzySearchEngine extends Engine
 
     public function update($models): void
     {
-        foreach ($models as $model) {
-            $this->indexManager->indexModel($model);
-        }
+        // One write for the collection, re-read with Scout's visibility: no global scopes, and
+        // a trashed model kept while scout.soft_delete is on (ER-72).
+        $this->indexManager->indexBatch($models, scout: true);
     }
 
     public function delete($models): void

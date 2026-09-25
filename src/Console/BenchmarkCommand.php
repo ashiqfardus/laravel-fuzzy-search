@@ -2,11 +2,13 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
 
 class BenchmarkCommand extends Command
 {
+    use ValidatesInput;
+
     protected $signature = 'fuzzy-search:benchmark 
                             {model : The model class to benchmark}
                             {--term=test : Search term to use}
@@ -19,17 +21,18 @@ class BenchmarkCommand extends Command
     {
         $model = $this->argument('model');
 
-        if (!class_exists($model)) {
-            $model = 'App\\Models\\' . $model;
+        $model = $this->modelName($model);
+
+        if (!$this->validModel($model, 'searchable')) {
+            return self::FAILURE;
         }
 
-        if (!class_exists($model)) {
-            $this->error("Model class not found: {$model}");
-            return 1;
+        $iterations = $this->integerOption('iterations', 1); // 0 divided by zero below
+        if ($iterations === null) {
+            return self::FAILURE;
         }
 
         $term = $this->option('term');
-        $iterations = (int) $this->option('iterations');
         $algorithm = $this->option('algorithm');
 
         $this->info("Benchmarking {$model}");
