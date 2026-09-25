@@ -1011,7 +1011,7 @@ Properties:
 
 ## Persisted Search Analytics
 
-Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and every executed search writes one row to the `analytics.table` table (`fuzzy_search_logs` by default; the migration creates the table that key names, so set it before `php artisan migrate`).
+Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and each search that fires `FuzzySearchExecuted` writes one row to the `analytics.table` table (Scout searches and cache hits fire none; see [what counts as one row](docs/analytics.md#what-counts-as-one-row)) (`fuzzy_search_logs` by default; the migration creates the table that key names, so set it before `php artisan migrate`).
 
 ```php
 SearchAnalytics::popular(7, 5);
