@@ -2,13 +2,17 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Security;
 
+require_once __DIR__ . '/../RelationModels.php';
+
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\ReindexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\CreatesRelationTables;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Queue;
 
 /**
@@ -47,6 +51,37 @@ class MethodProbeUser extends Model
     }
 }
 
+/** A related model with a method a relation leaf must never call. */
+class MethodProbeAuthor extends Model
+{
+    public static int $calls = 0;
+
+    protected $table   = 'authors';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    public function purgeEverything(): void
+    {
+        static::$calls++;
+    }
+}
+
+class MethodProbePost extends Model
+{
+    use Searchable;
+
+    protected $table   = 'posts';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['title' => 10], 'algorithm' => 'like'];
+
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(MethodProbeAuthor::class, 'author_id');
+    }
+}
+
 /**
  * Ruling ER-84 (F1): reading a model's searchIn() column never falls back to a relation or a
  * method call. Undotted names reach getAttribute()'s relation fallback, which calls any method
@@ -55,11 +90,20 @@ class MethodProbeUser extends Model
  */
 class AttributeReadSafetyTest extends TestCase
 {
+    use CreatesRelationTables;
+
     protected function setUp(): void
     {
         parent::setUp();
-        MethodProbeUser::$calls = 0;
+        MethodProbeUser::$calls   = 0;
+        MethodProbeAuthor::$calls = 0;
         app(IndexManager::class)->indexBatch(MethodProbeUser::all());
+    }
+
+    protected function tearDown(): void
+    {
+        $this->dropRelationTables();
+        parent::tearDown();
     }
 
     /** @return array<string, \Closure(string): mixed> every index terminal that highlights */
@@ -121,6 +165,26 @@ class AttributeReadSafetyTest extends TestCase
         $this->assertSame(0, MethodProbeUser::$calls);
         $this->assertSame($before, $this->savedListeners());
         Queue::assertNotPushed(ReindexModelJob::class);
+    }
+
+    /** N2: the leaf of a typed relation path is read off the related row's attributes, never through getAttribute(). */
+    public function test_a_relation_leaf_never_calls_the_related_models_method(): void
+    {
+        $this->createRelationTables();
+        $this->seedRelationFixtures();
+        app(IndexManager::class)->indexBatch(MethodProbePost::all());
+
+        $search = fn () => MethodProbePost::search('ring')->searchIn(['title', 'author.purgeEverything'])->useInvertedIndex()->highlight();
+        $runs   = [
+            'index get'      => fn () => $search()->get(),
+            'index paginate' => fn () => collect($search()->paginate(10)->items()),
+            'in memory'      => fn () => FuzzySearch::on(MethodProbePost::with('author')->get())->search('ring')->searchIn(['title', 'author.purgeEverything'])->get(),
+        ];
+
+        foreach ($runs as $path => $run) {
+            $this->assertSame(['The Ring'], $run()->pluck('title')->all(), $path);
+            $this->assertSame(0, MethodProbeAuthor::$calls, $path);
+        }
     }
 
     public function test_accessors_are_still_read(): void
