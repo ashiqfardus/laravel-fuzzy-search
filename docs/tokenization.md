@@ -34,7 +34,7 @@ Built-in lists cover eight locales — `en`, `de`, `fr`, `es`, `it`, `pt`, `nl`,
 ],
 ```
 
-`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's smaller built-in en/de/fr/es lists when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list. A term made only of stop words (`search('the')`) matches nothing: no rows and a total of 0, on the LIKE path as on the index.
+`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's built-in en/de/fr/es lists (longer than the shipped config's: 36 English words against 14) when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list. A term made only of stop words (`search('the')`) matches nothing: no rows and a total of 0, on the LIKE path as on the index.
 
 ### Synonym Support
 
@@ -97,7 +97,7 @@ User::search("nai\u{0308}ve")
     ->get();
 ```
 
-With `unicode.accent_insensitive` on (the shipped default), every search also looks for the term's accent-free form, beside the term as typed: `Müller` finds both `Zoë Müller` and `Muller`. The folded form works like a synonym. It is OR'd into the LIKE conditions of every algorithm and into `extended()` terms (where `!Müller` excludes both forms), and it counts for relevance and highlighting. A term with no accents compiles to exactly the SQL it would without the setting. `->accentInsensitive()` does the same for a single query. On PostgreSQL with `use_native_functions=true` it also ORs `unaccent(column) ILIKE unaccent(term)` beside the algorithm, so the column is folded too; that needs `CREATE EXTENSION unaccent`, and without it such a search fails with `function unaccent(…) does not exist`. `$searchable['accent_insensitive']` and a preset's `accent_insensitive` opt in the same way. The global key alone never runs `unaccent()`.
+With `unicode.accent_insensitive` on (the shipped default), every `Model::search()` (and any other `SearchBuilder`) also looks for the term's accent-free form, beside the term as typed: `Müller` finds both `Zoë Müller` and `Muller`. The `whereFuzzy`-style macros, the `Fuzzy` scopes, `tableSearch()` and `FuzzySearch::on()` search only the term as typed, and so does `FederatedSearch` for a model without the `Searchable` trait. The folded form works like a synonym. It is OR'd into the LIKE conditions of every algorithm and into `extended()` terms (where `!Müller` excludes both forms), and it counts for relevance and highlighting. A term with no accents compiles to exactly the SQL it would without the setting. `->accentInsensitive()` does the same for a single query. On PostgreSQL with `use_native_functions=true` it also ORs `unaccent(column) ILIKE unaccent(term)` beside the algorithm, so the column is folded too; that needs `CREATE EXTENSION unaccent`, and without it such a search fails with `function unaccent(…) does not exist`. `$searchable['accent_insensitive']` and a preset's `accent_insensitive` opt in the same way. The global key alone never runs `unaccent()`.
 
 Folding the term never folds the column. An unaccented `cafe` finds `Café` as a substring match (`simple`/`like`) only where the database folds the column: under an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or on PostgreSQL through the explicit `accentInsensitive()` with unaccent and `use_native_functions`. SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. The typo-tolerant algorithms may still reach `Café` from `cafe` as a one-letter typo.
 
@@ -199,7 +199,7 @@ Rebuild after flipping it, same as the tokenizer and stemmer:
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
 ```
 
-The LIKE path's accent handling (the `unicode.accent_insensitive` default and `->accentInsensitive()`, see *Unicode & Accent Insensitivity* above) folds with the exact same `Accents::fold()`, adding the folded term beside the typed one, so turning both on gives one consistent behaviour across paths. `suggest()` also folds the typed prefix, but only when the model's index pipeline itself folds.
+The LIKE path's accent handling (the `unicode.accent_insensitive` default and `->accentInsensitive()`, see *Unicode & Accent Insensitivity* above) folds with the exact same `Accents::fold()`, adding the folded term beside the typed one. The index also folds the stored text, while the LIKE path never folds the column, so with both on `cafe` finds `Café` on the index path but not on the LIKE path on SQLite, or on PostgreSQL without native functions (see above). `suggest()` also folds the typed prefix, but only when the model's index pipeline itself folds.
 
 ### Stemming (Optional)
 
