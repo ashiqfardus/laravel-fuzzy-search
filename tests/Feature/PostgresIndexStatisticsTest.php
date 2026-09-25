@@ -60,6 +60,49 @@ class PostgresIndexStatisticsTest extends TestCase
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_documents'));
     }
 
+    /**
+     * Ruling ER-110. A first index write of one row analyzed the tables at one row, and that was
+     * cached: after 50k more rows were indexed without a rebuild, the planner still took every term
+     * to have one posting, and every search took about 100 s (indexing 7× longer) until autovacuum.
+     * The statistics are taken again once the postings table has doubled since they were.
+     */
+    public function test_statistics_taken_on_a_one_row_first_write_are_retaken_as_the_table_grows(): void
+    {
+        app(IndexManager::class)->indexBatch(User::query()->where('name', 'Zebra 1')->get());
+        $one = $this->reltuples('fuzzy_index_postings');
+        $this->assertGreaterThan(0, $one, 'the one-row write analyzed the tables');
+
+        app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', 'Zebra%')->get());
+
+        $postings = DB::table('fuzzy_index_postings')->count();
+        $this->assertGreaterThan(20 * $one, $postings, 'the table grew well past the one-row statistics');
+        $this->assertGreaterThanOrEqual($postings / 2, $this->reltuples('fuzzy_index_postings'), 'statistics taken again on the grown table');
+    }
+
+    /** Ruling ER-110: once the statistics describe at least 10,000 postings, an index write reads the catalog no more. */
+    public function test_an_index_described_at_ten_thousand_postings_is_checked_no_more(): void
+    {
+        $rows = array_map(fn ($i) => ['name' => "Quagga {$i} alpha beta gamma delta", 'email' => "q{$i}@example.test"], range(1, 3000)); // about 27k postings: the last statistics, on at least half of them, hold 10,000
+        foreach (array_chunk($rows, 250) as $chunk) {
+            DB::table('users')->insert($chunk);
+        }
+
+        User::query()->orderBy('id')->chunk(250, fn ($users) => app(IndexManager::class)->indexBatch($users));
+        app(IndexManager::class)->indexBatch(User::query()->where('name', 'Zebra 1')->get()); // the check that caches it
+
+        $this->assertGreaterThanOrEqual(10000, $this->reltuples('fuzzy_index_postings'));
+
+        $catalog = 0;
+        DB::listen(function ($query) use (&$catalog) {
+            $catalog += (int) str_contains($query->sql, 'pg_class') + (int) (stripos($query->sql, 'analyze') === 0);
+        });
+        foreach (['Zebra 2', 'Zebra 3', 'Zebra 4'] as $name) {
+            app(IndexManager::class)->indexBatch(User::query()->where('name', $name)->get());
+        }
+
+        $this->assertSame(0, $catalog, 'no catalog read or ANALYZE once the statistics describe the table');
+    }
+
     /** Statistics taken on a few rows would describe the rebuilt index badly: a rebuild refreshes them. */
     public function test_a_rebuild_analyzes_the_index_tables(): void
     {
