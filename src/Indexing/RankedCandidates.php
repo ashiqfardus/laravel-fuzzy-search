@@ -135,7 +135,7 @@ final class RankedCandidates
      * its total counts, so a constrained search serves the rows of the unconstrained one that the
      * constraint accepts, and none past the ranking's cap. On the index's own connection one query
      * reads the keys of every match $base accepts, through the postings subquery
-     * (Bm25Scorer::whereRanked()), however long the ranking is: only the key is selected, and the rows
+     * (Bm25Scorer::whereRanked()), however long the ranking is: the key is selected, and the rows
      * are streamed (cursor()), keeping those the ranking holds. On another connection, where that
      * subquery cannot run, the ranked ids are checked a chunk at a time.
      *
@@ -150,9 +150,19 @@ final class RankedCandidates
             return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked))));
         }
 
-        $query          = self::whereMatches($base, $terms, $modelType, $columnWeights)->toBase()->reorder();
-        $query->columns = [$base->getModel()->getQualifiedKeyName() . ' as ' . self::KEY_ALIAS];
-        $accepted       = [];
+        $query = self::whereMatches($base, $terms, $modelType, $columnWeights)->toBase()->reorder();
+        $key   = $base->getModel()->getQualifiedKeyName() . ' as ' . self::KEY_ALIAS;
+
+        // The key alone, unless a HAVING may name an alias of the select list (withCount()'s
+        // posts_count, which MySQL and MariaDB accept there).
+        if ($query->havings) {
+            $query->columns ??= ['*'];
+            $query->addSelect($key);
+        } else {
+            $query->columns = [$key];
+        }
+
+        $accepted = [];
 
         foreach ($query->cursor() as $row) {
             if (isset($ranked[$row->{self::KEY_ALIAS}])) {

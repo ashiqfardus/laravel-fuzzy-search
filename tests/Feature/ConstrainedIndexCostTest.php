@@ -92,12 +92,34 @@ class ConstrainedIndexCostTest extends TestCase
         config(['scout.driver' => 'fuzzy-search', 'fuzzy-search.bm25.candidate_chunk' => 20]);
         $this->seedZebras(0, 150);
         DB::table('users')->whereIn('name', ['Zebra 0001', 'Zebra 0002', 'Zebra 0004'])->update(['deleted_at' => now()]); // trashed, still indexed
+        $this->costs(); // warms the once-per-process reads, such as MySQL's model_id collation
         $small = $this->costs();
 
         $this->seedZebras(150, 1100);
         $this->assertSame(1097, SoftDeletedUser::search('zebra')->typoTolerance(0)->useInvertedIndex()->count());
 
         $this->assertSame($small, $this->costs());
+    }
+
+    /**
+     * The matches a constrained search accepts are read by key alone, but a having() may name an
+     * alias of the select list, and then the list stays.
+     */
+    public function test_a_having_on_a_select_alias_still_runs_under_a_constraint(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('HAVING on a select alias without GROUP BY is MySQL/MariaDB syntax; the CI MySQL and MariaDB jobs run this.');
+        }
+
+        $this->seedZebras(0, 30);
+        $make = fn () => User::search('zebra')->typoTolerance(0)->useInvertedIndex()->where('email', 'like', '%.test')
+            ->selectRaw('users.*, length(users.email) as email_length')->having('email_length', '<', 17);
+
+        $expected = User::query()->where('name', 'like', 'Zebra%')->get()->filter(fn ($user) => strlen($user->email) < 17)->pluck('name')->sort()->values()->all();
+
+        $this->assertCount(10, $expected);
+        $this->assertSame($expected, $make()->take(50)->get()->pluck('name')->sort()->values()->all());
+        $this->assertSame(10, $make()->paginate(15)->total());
     }
 
     /** @return string[] the names every page of $make serves, and each page's total */
