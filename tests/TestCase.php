@@ -5,10 +5,11 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearchServiceProvider;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ConfiguresDatabaseConnection;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ReportsSourceDeprecations;
 
 abstract class TestCase extends BaseTestCase
 {
-    use ConfiguresDatabaseConnection;
+    use ConfiguresDatabaseConnection, ReportsSourceDeprecations;
 
     protected function getPackageProviders($app): array
     {
@@ -49,6 +50,9 @@ abstract class TestCase extends BaseTestCase
         parent::setUp();
 
         $this->setUpDatabase();
+
+        // Last, above Laravel's error handler: a src/ deprecation fails the run (failOnDeprecation).
+        $this->reportSourceDeprecations();
     }
 
     protected function setUpDatabase(): void

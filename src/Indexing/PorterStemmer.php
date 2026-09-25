@@ -20,7 +20,7 @@ class PorterStemmer implements StemmerInterface
         if (!class_exists(StemmerFactory::class)) {
             throw new \RuntimeException(
                 'PorterStemmer requires wamania/php-stemmer 1.x (2.0 and later have no Wamania\\Snowball\\English). ' .
-                'Install with: composer require "wamania/php-stemmer:^1.2"'
+                'Install with: composer require "wamania/php-stemmer:^1.3"'
             );
         }
 

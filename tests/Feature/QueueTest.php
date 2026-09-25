@@ -19,6 +19,9 @@ use Illuminate\Support\Facades\Schema;
  */
 class QueueTest extends TestCase
 {
+    private const REINDEX_DEPRECATED = User::class . '::reindex() is deprecated since v2.0.0. Use php artisan fuzzy-search:rebuild instead.';
+    private const PERFORM_REINDEX_DEPRECATED = User::class . '::performReindex() is deprecated since v2.0.0. Use php artisan fuzzy-search:rebuild instead.';
+
     protected string $indexTable = 'search_index';
 
     protected function setUp(): void
@@ -50,21 +53,21 @@ class QueueTest extends TestCase
 
     public function test_reindex_method_dispatches_job_when_async_enabled(): void
     {
-        User::reindex();
+        $this->assertSame([self::REINDEX_DEPRECATED], $this->deprecationsFrom(fn () => User::reindex()));
 
         Queue::assertPushed(ReindexModelJob::class);
     }
 
     public function test_reindex_job_uses_configured_queue(): void
     {
-        User::reindex();
+        $this->assertSame([self::REINDEX_DEPRECATED], $this->deprecationsFrom(fn () => User::reindex()));
 
         Queue::assertPushedOn('search-indexing', ReindexModelJob::class);
     }
 
     public function test_reindex_job_contains_correct_model(): void
     {
-        User::reindex();
+        $this->assertSame([self::REINDEX_DEPRECATED], $this->deprecationsFrom(fn () => User::reindex()));
 
         Queue::assertPushed(ReindexModelJob::class, function ($job) {
             $prop = new \ReflectionProperty($job, 'modelClass');
@@ -89,8 +92,11 @@ class QueueTest extends TestCase
         // Clear any existing data
         DB::table($this->indexTable)->truncate();
         
-        // This should run synchronously
-        User::reindex();
+        // This should run synchronously: reindex() calls performReindex(), and each raises its notice
+        $this->assertSame(
+            [self::REINDEX_DEPRECATED, self::PERFORM_REINDEX_DEPRECATED],
+            $this->deprecationsFrom(fn () => User::reindex())
+        );
 
         // Check that data was indexed
         $count = DB::table($this->indexTable)->count();
@@ -104,7 +110,7 @@ class QueueTest extends TestCase
         $this->createIndexTable();
         DB::table($this->indexTable)->truncate();
         
-        User::performReindex();
+        $this->assertSame([self::PERFORM_REINDEX_DEPRECATED], $this->deprecationsFrom(fn () => User::performReindex()));
 
         $userCount = DB::table('users')->count();
         $indexCount = DB::table($this->indexTable)->count();
@@ -126,7 +132,7 @@ class QueueTest extends TestCase
         $this->createIndexTable();
         DB::table($this->indexTable)->truncate();
         
-        User::performReindex();
+        $this->assertSame([self::PERFORM_REINDEX_DEPRECATED], $this->deprecationsFrom(fn () => User::performReindex()));
 
         // Should still index all records despite small chunk size
         $userCount = DB::table('users')->count();

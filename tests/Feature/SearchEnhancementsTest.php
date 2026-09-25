@@ -40,10 +40,9 @@ class SearchEnhancementsTest extends TestCase
             ->searchIn(['name'])
             ->suggest(5);
 
-        // Should find suggestions starting with 'joh'
-        foreach ($suggestions as $suggestion) {
-            $this->assertStringStartsWith('joh', strtolower($suggestion));
-        }
+        // Every word and whole value that starts with 'joh', shortest first. searchIn() adds to
+        // the model's columns, so the email column is scanned too.
+        $this->assertSame(['John', 'Johnny', 'John Doe', 'Johnny Bravo', 'john@example.com'], $suggestions);
     }
 
     public function test_suggest_respects_limit(): void

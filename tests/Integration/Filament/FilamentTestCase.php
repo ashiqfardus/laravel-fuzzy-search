@@ -18,6 +18,14 @@ abstract class FilamentTestCase extends TestCase
         parent::setUp();
     }
 
+    protected function tearDown(): void
+    {
+        // The skip above comes before parent::setUp(): there is no application to tear down.
+        if ($this->app !== null) {
+            parent::tearDown();
+        }
+    }
+
     protected function getPackageProviders($app): array
     {
         if (!class_exists(\Filament\Resources\Resource::class)) {
