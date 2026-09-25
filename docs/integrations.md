@@ -114,12 +114,31 @@ The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::se
 **Caching.** Neither Scout's builder nor this engine caches results. Wrap the Scout call in Laravel's cache, with a key that covers everything that changes the result — the term, the page, the constraints, the tenant:
 
 ```php
-$users = Cache::remember(
+use Illuminate\Pagination\LengthAwarePaginator;
+
+$hit = Cache::remember(
     'users.search.' . md5(json_encode([$term, $page, auth()->user()->tenant_id])),
     now()->addMinutes(10),
-    fn () => User::scoutSearch($term)->paginate(15, 'page', $page)
+    function () use ($term, $page) {
+        $found = User::scoutSearch($term)->paginate(15, 'page', $page);
+
+        // Plain arrays: they read back under cache.serializable_classes => false.
+        return ['scores' => $found->pluck('_score', 'id')->all(), 'total' => $found->total()];
+    }
+);
+
+// Re-read the page's models in the cached order, with their scores.
+$keys  = array_keys($hit['scores']);
+$users = new LengthAwarePaginator(
+    User::findMany($keys)
+        ->each(fn ($user) => $user->_score = $hit['scores'][$user->getKey()])
+        ->sortBy(fn ($user) => array_search($user->getKey(), $keys))
+        ->values(),
+    $hit['total'], 15, $page, ['path' => request()->url()]
 );
 ```
+
+The cache holds only keys, scores and the total, as the package builder's own cache does. A cached paginator of models would not survive a hit under Laravel 13's `cache.serializable_classes => false`: every serialising store (file, database, redis, memcached, dynamodb) hands it back as a `__PHP_Incomplete_Class`, and the first method call on it throws. A model deleted since the entry was written drops out of its page.
 
 The package's own builder can run the same BM25 ranking with its `cache()`, which caches `get()` — and `first()` and `simplePaginate()`, which run through it — but not `paginate()`:
 
