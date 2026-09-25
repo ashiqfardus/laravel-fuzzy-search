@@ -735,16 +735,16 @@ User::search('john')->cache(0)->get();
 
 A key you pass is used as given, so `Cache::forget('user-search-john')` removes it. A generated key starts with `cache.prefix` and covers everything that changes the result: the term, columns and weights, algorithm and options, filters, forwarded `where()`/joins/scopes (the SQL and its bindings), limit and offset, `orderBy()`, highlight tags, `withRelevance()`, `debugScore()`, the index model class, the model class, the names of its eager loads, where it runs — connection name, driver, host, port, database, table prefix and, on PostgreSQL, the `search_path` (one extra `select current_setting('search_path')` per cached search) — and the whole `fuzzy-search` config. Tenants on separate connections, databases or schemas therefore never share an entry, and changing any config value (`min_percentage`, `max_candidates`, a driver option, `cache.ttl` itself) starts a fresh set of entries; the old ones expire with their TTL. A key you name changes only when you change it. A search with a `customScore()` closure is cached only under a key you name: a closure cannot be part of a generated key.
 
-A cached entry holds only arrays and scalars: each model's key with its `_score` and `_raw_score`, or a plain query builder's rows as arrays. It therefore reads back on every store under Laravel 13's `cache.serializable_classes => false`.
+A cached entry holds only arrays and scalars. By default that is each model's key with its `_score` and `_raw_score`. When the rows share a key (a one-to-many join) or have none (a `select()` without the key), it is each model's attributes as the database returned them. A plain query builder's rows are stored as arrays. It therefore reads back on every store under Laravel 13's `cache.serializable_classes => false`.
 
-A hit re-reads the models by key, in the cached order, through the current query. That applies its global scopes, its eager loads with their constraints, and its `retrieved` listeners, so `with(['reviews' => fn ($q) => $q->where('user_id', auth()->id())])` is never served to another user.
+A hit re-reads models stored by key, in the cached order, through the current query. That applies its global scopes, its eager loads with their constraints, and its `retrieved` listeners, so `with(['reviews' => fn ($q) => $q->where('user_id', auth()->id())])` is never served to another user. Models stored as attributes are rebuilt from them instead: their `retrieved` listeners and the current eager loads run the same way, but the query does not read them again.
 
 On a hit:
-- A model deleted since the entry was written is left out. A plain query builder's rows are served as they were stored.
+- A model deleted since the entry was written is left out when the rows were stored by key. Rows stored as attributes, and a plain query builder's rows, are served as they were stored until the entry expires.
 - `_highlighted`, `_matches` and `_debug` are computed for the current request, so each viewer sees their own `makeVisible()`/`makeHidden()`.
 - The rows are still the ones the cached search found: a row that no longer matches stays until the entry expires.
 
-A hit costs that keyed read plus the eager-load queries. It fires no `FuzzySearchExecuted` event and writes no analytics row.
+A hit costs the keyed read (none for rows stored as attributes) plus the eager-load queries. It fires no `FuzzySearchExecuted` event and writes no analytics row.
 
 ---
 

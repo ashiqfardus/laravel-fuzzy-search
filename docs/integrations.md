@@ -138,7 +138,7 @@ $users = new LengthAwarePaginator(
 );
 ```
 
-The cache holds only keys, scores and the total, as the package builder's own cache does. A cached paginator of models would not survive a hit under Laravel 13's `cache.serializable_classes => false`: every serialising store (file, database, redis, memcached, dynamodb) hands it back as a `__PHP_Incomplete_Class`, and the first method call on it throws. A model deleted since the entry was written drops out of its page.
+The cache holds only keys, scores and the total, as the package builder's own cache does for rows it can store by key. A cached paginator of models would not survive a hit under Laravel 13's `cache.serializable_classes => false`: every serialising store (file, database, redis, memcached, dynamodb) hands it back as a `__PHP_Incomplete_Class`, and the first method call on it throws. A model deleted since the entry was written drops out of its page.
 
 The package's own builder can run the same BM25 ranking with its `cache()`, which caches `get()` — and `first()` and `simplePaginate()`, which run through it — but not `paginate()`:
 
