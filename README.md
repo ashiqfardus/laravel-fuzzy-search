@@ -1242,19 +1242,19 @@ class Product extends Model
 # Build / rebuild BM25 index for a model
 php artisan fuzzy-search:rebuild "App\Models\User"
 
-# Rebuild with fresh index (flush first)
+# Rebuild with fresh index (flushes the model's index first; asks no confirmation)
 php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 
 # Rebuild asynchronously (for large tables)
 php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
 
-# Remove a model's index entries (the same as fuzzy-search:clear "App\Models\User")
+# Remove a model's index entries (the same as fuzzy-search:clear "App\Models\User"; asks no confirmation)
 php artisan fuzzy-search:flush "App\Models\User"
 
-# Clear BM25 index for a model
+# Clear BM25 index for a model (asks no confirmation)
 php artisan fuzzy-search:clear "App\Models\User"
 
-# Clear BM25 index for all models
+# Clear BM25 index for all models (asks no confirmation)
 php artisan fuzzy-search:clear --all
 
 # Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
@@ -1264,6 +1264,8 @@ php artisan fuzzy-search:status
 `--async` dispatches a Laravel job batch, which needs the `job_batches` table: create it once with `php artisan make:queue-batches-table` (Laravel 10: `php artisan queue:batches-table`) and `php artisan migrate`. Without it, the command stops before touching the index.
 
 Run `flush`, `clear` and `rebuild --fresh` (which flushes first) while nothing is indexing any model; see [Artisan Commands](docs/bm25.md#artisan-commands) for why.
+
+`flush`, `clear`, `clear --all` and `rebuild --fresh` delete index entries as soon as they run. None of them asks for confirmation, in production either, so that non-interactive deploy scripts keep working. Guard them in your own production scripts. A confirmation prompt is planned for v3.
 
 Every command exits with status 1 when it cannot act on its input: a class that is not an Eloquent model (for `rebuild`, one it cannot index; for `benchmark` and `explain`, one without the `Searchable` trait), `--iterations` below 1, a `--days` below 0 or a `--limit` below 1 (or either one not a whole number), or an `add-shadow-column --type` other than `metaphone`.
 
