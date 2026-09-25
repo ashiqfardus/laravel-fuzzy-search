@@ -2477,7 +2477,9 @@ class SearchBuilder
                 $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
                 default           => $model->getQualifiedKeyName(),
             };
-            $names = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn];
+            // The alias's key too: under fromSub() the tie-break is the bare key, and SQL Server
+            // rejects an order by u.id followed by id.
+            $names = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn, \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($query)];
         } else {
             $keyColumn = ($this->qualifiedColumnMap($query)['id'] ?? '') . 'id';
             $names     = ['id', $keyColumn];

@@ -48,6 +48,12 @@ class IndexAliasedFromTest extends TestCase
                 $this->assertSame(['John Doe'], $ordered->pluck('name')->all(), "{$at}: orderBy page 2");
                 $this->assertSame(2, $make()->orderBy('name')->count(), "{$at}: orderBy count");
 
+                // Ordered by the alias's key: the key is not named again as the tie-break (SQL Server
+                // rejects "a column specified more than once in the order by list").
+                $byKey = User::query()->whereIn('name', ['John Doe', 'Jane Doe'])->orderByDesc('id')->pluck('name')->all();
+                $this->assertSame($byKey, $make()->orderBy('u.id', 'desc')->get()->pluck('name')->all(), "{$at}: orderBy(u.id) get");
+                $this->assertSame([$byKey[1]], $make()->orderBy('u.id', 'desc')->paginate(1, 'page', 2)->pluck('name')->all(), "{$at}: orderBy(u.id) page 2");
+
                 $this->assertSame(['Jane Doe'], $make()->where('u.email', 'jane@example.com')->get()->pluck('name')->all(), "{$at}: constrained get");
                 $this->assertSame(1, $make()->where('u.email', 'jane@example.com')->count(), "{$at}: constrained count");
             }
