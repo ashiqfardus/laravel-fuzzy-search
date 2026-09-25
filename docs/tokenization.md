@@ -34,7 +34,7 @@ Built-in lists cover eight locales — `en`, `de`, `fr`, `es`, `it`, `pt`, `nl`,
 ],
 ```
 
-`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's built-in en/de/fr/es lists (longer than the shipped config's: 36 English words against 14) when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list. A term made only of stop words (`search('the')`) matches nothing: no rows and a total of 0, on the LIKE path as on the index.
+`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's built-in en/de/fr/es lists (longer than the shipped config's: 36 English words against 14) when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list. A term made only of stop words (`search('the')`) matches nothing: no rows and a total of 0, on the LIKE path as on the index. An `extended()`/`searchBoolean()` query drops no stop words, so there it is still searched.
 
 ### Synonym Support
 
@@ -52,7 +52,7 @@ User::search('laptop')
     ->get();
 ```
 
-Synonyms for every search go in the `synonyms` config key (lower-case word => its synonyms). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
+Synonyms for every search go in the `synonyms` config key (lower-case word => its synonyms). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms and drops no stop words (see [the extended syntax](extended-syntax.md#synonyms-and-stop-words)). The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
 
 ### Language / Locale Awareness
 

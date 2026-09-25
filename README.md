@@ -203,7 +203,7 @@ Dotted column names — `posts.title`, `author.name`, nested paths — search th
 User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 ```
 
-A dotted segment is followed as a relation only when it is a public, non-static method with no required parameters that neither Laravel nor this package defines, and that either declares a `Relation` return type (`BelongsTo`, `HasMany`, …) or is on a path the model lists in `$searchable['columns']`. Anything else throws `InvalidArgumentException` — `App\Models\Author::company is not a relation: declare a Relation return type or list the path in $searchable['columns']` — before any SQL runs, and the method is never called: `searchIn()` can carry request input, and `searchIn(['unguard.body'])` must not run `unguard()`. Nested paths are checked segment by segment, and the error names the segment that failed. A dotted name whose first segment is not a method at all is still a table-qualified column (`posts.title`). Relations defined by Laravel's own traits (for example `Notifiable::notifications()`) are not followed; wrap one in a method of your own with a return type. An undotted `searchIn()` name is never a method call either. On every path (highlighting on `useInvertedIndex()`, PHP scoring, `suggest()` and `FuzzySearch::on()` over models), it is read from the row as an attribute, a cast or an accessor, or as a relation that is already loaded: `searchIn(['reindex'])` reads nothing and runs nothing.
+A dotted segment is followed as a relation only when it is a public, non-static method with no required parameters that neither Laravel nor this package defines, and that either declares a `Relation` return type (`BelongsTo`, `HasMany`, …) or is on a path the model lists in `$searchable['columns']`. Anything else throws `InvalidArgumentException` — `App\Models\Author::company is not a relation: declare a Relation return type or list the path in $searchable['columns']` — before any SQL runs, and the method is never called: `searchIn()` can carry request input, and `searchIn(['unguard.body'])` must not run `unguard()`. That check stops method calls, not column access: `searchIn()` searches any column it names, a hidden one included, so check request-supplied columns against an allowlist. Nested paths are checked segment by segment, and the error names the segment that failed. A dotted name whose first segment is not a method at all is still a table-qualified column (`posts.title`). Relations defined by Laravel's own traits (for example `Notifiable::notifications()`) are not followed; wrap one in a method of your own with a return type. An undotted `searchIn()` name is never a method call either. On every path (highlighting on `useInvertedIndex()`, PHP scoring, `suggest()` and `FuzzySearch::on()` over models), it is read from the row as an attribute, a cast or an accessor, or as a relation that is already loaded: `searchIn(['reindex'])` reads nothing and runs nothing.
 
 A dotted name whose first part names a table of the query — the FROM table, a joined table, or either one's alias — is always that table's column, and no model method is looked at: `->join('items', …)->searchIn(['items.name'])` works even when the model has an `items()` method. A relation whose name equals a joined table's name is therefore read as that table's column; alias the join (`join('items as i', …)`) if you mean the relation. Such a table's column is searched in SQL; the model row does not carry it, so it adds nothing to `_score` or `_highlighted` unless you select it under the model's own column name.
 
@@ -381,6 +381,8 @@ foreach ($users as $user) {
     echo "{$user->name}: {$user->_score}";
 }
 ```
+
+Search results are read models. `_score`, `_raw_score` and the other underscore-prefixed values a search adds are real attributes on each row, so `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving.
 
 ### Prefix Boosting
 
@@ -618,8 +620,8 @@ $analytics = User::search('john')
 
 ## Text Processing
 
-- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale.
-- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (lower-case word => its synonyms) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply no synonyms.
+- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale. An `extended()`/`searchBoolean()` query drops no stop words: every word in it stays a term of the query.
+- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (lower-case word => its synonyms) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
 - **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
 - **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
@@ -781,7 +783,7 @@ User::search('=John ^Doe !banned')->extended()->get();
 
 Operators: `'include`, `=exact`, `^prefix`, `suffix$`, `!exclude`, `|` (OR), `( )` (grouping), `~typo`, `field:term`, and quoted `"phrases"`.
 
-Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it.
+Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it. They apply no synonyms and drop no stop words: every word stays a term of the query. A `field:` scope reaches any searchable column, a hidden one included, so for untrusted input declare only public columns searchable or check the fields against an allowlist.
 
 → Full guide: [docs/extended-syntax.md](docs/extended-syntax.md)
 
@@ -798,6 +800,8 @@ SCOUT_DRIVER=fuzzy-search
 It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync. Scout's semantic and hybrid search (`semantic()`, `hybrid()`, Scout 11.6+) are not supported by this engine: both throw `NotSupportedException`.
 
 `orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), and `_score` still carries each one's BM25 score. The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
+
+Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty query matches nothing, with or without `allow_empty_search`. Scout searches fire no `FuzzySearchExecuted` event.
 
 → Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
 
@@ -824,6 +828,8 @@ Supports Filament v3, v4 and v5. Filament is a soft dependency — nothing in th
 `FuzzySearchResource` wraps one result row, and `FuzzySearchCollection::fromBuilder()` wraps a paginated search, into normal Laravel API responses with the package's underscore-prefixed fields alongside the plain attributes.
 
 ```php
+abort_if(blank($q), 422, 'Enter a search term.'); // an empty term throws EmptySearchTermException, a 500
+
 return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
 ```
 
@@ -914,7 +920,7 @@ User::search($query)
     ->get();
 ```
 
-One search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds, with 100 to spare for your own `where()` and `filter()` values; those are not counted. Each term (every word under `tokenize()`, every `extended()` leaf, its accent-free form and each synonym) is matched on each column with up to `max_patterns` LIKE patterns. When the patterns would pass 2,000 bindings, every term-and-column pair gets an equal share and always keeps its plain contains pattern, so a very long query matches fewer typo variants instead of failing. A query that needs more than 2,000 values even at one pattern per pair throws `QuerySyntaxException` ("The query is too complex…"). A query within the budget builds the same SQL as before. The multi-column helpers (`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes, `tableSearch()`) share the same budget across their columns.
+One search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds, with 100 to spare for your own `where()` and `filter()` values; those are not counted. Each term (every word under `tokenize()`, every `extended()` leaf, its accent-free form, and each synonym, which an `extended()` query does not add) is matched on each column with up to `max_patterns` LIKE patterns. When the patterns would pass 2,000 bindings, every term-and-column pair gets an equal share and always keeps its plain contains pattern, so a very long query matches fewer typo variants instead of failing. A query that needs more than 2,000 values even at one pattern per pair throws `QuerySyntaxException` ("The query is too complex…"). A query within the budget builds the same SQL as before. The multi-column helpers (`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes, `tableSearch()`) share the same budget across their columns.
 
 > `debounce()` is deprecated and does nothing: a request that has already reached the server cannot be debounced. Debounce on the client instead (`wire:model.live.debounce.300ms` in Livewire, or a timer in JavaScript). It will be removed in v3.0.0.
 
@@ -971,7 +977,7 @@ try {
 
 Fired after every `->get()` or `->paginate()` call, and — since v2.1 — after every in-memory search too (`FuzzySearch::on($items)->search(...)->get()`). Useful for monitoring search latency and volume in production.
 
-An in-memory search called with an empty term (which throws, or with `allow_empty_search` returns the items unsearched) or with no `searchIn()` columns (which returns nothing) fires no event: nothing was searched, so there's nothing to log. A term shorter than `min_search_length` fires none on any search API, in memory or not.
+An in-memory search called with an empty term (which throws, or with `allow_empty_search` returns the items unsearched) or with no `searchIn()` columns (which returns nothing) fires no event: nothing was searched, so there's nothing to log. A term shorter than `min_search_length` fires none on any search API, in memory or not. Scout searches never fire it, and neither does a `FederatedSearch` model without the `Searchable` trait (the query macros it is searched with fire no event).
 
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
@@ -1005,7 +1011,7 @@ Properties:
 
 ## Persisted Search Analytics
 
-Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and every executed search writes one row to the `analytics.table` table (`fuzzy_search_logs` by default; the migration creates the table that key names, so set it before `php artisan migrate`).
+Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and each search that fires `FuzzySearchExecuted` writes one row to the `analytics.table` table (Scout searches and cache hits fire none; see [what counts as one row](docs/analytics.md#what-counts-as-one-row)) (`fuzzy_search_logs` by default; the migration creates the table that key names, so set it before `php artisan migrate`).
 
 ```php
 SearchAnalytics::popular(7, 5);
@@ -1047,7 +1053,8 @@ return [
     ],
     
     'synonyms' => [
-        // Every SearchBuilder search's default synonyms (lower-case word => its synonyms):
+        // Default synonyms of every SearchBuilder search except extended()/searchBoolean()
+        // (lower-case word => its synonyms):
         // 'laptop' => ['notebook', 'computer'],
     ],
     
@@ -1237,19 +1244,19 @@ class Product extends Model
 # Build / rebuild BM25 index for a model
 php artisan fuzzy-search:rebuild "App\Models\User"
 
-# Rebuild with fresh index (flush first)
+# Rebuild with fresh index (flushes the model's index first; asks no confirmation)
 php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 
 # Rebuild asynchronously (for large tables)
 php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
 
-# Remove a model's index entries (the same as fuzzy-search:clear "App\Models\User")
+# Remove a model's index entries (the same as fuzzy-search:clear "App\Models\User"; asks no confirmation)
 php artisan fuzzy-search:flush "App\Models\User"
 
-# Clear BM25 index for a model
+# Clear BM25 index for a model (asks no confirmation)
 php artisan fuzzy-search:clear "App\Models\User"
 
-# Clear BM25 index for all models
+# Clear BM25 index for all models (asks no confirmation)
 php artisan fuzzy-search:clear --all
 
 # Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
@@ -1259,6 +1266,8 @@ php artisan fuzzy-search:status
 `--async` dispatches a Laravel job batch, which needs the `job_batches` table: create it once with `php artisan make:queue-batches-table` (Laravel 10: `php artisan queue:batches-table`) and `php artisan migrate`. Without it, the command stops before touching the index.
 
 Run `flush`, `clear` and `rebuild --fresh` (which flushes first) while nothing is indexing any model; see [Artisan Commands](docs/bm25.md#artisan-commands) for why.
+
+`flush`, `clear`, `clear --all` and `rebuild --fresh` delete index entries as soon as they run. None of them asks for confirmation, in production either, so that non-interactive deploy scripts keep working. Guard them in your own production scripts. A confirmation prompt is planned for v3.
 
 Every command exits with status 1 when it cannot act on its input: a class that is not an Eloquent model (for `rebuild`, one it cannot index; for `benchmark` and `explain`, one without the `Searchable` trait), `--iterations` below 1, a `--days` below 0 or a `--limit` below 1 (or either one not a whole number), or an `add-shadow-column --type` other than `metaphone`.
 
