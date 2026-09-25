@@ -17,9 +17,10 @@ use Illuminate\Support\Facades\Schema;
  * of a nonclustered index's 1,700, and the documents primary key 764 of a clustered one's 900.
  *
  * On MySQL/MariaDB model_id also takes utf8mb4_bin, as term has since 2026_09_17_000002: under
- * the connection's case-insensitive collation, keys that differ only by case (sqids, hashids,
- * base62: aBc and AbC) were one key, so the second overwrote the first's document. PostgreSQL and
- * SQLite compare it byte-wise already; SQL Server keeps its default collation, a documented limit.
+ * the connection's case- and accent-insensitive collation, keys that differ only by case or
+ * accents (sqids, hashids, base62: aBc and AbC) were one key, so the second overwrote the first's
+ * document. PostgreSQL and SQLite compare it byte-wise already; SQL Server keeps its default
+ * collation, a documented limit.
  *
  * Raw ALTERs, not ->change(): Laravel 10 needs doctrine/dbal for that. SQLite does not enforce a
  * varchar length, so there is nothing to change there. SQL Server refuses to alter a column a
@@ -47,15 +48,15 @@ return new class extends Migration
         $tables = array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
 
         // Keys longer than 36 characters do not fit the old column, and on MySQL/MariaDB keys that
-        // differ only by case are one key again under the old collation, which would violate the
-        // documents primary key. Those models leave the index the way a deleted model does, giving
-        // back their doc_count and meta totals; rebuild them after rolling back if they must stay
-        // searchable. Postings with no document row left (none in a consistent index) are then
-        // dropped as they are.
+        // differ only by case or accents (any two keys the table's collation compares equal) are
+        // one key again under the old collation, which would violate the documents primary key.
+        // Those models leave the index the way a deleted model does, giving back their doc_count
+        // and meta totals; rebuild them after rolling back if they must stay searchable. Postings
+        // with no document row left (none in a consistent index) are then dropped as they are.
         $tooLong = DbDialect::lengthFunction($driver) . '(model_id) > 36';
         if (in_array('fuzzy_index_documents', $tables, true)) {
             $documents = DB::table('fuzzy_index_documents')->whereRaw($tooLong)->get(['model_type', 'model_id'])
-                ->concat(DbDialect::isMySqlFamily($driver) ? $this->caseCollisions() : []);
+                ->concat(DbDialect::isMySqlFamily($driver) ? $this->collidingKeys() : []);
             foreach ($documents as $document) {
                 app(IndexManager::class)->removeFromIndex($document->model_type, $document->model_id);
             }
@@ -73,7 +74,7 @@ return new class extends Migration
      *
      * @return list<object{model_type: string, model_id: string}>
      */
-    private function caseCollisions(): array
+    private function collidingKeys(): array
     {
         $column = DB::selectOne(
             'select character_set_name as charset, collation_name as collation from information_schema.columns'
