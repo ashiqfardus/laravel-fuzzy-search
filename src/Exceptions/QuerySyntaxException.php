@@ -20,6 +20,14 @@ class QuerySyntaxException extends LaravelFuzzySearchException
         );
     }
 
+    public static function tooComplex(int $maxBindings): self
+    {
+        return new self(
+            "The query is too complex: even one LIKE pattern per term and column would bind more than {$maxBindings} values. " .
+            'Search fewer words or columns, or declare fewer synonyms.'
+        );
+    }
+
     public static function unbalancedParens(): self
     {
         return new self('Unbalanced parentheses in query.');

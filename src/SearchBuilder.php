@@ -124,6 +124,9 @@ class SearchBuilder
         $this->fuzzySearch = $fuzzySearch;
         $this->accentFoldingDefault     = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
         $this->unicodeNormalizeEnabled  = (bool) config('fuzzy-search.unicode.normalize', false);
+        // Ruling ER-80: the global synonyms, as if withSynonyms() came first; the model's
+        // $searchable['synonyms'] and the query's withSynonyms() merge on top of them.
+        $this->withSynonyms((array) config('fuzzy-search.synonyms', []));
         $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
         $this->maxPatterns = (int) config('fuzzy-search.performance.max_patterns', 100);
         // Forwarded through $options (merged into every applyFuzzyWhere() call) rather than
@@ -570,7 +573,8 @@ class SearchBuilder
     }
 
     /**
-     * Set synonyms
+     * Add synonyms (word => its synonyms), on top of config('fuzzy-search.synonyms'); a word set
+     * again replaces its earlier synonyms.
      */
     public function withSynonyms(array $synonyms): self
     {
@@ -1442,7 +1446,7 @@ class SearchBuilder
             return $this->executeIndexedSearch();
         }
 
-        $this->buildQuery();
+        $this->prepareQuery();
         $startTime = microtime(true);
 
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
@@ -1923,7 +1927,7 @@ class SearchBuilder
     {
         $startedAt = microtime(true);
 
-        $this->compileExtendedQuery();
+        $this->prepareQuery();
 
         $maxCandidates = config('fuzzy-search.max_candidates', 1000);
         $candidates = $this->query->limit($maxCandidates)->get();
@@ -2360,13 +2364,40 @@ class SearchBuilder
     /**
      * Apply this builder's search to $this->query: the extended/boolean AST when extended()
      * or searchBoolean() was called, the LIKE conditions otherwise. Every entry point that
-     * needs a prepared query but does not go through executeSearch() (which dispatches to
-     * executeExtendedSearch() itself) calls this, so none of them can run the raw extended
+     * needs a prepared query calls this, so none of them can run the raw extended
      * string — "name:john" — through the LIKE path as if it were a plain term.
+     *
+     * Ruling ER-86: the search binds at most FuzzySearch::MAX_BINDINGS values of its own, so SQL
+     * Server's 2,100-parameter limit holds. Every leaf, token, accent variant and synonym is matched
+     * on every column with up to max_patterns LIKE patterns; past the budget each condition gets an
+     * equal share, and always its first pattern (the plain contains one) — see
+     * FuzzySearch::withinBindingBudget(), which also budgets the multi-column macros (ER-91). A
+     * search within the budget builds exactly as before. The caller's where() and filter()
+     * bindings are not the search's and are left out; a rebuild starts from the caller's query.
+     *
+     * @throws \Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException when even one pattern per condition passes the budget
      */
     private function prepareQuery(): void
     {
-        $this->extendedQuery !== null ? $this->compileExtendedQuery() : $this->buildQuery();
+        $build       = fn () => $this->extendedQuery !== null ? $this->compileExtendedQuery() : $this->buildQuery();
+        $pristine    = clone $this->query;
+        $callers     = count($pristine->getBindings())
+            + array_sum(array_map(fn (array $filter) => $filter['operator'] === 'IN' ? count($filter['value']) : 1, $this->filters));
+        $maxPatterns = $this->options['max_patterns'];
+
+        try {
+            FuzzySearch::withinBindingBudget(function (?int $patterns) use ($build, $pristine, $callers, $maxPatterns): int {
+                if ($patterns !== null) {
+                    $this->query = clone $pristine;
+                }
+                $this->options['max_patterns'] = $patterns ?? $maxPatterns;
+                $build();
+
+                return count($this->query->getBindings()) - $callers;
+            });
+        } finally {
+            $this->options['max_patterns'] = $maxPatterns;
+        }
     }
 
     /**
@@ -2910,10 +2941,11 @@ class SearchBuilder
             if ($shownOnly && !self::shows($item, self::lastSegment($target['column']))) {
                 return []; // a qualified column (teams.name) is the row's attribute "name"
             }
-            // A table.column name is read off the attributes, never through getAttribute(): that
-            // calls a model method named like the table (ER-57: items.name must not run items()).
+            // Never through getAttribute(): its relation fallback calls a model method named like the
+            // column (ER-84: searchIn(['reindex']) must not run reindex()), or like the table of a
+            // table.column name, which is read off the attributes (ER-57: items.name must not run items()).
             $source = $item instanceof Model && str_contains($target['column'], '.') ? $item->getAttributes() : $item;
-            $value  = (string) data_get($source, $target['column'], '');
+            $value  = (string) SearchableColumns::read($source, $target['column']);
             return $value === '' ? [] : [$value];
         }
 
@@ -2946,7 +2978,7 @@ class SearchBuilder
 
         $values = [];
         foreach ($rows as $row) {
-            $value = $shownOnly && !self::shows($row, $target['column']) ? '' : (string) data_get($row, $target['column'], '');
+            $value = $shownOnly && !self::shows($row, $target['column']) ? '' : (string) SearchableColumns::read($row, $target['column']);
             if ($value !== '') {
                 $values[] = $value;
             }

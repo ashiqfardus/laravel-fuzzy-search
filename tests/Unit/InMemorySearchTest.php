@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 
@@ -141,9 +142,29 @@ class InMemorySearchTest extends TestCase
         $this->assertCount(0, FuzzySearch::on($items)->search('john')->searchIn([])->get());
         $this->assertSame([], $events, 'nothing was searched, so nothing is reported');
 
-        // '' is not a search: it still lists the items, with or without columns.
+        // '' is not a search: with allow_empty_search it lists the items, with or without columns.
+        config(['fuzzy-search.allow_empty_search' => true]);
         $this->assertCount(2, FuzzySearch::on($items)->search('')->get());
         $this->assertCount(2, FuzzySearch::on($items)->search('')->searchIn(['name'])->get());
+    }
+
+    /** Ruling ER-89 (F6): the ER-46 guard every SearchBuilder terminal and FederatedSearch apply. */
+    public function test_an_empty_term_throws_unless_allow_empty_search_is_on(): void
+    {
+        $items = [['name' => 'John Doe'], ['name' => 'Jane'], ['name' => 'Bob']];
+
+        foreach (['', '   ', null] as $term) {
+            $search = FuzzySearch::on($items)->searchIn(['name']);
+            try {
+                ($term === null ? $search : $search->search($term))->get();
+                $this->fail('[' . var_export($term, true) . '] listed the items');
+            } catch (EmptySearchTermException) {
+            }
+        }
+
+        config(['fuzzy-search.allow_empty_search' => true]);
+        $this->assertCount(3, FuzzySearch::on($items)->search('')->searchIn(['name'])->get());
+        $this->assertCount(2, FuzzySearch::on($items)->search('  ')->searchIn(['name'])->skip(1)->get());
     }
 
     // -------------------------------------------------------------------------

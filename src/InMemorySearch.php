@@ -2,6 +2,8 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch;
 
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Collection;
 
@@ -87,6 +89,7 @@ class InMemorySearch
         );
     }
 
+    /** @throws EmptySearchTermException for '' unless allow_empty_search is on */
     public function get(): Collection
     {
         // Like SearchBuilder::matchesNothing(): only invalid UTF-8, or below min_search_length.
@@ -94,7 +97,12 @@ class InMemorySearch
             return collect();
         }
 
+        // Ruling ER-46, as every SearchBuilder terminal applies it: '' (or whitespace) throws, and
+        // lists the items only with allow_empty_search.
         if ($this->term === '') {
+            if (!config('fuzzy-search.allow_empty_search', false)) {
+                throw new EmptySearchTermException();
+            }
             return $this->items->slice($this->offset, $this->limit)->values();
         }
 
@@ -121,7 +129,9 @@ class InMemorySearch
         $scored = $this->items->map(function ($item) use ($needle, $cutNeedle) {
             $score = 0;
             foreach ($this->columns as $col) {
-                $value = mb_strtolower((string) data_get($item, $col, ''), 'UTF-8');
+                // Never data_get() on a model: its relation fallback runs any method named like
+                // the column (ruling ER-84).
+                $value = mb_strtolower((string) SearchableColumns::read($item, $col), 'UTF-8');
                 if ($value === $needle) {
                     $score = max($score, 100);
                 } elseif (str_starts_with($value, $needle)) {
