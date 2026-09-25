@@ -118,7 +118,10 @@ class Bm25Scorer
      * cast into model_id's own character set and collation (see modelIdCollation()), explicitly, so
      * the comparison is the column's own whatever the connection says, and the index on model_id is
      * still used. A binary comparison (CAST AS BINARY, COLLATE utf8mb4_bin) is also
-     * collation-free, but MySQL then reads every posting of the term for each row.
+     * collation-free, but MySQL then reads every posting of the term for each row. On SQL Server
+     * the cast keeps the key column's collation, and a key collated unlike the database failed with
+     * "Cannot resolve the collation conflict": it takes the database's default, model_id's own, on
+     * the key's side, so the index on model_id is still used.
      *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
@@ -130,7 +133,7 @@ class Bm25Scorer
         $key    = $query->getGrammar()->wrap($qualifiedKey);
         $key    = match (true) {
             DbDialect::isMySqlFamily($driver) => self::castToModelId($query->getConnection(), $key),
-            $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191))",
+            $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191)) COLLATE DATABASE_DEFAULT",
             $driver === DbDialect::SQLITE     => "CAST({$key} AS TEXT)",
             default                           => "CAST({$key} AS VARCHAR)",
         };
