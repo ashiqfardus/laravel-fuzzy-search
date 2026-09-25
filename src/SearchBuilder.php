@@ -2236,58 +2236,40 @@ class SearchBuilder
         });
     }
 
-    /** The most values one search binds of its own (ruling ER-86): SQL Server takes 2,100 in all. */
-    private const MAX_BINDINGS = 2000;
-
     /**
      * Apply this builder's search to $this->query: the extended/boolean AST when extended()
      * or searchBoolean() was called, the LIKE conditions otherwise. Every entry point that
      * needs a prepared query calls this, so none of them can run the raw extended
      * string — "name:john" — through the LIKE path as if it were a plain term.
      *
-     * Ruling ER-86: the search binds at most MAX_BINDINGS values of its own, so SQL Server's
-     * 2,100-parameter limit holds. Every leaf, token, accent variant and synonym is matched on
-     * every column with up to max_patterns LIKE patterns; past the budget each condition gets an
-     * equal share, and always its first pattern (the plain contains one). The share is counted on
-     * the built query, so it is the same on every database unless use_native_functions or
-     * PostgreSQL's unaccent() opt-in binds values of its own. A search within the budget builds
-     * exactly as before. The caller's where() and filter() bindings are not the search's and are
-     * left out.
+     * Ruling ER-86: the search binds at most FuzzySearch::MAX_BINDINGS values of its own, so SQL
+     * Server's 2,100-parameter limit holds. Every leaf, token, accent variant and synonym is matched
+     * on every column with up to max_patterns LIKE patterns; past the budget each condition gets an
+     * equal share, and always its first pattern (the plain contains one) — see
+     * FuzzySearch::withinBindingBudget(), which also budgets the multi-column macros (ER-91). A
+     * search within the budget builds exactly as before. The caller's where() and filter()
+     * bindings are not the search's and are left out; a rebuild starts from the caller's query.
      *
      * @throws \Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException when even one pattern per condition passes the budget
      */
     private function prepareQuery(): void
     {
-        $build    = fn () => $this->extendedQuery !== null ? $this->compileExtendedQuery() : $this->buildQuery();
-        $pristine = clone $this->query;
-        $build();
-
-        $callers = count($pristine->getBindings())
+        $build       = fn () => $this->extendedQuery !== null ? $this->compileExtendedQuery() : $this->buildQuery();
+        $pristine    = clone $this->query;
+        $callers     = count($pristine->getBindings())
             + array_sum(array_map(fn (array $filter) => $filter['operator'] === 'IN' ? count($filter['value']) : 1, $this->filters));
-        $own = fn (): int => count($this->query->getBindings()) - $callers;
-
-        if ($own() <= self::MAX_BINDINGS) {
-            return;
-        }
-
         $maxPatterns = $this->options['max_patterns'];
-        $rebuild     = function (int $patterns) use ($build, $pristine, $own): int {
-            $this->query                   = clone $pristine;
-            $this->options['max_patterns'] = $patterns;
-            $build();
-
-            return $own();
-        };
 
         try {
-            // One pattern per condition is the floor. Each condition with a second pattern binds at
-            // most one more value per extra pattern, so those share what the floor leaves.
-            $floor = $rebuild(1);
-            if ($floor > self::MAX_BINDINGS) {
-                throw \Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException::tooComplex(self::MAX_BINDINGS);
-            }
-            $growing = $rebuild(2) - $floor;
-            $rebuild(1 + intdiv(self::MAX_BINDINGS - $floor, max(1, $growing)));
+            FuzzySearch::withinBindingBudget(function (?int $patterns) use ($build, $pristine, $callers, $maxPatterns): int {
+                if ($patterns !== null) {
+                    $this->query = clone $pristine;
+                }
+                $this->options['max_patterns'] = $patterns ?? $maxPatterns;
+                $build();
+
+                return count($this->query->getBindings()) - $callers;
+            });
         } finally {
             $this->options['max_patterns'] = $maxPatterns;
         }

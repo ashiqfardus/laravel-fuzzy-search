@@ -2,9 +2,11 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch;
 
+use Closure;
 use Illuminate\Database\Query\Builder;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\BaseDriver;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException;
 use Ashiqfardus\LaravelFuzzySearch\InMemorySearch;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
@@ -131,6 +133,16 @@ class FuzzySearch
         return $driver->apply($query, $column, $value, $boolean);
     }
 
+    /**
+     * The term on any of $columns, as one where group. Every multi-column entry point comes here:
+     * the whereFuzzyMultiple() and fuzzySearch() macros, the Fuzzy scopes, tableSearch() and
+     * FederatedSearch's fallback. The columns share one binding budget (ruling ER-91, see
+     * withinBindingBudget()), each keeping at least its plain contains pattern. The group is built
+     * apart and then added, as where(Closure) adds it, so the caller's own bindings are not counted
+     * and a call within the budget writes the same SQL as before.
+     *
+     * @throws QuerySyntaxException when even one pattern per column passes the budget
+     */
     public function applyFuzzyWhereMultiple(
         Builder $query,
         array $columns,
@@ -138,12 +150,51 @@ class FuzzySearch
         ?string $algorithm = null,
         ?array $options = []
     ): Builder {
-        return $query->where(function ($q) use ($columns, $value, $algorithm, $options) {
+        $group = null;
+
+        self::withinBindingBudget(function (?int $patterns) use ($query, $columns, $value, $algorithm, $options, &$group): int {
+            $group   = $query->forNestedWhere();
+            $options = $patterns === null ? $options : array_merge($options ?? [], ['max_patterns' => $patterns]);
+
             foreach ($columns as $index => $column) {
                 $boolean = $index === 0 ? 'and' : 'or';
-                $this->applyFuzzyWhere($q, $column, $value, $algorithm, $options, $boolean);
+                $this->applyFuzzyWhere($group, $column, $value, $algorithm, $options, $boolean);
             }
+
+            return count($group->getBindings());
         });
+
+        return $query->addNestedWhereQuery($group);
+    }
+
+    /** The most values one search binds of its own (rulings ER-86, ER-91): SQL Server takes 2,100 in all. */
+    public const MAX_BINDINGS = 2000;
+
+    /**
+     * @internal Fit a search's LIKE patterns into MAX_BINDINGS (rulings ER-86, ER-91), the one budget
+     * SearchBuilder::prepareQuery() and applyFuzzyWhereMultiple() apply. $build(null) builds with the
+     * configured max_patterns; $build($n) builds afresh with at most $n patterns per condition (a
+     * term on a column). Each returns how many values the search itself bound. Over the budget, one
+     * pattern per condition (its first: the plain contains one) is the floor, and the conditions
+     * with a second pattern share what the floor leaves equally. Each binds at most one more value
+     * per extra pattern, so the last build fits. The share is counted on the built query, so it is
+     * the same on every database unless a native function binds values of its own.
+     *
+     * @param  Closure(?int): int $build
+     * @throws QuerySyntaxException when even the floor passes the budget
+     */
+    public static function withinBindingBudget(Closure $build): void
+    {
+        if ($build(null) <= self::MAX_BINDINGS) {
+            return;
+        }
+
+        $floor = $build(1);
+        if ($floor > self::MAX_BINDINGS) {
+            throw QuerySyntaxException::tooComplex(self::MAX_BINDINGS);
+        }
+
+        $build(1 + intdiv(self::MAX_BINDINGS - $floor, max(1, $build(2) - $floor)));
     }
 
     public function applyFuzzyOrder(Builder $query, string $column, string $value, string $direction = 'asc'): Builder
