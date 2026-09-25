@@ -709,10 +709,14 @@ class ScoutEngineTest extends TestCase
         [$top, $bottom, $middle] = $this->seedOrderableWidgets();
         $cache = \Illuminate\Support\Facades\Cache::build(['driver' => 'array', 'serialize' => true]); // stores like file or redis
 
+        // A search query, that is: on PostgreSQL the cache key reads search_path (ruling ER-58),
+        // one lookup that a cache hit makes too.
         $queries = function (\Closure $call): array {
             $count = 0;
-            \Illuminate\Support\Facades\DB::listen(function () use (&$count) {
-                $count++;
+            \Illuminate\Support\Facades\DB::listen(function ($query) use (&$count) {
+                if (!str_contains($query->sql, "current_setting('search_path')")) {
+                    $count++;
+                }
             });
             $result = $call();
 
