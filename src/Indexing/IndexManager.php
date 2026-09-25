@@ -21,6 +21,13 @@ class IndexManager
     private const POSTING_ROWS_PER_UPSERT = 400;
     private const ROWS_PER_UPSERT         = 500;
 
+    /**
+     * Tries per index write. Laravel retries a top-level transaction that fails on a deadlock
+     * or lock timeout (MySQL 1213/1205, PostgreSQL 40P01, SQL Server 1205, SQLite busy), and a
+     * write is safe to repeat: it claims, re-reads and rewrites the rows from scratch (ER-71).
+     */
+    private const ATTEMPTS = 3;
+
     // Every model id is bound as a string: model_id is a varchar, and an integer bound against it
     // makes MySQL/MariaDB compare numerically and SQL Server convert the column, so neither can
     // seek the key. The claim's FOR UPDATE then scans, and locks, every document row of the
@@ -82,8 +89,10 @@ class IndexManager
 
         DB::transaction(function () use ($modelType, $modelId) {
             // Waits for a write to this row in flight; empty = it was not indexed.
-            $old = $this->claimDocuments($modelType, [$modelId]);
+            $old    = $this->claimDocuments($modelType, [$modelId]);
+            $posted = $this->postedTerms($modelType, [$modelId]);
 
+            $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
             $this->deletePostings($modelType, [$modelId]);
 
             // The document row, or the placeholder the claim just inserted.
@@ -93,7 +102,7 @@ class IndexManager
                 ->delete();
 
             $this->adjustMeta($modelType, -count($old), -array_sum($old), ensure: false);
-        });
+        }, self::ATTEMPTS);
     }
 
     /**
@@ -140,31 +149,45 @@ class IndexManager
     }
 
     /**
-     * Delete the models' postings and give back their share of each term's doc_count:
-     * COUNT(DISTINCT model_id) per term, since a document has one posting per column a term is in.
+     * The dictionary terms the models' postings hold: term => [term id, how many of the models
+     * hold it], COUNT(DISTINCT model_id) since a document has one posting per column a term is in.
+     *
+     * @param  array<int|string>              $modelIds
+     * @return array<string, array{int, int}>
+     */
+    private function postedTerms(string $modelType, array $modelIds): array
+    {
+        $posted = [];
+        foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
+            $rows = DB::table('fuzzy_index_postings as p')
+                ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+                ->where('p.model_type', $modelType)
+                ->whereIn('p.model_id', $chunk)
+                ->groupBy('t.id', 't.term')
+                ->select('t.id', 't.term')
+                ->selectRaw('COUNT(DISTINCT ' . DbDialect::rawIdentifier('p.model_id') . ') as cnt')
+                ->get();
+
+            foreach ($rows as $row) {
+                $posted[(string) $row->term] = [(int) $row->id, ($posted[(string) $row->term][1] ?? 0) + (int) $row->cnt];
+            }
+        }
+
+        return $posted;
+    }
+
+    /**
+     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts().
      *
      * @param array<int|string> $modelIds
      */
     private function deletePostings(string $modelType, array $modelIds): void
     {
         foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
-            $counts = DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
-                ->whereIn('model_id', $chunk)
-                ->groupBy('term_id')
-                ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
-                ->pluck('cnt', 'term_id');
-
-            if ($counts->isEmpty()) {
-                continue;
-            }
-
             DB::table('fuzzy_index_postings')
                 ->where('model_type', $modelType)
                 ->whereIn('model_id', $chunk)
                 ->delete();
-
-            $this->decrementDocCounts($counts->all());
         }
     }
 
@@ -181,7 +204,7 @@ class IndexManager
                 ->where('model_type', $modelClass)
                 ->groupBy('term_id')
                 ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
-                ->chunkById(1000, fn ($rows) => $this->decrementDocCounts($rows->pluck('cnt', 'term_id')->all()), 'term_id');
+                ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
 
             // Bulk delete index data for this model type — DB-side, no PHP memory load.
             DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->delete();
@@ -344,8 +367,12 @@ class IndexManager
      *     them waits for this one, or this one for it;
      *  2. reload the saved rows (reload()): the text indexed is the row as committed now, so
      *     whichever write commits last leaves the latest save indexed (ruling ER-68);
-     *  3. delete their old postings, giving back doc_count (C12);
-     *  4. write the dictionary, postings, document rows and meta (C11) of the rows with text.
+     *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
+     *     terms, in id order (giving back the old terms, C12; raising the new ones), and delete
+     *     the old postings;
+     *  4. insert the terms the dictionary lacks, sorted, then the postings, document rows and
+     *     meta (C11) of the rows with text.
+     * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
      *
      * @param  list<int|string>     $keys    saved models, reloaded here
@@ -369,15 +396,6 @@ class IndexManager
                 }
             }
 
-            $this->deletePostings($modelType, $ids);
-
-            // Rows leaving the index (gone, soft-deleted, no text left) lose their document row,
-            // and rows never indexed lose the placeholder the claim inserted.
-            $leaving = array_values(array_diff($ids, array_map('strval', array_keys($byModel))));
-            foreach (array_chunk($leaving, 1000) as $chunk) {
-                DB::table('fuzzy_index_documents')->where('model_type', $modelType)->whereIn('model_id', $chunk)->delete();
-            }
-
             $lengths = [];
             $counts  = []; // term => number of documents holding it: its doc_count increment
             foreach ($byModel as $id => $byColumn) {
@@ -388,17 +406,49 @@ class IndexManager
                 }
             }
 
+            // Every doc_count change to a term the dictionary already holds (the old terms given
+            // back, the new ones raised) goes out as one UPDATE per 1,000 terms in id order, so a
+            // write takes its locks on existing terms in the order every other write takes them
+            // (ER-71): giving back old terms, then raising new ones in a second statement, let two
+            // writes whose terms cross each hold a row the other needed.
+            $posted   = $this->postedTerms($modelType, $ids);
+            $existing = $this->termIds(array_map('strval', array_keys($counts)));
+            $deltas   = [];
+            foreach ($posted as [$termId, $holders]) {
+                $deltas[$termId] = -$holders;
+            }
+            foreach ($counts as $term => $increment) {
+                if (isset($existing[$term])) {
+                    $deltas[$existing[$term]] = ($deltas[$existing[$term]] ?? 0) + $increment;
+                }
+            }
+            $this->adjustDocCounts($deltas);
+            $this->deletePostings($modelType, $ids);
+
+            // Rows leaving the index (gone, soft-deleted, no text left) lose their document row,
+            // and rows never indexed lose the placeholder the claim inserted.
+            $leaving = array_values(array_diff($ids, array_map('strval', array_keys($byModel))));
+            foreach (array_chunk($leaving, 1000) as $chunk) {
+                DB::table('fuzzy_index_documents')->where('model_type', $modelType)->whereIn('model_id', $chunk)->delete();
+            }
+
             // PHP normalises numeric-string array keys (e.g. '10') to int keys, so a purely
             // numeric token comes back an int. Cast back to string wherever a key becomes a query
             // binding: SQL Server's MERGE ... USING (VALUES (...)) infers one type per column from
             // the batch of bindings, so a mixed int/string 'term' column fails with "Conversion
             // failed when converting the nvarchar value 'paginate' to data type int". $termIds[$term]
             // lookups still work because PHP normalises numeric-string keys the same way on read.
+            //
+            // Terms the dictionary lacks are inserted, sorted by term. A write that inserts one of
+            // them first turns this insert into an update of its row: the conflict branch raises it.
             $byIncrement = [];
             foreach ($counts as $term => $increment) {
-                $byIncrement[$increment][] = (string) $term;
+                if (!isset($existing[$term])) {
+                    $byIncrement[$increment][] = (string) $term;
+                }
             }
             foreach ($byIncrement as $increment => $terms) {
+                sort($terms, SORT_STRING);
                 foreach (array_chunk($terms, self::ROWS_PER_UPSERT) as $chunk) {
                     DB::table('fuzzy_index_terms')->upsert(
                         array_map(fn ($term) => ['term' => $term, 'doc_count' => $increment, 'term_length' => mb_strlen($term)], $chunk),
@@ -411,7 +461,7 @@ class IndexManager
                 }
             }
 
-            $termIds = $this->termIds(array_map('strval', array_keys($counts)));
+            $termIds = $existing + $this->termIds(array_merge(...array_values($byIncrement)));
 
             // One posting per (term, column); a term missing from $termIds means a pre-migration
             // MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
@@ -440,7 +490,7 @@ class IndexManager
             );
 
             return count($byModel);
-        });
+        }, self::ATTEMPTS);
     }
 
     /**
@@ -567,21 +617,32 @@ class IndexManager
     }
 
     /**
-     * Subtract term_id => count from doc_count, floored at 0 (unsigned column, concurrent
-     * deletes): one UPDATE per 1,000 terms instead of a round-trip each. Ids and counts are
-     * inlined as ints; they come from the database, never from user input.
+     * Add term_id => delta (either sign; a result below 0 is floored at 0: unsigned column,
+     * concurrent deletes) to doc_count: one UPDATE per 1,000 terms, after a locking read that takes
+     * the rows in ascending id order, so every write locks the dictionary rows it touches in the
+     * same order (ER-71). The UPDATE alone would lock them in scan order, which on PostgreSQL is
+     * the rows' physical order and moves with every update. A delta of 0 still locks its row: a
+     * posting inserted later checks its term row (MySQL's foreign-key S lock), and must find it
+     * locked already rather than wait for it behind another write.
+     * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
      *
-     * @param array<int, int|string> $counts
+     * @param array<int, int> $deltas
      */
-    private function decrementDocCounts(array $counts): void
+    private function adjustDocCounts(array $deltas): void
     {
-        foreach (array_chunk($counts, 1000, true) as $chunk) {
+        ksort($deltas);
+
+        foreach (array_chunk($deltas, 1000, true) as $chunk) {
             $cases = '';
-            foreach ($chunk as $termId => $cnt) {
+            foreach ($chunk as $termId => $delta) {
                 $termId = (int) $termId;
-                $cnt    = (int) $cnt;
-                $cases .= " WHEN {$termId} THEN CASE WHEN doc_count >= {$cnt} THEN doc_count - {$cnt} ELSE 0 END";
+                $delta  = (int) $delta;
+                $cases .= $delta >= 0
+                    ? " WHEN {$termId} THEN doc_count + {$delta}"
+                    : " WHEN {$termId} THEN CASE WHEN doc_count >= " . -$delta . ' THEN doc_count - ' . -$delta . ' ELSE 0 END';
             }
+            DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('id');
+
             $inList = implode(',', array_map('intval', array_keys($chunk)));
             DB::statement(
                 'UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET doc_count = CASE id{$cases} ELSE doc_count END WHERE id IN ({$inList})"

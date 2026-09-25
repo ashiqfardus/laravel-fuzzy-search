@@ -249,6 +249,49 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertSame(['john', 'waited'], $terms);
     }
 
+    /**
+     * Two writes for different rows whose dictionary terms cross (row A's old words are row B's
+     * new ones and the other way round) must not deadlock (ER-71). Each write used to lock its
+     * old terms first (the doc_count give-back) and its new ones after (the upsert), so A held
+     * "alpha" waiting for "bravo" while B held "bravo" waiting for "alpha". A write now locks
+     * all its terms, old and new, in one sorted order before it changes any, so the second
+     * write waits for the first instead. No attempt may roll back: a retry would hide a deadlock.
+     */
+    public function test_writes_whose_terms_cross_neither_deadlock_nor_retry(): void
+    {
+        $a = User::where('name', 'John Doe')->value('id');
+        $b = User::where('name', 'Jane Doe')->value('id');
+        DB::table('users')->where('id', $a)->update(['name' => 'alpha', 'email' => 'qa']);
+        DB::table('users')->where('id', $b)->update(['name' => 'bravo', 'email' => 'qb']);
+        app(IndexManager::class)->indexBatch(User::whereKey([$a, $b])->get());
+
+        // The texts swap: each row's new word is the other row's old one.
+        DB::table('users')->where('id', $a)->update(['name' => 'bravo']);
+        DB::table('users')->where('id', $b)->update(['name' => 'alpha']);
+
+        $rollbacks = sys_get_temp_dir() . '/fuzzy-race-rollbacks-' . getmypid() . '-' . uniqid();
+        $count     = function () use ($rollbacks) {
+            \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($rollbacks, 'x', FILE_APPEND));
+        };
+
+        [$childError, $parentError] = $this->race(
+            function () use ($count, $a) { $count(); (new IndexModelJob(User::class, $a))->handle(app(IndexManager::class)); },
+            function () use ($count, $b) { $count(); (new IndexModelJob(User::class, $b))->handle(app(IndexManager::class)); },
+            '/^\s*update\b.*fuzzy_index_terms/is', // the first change to the dictionary
+            1_000_000,
+            300_000,
+        );
+
+        $retried = is_file($rollbacks) ? strlen(file_get_contents($rollbacks)) : 0;
+        @unlink($rollbacks);
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $this->assertSame(0, $retried, 'a write rolled back and retried');
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'alpha')->value('doc_count'));
+        $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'bravo')->value('doc_count'));
+    }
+
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
     public function test_the_indexer_binds_model_ids_as_strings(): void
     {

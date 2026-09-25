@@ -437,8 +437,9 @@ class IndexManagerTest extends TestCase
 
         $manager->indexModel($model);
 
+        // The upsert that inserts new terms and, on a conflict, raises doc_count.
         $termUpserts = array_values(array_filter($queries, fn ($q) =>
-            str_contains($q['query'], 'fuzzy_index_terms') && str_contains(strtolower($q['query']), 'doc_count')
+            str_starts_with(strtolower($q['query']), 'insert') && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], '+ 1')
         ));
 
         $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
