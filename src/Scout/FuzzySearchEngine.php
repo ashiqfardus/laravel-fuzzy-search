@@ -126,8 +126,13 @@ class FuzzySearchEngine extends Engine
     private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, array $terms, int $offset, int $limit): array
     {
         $model = $builder->model;
-        $query = RankedCandidates::matches($query ?? $model->newQuery(), $ranked, $terms, $model::class, $this->columnWeights($builder));
-        $total = RankedCandidates::countModels($query);
+
+        // No constraint means no __soft_deleted where either: withTrashed(), or scout.soft_delete off,
+        // when no trashed row is indexed. constrainedQuery() reads that state as withTrashed() too;
+        // newQuery()'s SoftDeletes scope dropped the trashed matches that total() counted.
+        $query ??= in_array(SoftDeletes::class, class_uses_recursive($model), true) ? $model->newQuery()->withTrashed() : $model->newQuery();
+        $query   = RankedCandidates::matches($query, $ranked, $terms, $model::class, $this->columnWeights($builder));
+        $total   = RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
             return ['total' => $total, 'keys' => []];
