@@ -3088,7 +3088,7 @@ class SearchBuilder
             return $results;
         }
 
-        $needles =$terms === null ? $this->termVariants($this->searchTerm) : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
+        $needles = $terms === null ? $this->termVariants($this->searchTerm) : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
         if ($needles === [] || $needles === ['']) {
             return $results;
         }
