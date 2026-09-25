@@ -3278,9 +3278,26 @@ class SearchBuilder
             ],
             'base_sql'               => $this->query->toSql(),
             'base_bindings'          => $this->query->getBindings(),
+            // Ruling ER-70: every query-time setting (min_percentage, max_candidates, driver
+            // options, ...) at once, keys sorted so that an equal config gives the same key.
+            'config'                 => self::sortedKeys(config('fuzzy-search', [])),
         ];
 
         return config('fuzzy-search.cache.prefix', 'fuzzy_search_') . md5(serialize($data));
+    }
+
+    /**
+     * $value with every array in it sorted by key, at every depth. SORT_STRING is a total order
+     * even for mixed int and string keys; keys are kept, so a list's order still tells lists apart.
+     */
+    private static function sortedKeys(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+        ksort($value, SORT_STRING);
+
+        return array_map(self::sortedKeys(...), $value);
     }
 
     /**

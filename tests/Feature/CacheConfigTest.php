@@ -193,6 +193,43 @@ class CacheConfigTest extends TestCase
         $this->assertNotSame($folded, $search(false)->cache()->get()->pluck('_raw_score', 'name')->all(), 'folding off was served the folded entry');
     }
 
+    /** Ruling ER-70: the whole fuzzy-search config is in the key, so a query-time setting change is a new entry. */
+    public function test_a_config_change_between_two_cached_searches_is_never_served_the_first_entry(): void
+    {
+        $search = fn () => User::search('john')->using('similar_text');
+
+        config(['fuzzy-search.similar_text.min_percentage' => 0]);
+        $loose = $this->names($search()->cache());
+
+        config(['fuzzy-search.similar_text.min_percentage' => 70]);
+        $strict = $this->names($search()->cache());
+
+        $this->assertNotSame($loose, $this->names($search()), 'the two settings must return different rows');
+        $this->assertSame($this->names($search()), $strict, 'min_percentage 70 was served the min_percentage 0 entry');
+    }
+
+    /** Ruling ER-70: the config is keyed in a stable order, so equal configs share an entry. */
+    public function test_equal_configs_in_another_key_order_give_the_same_key(): void
+    {
+        $key    = fn () => $this->probe(User::query())->search('john')->searchIn(['name'])->key();
+        $before = $key();
+
+        // Every map reversed, at every depth; a list keeps its order, which is part of its value.
+        $reverse = function (array $config) use (&$reverse): array {
+            $config = array_is_list($config) ? $config : array_reverse($config, true);
+
+            return array_map(fn ($value) => is_array($value) ? $reverse($value) : $value, $config);
+        };
+        $reversed = $reverse(config('fuzzy-search'));
+        $this->assertNotSame(array_keys(config('fuzzy-search')), array_keys($reversed));
+        config(['fuzzy-search' => $reversed]);
+
+        $this->assertSame($before, $key());
+
+        config(['fuzzy-search.max_candidates' => 999]);
+        $this->assertNotSame($before, $key(), 'a changed value is a new key');
+    }
+
     private function addJohn(): void
     {
         User::create(['name' => 'John Newman', 'email' => 'newman@example.com']);
