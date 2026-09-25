@@ -39,9 +39,10 @@ return [
     | Legacy dispatch fallback
     |--------------------------------------------------------------------------
     |
-    | When true, unknown algorithm names silently fall back to LevenshteinDriver
-    | (v1.x behavior). Set to false in production once all callers use valid
-    | algorithm names.
+    | When true, an unknown algorithm name given to the whereFuzzy-style macros or
+    | fallback() runs as LevenshteinDriver instead of throwing; using() always throws
+    | for one. Known names (fuzzy, trigram, simple, ...) always run their own driver:
+    | this does not restore v1.x's routing of those names to Levenshtein.
     |
     */
     'legacy_dispatch' => false,
