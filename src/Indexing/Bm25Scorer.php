@@ -75,8 +75,8 @@ class Bm25Scorer
     }
 
     /**
-     * Count the number of distinct models that contain at least one query term.
-     * Used by FuzzySearchEngine::paginate() to obtain an accurate total (C13).
+     * Count the number of distinct models that contain at least one query term: every match, those
+     * past rank()'s max_postings_per_term too.
      *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column

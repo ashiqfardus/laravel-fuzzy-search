@@ -1512,34 +1512,9 @@ class SearchBuilder
             return $this->executeSearch();
         }
 
-        $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
-        $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
-
-        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
-
-        $base = $this->indexedBaseQuery($modelClass);
-
-        if ($ranked !== [] && $this->sortBy !== []) {
-            ['total' => $total, 'page' => $sorted] = $this->orderedIndexedPage($modelClass, $base, $ranked, $this->offset, $this->limit);
-            $this->matched = $total > 0;
-        } elseif (empty($ranked) || $this->offset >= count($ranked)) {
-            // Fall through instead of returning early (the shape paginateIndexed() already
-            // uses): a search that matched nothing must still dispatch FuzzySearchExecuted,
-            // or zero-result analytics never sees a miss on the index path. A page that starts
-            // past every match is empty without a walk (ruling ER-82); only a fallback() asks
-            // whether the query sees any match at all.
-            $sorted        = collect();
-            $this->matched = !empty($ranked) && ($this->fallbackAlgorithms === []
-                || \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keys($base, array_keys($ranked), 1) !== []);
-        } else {
-            // Walk the ranking against the constrained query until the requested window is
-            // full. Constraints (filters, wheres, scopes) are applied before the cut, so a
-            // selective filter fills its page from lower-ranked matches instead of coming
-            // back short or empty.
-            $window        = $this->indexedWindow($modelClass, $base, $ranked, $this->offset + $this->limit);
-            $this->matched = $window->isNotEmpty();
-            $sorted        = $window->slice($this->offset, $this->limit)->values();
-        }
+        // fallback() decides on whether the search matched a row at all, not on this page's rows.
+        ['ranked' => $ranked, 'total' => $total, 'page' => $sorted] = $this->indexedResults($modelClass, $this->offset, $this->limit);
+        $this->matched = $total > 0;
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));
@@ -1736,18 +1711,6 @@ class SearchBuilder
             $item->_score     = $top > 0 ? round($item->_raw_score / $top, 6) : $item->_raw_score;
             return $item;
         })->values();
-    }
-
-    /**
-     * The index path's first $end matches the constrained $base accepts, in rank order, scored.
-     *
-     * @param array<int|string, float> $ranked model_id => score, best first
-     */
-    private function indexedWindow(string $modelClass, EloquentBuilder $base, array $ranked, int $end): Collection
-    {
-        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($ranked), $this->bm25Window($modelClass, $end));
-
-        return $this->attachBm25Scores($models, $ranked, (int) config('fuzzy-search.max_candidates', 1000));
     }
 
     /**
@@ -2129,15 +2092,7 @@ class SearchBuilder
         $page   = $this->resolvePage($page, $pageName, $perPage);
         $offset = ($page - 1) * $perPage;
 
-        ['total' => $total, 'ranked' => $ranked, 'base' => $base, 'page' => $sorted] = $this->indexedRankingAndTotal($modelClass, $offset, $perPage);
-
-        // With orderBy() the page came with the total (orderedIndexedPage()).
-        if ($sorted === null) {
-            $sorted = empty($ranked) || $offset >= count($ranked)
-                ? collect() // past every match: no walk (ruling ER-82)
-                // Walk the matches against the constrained query until offset + perPage rows are collected, then slice.
-                : $this->indexedWindow($modelClass, $base, $ranked, $offset + $perPage)->slice($offset, $perPage)->values();
-        }
+        ['total' => $total, 'page' => $sorted] = $this->indexedResults($modelClass, $offset, $perPage);
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));
@@ -2158,38 +2113,47 @@ class SearchBuilder
     }
 
     /**
-     * Rank the current search term against $modelClass's BM25 index and total the matches
-     * against the constrained base query. Shared by paginateIndexed() (which also builds the
-     * page from the returned ranking/base) and count() (which only needs the total), so the
-     * two can never disagree. With orderBy() the total and the page [$offset, $offset + $limit)
-     * come from one query (orderedIndexedPage()); otherwise the page is null.
+     * Rank the current search term against $modelClass's BM25 index, total the matches the
+     * constrained base query serves, and fetch the page [$offset, $offset + $limit) of them, scored.
+     * Shared by get(), paginate() and count(), so they never disagree, and total() is what the pages
+     * serve:
+     *  - in rank order, the ranked matches the base query accepts (RankedCandidates::accepted()), so
+     *    a constrained search serves the unconstrained one's rows that the constraint accepts, and
+     *    none past bm25.max_postings_per_term, where the ranking ends;
+     *  - with orderBy(), every match the base query accepts, in that order (orderedIndexedPage()).
+     * Constraints (filters, wheres, scopes) apply before the cut, so a selective filter fills its
+     * page from lower-ranked matches instead of coming back short or empty. A page past the total is
+     * empty and reads no row (ruling ER-82).
      *
-     * @return array{total: int, ranked: array<int|string, float>, base: EloquentBuilder, page: ?Collection}
+     * @return array{ranked: array<int|string, float>, total: int, page: Collection}
      */
-    protected function indexedRankingAndTotal(string $modelClass, int $offset = 0, int $limit = 0): array
+    protected function indexedResults(string $modelClass, int $offset, int $limit): array
     {
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $terms  = $this->indexedQueryTerms($indexManager);
-        $ranked = $scorer->rank($terms, $modelClass, $this->columnWeights); // model_id => score, best first
+        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 
-        if (empty($ranked)) {
-            return ['total' => 0, 'ranked' => $ranked, 'base' => $base, 'page' => $this->sortBy !== [] ? collect() : null];
+        if ($ranked === []) {
+            return ['ranked' => [], 'total' => 0, 'page' => collect()];
         }
 
         if ($this->sortBy !== []) {
-            return ['ranked' => $ranked, 'base' => $base] + $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
+            return ['ranked' => $ranked] + $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
         }
 
-        // Total: under constraints, count the ranked ids the constrained query accepts
-        // (chunked); otherwise a single COUNT(DISTINCT) over the postings is exact.
-        $total = $this->hasIndexedConstraints($base)
-            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::count($base, array_keys($ranked))
-            : $scorer->count($terms, $modelClass, $this->columnWeights);
+        $accepted = $this->hasIndexedConstraints($base)
+            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, $modelClass, $this->columnWeights)
+            : $ranked;
+        $page     = collect();
 
-        return ['total' => $total, 'ranked' => $ranked, 'base' => $base, 'page' => null];
+        if ($offset < count($accepted) && $limit > 0) {
+            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($accepted), $this->bm25Window($modelClass, $offset + $limit));
+            $page   = $this->attachBm25Scores($models, $ranked, (int) config('fuzzy-search.max_candidates', 1000))->slice($offset, $limit)->values();
+        }
+
+        return ['ranked' => $ranked, 'total' => count($accepted), 'page' => $page];
     }
 
     /**
@@ -2280,7 +2244,7 @@ class SearchBuilder
                     $modelClass = $this->resolveIndexModelClass();
 
                     if ($modelClass !== null) {
-                        return $this->indexedRankingAndTotal($modelClass)['total'];
+                        return $this->indexedResults($modelClass, 0, 0)['total'];
                     }
 
                     if (config('app.debug', false)) {

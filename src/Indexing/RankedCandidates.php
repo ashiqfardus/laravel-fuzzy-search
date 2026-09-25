@@ -9,21 +9,20 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
- * rank order. Ids are visited best-first in chunks and only rows the query returns are
- * kept, so a selective filter fills its page from lower-ranked matches instead of
- * coming back short, and totals reflect the constraints.
+ * rank order, so a selective filter fills its page from lower-ranked matches instead of
+ * coming back short, and totals reflect the constraints. On the index's own connection the
+ * matches a query accepts are read through a subquery on the postings (accepted(),
+ * matches()); otherwise ids are visited best-first in chunks and only rows the query
+ * returns are kept.
  *
  * @internal This class is not part of the public API and may change without notice.
  */
 final class RankedCandidates
 {
-    /** COUNT chunk — stays under SQLite's 999 and SQL Server's 2100 bind-parameter limits. */
-    private const COUNT_CHUNK = 500;
-
     /** The alias an ordered read selects the key under, beside the caller's select list (see orderedKeys()). */
     private const KEY_ALIAS = 'fuzzy_walk_key';
 
-    /** The scope matches() restricts a query with; among() adds its own, so the two never replace each other. */
+    /** The scope whereMatches() restricts a query with; among() adds its own, so the two never replace each other. */
     private const MATCHES = 'fuzzy-search:matches';
 
     /**
@@ -83,23 +82,6 @@ final class RankedCandidates
     }
 
     /**
-     * How many of the ranked ids satisfy $base (see countModels()).
-     *
-     * @param  array<int|string> $rankedIds
-     */
-    public static function count(Builder $base, array $rankedIds): int
-    {
-        $key   = $base->getModel()->getQualifiedKeyName();
-        $total = 0;
-
-        foreach (array_chunk($rankedIds, self::COUNT_CHUNK) as $chunk) {
-            $total += self::countModels(self::among($base, $key, $chunk));
-        }
-
-        return $total;
-    }
-
-    /**
      * How many models $query returns: models, not rows — a one-to-many join repeats a model once per
      * joined row, so an ungrouped query counts its distinct keys (COUNT(DISTINCT key) on every
      * driver). A grouped query is counted as a subquery, where the key is out of scope and its groups
@@ -139,14 +121,46 @@ final class RankedCandidates
         // than that many pairs in the ranking mean it read them all, and it holds every match.
         $whole = count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
-        if ((count($ids) > $chunk || !$whole) && $base->getQuery()->getConnection() === DB::connection()) {
-            return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
-                ->whereRanked($query->getQuery(), $model->getQualifiedKeyName(), $terms, $modelType, $columnWeights));
+        if ((count($ids) > $chunk || !$whole) && self::onIndexConnection($base)) {
+            return self::whereMatches($base, $terms, $modelType, $columnWeights);
         }
 
         $ids = self::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => $query->whereKey($ids));
+    }
+
+    /**
+     * $ranked cut to the documents $base accepts, in rank order: what a page in rank order serves and
+     * its total counts, so a constrained search serves the rows of the unconstrained one that the
+     * constraint accepts, and none past the ranking's cap. On the index's own connection one query
+     * reads the keys of every match $base accepts, through the postings subquery
+     * (Bm25Scorer::whereRanked()), however long the ranking is: only the key is selected, and the rows
+     * are streamed (cursor()), keeping those the ranking holds. On another connection, where that
+     * subquery cannot run, the ranked ids are checked a chunk at a time.
+     *
+     * @param  array<int|string, float>                $ranked        model_id => score, best first
+     * @param  array<int, string>|array<string, float> $terms         the terms it was ranked for
+     * @param  array<string, int|float>                $columnWeights the column weights it was ranked with
+     * @return array<int|string, float>
+     */
+    public static function accepted(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): array
+    {
+        if (!self::onIndexConnection($base)) {
+            return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked))));
+        }
+
+        $query          = self::whereMatches($base, $terms, $modelType, $columnWeights)->toBase()->reorder();
+        $query->columns = [$base->getModel()->getQualifiedKeyName() . ' as ' . self::KEY_ALIAS];
+        $accepted       = [];
+
+        foreach ($query->cursor() as $row) {
+            if (isset($ranked[$row->{self::KEY_ALIAS}])) {
+                $accepted[$row->{self::KEY_ALIAS}] = true;
+            }
+        }
+
+        return array_intersect_key($ranked, $accepted);
     }
 
     /**
@@ -180,6 +194,21 @@ final class RankedCandidates
         }
 
         return array_slice(array_keys($keys), $offset, $limit);
+    }
+
+    /** $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a global scope. */
+    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights): Builder
+    {
+        $key = $base->getModel()->getQualifiedKeyName();
+
+        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
+            ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights));
+    }
+
+    /** Whether $base runs on the connection the index lives on, the default one, where the postings subquery can run. */
+    private static function onIndexConnection(Builder $base): bool
+    {
+        return $base->getQuery()->getConnection() === DB::connection();
     }
 
     /**

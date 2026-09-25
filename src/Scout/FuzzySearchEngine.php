@@ -47,76 +47,49 @@ class FuzzySearchEngine extends Engine
 
     public function search(Builder $builder)
     {
-        $modelType = $builder->model::class;
-        $orders    = $this->orders($builder);
-        $terms     = $this->terms($builder);
-        $limit     = $builder->limit ?? 15;
-
-        $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
-        $query  = $this->constrainedQuery($builder);
-
-        if ($orders !== [] && $ranked !== []) {
-            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, 0, $limit);
-        } else {
-            // 'total' is the match count — the ranked ids (that satisfy the constraints) — not
-            // the size of the page cut from them.
-            $total = $query === null || empty($ranked) ? count($ranked) : RankedCandidates::count($query, array_keys($ranked));
-            $keys  = $this->resultKeys($query, $ranked, $limit);
-        }
-
-        return [
-            'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
-            'total'   => $total,
-        ];
+        return $this->results($builder, 0, $builder->limit ?? 15);
     }
 
     public function paginate(Builder $builder, $perPage, $page)
     {
         // Scout resolves ?page to any whole number of at least 1. Capped as SearchBuilder::resolvePage()
         // caps it, so that no offset (plus one page) overflows into a float: past that, every page is empty.
-        $perPage   = max(1, (int) $perPage);
-        $page      = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
-        $modelType = $builder->model::class;
-        $orders    = $this->orders($builder);
-        $terms     = $this->terms($builder);
-        $offset    = ($page - 1) * $perPage;
-        $weights   = $this->columnWeights($builder);
+        $perPage = max(1, (int) $perPage);
+        $page    = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
 
-        $ranked = $this->scorer->rank($terms, $modelType, $weights);
+        return $this->results($builder, ($page - 1) * $perPage, $perPage);
+    }
+
+    /**
+     * The page [$offset, $offset + $limit) of the builder's matches, scored, and their total: the
+     * match count, not the size of the page cut from them, and what the pages serve, as on
+     * SearchBuilder's index path. In rank order it is the ranked matches the builder's constraints
+     * accept (RankedCandidates::accepted()), cut after the constraints (otherwise a selective where()
+     * returns a short or empty page while matches exist further down the ranking), and none past
+     * bm25.max_postings_per_term, where the ranking ends. With orderBy() it is every match the
+     * constraints accept, in that order (orderedPage()). A page past the total reads no row.
+     *
+     * @return array{results: Collection, total: int}
+     */
+    private function results(Builder $builder, int $offset, int $limit): array
+    {
+        $orders = $this->orders($builder);
+        $terms  = $this->terms($builder);
+        $ranked = $this->scorer->rank($terms, $builder->model::class, $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
 
-        if ($orders !== [] && $ranked !== []) {
-            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $offset, $perPage);
+        if ($ranked !== [] && $orders !== []) {
+            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $terms, $offset, $limit);
         } else {
-            // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
-            $total = $query === null || empty($ranked)
-                ? $this->scorer->count($terms, $modelType, $weights)
-                : RankedCandidates::count($query, array_keys($ranked));
-            // A page past every ranked id is empty: never walk to it.
-            $keys  = $offset < count($ranked) ? array_slice($this->resultKeys($query, $ranked, $offset + $perPage), $offset, $perPage) : [];
+            $accepted = $query === null || $ranked === [] ? $ranked : RankedCandidates::accepted($query, $ranked, $terms, $builder->model::class, $this->columnWeights($builder));
+            $total    = count($accepted);
+            $keys     = array_slice(array_keys($accepted), $offset, $limit);
         }
 
         return [
             'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
             'total'   => $total,
         ];
-    }
-
-    /**
-     * The first $needed matches in rank order, the ranking cut after the builder's constraints
-     * (otherwise a selective where() returns a short or empty page while matches exist further down
-     * the ranking).
-     *
-     * @param  array<int|string, float> $ranked model_id => score, best first
-     * @return array<int|string>
-     */
-    private function resultKeys(?EloquentBuilder $query, array $ranked, int $needed): array
-    {
-        if (empty($ranked)) {
-            return [];
-        }
-
-        return array_slice($query === null ? array_keys($ranked) : RankedCandidates::keys($query, array_keys($ranked), $needed), 0, $needed);
     }
 
     /**
@@ -147,12 +120,13 @@ class FuzzySearchEngine extends Engine
      *
      * @param  array<int, array{column: string, direction: string}> $orders
      * @param  array<int|string, float>                             $ranked model_id => score
+     * @param  string[]                                             $terms  the terms $ranked was scored for
      * @return array{total: int, keys: array<int|string>}
      */
-    private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, int $offset, int $limit): array
+    private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, array $terms, int $offset, int $limit): array
     {
         $model = $builder->model;
-        $query = RankedCandidates::matches($query ?? $model->newQuery(), $ranked, $this->terms($builder), $model::class, $this->columnWeights($builder));
+        $query = RankedCandidates::matches($query ?? $model->newQuery(), $ranked, $terms, $model::class, $this->columnWeights($builder));
         $total = RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
