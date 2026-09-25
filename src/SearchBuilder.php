@@ -1216,11 +1216,13 @@ class SearchBuilder
      * visibility, highlighting or relation is stored: those belong to the request that reads it.
      *
      * Models are stored by key only when a re-read by key gives back exactly the cached rows: every
-     * row has a key of its own (ruling ER-92) and the query has no join and no union (ER-93; toBase(),
-     * so a global scope's join counts). A re-read returns every row the query holds for a key, and
-     * under a join or a union that can be another row than the one cached, even when the key is
-     * cached once (first(), take(), a page, a search on the joined column). Any other rows are
-     * stored as the attributes the database returned for them.
+     * row has a key of its own (ruling ER-92), the query has no join and no union (ER-93; toBase(),
+     * so a global scope's join counts), and it reads the model's table by its own name. A re-read
+     * returns every row the query holds for a key, and under a join or a union that can be another
+     * row than the one cached, even when the key is cached once (first(), take(), a page, a search
+     * on the joined column); and it filters on the model's qualified key ("users"."id"), which a FROM
+     * under an alias or a fromSub() does not have. Any other rows are stored as the attributes the
+     * database returned for them.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
@@ -1230,7 +1232,7 @@ class SearchBuilder
         $models = match (true) {
             !$results->first() instanceof Model => false,
             !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys)
-                && empty($base->joins) && empty($base->unions) => 'key',
+                && empty($base->joins) && empty($base->unions) && $base->from === $results->first()->getTable() => 'key',
             default => 'attributes',
         };
 
