@@ -52,7 +52,7 @@ User::search('laptop')
     ->get();
 ```
 
-Synonyms for every search go in the `synonyms` config key (lower-case word => its synonyms). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms and drops no stop words (see [the extended syntax](extended-syntax.md#synonyms-and-stop-words)). The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
+Synonyms for every search go in the `synonyms` config key (word => its synonyms; case is ignored, non-ASCII letters included). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms and drops no stop words (see [the extended syntax](extended-syntax.md#synonyms-and-stop-words)). The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
 
 ### Language / Locale Awareness
 
@@ -207,10 +207,10 @@ The LIKE path's accent handling (the `unicode.accent_insensitive` default and `-
 
 Default: no stemming (`NullStemmer`). With `NullStemmer`, `running` only matches `running`, not `run` or `ran`.
 
-To enable Porter stemming, install the 1.x line of `wamania/php-stemmer` (a bare `composer require wamania/php-stemmer` installs 4.x, whose classes `PorterStemmer` cannot load):
+To enable Porter stemming, install the 1.x line of `wamania/php-stemmer`, 1.3 or later (1.2 is a fatal error on PHP 8; a bare `composer require wamania/php-stemmer` installs 4.x, whose classes `PorterStemmer` cannot load):
 
 ```bash
-composer require "wamania/php-stemmer:^1.2"
+composer require "wamania/php-stemmer:^1.3"
 ```
 
 ```php

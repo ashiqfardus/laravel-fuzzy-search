@@ -451,6 +451,8 @@ Write assertions that hold on every driver:
 Read `$this->dbDriver` inside a test when the expectation legitimately differs per
 database. CI runs the suite on every supported database (see `.github/workflows/ci.yml`).
 
+Some guards hold on one database only. The indexer inserts a batch's new dictionary words in one sorted order, so that parallel batches cannot deadlock on them, and `tests/Unit/IndexModelJobOverlapTest.php` fails when that order is lost on PostgreSQL only. On SQL Server under its default `READ COMMITTED`, the second batch waits at its document claim, or at its locking read of the dictionary, before it inserts any word, so the races cannot reproduce the deadlock there. CI runs no SQL Server cell with `READ_COMMITTED_SNAPSHOT` on (Azure SQL's default, and what the BM25 guide recommends), where the sorted insert is what prevents it. After changing how `IndexManager` inserts new words, run that test file on PostgreSQL.
+
 ### Running Tests
 
 ```bash
@@ -469,6 +471,8 @@ vendor/bin/phpunit --filter test_it_searches_correctly
 # Run the Performance suite (timing and memory bounds; CI does not run it)
 composer benchmark
 ```
+
+A run fails on any warning PHPUnit records and on any deprecation raised in `src/` (`failOnWarning`, `failOnDeprecation`); a risky test does not fail it. A test of a deprecated method must catch its notice and assert it: `$this->assertSame([$message], $this->deprecationsFrom(fn () => …))`, with `deprecationsFrom()` from `Tests\Concerns\ReportsSourceDeprecations`. In a test that boots the application (`Tests\TestCase`, `Tests\Integration\DatabaseTestCase`), a deprecation raised by vendor code is logged by Laravel and does not fail the run; in a test that extends `PHPUnit\Framework\TestCase` directly, any deprecation does.
 
 ### Test Coverage
 
@@ -536,7 +540,7 @@ The package carries no version string — Packagist versions come from git tags,
 is a tag plus release notes, not a file edit.
 
 1. **CI green on the release commit.** Every row of `test-sqlite`, `test-mysql`, `test-pgsql`,
-   `test-mariadb`, `test-sqlsrv`, `test-scout10` and both `test-filament` legs.
+   `test-mariadb`, `test-sqlsrv`, `test-scout10` and `test-lowest`, and all three `test-filament` legs.
 2. **CHANGELOG.** Give `[x.y.z]` its date (`## [2.1.0] — 2026-09-18`, em-dash), keep the
    subsection order Added / Changed / Deprecated / Removed / Fixed / Security, and add the
    compare link at the bottom: `[x.y.z]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v<prev>...v<new>`.

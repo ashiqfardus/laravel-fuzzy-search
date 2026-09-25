@@ -205,6 +205,14 @@ User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
 
 A dotted segment is followed as a relation only when it is a public, non-static method with no required parameters that neither Laravel nor this package defines, and that either declares a `Relation` return type (`BelongsTo`, `HasMany`, …) or is on a path the model lists in `$searchable['columns']`. Anything else throws `InvalidArgumentException` — `App\Models\Author::company is not a relation: declare a Relation return type or list the path in $searchable['columns']` — before any SQL runs, and the method is never called: `searchIn()` can carry request input, and `searchIn(['unguard.body'])` must not run `unguard()`. That check stops method calls, not column access: `searchIn()` searches any column it names, a hidden one included, so check request-supplied columns against an allowlist. Nested paths are checked segment by segment, and the error names the segment that failed. A dotted name whose first segment is not a method at all is still a table-qualified column (`posts.title`). Relations defined by Laravel's own traits (for example `Notifiable::notifications()`) are not followed; wrap one in a method of your own with a return type. An undotted `searchIn()` name is never a method call either. On every path (highlighting on `useInvertedIndex()`, PHP scoring, `suggest()` and `FuzzySearch::on()` over models), it is read from the row as an attribute, a cast or an accessor, or as a relation that is already loaded: `searchIn(['reindex'])` reads nothing and runs nothing.
 
+A relation you eager-load yourself keeps your constraint: `->with('author:id,name')` or `->with(['comments' => fn ($q) => $q->where('approved', true)])` is what the results carry, and the search eager-loads only the paths you did not load. Write the relation in `with()` as its method is declared (`author`, not `Author`): Eloquent treats another spelling as a second relation, and the search's own load of `author` is then unconstrained. A `searchIn()` path, by contrast, is matched to its methods whatever its case: `Author.name` is `author.name`.
+
+Your constraint limits what is **loaded**, not which rows **match**. Relation matching sees every related row, so a post still matches through an unapproved comment. To match approved comments only, `searchIn()` a relation method that carries the constraint (`approvedComments.body`, where `approvedComments()` returns `$this->hasMany(Comment::class)->where('approved', true)`).
+
+A column select must include the searched column, and for a nested path the key the next relation needs (`author:id,name,company_id` for `author.company.name`). A column the select leaves out scores nothing and is left out of `_highlighted` and `_matches`.
+
+A relation `searchIn()` reads is loaded even after `without()`. To keep it out of a response, constrain it with `with()`, hide it (`$hidden`/`makeHidden()`), or shape the response with an API resource.
+
 A dotted name whose first part names a table of the query — the FROM table, a joined table, or either one's alias — is always that table's column, and no model method is looked at: `->join('items', …)->searchIn(['items.name'])` works even when the model has an `items()` method. A relation whose name equals a joined table's name is therefore read as that table's column; alias the join (`join('items as i', …)`) if you mean the relation. Such a table's column is searched in SQL; the model row does not carry it, so it adds nothing to `_score` or `_highlighted` unless you select it under the model's own column name.
 
 The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
@@ -255,7 +263,7 @@ The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `
 | `levenshtein` | Strict typo matching | Configurable | Medium |
 | `soundex` | Phonetic matching (English names) | Phonetic | Fast |
 | `metaphone` | Phonetic matching (more accurate) | Phonetic | Fast |
-| `trigram` | Similarity matching | High | Medium |
+| `trigram` | Similarity matching | Medium (a shared three-letter run) | Medium |
 | `similar_text` | Percentage similarity (`similar_text.min_percentage`, default 70) | None (the value must contain the term) | Medium |
 | `simple` / `like` | Exact substring (LIKE) | None | Fastest |
 
@@ -353,6 +361,8 @@ $matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->ge
 
 Without `searchIn()` there is no column to search, so a search matches nothing. An empty (or whitespace-only) term throws `EmptySearchTermException`, as every other search does, unless `allow_empty_search` is on; then it returns the items unsearched. Over Eloquent models, a column is read as an attribute, cast or accessor. A dotted `searchIn()` name follows only relations already loaded, so call `load('author')` before searching `author.name`. Case is folded in every script, the way `Model::search()` scores (`ÉCOLE` finds `école`, `МОСКВА` finds `москва`), a term is cut at `query.max_term_length` characters (default 128), and `similar_text()` compares at most the first 255 characters of a value and of the term.
 
+A result stays a read model. With relevance on (the default), each matched item gets `_score` and `_raw_score`: attributes on an Eloquent model, keys on an array, properties on an object. So `save()` on a matched model fails with an unknown-column error: re-fetch it by key first, or `unset($model->_score, $model->_raw_score)` before saving. `withRelevance(false)` adds neither. An item that did not match is left exactly as it was, with none of these and none of the temporary `_raw_score_tmp` key used while scoring.
+
 ---
 
 ## Field Weighting & Scoring
@@ -382,7 +392,7 @@ foreach ($users as $user) {
 }
 ```
 
-Search results are read models. `_score`, `_raw_score` and the other underscore-prefixed values a search adds are real attributes on each row, so `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving.
+Search results are read models. The values a search adds are real attributes on each row: `_score` and `_raw_score`; `_highlighted` and `_matches` with `highlight()` (or `highlighting.enabled`); `_debug` with `debugScore()`; and `_model_type` and `_model_class` on a `FederatedSearch` result. So `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving. `withRelevance(false)` adds no `_score` or `_raw_score`, except on the index path (`useInvertedIndex()`), which adds both whatever `withRelevance()` says.
 
 ### Prefix Boosting
 
@@ -590,7 +600,7 @@ $page = FederatedSearch::across([User::class, Product::class])
 
 Each model is searched the way `Model::search()` searches it, with its own `$searchable` configuration — algorithm, typo tolerance, stop words, synonyms, accent handling and options. `using()`, `typoTolerance()` and `options()` on the federated search override them for every model (`options()` takes the same driver options as `SearchBuilder::options()`, such as `max_distance`; `typoTolerance()` wins over its `max_distance`). Narrowing the columns with `searchIn()` overrides only the column list. A model without the `Searchable` trait is searched with LIKE — or, with the `Fuzzy` trait, with its own `getFuzzyAlgorithm()` and `getFuzzyOptions()` (its `$fuzzyAlgorithm`, default `default_algorithm`, and `$fuzzyOptions`), which `using()`, `options()` and `typoTolerance()` override — on the `searchIn()` columns its table has; without `searchIn()`, on its declared `$searchable['columns']`, else — with the `Fuzzy` trait — on `getFuzzySearchableColumns()` (its `$fuzzySearchable`, `name` by default), else on whichever of `name` and `title` its table has, and a model with none of these contributes nothing. Every model, with the trait or without, contributes at most `max_candidates` rows.
 
-A relation column (`author.name`) passed to the federated `searchIn()` is ignored (a model left with no column is searched on its own columns). Relation columns a model declares in `$searchable['columns']` are searched, as `Model::search()` searches them.
+A relation column (`author.name`) passed to the federated `searchIn()` is ignored. A model with none of the named columns on its table contributes nothing and is left out of `getCounts()`; one with some of them is searched on those only. Relation columns a model declares in `$searchable['columns']` are searched, as `Model::search()` searches them.
 
 ### Search Analytics
 
@@ -621,7 +631,7 @@ $analytics = User::search('john')
 ## Text Processing
 
 - **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale. An `extended()`/`searchBoolean()` query drops no stop words: every word in it stays a term of the query.
-- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (lower-case word => its synonyms) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
+- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (word => its synonyms; case is ignored, so `'Laptop'` and `'laptop'`, or `'Ägypten'` and `'ägypten'`, are the same word, and the later one set wins; `synonymGroup()` words ignore case too) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
 - **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
 - **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
@@ -737,7 +747,7 @@ User::search('john')->cache(0)->get();
 
 A key you pass is used as given, so `Cache::forget('user-search-john')` removes it. A generated key starts with `cache.prefix` and covers everything that changes the result: the term, columns and weights, algorithm and options, filters, forwarded `where()`/joins/scopes (the SQL and its bindings), limit and offset, `orderBy()`, highlight tags, `withRelevance()`, `debugScore()`, the index model class, the model class, the names of its eager loads, where it runs — connection name, driver, host, port, database, table prefix and, on PostgreSQL, the `search_path` (one extra `select current_setting('search_path')` per cached search) — and the whole `fuzzy-search` config. Tenants on separate connections, databases or schemas therefore never share an entry, and changing any config value (`min_percentage`, `max_candidates`, a driver option, `cache.ttl` itself) starts a fresh set of entries; the old ones expire with their TTL. A key you name changes only when you change it. A search with a `customScore()` closure is cached only under a key you name: a closure cannot be part of a generated key.
 
-A cached entry holds only arrays and scalars. By default that is each model's key with its `_score` and `_raw_score`. Rows of a search with a join or a union, or without the key selected, are stored as their attributes, as the database returned them. A plain query builder's rows are stored as arrays. It therefore reads back on every store under Laravel 13's `cache.serializable_classes => false`.
+A cached entry holds only arrays and scalars. By default that is each model's key with its `_score` and `_raw_score`. Rows of a search with a join, a union, an aliased FROM (`from('users as u')`) or a `fromSub()`, or without the key selected, are stored as their attributes, as the database returned them. A plain query builder's rows are stored as arrays. It therefore reads back on every store under Laravel 13's `cache.serializable_classes => false`.
 
 A hit re-reads models stored by key, in the cached order, through the current query. That applies its global scopes, its eager loads with their constraints, and its `retrieved` listeners, so `with(['reviews' => fn ($q) => $q->where('user_id', auth()->id())])` is never served to another user. Models stored as attributes are rebuilt from them instead: their `retrieved` listeners and the current eager loads run the same way, but the query does not read them again.
 
@@ -1011,7 +1021,7 @@ Properties:
 
 ## Persisted Search Analytics
 
-Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and each search that fires `FuzzySearchExecuted` writes one row to the `analytics.table` table (Scout searches and cache hits fire none; see [what counts as one row](docs/analytics.md#what-counts-as-one-row)) (`fuzzy_search_logs` by default; the migration creates the table that key names, so set it before `php artisan migrate`).
+Opt-in, DB-backed analytics: set `analytics.enabled` to `true` and each search that fires `FuzzySearchExecuted` writes one row to the `analytics.table` table (`fuzzy_search_logs` by default; the migration creates the table that key names, so set it before `php artisan migrate`). Scout searches and cache hits fire none; see [what counts as one row](docs/analytics.md#what-counts-as-one-row).
 
 ```php
 SearchAnalytics::popular(7, 5);
@@ -1054,7 +1064,7 @@ return [
     
     'synonyms' => [
         // Default synonyms of every SearchBuilder search except extended()/searchBoolean()
-        // (lower-case word => its synonyms):
+        // (word => its synonyms; case is ignored):
         // 'laptop' => ['notebook', 'computer'],
     ],
     
@@ -1294,7 +1304,7 @@ php artisan fuzzy-search:explain User --term="john"
 | **simple** | Fastest | None | Exact matches, SKUs | Any size |
 | **fuzzy** | Very Fast | High | General purpose | < 100K rows |
 | **soundex** | Very Fast | Phonetic | Name searches | < 100K rows |
-| **trigram** | Fast | Very High | Similarity matching | < 50K rows |
+| **trigram** | Fast | Medium (a shared three-letter run) | Similarity matching | < 50K rows |
 | **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
 | **BM25 index** | Fast at scale | Native (dictionary expansion) | Large tables, ranked results | 10K+ rows |
 
