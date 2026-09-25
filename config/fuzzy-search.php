@@ -233,10 +233,12 @@ return [
          */
         'max_postings_per_term' => 50000,
         /*
-         * candidate_chunk: when a BM25 search runs under Eloquent constraints (filters,
-         * wheres, global scopes), ranked ids are checked against the database in chunks
-         * of this size until the requested page is full. Smaller = less over-fetching
-         * on selective filters; larger = fewer round trips.
+         * candidate_chunk: an ordered index search lists the ranked ids when the ranking
+         * holds every match and has at most this many; above it, a subquery on the
+         * postings restricts the read. It is also the chunk the index path hydrates a
+         * page's rows in and a cache hit re-reads rows in, and, for a model on another
+         * connection than the index, the chunk its ranking is checked against the
+         * constraints in.
          */
         'candidate_chunk' => 200,
         /*
