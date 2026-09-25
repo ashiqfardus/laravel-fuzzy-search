@@ -1895,7 +1895,14 @@ class SearchBuilder
 
         $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query)))
+        // Ruling ER-95: an unknown field's message, shown to whoever typed the query, names only the
+        // fields the model shows. Every column is still matched, hidden ones included (ER-66).
+        $listed = array_values(array_map(
+            fn (array $t) => $t['relation'] === null ? self::lastSegment($t['column']) : $t['relation'] . '.' . $t['column'],
+            $this->suggestTargets()
+        ));
+
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
             ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
@@ -3729,8 +3736,8 @@ class SearchBuilder
     }
 
     /**
-     * The searchIn() targets suggest()'s table scan matches and reads: those the model does not
-     * hide by its class-level $hidden/$visible (for a relation column, each segment on the model
+     * The searchIn() targets suggest()'s table scan matches and reads, and extended()'s unknown-field
+     * message names: those the model does not hide by its class-level $hidden/$visible (for a relation column, each segment on the model
      * that holds it, then the leaf on the related model). A row that matches only through a
      * hidden column can yield no suggestion (ER-51), so matching it would only use up the rows
      * the scan fetches (NF-1). Only the WHERE narrows (ruling ER-67): the SELECT stays as it is,
