@@ -82,7 +82,7 @@ class IndexModelJobOverlapTest extends TestCase
      *
      * @return array{0: ?string, 1: ?string, 2: float}
      */
-    private function race(\Closure $child, \Closure $parent, string $at, int $pause, int $delay): array
+    private function race(\Closure $child, \Closure $parent, string $at, int $pause, int $delay, bool $pauseParent = true): array
     {
         // function_exists(), not extension_loaded(): disable_functions can remove them too.
         if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
@@ -93,12 +93,15 @@ class IndexModelJobOverlapTest extends TestCase
         config(['database.connections.race' => config('database.connections.' . config('database.default'))]);
 
         $paused = false;
-        DB::listen(function ($query) use (&$paused, $at, $pause) {
+        $listen = fn () => DB::listen(function ($query) use (&$paused, $at, $pause) {
             if (!$paused && preg_match($at, $query->sql)) {
                 $paused = true;
                 usleep($pause);
             }
         });
+        if ($pauseParent) {
+            $listen();
+        }
 
         $failed = sys_get_temp_dir() . '/fuzzy-race-child-' . getmypid() . '-' . uniqid();
 
@@ -110,6 +113,9 @@ class IndexModelJobOverlapTest extends TestCase
         if ($pid === 0) {
             try {
                 DB::setDefaultConnection('race');
+                if (!$pauseParent) {
+                    $listen();
+                }
                 $child();
             } catch (\Throwable $e) {
                 file_put_contents($failed, (string) $e);
@@ -212,6 +218,35 @@ class IndexModelJobOverlapTest extends TestCase
             $this->assertLessThan(1.5, $elapsed);
         }
         $this->assertSame($reindex ? 7 : 2, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
+    }
+
+    /**
+     * A job that read the row before a newer save must not leave the older text indexed when it
+     * commits after that save's own index write (ER-68). The child job pauses right after its
+     * read of the row; the parent saves new text meanwhile, with sync indexing. The row is read
+     * under the claim now, so the parent's index write waits for the child, then re-reads the row.
+     */
+    public function test_a_job_that_read_the_row_before_a_newer_save_leaves_the_newer_text_indexed(): void
+    {
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        $john = User::where('name', 'John Doe')->first();
+
+        [$childError, $parentError] = $this->race(
+            fn () => (new IndexModelJob(User::class, $john->id))->handle(app(IndexManager::class)),
+            fn () => $john->update(['name' => 'John Waited']),
+            '/^\s*select\b.*\busers\b/is', // the job's read of the row
+            800_000,
+            300_000,
+            pauseParent: false,
+        );
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $terms = DB::table('fuzzy_index_postings as p')
+            ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+            ->where('p.model_type', User::class)->where('p.model_id', (string) $john->id)->where('p.column_name', 'name')
+            ->orderBy('t.term')->pluck('t.term')->all();
+        $this->assertSame(['john', 'waited'], $terms);
     }
 
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */

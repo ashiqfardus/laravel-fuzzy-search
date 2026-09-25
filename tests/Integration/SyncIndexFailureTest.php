@@ -31,7 +31,7 @@ class SyncIndexFailureTest extends TestCase
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
 
         $this->app->instance(IndexManager::class, new class(new WhitespaceTokenizer(), new NullStemmer()) extends IndexManager {
-            public function indexModel(Model $model): void { throw new \RuntimeException('index write failed'); }
+            public function syncModel(string $modelClass, int|string $key): void { throw new \RuntimeException('index write failed'); }
             public function removeFromIndex(string $modelType, int|string $modelId): void { throw new \RuntimeException('index delete failed'); }
         });
 

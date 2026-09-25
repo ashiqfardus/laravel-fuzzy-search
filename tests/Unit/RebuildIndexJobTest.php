@@ -87,7 +87,8 @@ class RebuildIndexJobTest extends TestCase
         (new RebuildIndexJob(RebuildHookTestUser::class, [$hooked->id, $plain->id]))
             ->handle($this->makeManager());
 
-        $this->assertSame(1, RebuildHookTestUser::$hookCalls, 'searchIndexQuery() must be called once per job.');
+        // Once for the job's load, once for the reload under the claim (ER-68): per job, never per row.
+        $this->assertSame(2, RebuildHookTestUser::$hookCalls, 'searchIndexQuery() must be called twice per job.');
 
         // The hook constrained the query to names starting with "hooked", proving it was applied.
         $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id]);

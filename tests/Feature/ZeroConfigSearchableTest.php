@@ -255,9 +255,10 @@ class ZeroConfigSearchableTest extends TestCase
         $this->assertSame(['email', 'name'], $indexed);
 
         // A stored value that is still not text is skipped, never thrown: nobody asked for that
-        // column to be indexed — detection picked it.
-        $user->setRawAttributes(['id' => $user->getKey(), 'name' => new \stdClass, 'email' => 'ada@example.com']);
-        app(IndexManager::class)->indexModel($user);
+        // column to be indexed — detection picked it. An unsaved instance, which the indexer
+        // takes as given (a saved one is re-read from the database, ER-68).
+        $copy = (new ZeroConfigAccessorUser())->setRawAttributes(['id' => $user->getKey(), 'name' => new \stdClass, 'email' => 'ada@example.com']);
+        app(IndexManager::class)->indexModel($copy);
 
         $this->assertSame(['email'], DB::table('fuzzy_index_postings')->where('model_id', $user->getKey())->distinct()->pluck('column_name')->all());
     }
