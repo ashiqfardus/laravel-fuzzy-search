@@ -179,6 +179,8 @@ class IndexModelJobOverlapTest extends TestCase
             'paused after the claim, re-index'          => ['select', true],
             'paused between upsert and read, first index' => ['insert', false],
             'paused between upsert and read, re-index'  => ['insert', true],
+            'batches, paused after the claim, first index' => ['select', false, true],
+            'batches, paused after the claim, re-index'    => ['select', true, true],
         ];
     }
 
@@ -187,14 +189,23 @@ class IndexModelJobOverlapTest extends TestCase
      * An integer key bound against the varchar model_id made MySQL compare numerically, scan the
      * model type's whole key prefix under the claim's FOR UPDATE and lock every document row
      * of it: a second row's write waited, and two claims crossing deadlocked (1213).
+     * Batches: while the table or the model type had few rows, a batch's IN-list FOR UPDATE ran
+     * as a scan (MySQL of the table; MariaDB, from about 12 ids, of the model type's key prefix)
+     * and locked the other batch's rows and the gaps between them as well (ER-77).
      * SQLite takes one write lock for the whole database, so there only the absence of errors
      * is checked.
      */
     #[DataProvider('differentRowShapes')]
-    public function test_writes_for_different_rows_neither_wait_on_each_other_nor_deadlock(string $pauseAt, bool $reindex): void
+    public function test_writes_for_different_rows_neither_wait_on_each_other_nor_deadlock(string $pauseAt, bool $reindex, bool $batches = false): void
     {
         $john = User::where('name', 'John Doe')->value('id');
         $jane = User::where('name', 'Jane Doe')->value('id');
+        $first = $second = [];
+        if ($batches) {
+            // Two batches of 12 of 24 rows: MariaDB takes the ref plan from about 12 ids.
+            DB::table('users')->insert(array_fill(0, 17, ['name' => 'race', 'email' => 'race', 'created_at' => now(), 'updated_at' => now()]));
+            [$first, $second] = array_chunk(DB::table('users')->orderBy('id')->pluck('id')->all(), 12);
+        }
         if ($reindex) {
             app(IndexManager::class)->indexBatch(User::all());
         }
@@ -203,9 +214,12 @@ class IndexModelJobOverlapTest extends TestCase
             ? '/^\s*select\b.*fuzzy_index_documents/is'           // the claim's FOR UPDATE read
             : '/^\s*(insert|merge)\b.*fuzzy_index_documents/is';   // the claim's placeholder upsert
 
+        $batch = fn (array $ids) => fn () => app(IndexManager::class)->indexBatch(User::whereKey($ids)->get());
+        $job   = fn ($id) => fn () => (new IndexModelJob(User::class, $id))->handle(app(IndexManager::class));
+
         [$childError, $parentError, $elapsed] = $this->race(
-            fn () => (new IndexModelJob(User::class, $john))->handle(app(IndexManager::class)),
-            fn () => (new IndexModelJob(User::class, $jane))->handle(app(IndexManager::class)),
+            $batches ? $batch($first) : $job($john),
+            $batches ? $batch($second) : $job($jane),
             $at,
             1_000_000,
             300_000,
@@ -213,11 +227,14 @@ class IndexModelJobOverlapTest extends TestCase
 
         $this->assertNull($childError);
         $this->assertNull($parentError);
-        if ($this->dbDriver !== 'sqlite') {
+        // SQL Server: a batch's placeholder MERGE into a documents table with few rows scans it,
+        // so on a first index it waits for the other batch's uncommitted placeholders. That is
+        // a wait at the upsert, not at the claim, and no deadlock (see the parallel batch test).
+        if ($this->dbDriver !== 'sqlite' && !($batches && !$reindex && $this->dbDriver === 'sqlsrv')) {
             // Its own 1 s pause, plus the work: not the child's remaining 0.7 s on top.
             $this->assertLessThan(1.5, $elapsed);
         }
-        $this->assertSame($reindex ? 7 : 2, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
+        $this->assertSame($batches ? 24 : ($reindex ? 7 : 2), (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
     }
 
     /**
@@ -324,19 +341,32 @@ class IndexModelJobOverlapTest extends TestCase
         }
     }
 
+    public static function parallelBatchShapes(): array
+    {
+        return [
+            'every word new, index flushed each round' => [true],
+            're-index, no flush'                       => [false],
+        ];
+    }
+
     /**
-     * Parallel batches into an empty dictionary (parallel rebuild --async workers, scout:import)
-     * insert the same new words. Inserted one statement per doc_count increment, each sorted
-     * only within itself, two batches locked the words in opposite orders across statements
-     * (P: lima at +1, kilo at +2; Q: kilo at +1, lima at +2), and on PostgreSQL many batches
-     * deadlocked on all three attempts. A write now inserts its new words in one sorted order
-     * (ER-74). On SQL Server the batches also deadlocked on the document claim (its key-range
-     * locks and scan reached the other batches' rows), and two MERGEs inserting one new word at
-     * once failed the second on the duplicate key. MySQL/MariaDB keep one statement per
-     * increment: there InnoDB's duplicate-key gap locks cycle in any order, so a batch may still
-     * lose its attempts, and only the index is checked.
+     * Parallel batches (parallel rebuild --async workers, scout:import) must not lose all their
+     * attempts, whether they fill an empty index or re-index rows of a model type that has few
+     * indexed rows.
+     * - New words: inserted one statement per doc_count increment, each sorted only within
+     *   itself, two batches locked the words in opposite orders across statements (P: lima at
+     *   +1, kilo at +2; Q: kilo at +1, lima at +2), and on PostgreSQL many batches deadlocked on
+     *   all three attempts. A write now inserts its new words in one sorted order (ER-74). On
+     *   SQL Server two MERGEs inserting one new word at once also failed the second on the
+     *   duplicate key.
+     * - The document claim: on SQL Server (key-range locks, and a scan for the IN list) and on
+     *   MariaDB (a scan of the model type's key prefix while the type has few rows) the
+     *   claim's locking read of a batch's ids locked the other batches' rows too, and the
+     *   batches deadlocked on each other's claims, re-index or not. MySQL/MariaDB now claim
+     *   each id with its own point read (ER-77).
      */
-    public function test_parallel_batches_that_add_the_same_new_words_do_not_lose_all_their_attempts(): void
+    #[DataProvider('parallelBatchShapes')]
+    public function test_parallel_batches_do_not_lose_all_their_attempts(bool $flush): void
     {
         if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
             $this->markTestSkipped('The race needs several processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
@@ -353,12 +383,21 @@ class IndexModelJobOverlapTest extends TestCase
 
         mt_srand(74);
         $words = fn (int $n) => implode(' ', array_map(fn () => $vocabulary[mt_rand(0, 59)], range(1, $n)));
-
-        for ($round = 0; $round < 5; $round++) {
+        $text  = function () use ($ids, $words) {
             foreach ($ids as $id) {
                 DB::table('users')->where('id', $id)->update(['name' => $words(4), 'email' => $words(2)]);
             }
-            app(IndexManager::class)->flush(User::class); // every word is new again
+        };
+        if (!$flush) {
+            $text();
+            app(IndexManager::class)->indexBatch(User::whereKey($ids)->get()); // every round re-indexes
+        }
+
+        for ($round = 0; $round < 10; $round++) {
+            $text();
+            if ($flush) {
+                app(IndexManager::class)->flush(User::class); // every word is new again
+            }
 
             $pids = [];
             foreach (array_chunk($ids, 25) as $batch) {
@@ -387,14 +426,12 @@ class IndexModelJobOverlapTest extends TestCase
         $lines = is_file($log) ? file($log, FILE_IGNORE_NEW_LINES) : [];
         @unlink($log);
         $failed = array_values(preg_grep('/^failed/', $lines));
-        $report = count($failed) . ' of 20 batches failed, ' . (count($lines) - 2 * count($failed)) . ' retried: ' . ($failed[0] ?? '');
+        $report = count($failed) . ' of 40 batches failed, ' . (count($lines) - 2 * count($failed)) . ' retried: ' . ($failed[0] ?? '');
 
-        if (in_array($this->dbDriver, ['pgsql', 'sqlsrv'], true)) {
-            $this->assertSame([], $failed, $report);
-            $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
-        }
+        $this->assertSame([], $failed, $report);
+        $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
 
-        // Whatever failed rolled back whole: every term counts the rows posting it, and meta the documents.
+        // Every term counts the rows posting it, and meta the documents.
         $holders = [];
         foreach (DB::table('fuzzy_index_postings')->get(['term_id', 'model_id']) as $posting) {
             $holders[(int) $posting->term_id][(string) $posting->model_id] = true;

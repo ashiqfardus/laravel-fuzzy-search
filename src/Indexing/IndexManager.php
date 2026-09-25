@@ -126,6 +126,7 @@ class IndexManager
         $modelIds = array_map('strval', $modelIds);
         sort($modelIds, SORT_STRING);
         $indexed = [];
+        $driver  = DB::connection()->getDriverName();
 
         foreach (array_chunk($modelIds, self::ROWS_PER_UPSERT) as $chunk) {
             $this->upsertShared(
@@ -135,16 +136,35 @@ class IndexManager
                 ['model_type'] // a no-op update: the conflict branch only takes the row lock
             );
 
-            // SQL Server: UPDLOCK holds the row locks to commit; the rows exist (the upsert just
-            // wrote them), so Laravel's HOLDLOCK only added key-range locks, which reach the
-            // neighbouring keys: other writes' rows. FORCESEEK: for an IN list on a small table SQL
-            // Server scanned the model type's rows instead, locking them all. Either way parallel
-            // batches for different rows deadlocked.
-            $rows = DB::table('fuzzy_index_documents')
-                ->where('model_type', $modelType)
-                ->whereIn('model_id', $chunk)
-                ->lock(DB::connection()->getDriverName() === 'sqlsrv' ? 'with(rowlock,updlock,forceseek)' : true)
-                ->pluck('doc_length', 'model_id');
+            $claim = DB::table('fuzzy_index_documents')->where('model_type', $modelType);
+
+            if (count($chunk) > 1 && DbDialect::isMySqlFamily($driver)) {
+                // MySQL/MariaDB: one point read per id, in the sorted order above, sent as one
+                // UNION ALL. Each is a const plan, which locks its own row only, whatever the
+                // table's statistics say. The IN list's plan followed them: while the table or
+                // the model type had few rows, MySQL scanned the table, and MariaDB (from about 12
+                // ids) the model type's key prefix, locking every row and gap they passed. So
+                // parallel batches for different rows waited on each other's claims, and on
+                // MariaDB deadlocked until they lost all their attempts (ER-77). One statement:
+                // a round trip per id added 30% to 300% to a 500-row write.
+                $point    = '(' . $claim->select('model_id', 'doc_length')->where('model_id', '')->lockForUpdate()->toSql() . ')';
+                $bindings = [];
+                foreach ($chunk as $id) {
+                    array_push($bindings, $modelType, $id); // the point read's two placeholders, in order
+                }
+                $rows = collect(DB::select(implode(' union all ', array_fill(0, count($chunk), $point)), $bindings, false))
+                    ->pluck('doc_length', 'model_id');
+            } else {
+                // SQL Server: UPDLOCK holds the row locks to commit; the rows exist (the upsert
+                // just wrote them), so Laravel's HOLDLOCK only added key-range locks, which reach
+                // the neighbouring keys: other writes' rows. FORCESEEK: for an IN list on a small
+                // table SQL Server scanned the model type's rows instead, locking them all. Either
+                // way parallel batches for different rows deadlocked.
+                $rows = $claim
+                    ->whereIn('model_id', $chunk)
+                    ->lock($driver === 'sqlsrv' ? 'with(rowlock,updlock,forceseek)' : true)
+                    ->pluck('doc_length', 'model_id');
+            }
 
             foreach ($rows as $id => $length) {
                 if ((int) $length > 0) {
@@ -471,8 +491,10 @@ class IndexManager
             // by this write's increment, the inserted row's own doc_count (EXCLUDED, or the MERGE
             // source). So every write takes its new words in one sorted order (ER-74); a
             // statement per increment, each sorted only within itself, let two batches take them
-            // in opposite orders. MySQL/MariaDB keep a statement per increment with a literal raise
-            // (VALUES() there is deprecated): InnoDB's duplicate-key gap locks cycle in any order.
+            // in opposite orders. MySQL/MariaDB keep a statement per increment with a literal raise:
+            // the raise cannot name the inserted row there on both (MySQL deprecates VALUES(),
+            // MariaDB has no row alias). Two batches there can still take a shared new word in
+            // opposite orders; that deadlock is rare and retried (0 of 40 parallel batches lost).
             $missing = [];
             foreach ($counts as $term => $increment) {
                 if (!isset($existing[$term])) {
