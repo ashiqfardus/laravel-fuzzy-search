@@ -3743,11 +3743,12 @@ class SearchBuilder
 
     /**
      * The searchIn() targets suggest()'s table scan matches and reads, and extended()'s unknown-field
-     * message names: those the model does not hide by its class-level $hidden/$visible (for a relation column, each segment on the model
-     * that holds it, then the leaf on the related model). A row that matches only through a
-     * hidden column can yield no suggestion (ER-51), so matching it would only use up the rows
-     * the scan fetches (NF-1). Only the WHERE narrows (ruling ER-67): the SELECT stays as it is,
-     * so an accessor that reads a hidden attribute still has it (Q13).
+     * message names: those the model does not hide by its class-level $hidden/$visible (for a
+     * relation column, each segment on the model that holds it, then the leaf on the related model).
+     * For suggest(): a row that matches only through a hidden column can yield no suggestion
+     * (ER-51), so matching it would only use up the rows the scan fetches (NF-1). Only the WHERE
+     * narrows (ruling ER-67): the SELECT stays as it is, so an accessor that reads a hidden
+     * attribute still has it (Q13).
      *
      * @return array<string, array{relation: ?string, column: string}>
      */
