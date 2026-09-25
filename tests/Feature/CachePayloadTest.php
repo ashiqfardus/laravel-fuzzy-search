@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /** Hides email; an admin sees it (a retrieved listener, the README's per-viewer recipe). */
 class CacheViewerUser extends Model
@@ -61,6 +62,7 @@ class CachePayloadTest extends TestCase
 
     protected function tearDown(): void
     {
+        Schema::dropIfExists('cache_posts');
         Cache::store('fuzzy_file')->flush();
         @rmdir($this->path);
         CacheViewerUser::$admin = false;
@@ -122,8 +124,10 @@ class CachePayloadTest extends TestCase
         CacheViewerUser::retrieved(fn (CacheViewerUser $user) => CacheViewerUser::$admin && $user->makeVisible('email'));
 
         $paths = [
-            'like'  => fn () => CacheViewerUser::search('john')->highlight()->debugScore()->cache(),
-            'index' => fn () => CacheViewerUser::search('john')->useInvertedIndex()->highlight()->debugScore()->cache(),
+            'like'    => fn () => CacheViewerUser::search('john')->highlight()->debugScore()->cache(),
+            'index'   => fn () => CacheViewerUser::search('john')->useInvertedIndex()->highlight()->debugScore()->cache(),
+            // No key: cached as attributes and hydrated on a hit (ruling ER-92), retrieved listeners included.
+            'keyless' => fn () => CacheViewerUser::search('john')->select('name', 'email')->highlight()->debugScore()->cache(),
         ];
 
         foreach ($paths as $path => $make) {
@@ -140,12 +144,48 @@ class CachePayloadTest extends TestCase
                     $this->assertSame($admin, array_key_exists('email', $row->_highlighted), "{$who}: _highlighted");
                     $this->assertSame($admin, in_array('email', array_column($row->_matches, 'column'), true), "{$who}: _matches");
                     $this->assertSame($admin, in_array('email', $row->_debug['columns'], true), "{$who}: _debug.columns");
-                    if ($path === 'like') { // the index path scores in SQL, with no per-column scores
+                    if ($path !== 'index') { // the index path scores in SQL, with no per-column scores
                         $this->assertSame($admin, array_key_exists('email', $row->_debug['column_scores']), "{$who}: _debug.column_scores");
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Ruling ER-92 (N1): rows that share a key (a one-to-many join) or carry none (a select without
+     * it) cannot be re-read by key: a hit returned the last joined row twice, or nothing. They are
+     * cached as attributes and hydrated on a hit, so it returns the miss's rows.
+     */
+    public function test_a_hit_returns_joined_and_keyless_rows_as_the_miss_did(): void
+    {
+        Schema::dropIfExists('cache_posts');
+        Schema::create('cache_posts', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->string('title');
+        });
+        $john = DB::table('users')->where('name', 'John Doe')->value('id');
+        DB::table('cache_posts')->insert([['user_id' => $john, 'title' => 'First post'], ['user_id' => $john, 'title' => 'Second post']]);
+
+        $searches = [
+            'one-to-many join' => fn () => User::search('john doe')->join('cache_posts', 'cache_posts.user_id', '=', 'users.id')
+                ->select('users.*', 'cache_posts.title as post_title')->using('like')->searchIn(['name'])->highlight()->cache(),
+            'no key selected'  => fn () => User::search('john')->select('name', 'email')->highlight()->debugScore()->cache(),
+        ];
+
+        foreach ($searches as $label => $make) {
+            $miss = $make()->get();
+            $hit  = $make()->get();
+
+            $this->assertNotSame([], $this->rows($miss), $label);
+            $this->assertEquals($this->rows($miss), $this->rows($hit), $label);
+            $this->assertContainsOnlyInstancesOf(User::class, $hit, $label);
+        }
+
+        $make = $searches['one-to-many join'];
+        $this->assertEqualsCanonicalizing(['First post', 'Second post'], $make()->get()->pluck('post_title')->all());
+        $this->assertScalarPayload();
     }
 
     public function test_a_row_deleted_after_caching_is_dropped_from_a_hit(): void

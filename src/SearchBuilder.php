@@ -1179,7 +1179,7 @@ class SearchBuilder
         $cached = $store->get($cacheKey);
 
         // Anything else under the key (an entry written before 2.1) is a miss.
-        if (is_array($cached) && isset($cached['rows'])) {
+        if (is_array($cached) && isset($cached['rows']) && in_array($cached['models'] ?? null, [false, 'key', 'attributes'], true)) {
             return $this->fromCachePayload($cached);
         }
 
@@ -1202,28 +1202,42 @@ class SearchBuilder
      * 13's cache.serializable_classes = false — each model's key and scores, or a plain query
      * builder's rows as arrays — plus the columns searched and how the rows are decorated. No row
      * visibility, highlighting or relation is stored: those belong to the request that reads it.
+     *
+     * Models are stored by key only when every row has a key of its own (ruling ER-92). Rows that
+     * share one (a one-to-many join) or have none (a select() without it) cannot be re-read by key,
+     * so each is stored as the attributes the database returned for it.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
         $scores = array_flip(['_score', '_column_scores', '_raw_score']);
+        $keys   = $results->map(fn ($row) => $row instanceof Model ? $row->getKey() : null)->all();
+        $models = match (true) {
+            !$results->first() instanceof Model                                         => false,
+            !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys) => 'key',
+            default                                                                     => 'attributes',
+        };
 
         return [
-            'models'     => $results->first() instanceof Model,
+            'models'     => $models,
             'columns'    => $this->columnWeights,
             'decoration' => $decoration,
-            'rows'       => $results->map(fn ($row) => $row instanceof Model
-                ? ['key' => $row->getKey(), 'scores' => array_intersect_key($row->getAttributes(), $scores)]
-                : (array) $row)->all(),
+            'rows'       => $results->map(fn ($row) => match ($models) {
+                'key'        => ['key' => $row->getKey(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
+                'attributes' => ['attributes' => $row->getRawOriginal(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
+                default      => (array) $row,
+            })->all(),
         ];
     }
 
     /**
-     * A cached result for this request (rulings ER-58, ER-83): a plain query builder's rows as
-     * stdClass again; models re-read by key, in the cached order, through the current query — its
+     * A cached result for this request (rulings ER-58, ER-83, ER-92): a plain query builder's rows
+     * as stdClass again; models re-read by key, in the cached order, through the current query — its
      * global scopes, and its eager loads with their constraint closures plus the relation paths
      * searchIn() reads — so a row deleted since is dropped and retrieved listeners run for this
-     * viewer. Then highlighted and debugged as a live get() would (decorate()). Costs the keyed
-     * read and its eager loads on a hit.
+     * viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
+     * retrieved listeners run, then the same eager loads — and served as cached, a row deleted
+     * since included, until the entry expires. Then highlighted and debugged as a live get() would
+     * (decorate()). Costs the keyed read and the eager loads on a hit.
      */
     private function fromCachePayload(array $payload): Collection
     {
@@ -1244,19 +1258,19 @@ class SearchBuilder
             $query->with($this->relationPaths());
         }
 
-        $found = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($query, array_values(array_unique(array_column($payload['rows'], 'key'))))
-            ->keyBy(fn (Model $model) => $model->getKey());
-        $rows  = [];
-        $seen  = [];
+        if ($payload['models'] === 'attributes') {
+            $hydrated = $query->hydrate(array_column($payload['rows'], 'attributes'))->all();
+            $found    = $hydrated === [] ? [] : $query->eagerLoadRelations($hydrated);
+        } else {
+            $found = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($query, array_column($payload['rows'], 'key'))
+                ->keyBy(fn (Model $model) => $model->getKey());
+        }
+        $rows = [];
 
-        foreach ($payload['rows'] as $row) {
-            if (($model = $found[$row['key']] ?? null) === null) {
-                continue;
+        foreach ($payload['rows'] as $i => $row) {
+            if (($model = $found[$payload['models'] === 'key' ? $row['key'] : $i] ?? null) === null) {
+                continue; // deleted since it was cached
             }
-            // A join can repeat a model; each row keeps its own scores.
-            $model = isset($seen[$row['key']]) ? clone $model : $model;
-            $seen[$row['key']] = true;
-
             foreach ($row['scores'] as $name => $value) {
                 $model->{$name} = $value;
             }
