@@ -128,16 +128,22 @@ class IndexManager
         $indexed = [];
 
         foreach (array_chunk($modelIds, self::ROWS_PER_UPSERT) as $chunk) {
-            DB::table('fuzzy_index_documents')->upsert(
+            $this->upsertShared(
+                'fuzzy_index_documents',
                 array_map(fn ($id) => ['model_type' => $modelType, 'model_id' => $id, 'doc_length' => 0], $chunk),
                 ['model_type', 'model_id'],
                 ['model_type'] // a no-op update: the conflict branch only takes the row lock
             );
 
+            // SQL Server: UPDLOCK holds the row locks to commit; the rows exist (the upsert just
+            // wrote them), so Laravel's HOLDLOCK only added key-range locks, which reach the
+            // neighbouring keys: other writes' rows. FORCESEEK: for an IN list on a small table SQL
+            // Server scanned the model type's rows instead, locking them all. Either way parallel
+            // batches for different rows deadlocked.
             $rows = DB::table('fuzzy_index_documents')
                 ->where('model_type', $modelType)
                 ->whereIn('model_id', $chunk)
-                ->lockForUpdate()
+                ->lock(DB::connection()->getDriverName() === 'sqlsrv' ? 'with(rowlock,updlock,forceseek)' : true)
                 ->pluck('doc_length', 'model_id');
 
             foreach ($rows as $id => $length) {
@@ -491,7 +497,8 @@ class IndexManager
                     foreach ($chunk as $term => $increment) {
                         $rows[] = ['term' => (string) $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)];
                     }
-                    DB::table('fuzzy_index_terms')->upsert(
+                    $this->upsertShared(
+                        'fuzzy_index_terms',
                         $rows,
                         ['term'],
                         // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
@@ -804,6 +811,26 @@ class IndexManager
     }
 
     /**
+     * upsert() for a key another write may insert at the same moment: a new document row, a new
+     * word, a model type's meta row. SQL Server's MERGE decides "not matched" without locking the
+     * missing key, so two writes both insert it and the second fails (2601/2627) once the first
+     * commits; run again, the MERGE finds the row and updates it. Only the failed statement rolls
+     * back, so the write keeps its transaction and its locks. The other databases' upserts take
+     * the conflict branch instead.
+     */
+    private function upsertShared(string $table, array $rows, array $uniqueBy, array $update): void
+    {
+        retry(
+            self::ATTEMPTS,
+            fn () => DB::table($table)->upsert($rows, $uniqueBy, $update),
+            0,
+            fn (\Throwable $e) => $e instanceof \Illuminate\Database\QueryException
+                && in_array($e->errorInfo[1] ?? null, [2601, 2627], true)
+                && DB::connection()->getDriverName() === 'sqlsrv',
+        );
+    }
+
+    /**
      * Guarantee the meta row exists without clobbering its counters.
      *
      * upsert() is implemented on every supported driver (MySQL/MariaDB ON DUPLICATE KEY,
@@ -812,7 +839,8 @@ class IndexManager
      */
     private function ensureMetaRow(string $modelType): void
     {
-        DB::table('fuzzy_index_meta')->upsert(
+        $this->upsertShared(
+            'fuzzy_index_meta',
             [[
                 'model_type'     => $modelType,
                 'total_docs'     => 0,

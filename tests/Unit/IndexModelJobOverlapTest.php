@@ -330,8 +330,11 @@ class IndexModelJobOverlapTest extends TestCase
      * only within itself, two batches locked the words in opposite orders across statements
      * (P: lima at +1, kilo at +2; Q: kilo at +1, lima at +2), and on PostgreSQL many batches
      * deadlocked on all three attempts. A write now inserts its new words in one sorted order
-     * (ER-74). MySQL/MariaDB keep one statement per increment: there InnoDB's duplicate-key gap
-     * locks cycle in any order, so a batch may still retry, and only the index is checked.
+     * (ER-74). On SQL Server the batches also deadlocked on the document claim (its key-range
+     * locks and scan reached the other batches' rows), and two MERGEs inserting one new word at
+     * once failed the second on the duplicate key. MySQL/MariaDB keep one statement per
+     * increment: there InnoDB's duplicate-key gap locks cycle in any order, so a batch may still
+     * lose its attempts, and only the index is checked.
      */
     public function test_parallel_batches_that_add_the_same_new_words_do_not_lose_all_their_attempts(): void
     {
@@ -386,7 +389,7 @@ class IndexModelJobOverlapTest extends TestCase
         $failed = array_values(preg_grep('/^failed/', $lines));
         $report = count($failed) . ' of 20 batches failed, ' . (count($lines) - 2 * count($failed)) . ' retried: ' . ($failed[0] ?? '');
 
-        if ($this->dbDriver === 'pgsql') {
+        if (in_array($this->dbDriver, ['pgsql', 'sqlsrv'], true)) {
             $this->assertSame([], $failed, $report);
             $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
         }
