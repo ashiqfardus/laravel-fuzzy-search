@@ -100,6 +100,19 @@ class IndexModelJobOverlapTest extends TestCase
         }, 200);
     }
 
+    /** Whether $e (or an exception it wraps) is a connection-class SQLSTATE: 08xxx. */
+    private function lostConnection(\Throwable $e): bool
+    {
+        for (; $e !== null; $e = $e->getPrevious()) {
+            $state = $e instanceof \PDOException || $e instanceof \Illuminate\Database\QueryException ? (string) ($e->errorInfo[0] ?? $e->getCode()) : '';
+            if (str_starts_with($state, '08')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function race(\Closure $child, \Closure $parent, string $at, int $pause, int $delay, bool $pauseParent = true): array
     {
         // function_exists(), not extension_loaded(): disable_functions can remove them too.
@@ -427,9 +440,24 @@ class IndexModelJobOverlapTest extends TestCase
                 if ($pid === 0) {
                     try {
                         DB::setDefaultConnection('race');
-                        $this->connectRace();
                         \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback\n", FILE_APPEND));
-                        app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
+                        for ($try = 1; ; $try++) {
+                            try {
+                                $this->connectRace();
+                                app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
+                                break;
+                            } catch (\Throwable $e) {
+                                // A dropped connection (SQLSTATE 08xxx) is the CI server, not the lock
+                                // order this test counts: the batch reconnects and runs again, as a
+                                // queued job would. The write is idempotent, so a rerun is safe.
+                                if ($try < 3 && $this->lostConnection($e)) {
+                                    file_put_contents($log, 'reconnect: ' . strtok($e->getMessage(), "\n") . "\n", FILE_APPEND);
+                                    DB::purge('race');
+                                    continue;
+                                }
+                                throw $e;
+                            }
+                        }
                     } catch (\Throwable $e) {
                         file_put_contents($log, 'failed: ' . strtok($e->getMessage(), "\n") . "\n", FILE_APPEND);
                     } finally {
@@ -446,7 +474,8 @@ class IndexModelJobOverlapTest extends TestCase
         $lines = is_file($log) ? file($log, FILE_IGNORE_NEW_LINES) : [];
         @unlink($log);
         $failed = array_values(preg_grep('/^failed/', $lines));
-        $report = count($failed) . ' of 40 batches failed, ' . (count($lines) - 2 * count($failed)) . ' retried: ' . ($failed[0] ?? '');
+        $report = count($failed) . ' of 40 batches failed, ' . count(preg_grep('/^rollback/', $lines)) . ' rolled back, '
+            . count(preg_grep('/^reconnect/', $lines)) . ' reconnected: ' . ($failed[0] ?? '');
 
         $this->assertSame([], $failed, $report);
         $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
