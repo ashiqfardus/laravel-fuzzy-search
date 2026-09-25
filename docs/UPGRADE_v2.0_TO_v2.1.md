@@ -193,7 +193,7 @@ analytics, `suggest()` and the tokenizers.
 ### Config and PHP API
 
 - **`FuzzySearchExecuted` fires in more places.** A BM25 search that matches nothing fires it, in-memory searches fire it (see [Search analytics](#search-analytics-new)), and `simplePaginate()` reports the page size in `resultCount`, not the look-ahead row.
-- **Config keys that were documented but inert now take effect** (`scoring.*`, `highlighting.*`, `performance.max_patterns`, `unicode.normalize`, `similar_text.min_percentage`, `cache.*`) — see [below](#config-keys-that-now-take-effect).
+- **Config keys that were documented but inert now take effect** (`scoring.*`, `highlighting.*`, `performance.max_patterns`, `unicode.normalize`, `similar_text.min_percentage`, `cache.*`, `synonyms`) — see [below](#config-keys-that-now-take-effect).
 - **New config keys:** `indexing.job` (`tries`, `backoff`, `timeout`) bounds retries of
   `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) sets the chunk size used
   when checking BM25 rankings against a constrained query.
@@ -228,12 +228,14 @@ were parsed into the config array but never read by the package. As of 2.1.0 the
 | `unicode.normalize` | NFC-normalise search terms by default | Ignored — normalization was opt-in per query only | `false` |
 | `similar_text.min_percentage` | The least `similar_text()` percentage a `similar_text` match may have, enforced in SQL as a length bound (a match is at most `t·(200 − p) / p` characters for a `t`-character term) | Ignored — `similar_text` matched every value containing the term | `70` |
 | `cache.enabled` / `driver` / `ttl` / `prefix` | Cache every `get()`, `first()` and `simplePaginate()` without calling `cache()`; the store; the lifetime in **seconds**; the generated keys' prefix | Ignored — only `cache()` cached, for its own minutes | `false` / `'default'` / `3600` / `'fuzzy_search_'` |
+| `synonyms` | Default synonym mappings for every search; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top | Ignored — only `$searchable['synonyms']` and `withSynonyms()` reached a search | `[]` |
 
 **If you left these keys untouched** (or never published `config/fuzzy-search.php`), nothing
 changes for the first four rows: the new defaults reproduce the same values the PHP scorer already
 used internally, so ranking is identical. `similar_text.min_percentage` is the exception: its
 default of 70 now applies, so `similar_text` searches return fewer rows (see Behaviour changes).
-An untouched `cache.enabled` is `false`, so nothing is cached unless you call `cache()`.
+An untouched `cache.enabled` is `false`, so nothing is cached unless you call `cache()`. An untouched
+`synonyms` is empty; mappings you put there now apply to every search.
 
 That "identical" claim is about the PHP-side rescoring. The SQL `ORDER BY` used while fetching
 the initial candidate set is a separate story: it previously used hard-coded weights
