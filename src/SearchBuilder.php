@@ -2299,12 +2299,13 @@ class SearchBuilder
     }
 
     /**
-     * Get first result.
+     * Get first result: a model on an Eloquent source, a row on a query builder (stdClass, or an
+     * array under an array fetch mode), or null.
      *
      * The limit it sets is restored afterwards (as simplePaginate() does with its look-ahead),
      * so first() leaves the builder exactly as it found it.
      */
-    public function first(): ?Model
+    public function first(): Model|\stdClass|array|null
     {
         $limit       = $this->limit;
         $this->limit = 1;
