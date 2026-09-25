@@ -799,6 +799,8 @@ It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInv
 
 `orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), and `_score` still carries each one's BM25 score. The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
 
+Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty query matches nothing, with or without `allow_empty_search`.
+
 → Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
 
 ---

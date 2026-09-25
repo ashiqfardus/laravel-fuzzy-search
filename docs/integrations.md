@@ -109,6 +109,8 @@ The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::se
 
 **Query length.** The engine searches the first `query.max_term_length` characters of the query (default 128), as `Model::search()->useInvertedIndex()` does; longer input is cut, never rejected. A page past the last match is empty, however large its number.
 
+**Result size and empty queries.** Without `take()`, `get()` returns only the first 15 matches, not every match: call `take($n)` for more, or `paginate()`, whose default page size is the model's `getPerPage()` (15). An empty or whitespace-only query matches nothing: no rows and a total of 0, whatever `allow_empty_search` says, and no `EmptySearchTermException`.
+
 **Indexing.** `$model->searchable()` and Scout's import go through the engine's `update()`, which writes a collection of models in one transaction and indexes each row as it is stored, read the way Scout's own jobs read it: without global scopes, and keeping a trashed row while `scout.soft_delete` is on. Unsaved changes on an instance are not indexed. An error on one model (a `searchableText()` value that cannot be indexed, or a write that loses all three deadlock attempts) leaves none of that collection indexed.
 
 **Caching.** Neither Scout's builder nor this engine caches results. Wrap the Scout call in Laravel's cache, with a key that covers everything that changes the result — the term, the page, the constraints, the tenant:
