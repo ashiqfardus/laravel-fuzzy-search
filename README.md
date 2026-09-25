@@ -777,7 +777,7 @@ Post::search('tolkien')->useInvertedIndex()->get();
 - **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
 - BM25 tends to beat LIKE once a table passes roughly 10k+ rows; below that, LIKE is simpler to operate.
-- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, not thrown from `save()`. On SQL Server, indexing inside an open transaction (Scout with `after_commit` off, or `searchable()` inside `DB::transaction()`) can deadlock; see [Production Setup](docs/bm25.md#production-setup).
+- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, not thrown from `save()`. On SQL Server, indexing inside an open transaction (Scout with `after_commit` off, or `searchable()` inside `DB::transaction()`) can deadlock; see [Production Setup](docs/bm25.md#production-setup). On PostgreSQL the package analyzes the index tables after a rebuild and as they grow; after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
 
 → Full guide: [docs/bm25.md](docs/bm25.md)
 
