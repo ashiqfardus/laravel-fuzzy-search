@@ -136,6 +136,29 @@ class AccentVariantTest extends TestCase
     }
 
     /**
+     * Ruling ER-65, clarified: leaves share a group by their folded form only while folding is on
+     * for the query (the global default or an explicit opt-in). With it off, a typed "müller" and
+     * "muller" are two terms and add up; with it on they are one term in two forms, which scores
+     * its best.
+     */
+    public function test_typed_accent_variants_add_up_only_while_folding_is_off(): void
+    {
+        $raw = function (bool $fold, bool $optIn = false): float {
+            config(['fuzzy-search.unicode.accent_insensitive' => $fold]);
+            $builder = $optIn ? $this->builder()->accentInsensitive() : $this->builder();
+
+            return $builder->search('müller | muller')->searchIn(['name'])->extended()->get()->keyBy('name')['Muller']->_raw_score;
+        };
+
+        config(['fuzzy-search.unicode.accent_insensitive' => false]);
+        $exact = $this->builder()->search('muller')->searchIn(['name'])->extended()->get()->keyBy('name')['Muller']->_raw_score;
+
+        $this->assertSame($exact, $raw(true), 'the global default: one group, its best member');
+        $this->assertSame($exact, $raw(false, true), 'an explicit opt-in: one group, its best member');
+        $this->assertGreaterThan($exact, $raw(false), 'folding off: two groups, summed');
+    }
+
+    /**
      * The relevance ORDER BY decides which rows survive the max_candidates cut before PHP
      * rescores them, so each of its tiers matches either form.
      */

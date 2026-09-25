@@ -2639,18 +2639,20 @@ class SearchBuilder
      * exactly as the search term does. $terms are an extended query's leaf terms; null scores the
      * search term in every form it was searched in (termVariants()).
      *
-     * Ruling ER-65: a group is the terms with one accent-folded form — the search term and its
-     * folded form, or an extended leaf and the folded twin withTermVariants() adds — so a twin
-     * never counts twice.
+     * Ruling ER-65: while accent folding is on for the query (foldsAccents()), a group is the terms
+     * with one accent-folded form — the search term and its folded form, or an extended leaf and
+     * the folded twin withTermVariants() adds — so a twin never counts twice. With folding off,
+     * each distinct term is its own group: a typed "müller" and "muller" add up.
      *
      * @param string[]|null $terms
      */
     protected function calculateRelevanceScores(Collection $results, ?array $terms = null): Collection
     {
         $groups = [];
+        $folds  = $this->foldsAccents();
         foreach ($terms ?? $this->termVariants($this->searchTerm) as $term) {
             $term = mb_strtolower($term, 'UTF-8');
-            $key  = trim($this->removeAccents($term));
+            $key  = $folds ? trim($this->removeAccents($term)) : $term;
             $groups[$key === '' ? $term : $key][] = $term;
         }
         $groups = array_values($groups);

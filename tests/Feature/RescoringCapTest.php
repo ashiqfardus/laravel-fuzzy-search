@@ -172,11 +172,13 @@ class RescoringCapTest extends TestCase
     }
 
     /**
-     * Ruling ER-65: a term and its accent-folded twin are one group, and the budget counts the
-     * group once, by its longest member: 4 + 250 characters are within it, 4 + 4 + 250 are not.
+     * Ruling ER-65: while folding is on, a term and its accent-folded twin are one group, and the
+     * budget counts the group once, by its longest member: 4 + 250 characters are within it,
+     * 4 + 4 + 250 are not.
      */
     public function test_the_budget_counts_a_folded_group_once(): void
     {
+        config(['fuzzy-search.unicode.accent_insensitive' => true]);
         $scorer = $this->scorer();
         $john   = User::query()->where('name', 'John Doe')->first();
         $long   = substr(str_repeat('johndoe', 40), 0, 250); // not contained in "john doe": similarity only
