@@ -219,24 +219,6 @@ trait Searchable
     }
 
     /**
-     * The four $searchable extras that search() applies on top of columns/algorithm/
-     * typo_tolerance. Public so FederatedSearch::queryFor() can apply them to the bare
-     * SearchBuilder it builds for its searchIn()-narrowed path (getSearchableConfig() itself
-     * stays protected).
-     */
-    public function getSearchableExtras(): array
-    {
-        $config = $this->getSearchableConfig();
-
-        return [
-            'stop_words'         => $config['stop_words'] ?? null,
-            'synonyms'           => $config['synonyms'] ?? null,
-            'accent_insensitive' => $config['accent_insensitive'] ?? null,
-            'options'            => $config['options'] ?? null,
-        ];
-    }
-
-    /**
      * Per-model index pipeline overrides (Phase 7): tokenizer, stemmer, stemmer_language,
      * locale. Only the keys declared in $searchable are returned; IndexManager fills the rest
      * from config. Changing any of them requires `fuzzy-search:rebuild --fresh`.
