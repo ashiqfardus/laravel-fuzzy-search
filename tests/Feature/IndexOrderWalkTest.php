@@ -89,8 +89,33 @@ class IndexOrderWalkTest extends TestCase
         }
     }
 
-    /** Finding 12: past one candidate chunk the walk reads the ordered table a bounded page at a time. */
-    public function test_the_walk_reads_bounded_pages(): void
+    /**
+     * H1 (round 8): a one-to-many join repeats a model once per joined row. Each model is served
+     * once, at its first row, and total() counts models (every case: JoinedOrderedIndexPageTest).
+     */
+    public function test_a_join_that_repeats_a_model_serves_it_once_in_the_order(): void
+    {
+        $this->seedSagas();
+
+        foreach ($this->walks() as $walk => $chunk) {
+            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+            $make = fn () => Post::search('saga')->useInvertedIndex()
+                ->join('comments', 'comments.post_id', '=', 'posts.id')->select('posts.*')->orderBy('posts.title');
+
+            $this->assertSame(['Saga Three', 'Saga Two'], $make()->get()->pluck('title')->all(), "{$walk} get");
+            $this->assertSame(2, $make()->count(), "{$walk} count");
+
+            $pages = array_map(fn ($page) => $make()->paginate(1, 'page', $page), [1, 2, 3]);
+            $this->assertSame([['Saga Three'], ['Saga Two'], []], array_map(fn ($p) => collect($p->items())->pluck('title')->all(), $pages), "{$walk} pages");
+            $this->assertSame(2, $pages[0]->total(), "{$walk} total");
+        }
+    }
+
+    /**
+     * Finding 12: past one candidate chunk the ordered read is bounded, never one unbounded result.
+     * H1 (round 8): it reads the page itself, get()'s 15 rows, not 1,000 rows at a time from the first.
+     */
+    public function test_the_ordered_read_is_bounded_by_the_page(): void
     {
         app(IndexManager::class)->indexBatch(User::all());
         config(['fuzzy-search.bm25.candidate_chunk' => 1]);
@@ -104,7 +129,7 @@ class IndexOrderWalkTest extends TestCase
         $this->assertSame(['John Doe', 'Johnny Bravo', 'Jon Snow'], $names);
         $this->assertNotSame([], $walk);
         foreach ($walk as $sql) {
-            $this->assertStringContainsString('1000', $sql, 'a page of 1,000 rows, not one unbounded result');
+            $this->assertMatchesRegularExpression('/\blimit 15\b|\btop 15\b|\bfetch next 15 rows\b/i', $sql, "not the page: {$sql}");
         }
     }
 

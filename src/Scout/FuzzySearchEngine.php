@@ -26,9 +26,6 @@ use Laravel\Scout\Exceptions\NotSupportedException;
  */
 class FuzzySearchEngine extends Engine
 {
-    /** The alias the ordered walk reads the key under — see orderedKeys(). */
-    private const WALK_KEY = 'fuzzy_walk_key';
-
     public function __construct(
         private IndexManager $indexManager,
         private Bm25Scorer   $scorer,
@@ -36,6 +33,10 @@ class FuzzySearchEngine extends Engine
 
     public function update($models): void
     {
+        if ($models->isNotEmpty()) {
+            self::requirePackageTrait($models->first());
+        }
+
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
         // a trashed model kept while scout.soft_delete is on (ER-72).
         $this->indexManager->indexBatch($models, scout: true);
@@ -50,75 +51,70 @@ class FuzzySearchEngine extends Engine
 
     public function search(Builder $builder)
     {
-        $modelType = $builder->model::class;
-        $orders    = $this->orders($builder);
-        $terms     = $this->terms($builder);
-        $limit     = $builder->limit ?? 15;
-
-        $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
-        $query  = $this->constrainedQuery($builder);
-
-        // 'total' is the match count — the ranked ids (that satisfy the constraints) — not
-        // the size of the page cut from them.
-        $total = $query === null || empty($ranked) ? count($ranked) : RankedCandidates::count($query, array_keys($ranked));
-        $keys  = $this->resultKeys($builder, $query, $orders, $ranked, $limit);
-
-        return [
-            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit)), $builder->model),
-            'total'   => $total,
-        ];
+        return $this->results($builder, 0, $builder->limit ?? 15);
     }
 
     public function paginate(Builder $builder, $perPage, $page)
     {
         // Scout resolves ?page to any whole number of at least 1. Capped as SearchBuilder::resolvePage()
         // caps it, so that no offset (plus one page) overflows into a float: past that, every page is empty.
-        $perPage   = max(1, (int) $perPage);
-        $page      = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
-        $modelType = $builder->model::class;
-        $orders    = $this->orders($builder);
-        $terms     = $this->terms($builder);
-        $offset    = ($page - 1) * $perPage;
-        $weights   = $this->columnWeights($builder);
+        $perPage = max(1, (int) $perPage);
+        $page    = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
 
-        $ranked = $this->scorer->rank($terms, $modelType, $weights);
+        return $this->results($builder, ($page - 1) * $perPage, $perPage);
+    }
+
+    /**
+     * The page [$offset, $offset + $limit) of the builder's matches, scored, and their total: the
+     * match count, not the size of the page cut from them, and what the pages serve, as on
+     * SearchBuilder's index path. In rank order it is the ranked matches the builder's constraints
+     * accept (RankedCandidates::accepted()), cut after the constraints (otherwise a selective where()
+     * returns a short or empty page while matches exist further down the ranking), and none past
+     * bm25.max_postings_per_term, where the ranking ends. With orderBy() it is every match the
+     * constraints accept, in that order (orderedPage()). A page past the total reads no row.
+     *
+     * @return array{results: Collection, total: int}
+     */
+    private function results(Builder $builder, int $offset, int $limit): array
+    {
+        self::requirePackageTrait($builder->model);
+
+        $orders = $this->orders($builder);
+        $terms  = $this->terms($builder);
+        $ranked = $this->scorer->rank($terms, $builder->model::class, $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
 
-        // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
-        $total = $query === null || empty($ranked)
-            ? $this->scorer->count($terms, $modelType, $weights)
-            : RankedCandidates::count($query, array_keys($ranked));
-        // A page past every ranked id is empty: never walk to it.
-        $keys  = $offset < count($ranked) ? $this->resultKeys($builder, $query, $orders, $ranked, $offset + $perPage) : [];
+        if ($ranked !== [] && $orders !== []) {
+            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $terms, $offset, $limit);
+        } else {
+            $accepted = $query === null || $ranked === [] ? $ranked : RankedCandidates::accepted($query, $ranked, $terms, $builder->model::class, $this->columnWeights($builder));
+            $total    = count($accepted);
+            $keys     = array_slice(array_keys($accepted), $offset, $limit);
+        }
 
         return [
-            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage)), $builder->model),
+            'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
             'total'   => $total,
         ];
     }
 
     /**
-     * The first $needed matches, in result order: the ranking, cut after the builder's
-     * constraints (otherwise a selective where() returns a short or empty page while matches
-     * exist further down the ranking) — or, with orderBy(), the builder's own order.
+     * The engine indexes what the package's Searchable trait declares: getSearchableColumns() (or a
+     * searchableText() hook), which IndexManager::indexesModel() reads. A model with Scout's trait
+     * alone has neither, and was indexed as nothing and searched as nothing, silently, where v2.0.1
+     * threw on the missing method (ruling D3). Indexing and searching it throw again, naming the
+     * fix; delete() and flush() only remove rows, as in v2.0.1, so deleting a record still works.
      *
-     * @param  array<int, array{column: string, direction: string}> $orders
-     * @param  array<int|string, float>                             $ranked model_id => score, best first
-     * @return array<int|string>
+     * @throws \LogicException
      */
-    private function resultKeys(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, int $needed): array
+    private static function requirePackageTrait(\Illuminate\Database\Eloquent\Model $model): void
     {
-        if (empty($ranked)) {
-            return [];
+        if (!method_exists($model, 'getSearchableColumns') && !method_exists($model, 'searchableText')) {
+            throw new \LogicException(sprintf(
+                '%s is on the fuzzy-search Scout driver without the package\'s trait, so it has nothing to index or search. Add `use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;` to the model, beside Scout\'s trait (see the Scout section of the README).',
+                $model::class
+            ));
         }
-
-        if ($orders !== []) {
-            return $this->orderedKeys($query ?? $builder->model->newQuery(), $orders, $ranked, $needed, $this->terms($builder), $this->columnWeights($builder));
-        }
-
-        return $query === null
-            ? array_slice(array_keys($ranked), 0, $needed)
-            : RankedCandidates::keys($query, array_keys($ranked), $needed);
     }
 
     /**
@@ -138,72 +134,48 @@ class FuzzySearchEngine extends Engine
     }
 
     /**
-     * The first $needed ranked ids that $query returns, in the builder's order, then by key
-     * descending for ties (Scout's database engine breaks them the same way, and a tie must not
-     * move between one page's query and the next).
-     *
-     * The query reads only ranked documents, as SearchBuilder's ordered walk does (ruling ER-82):
-     * up to one bm25.candidate_chunk of matches the ids restrict it; past that, where binding every
-     * id could exceed SQL Server's 2,100-parameter limit, a subquery on the postings does
-     * (Bm25Scorer::whereRanked()). That needs the index on the model's connection; on another one
-     * the order covers the top max_candidates ranked ids (at least one chunk), listed. The keys are
-     * read a page of 1,000 at a time (lazy(), never one buffered result set: pdo_mysql and pdo_pgsql
-     * fetch a whole result before its first row) until $needed of them are ranked. The database
-     * still decides the order, and the key tie-break makes it total, so no key moves between one
-     * page of the walk and the next.
+     * With orderBy(): the total and the keys of the page [$offset, $offset + $limit) of the matches
+     * the builder's constraints accept, in the builder's order, then by key descending for ties
+     * (Scout's database engine breaks them the same way, and a tie must not move between one page's
+     * query and the next). As on SearchBuilder's ordered page, the query reads only matches
+     * (RankedCandidates::matches(): on the index's connection every one, past
+     * bm25.max_postings_per_term too), so its count is the total, a page past it reads no row, and
+     * the page is one offset/limit read however deep (RankedCandidates::orderedKeys()). A match past
+     * the cap has no BM25 score: its score is 0.
      *
      * @param  array<int, array{column: string, direction: string}> $orders
-     * @param  array<int|string, float>                             $ranked
-     * @param  string[]                                             $terms   the terms $ranked was scored for
-     * @param  array<string, int|float>                             $weights the column weights it was scored with
-     * @return array<int|string>
+     * @param  array<int|string, float>                             $ranked model_id => score
+     * @param  string[]                                             $terms  the terms $ranked was scored for
+     * @return array{total: int, keys: array<int|string>}
      */
-    private function orderedKeys(EloquentBuilder $query, array $orders, array $ranked, int $needed, array $terms, array $weights): array
+    private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, array $terms, int $offset, int $limit): array
     {
-        $model = $query->getModel();
-        $ids   = array_keys($ranked);
-        $chunk = max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200));
+        $model = $builder->model;
 
-        $query = clone $query;
+        // No constraint means no __soft_deleted where either: withTrashed(), or scout.soft_delete off,
+        // when no trashed row is indexed. constrainedQuery() reads that state as withTrashed() too;
+        // newQuery()'s SoftDeletes scope dropped the trashed matches that total() counted.
+        $query ??= in_array(SoftDeletes::class, class_uses_recursive($model), true) ? $model->newQuery()->withTrashed() : $model->newQuery();
+        $query   = RankedCandidates::matches($query, $ranked, $terms, $model::class, $this->columnWeights($builder));
+        $total   = RankedCandidates::countModels($query);
 
-        // Added the way RankedCandidates does, so a caller's where(A)->orWhere(B) is wrapped first.
-        if (count($ids) > $chunk && $query->getQuery()->getConnection() === DB::connection()) {
-            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $this->scorer->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $terms, $model::class, $weights));
-        } else {
-            $ids = RankedCandidates::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
-            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
+        if ($offset >= $total || $limit < 1) {
+            return ['total' => $total, 'keys' => []];
         }
 
-        // The caller's select list stays, as in SearchBuilder's walk: an order may name its alias
-        // (withCount()'s posts_count, a selectRaw() column). The key is read through its own alias.
+        $key   = RankedCandidates::keyColumn($query);
         $query = $query->toBase();
-        $query->columns ??= ['*'];
-        $query->addSelect($model->getQualifiedKeyName() . ' as ' . self::WALK_KEY);
 
         foreach ($orders as $order) {
             $query->orderBy($order['column'], $order['direction']);
         }
 
         // SQL Server rejects a column named twice in ORDER BY.
-        if (array_intersect(array_column($orders, 'column'), [$model->getKeyName(), $model->getQualifiedKeyName()]) === []) {
-            $query->orderBy($model->getQualifiedKeyName(), 'desc');
+        if (array_intersect(array_column($orders, 'column'), [$model->getKeyName(), $model->getQualifiedKeyName(), $key]) === []) {
+            $query->orderBy($key, 'desc');
         }
 
-        $keys = [];
-
-        foreach ($query->lazy(1000) as $row) {
-            $key = $row->{self::WALK_KEY};
-
-            if (isset($ranked[$key])) {
-                $keys[$key] = true; // a join may repeat a model
-
-                if (count($keys) >= $needed) {
-                    break;
-                }
-            }
-        }
-
-        return array_keys($keys);
+        return ['total' => $total, 'keys' => RankedCandidates::orderedKeys($query, $key, $offset, $limit)];
     }
 
     /**
@@ -239,7 +211,7 @@ class FuzzySearchEngine extends Engine
     /**
      * The model's BM25F column weights, resolved exactly as Model::search() resolves them, so a
      * Scout search ranks identically to Model::search()->useInvertedIndex(). Empty for a model
-     * that does not use the package's Searchable trait — rank() then weighs every column 1.
+     * that declares its columns without the package's trait — rank() then weighs every column 1.
      *
      * @return array<string, int>
      */
@@ -317,7 +289,7 @@ class FuzzySearchEngine extends Engine
     {
         $picked = [];
         foreach ($keys as $key) {
-            $picked[$key] = $ranked[$key];
+            $picked[$key] = $ranked[$key] ?? 0.0; // an ordered page's match past the ranking's cap
         }
         return $picked;
     }

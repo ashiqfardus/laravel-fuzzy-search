@@ -75,8 +75,8 @@ class Bm25Scorer
     }
 
     /**
-     * Count the number of distinct models that contain at least one query term.
-     * Used by FuzzySearchEngine::paginate() to obtain an accurate total (C13).
+     * Count the number of distinct models that contain at least one query term: every match, those
+     * past rank()'s max_postings_per_term too.
      *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
@@ -105,19 +105,23 @@ class Bm25Scorer
     }
 
     /**
-     * Restrict $query, a query on $modelType's table, to the documents rank() can score for $terms,
-     * without binding their ids (ruling ER-82): EXISTS one of their postings under a column that is
-     * not weighted out, matched on $qualifiedKey. The bindings are the model type and the terms, so
-     * the ordered index walks read only matches, however many there are. model_id is a string
-     * column, so the key is compared as a string (PostgreSQL has no integer = varchar operator);
-     * only for a query on the connection the index lives on, the default one.
+     * Restrict $query, a query on $modelType's table, to the documents that hold $terms, those past
+     * rank()'s max_postings_per_term too, without binding their ids (ruling ER-82): EXISTS one of
+     * their postings under a column that is not weighted out, matched on $qualifiedKey. The bindings
+     * are the model type and the terms, so an ordered index page reads only matches, however many
+     * there are. model_id is a string column, so the key is compared as a string (PostgreSQL has no
+     * integer = varchar operator); only for a query on the connection the index lives on, the
+     * default one.
      *
      * On MySQL and MariaDB a string cast takes the connection's collation, and a connection whose
      * collation differs from model_id's failed with 1267 "Illegal mix of collations". The key is
      * cast into model_id's own character set and collation (see modelIdCollation()), explicitly, so
      * the comparison is the column's own whatever the connection says, and the index on model_id is
      * still used. A binary comparison (CAST AS BINARY, COLLATE utf8mb4_bin) is also
-     * collation-free, but MySQL then reads every posting of the term for each row.
+     * collation-free, but MySQL then reads every posting of the term for each row. On SQL Server
+     * the cast keeps the key column's collation, and a key collated unlike the database failed with
+     * "Cannot resolve the collation conflict": it takes the database's default, model_id's own, on
+     * the key's side, so the index on model_id is still used.
      *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
@@ -129,13 +133,19 @@ class Bm25Scorer
         $key    = $query->getGrammar()->wrap($qualifiedKey);
         $key    = match (true) {
             DbDialect::isMySqlFamily($driver) => self::castToModelId($query->getConnection(), $key),
-            $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191))",
+            $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191)) COLLATE DATABASE_DEFAULT",
             $driver === DbDialect::SQLITE     => "CAST({$key} AS TEXT)",
             default                           => "CAST({$key} AS VARCHAR)",
         };
 
-        $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key) {
-            $postings->selectRaw('1')
+        // MySQL (a MariaDB server ignores the hint): FirstMatch, one index probe per row. With
+        // model_id in utf8mb4_bin, and an index on the order column, MySQL chose a hash semi-join it
+        // could not key on the cast key, whose cost grew with the square of the rows: 3.6 s at 100k
+        // matches, where FirstMatch takes 0.16 s.
+        $select = $driver === DbDialect::MYSQL ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1';
+
+        $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key, $select) {
+            $postings->selectRaw($select)
                 ->from('fuzzy_index_postings as fzr')
                 ->where('fzr.model_type', $modelType)
                 ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))

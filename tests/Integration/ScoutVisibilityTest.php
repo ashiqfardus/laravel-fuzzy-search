@@ -83,6 +83,41 @@ class ScoutVisibilityTest extends TestCase
         $this->assertNotContains('John Doe', ScoutSoftDeleteUser::scoutSearch('john')->get()->pluck('name')->all());
     }
 
+    /**
+     * H4 (round 8): withTrashed() leaves no soft-delete constraint, and the ordered read then ran on
+     * newQuery(), under the SoftDeletes scope: a trashed match was dropped while total() counted it.
+     */
+    public function test_with_trashed_keeps_the_trashed_matches_under_an_order(): void
+    {
+        foreach (['Zed Alpha', 'Zed Beta', 'Zed Gamma'] as $name) {
+            DB::table('users')->insert(['name' => $name, 'email' => strtolower(str_replace(' ', '.', $name)) . '@example.com', 'created_at' => now(), 'updated_at' => now()]);
+        }
+        ScoutSoftDeleteUser::where('name', 'like', 'Zed%')->get()->searchable();
+        ScoutSoftDeleteUser::where('name', 'Zed Beta')->first()->delete();
+
+        $names = fn ($results) => collect($results instanceof \Illuminate\Contracts\Pagination\Paginator ? $results->items() : $results)->pluck('name')->all();
+
+        // candidate_chunk 200: the ranked ids are listed; 1: the postings subquery restricts the read.
+        foreach ([200, 1] as $chunk) {
+            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+            $search = fn () => ScoutSoftDeleteUser::scoutSearch('zed')->withTrashed();
+
+            $this->assertEqualsCanonicalizing(['Zed Alpha', 'Zed Beta', 'Zed Gamma'], $names($search()->get()), "chunk {$chunk}: unordered get");
+            $this->assertSame(3, $search()->paginate(2)->total(), "chunk {$chunk}: unordered total");
+            $this->assertSame(['Zed Alpha', 'Zed Beta', 'Zed Gamma'], $names($search()->orderBy('name')->get()), "chunk {$chunk}: orderBy get");
+            $this->assertSame(['Zed Gamma', 'Zed Beta', 'Zed Alpha'], $names($search()->latest()->get()), "chunk {$chunk}: latest get");
+
+            $page = $search()->orderBy('name')->paginate(2);
+            $this->assertSame(3, $page->total(), "chunk {$chunk}: orderBy total");
+            $this->assertSame(['Zed Alpha', 'Zed Beta'], $names($page), "chunk {$chunk}: orderBy page 1");
+            $this->assertSame(['Zed Gamma'], $names($search()->orderBy('name')->paginate(2, 'page', 2)), "chunk {$chunk}: orderBy page 2");
+
+            // The soft-delete constraint still holds without withTrashed(), and onlyTrashed() still narrows.
+            $this->assertSame(['Zed Alpha', 'Zed Gamma'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->orderBy('name')->get()), "chunk {$chunk}: live rows");
+            $this->assertSame(['Zed Beta'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->onlyTrashed()->orderBy('name')->get()), "chunk {$chunk}: onlyTrashed");
+        }
+    }
+
     public function test_without_scout_soft_delete_a_trashed_model_leaves_the_index(): void
     {
         config(['scout.soft_delete' => false]);
