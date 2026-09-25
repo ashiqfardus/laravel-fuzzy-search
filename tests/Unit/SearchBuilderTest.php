@@ -198,9 +198,12 @@ class SearchBuilderTest extends TestCase
 
     public function test_use_index_method_is_chainable(): void
     {
-        $result = $this->builder->useIndex();
-        
+        $deprecations = $this->deprecationsFrom(function () use (&$result) {
+            $result = $this->builder->useIndex();
+        });
+
         $this->assertInstanceOf(SearchBuilder::class, $result);
+        $this->assertSame(['useIndex() is deprecated since v2.0.0; use useInvertedIndex() instead.'], $deprecations);
     }
 
     public function test_cache_method_is_chainable(): void
@@ -558,23 +561,5 @@ class SearchBuilderTest extends TestCase
 
         $this->assertSame(['name'], $debug['searchable_columns']); // not name + the configured email
         $this->assertSame('fuzzy', $debug['algorithm']);           // the rest of $searchable still applies
-    }
-
-    /** @return string[] the E_USER_DEPRECATED messages $callback raised */
-    private function deprecationsFrom(\Closure $callback): array
-    {
-        $deprecations = [];
-        set_error_handler(function (int $errno, string $message) use (&$deprecations): bool {
-            $deprecations[] = $message;
-            return true;
-        }, E_USER_DEPRECATED);
-
-        try {
-            $callback();
-        } finally {
-            restore_error_handler();
-        }
-
-        return $deprecations;
     }
 }
