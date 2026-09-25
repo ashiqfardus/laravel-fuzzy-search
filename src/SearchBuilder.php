@@ -1781,7 +1781,7 @@ class SearchBuilder
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class)
                 ->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $this->indexedTermWeights, $modelClass, $this->columnWeights));
         } else {
-            $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
+            $ids = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
         }
 

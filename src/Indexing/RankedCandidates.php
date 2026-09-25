@@ -108,7 +108,24 @@ final class RankedCandidates
      */
     private static function among(Builder $base, string $key, array $chunk): Builder
     {
+        $chunk = self::keysFor($base->getModel(), $chunk);
+
         return (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIn($key, $chunk));
+    }
+
+    /**
+     * $ids as $model's key column compares them. A ranking is keyed by model_id, and PHP turns an
+     * all-digit array key ('42') into an int. Bound as an int against a string key column, SQL
+     * Server converts the whole nvarchar column to int and fails on its first other key (22018,
+     * "Conversion failed when converting the nvarchar value 'abc-1' to data type int"), so a string
+     * key is bound as a string.
+     *
+     * @param  array<int|string> $ids
+     * @return array<int|string>
+     */
+    public static function keysFor(\Illuminate\Database\Eloquent\Model $model, array $ids): array
+    {
+        return $model->getKeyType() === 'string' ? array_map('strval', $ids) : $ids;
     }
 
     private static function chunkSize(?int $override): int

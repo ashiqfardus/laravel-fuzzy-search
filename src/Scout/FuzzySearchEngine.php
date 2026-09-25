@@ -64,7 +64,7 @@ class FuzzySearchEngine extends Engine
         $keys  = $this->resultKeys($builder, $query, $orders, $ranked, $limit);
 
         return [
-            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit))),
+            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit)), $builder->model),
             'total'   => $total,
         ];
     }
@@ -92,7 +92,7 @@ class FuzzySearchEngine extends Engine
         $keys  = $offset < count($ranked) ? $this->resultKeys($builder, $query, $orders, $ranked, $offset + $perPage) : [];
 
         return [
-            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage))),
+            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage)), $builder->model),
             'total'   => $total,
         ];
     }
@@ -170,7 +170,7 @@ class FuzzySearchEngine extends Engine
         if (count($ids) > $chunk && $query->getQuery()->getConnection() === DB::connection()) {
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $this->scorer->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $terms, $model::class, $weights));
         } else {
-            $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
+            $ids = RankedCandidates::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
             $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
         }
 
@@ -322,12 +322,18 @@ class FuzzySearchEngine extends Engine
         return $picked;
     }
 
-    /** @param array<int|string, float> $scores model_id => score, in rank order */
-    private function hydrate(array $scores): Collection
+    /**
+     * The results' model_id is the model's own key: a string key stays a string (see
+     * RankedCandidates::keysFor()), so map() binds it as one and keys() returns it as stored.
+     *
+     * @param array<int|string, float> $scores model_id => score, in rank order
+     */
+    private function hydrate(array $scores, \Illuminate\Database\Eloquent\Model $model): Collection
     {
-        return collect($scores)
-            ->map(fn($score, $modelId) => (object) ['model_id' => $modelId, 'score' => round($score, 6)])
-            ->values();
+        $ids = RankedCandidates::keysFor($model, array_keys($scores));
+
+        return collect(array_values($scores))
+            ->map(fn ($score, $i) => (object) ['model_id' => $ids[$i], 'score' => round($score, 6)]);
     }
 
     public function mapIds($results): Collection
