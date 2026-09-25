@@ -17,7 +17,7 @@ Use Fuse.js-style operators inside your search string for precise control over m
 | `=word` | Exact equality | `=John` |
 | `^word` | Prefix match | `^Doe` |
 | `word$` | Suffix match | `Sr$` |
-| `!word` | Exclude (NOT) | `!banned` |
+| `!word` | Exclude (NOT); a row whose searchable columns are NULL is kept | `!banned` |
 | `!^word` | Inverse prefix | `!^test` |
 | `!word$` | Inverse suffix | `!@spam.com$` |
 | `\|` | OR | `john \| jane` |
@@ -51,16 +51,17 @@ $users = User::search('admin (john | jane)')->extended()->get();
 "'manager !@temp.com$"   // Substring 'manager' but not @temp.com emails
 ```
 
+Relevance scores each positive leaf term on its own and adds the leaf scores up; an explicit `orderBy()` replaces the relevance order, and `stableRanking()` adds the primary key as the final tiebreak. While accent folding is on, a leaf and its accent-free form count once (the better of the two); with the shipped `unicode.accent_insensitive` default, `Müller` also matches `Muller`, and `!Müller` excludes both forms.
+
 ### Limits
 
 | Limit | Default | Config key |
 | --- | --- | --- |
-| Maximum tokens per query | 32 | `query.max_tokens` |
+| Maximum tokens per query (words, `\|` and parentheses each count; a query throws once it reaches the limit, so 32 allows 31) | 32 | `query.max_tokens` |
 | Maximum nesting depth | 16 | `query.max_depth` |
 | Maximum characters per term | 128 | `query.max_term_length` |
 
-`query.max_term_length` applies to the LIKE path and to every extended-syntax token: a longer
-term is silently truncated before the driver generates its LIKE patterns.
+`query.max_term_length` applies to the LIKE path, to every extended-syntax token, and to the `whereFuzzy`-style query macros, the `Fuzzy` scopes and `tableSearch()`: a longer term is silently truncated before the driver generates its LIKE patterns, and no driver builds more than `max_patterns` of them.
 
 ### Pagination with Extended Syntax
 

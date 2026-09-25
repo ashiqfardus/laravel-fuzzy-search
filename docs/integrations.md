@@ -31,6 +31,8 @@ Build the index:
 php artisan fuzzy-search:rebuild "App\Models\User"
 ```
 
+**SQL Server:** turn on `READ_COMMITTED_SNAPSHOT` for the database (`ALTER DATABASE … SET READ_COMMITTED_SNAPSHOT ON`), or set `scout.after_commit` to `true`, which defers Scout's own save and delete hooks until the commit. The indexer re-reads a row after it claims the row's index entry. Under SQL Server's default locking read committed, that read waits on a row another transaction has updated but not committed. That transaction may be one that indexes before it commits: Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`. Its index write in turn waits on the claim, so the two deadlock (error 1205). Snapshot reads do not wait. A `searchable()` you call yourself inside `DB::transaction()` still indexes at once, whatever `after_commit` says: call it after the commit, or turn on `READ_COMMITTED_SNAPSHOT`.
+
 ### Usage
 
 Add both traits to your model. Both traits declare `bootSearchable()`, so the conflict
@@ -69,6 +71,8 @@ $users = User::search('john')->get();       // fluent package builder
 $users = User::scoutSearch('john')->get();  // Scout's builder, when you need it
 ```
 
+The model needs no `$searchable` property; add one to choose the columns (and their weights) instead of relying on auto-detection.
+
 ### Relevance Scores
 
 Results include `_score` (BM25 relevance, higher = more relevant):
@@ -96,6 +100,32 @@ With `scout.soft_delete` enabled, trashed models stay in the index as Scout expe
 The Scout engine wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`. There is no separate index — it reads from the same `fuzzy_index_*` tables, with the model's `$searchable['columns']` weights, so a Scout search and `useInvertedIndex()` rank a term the same way. Typo expansion is the one difference: the engine matches exact terms only (see [docs/bm25.md](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)).
 
 `raw()['total']` is the number of matches (after the builder's `where()`/`whereIn()`/`query()` constraints), not the size of the page returned. `scout:flush "App\Models\User"` clears that model's rows from the shared tables; `scout:delete-index {name}` clears every indexed model whose `indexableAs()` (by default `scout.prefix` + table) equals the name Scout resolves: a model class becomes its `indexableAs()`, and a bare name gets `scout.prefix` prepended unless it already starts with it. With `SCOUT_PREFIX=app_`, `scout:delete-index users` and `scout:delete-index "App\Models\User"` both target `app_users`. `scout:index` is a no-op — the tables come from the package migrations.
+
+**Ordering.** `orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as they do on Scout's database engine. The matches that satisfy the builder's `where()`/`whereIn()`/`whereNotIn()`/`query()` constraints come back in that order on `get()`, `first()`, `paginate()` and `simplePaginate()`, ties broken by the primary key, descending; `_score` still carries each match's BM25 score. An order column must be a column name — letters, digits and underscores, optionally table-qualified (`users.name`); anything else throws `InvalidArgumentException`. Up to `bm25.candidate_chunk` matches (default 200), the database orders exactly those rows in one query. Beyond that, it reads the constrained table's keys in that order, 1,000 per query, until the page is full: each of those queries sorts the constrained rows, so an ordered search that matches more than one chunk of a large table costs one sorted query per 1,000 rows it passes. Give such a search a selective `where()`, or an index on the order column.
+
+**Query length.** The engine searches the first `query.max_term_length` characters of the query (default 128), as `Model::search()->useInvertedIndex()` does; longer input is cut, never rejected. A page past the last match is empty, however large its number.
+
+**Indexing.** `$model->searchable()` and Scout's import go through the engine's `update()`, which writes a collection of models in one transaction and indexes each row as it is stored, read the way Scout's own jobs read it: without global scopes, and keeping a trashed row while `scout.soft_delete` is on. Unsaved changes on an instance are not indexed. An error on one model (a `searchableText()` value that cannot be indexed, or a write that loses all three deadlock attempts) leaves none of that collection indexed.
+
+**Caching.** Neither Scout's builder nor this engine caches results. Wrap the Scout call in Laravel's cache, with a key that covers everything that changes the result — the term, the page, the constraints, the tenant:
+
+```php
+$users = Cache::remember(
+    'users.search.' . md5(json_encode([$term, $page, auth()->user()->tenant_id])),
+    now()->addMinutes(10),
+    fn () => User::scoutSearch($term)->paginate(15, 'page', $page)
+);
+```
+
+The package's own builder can run the same BM25 ranking with its `cache()`, which caches `get()` — and `first()` and `simplePaginate()`, which run through it — but not `paginate()`:
+
+```php
+User::search($term)->useInvertedIndex()->typoTolerance(0)->cache(10)->get();          // cached for 10 minutes
+User::search($term)->useInvertedIndex()->typoTolerance(0)->cache(10)->simplePaginate(15); // cached
+User::search($term)->useInvertedIndex()->typoTolerance(0)->cache(10)->paginate(15);   // not cached
+```
+
+`typoTolerance(0)` keeps the engine's exact-term matching; without it the builder also expands typos.
 
 ---
 
@@ -245,7 +275,7 @@ Pass `perPage` and the response also carries Laravel's usual pagination `meta` (
 
 ### `lastExecution()`
 
-`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). It also stays `null` — or stale from an earlier run on the same builder — when a run never executed: a term shorter than `min_search_length` matches nothing without building an event, and `remember()` serves `get()` from the cache. `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms` (both `null` for such a run); call it directly for anything else you want to report:
+`SearchBuilder::lastExecution(): ?FuzzySearchExecuted` returns the event built by the builder's most recent `get()`/`paginate()` call — `null` before either has run, and `count()` never sets it (with `fallback()`, the last attempt's event wins). It also stays `null` — or stale from an earlier run on the same builder — when a run never executed: a term shorter than `min_search_length` matches nothing without building an event, and a cache hit (`cache()`, or any search while `cache.enabled` is on) serves `get()` from the cache. `FuzzySearchCollection` reads it to fill `meta.algorithm` and `meta.latency_ms` (both `null` for such a run); call it directly for anything else you want to report:
 
 ```php
 $builder = User::search('john');

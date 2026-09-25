@@ -85,16 +85,21 @@ list or a collation; it is deprecated since v2.1.0, does nothing, and is removed
 ### Unicode & Accent Insensitivity
 
 ```php
-// Matches "café", "cafe", "Café"
-User::search('cafe')
-    ->accentInsensitive()
+// Matches "Zoë Müller" and "Muller": the accent-free form is searched beside the typed one
+User::search('Müller')
+    ->accentInsensitive()   // or rely on unicode.accent_insensitive, on by default
     ->get();
 
-// Matches "naïve", "naive"
-User::search('naive')
-    ->unicodeNormalize()
+// A decomposed "naïve" (i followed by U+0308, as some keyboards and macOS produce) is
+// NFC-normalised before the search, so it matches a stored, composed "naïve"
+User::search("nai\u{0308}ve")
+    ->unicodeNormalize()    // needs ext-intl; a no-op without it
     ->get();
 ```
+
+With `unicode.accent_insensitive` on (the shipped default), every search also looks for the term's accent-free form, beside the term as typed: `Müller` finds both `Zoë Müller` and `Muller`. The folded form works like a synonym. It is OR'd into the LIKE conditions of every algorithm and into `extended()` terms (where `!Müller` excludes both forms), and it counts for relevance and highlighting. A term with no accents compiles to exactly the SQL it would without the setting. `->accentInsensitive()` does the same for a single query. On PostgreSQL with `use_native_functions=true` it also ORs `unaccent(column) ILIKE unaccent(term)` beside the algorithm, so the column is folded too; that needs `CREATE EXTENSION unaccent`, and without it such a search fails with `function unaccent(…) does not exist`. `$searchable['accent_insensitive']` and a preset's `accent_insensitive` opt in the same way. The global key alone never runs `unaccent()`.
+
+Folding the term never folds the column. An unaccented `cafe` finds `Café` as a substring match (`simple`/`like`) only where the database folds the column: under an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or on PostgreSQL through the explicit `accentInsensitive()` with unaccent and `use_native_functions`. SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. The typo-tolerant algorithms may still reach `Café` from `cafe` as a one-letter typo.
 
 Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm, and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 2.1.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
 
@@ -119,7 +124,13 @@ Chinese, Japanese and Korean don't use spaces between words, so `WhitespaceToken
 
 Both tokenizers cut windows per Unicode code point, not per grapheme: on scripts that write accents as combining marks (decomposed Latin, Vietnamese, Indic, Thai) a window can separate a base letter from its mark. `ScriptAwareTokenizer` sidesteps this outside CJK runs by falling back to the whitespace rule, which keeps marks attached.
 
-With an n-gram tokenizer `suggest()` completes only prefixes of up to `n` characters (the dictionary holds n-grams, so `東` completes to `東京` but `東京タ` finds nothing) — call `suggestFrom('table')` on such models when you need longer completions.
+With an n-gram tokenizer the dictionary holds CJK text as `n`-character fragments, so dictionary completions cannot extend a CJK prefix: `suggest()` needs at least two characters, and with the default `n = 2` a two-character prefix such as `東京` matches only the fragment `東京` itself, which `suggest()` never offers back. Call `suggestFrom('table')` on such models; it completes from the stored values:
+
+```php
+// Rows "東京タワー" and "東京都庁", indexed with NgramTokenizer
+Place::search('東京')->suggest(5);                        // []
+Place::search('東京')->suggestFrom('table')->suggest(5);  // ['東京都庁', '東京タワー']
+```
 
 Enable a tokenizer globally, or per model (see **Per-Model Pipelines** below):
 
@@ -188,16 +199,16 @@ Rebuild after flipping it, same as the tokenizer and stemmer:
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
 ```
 
-The LIKE path's `->accentInsensitive()` (see *Unicode & Accent Insensitivity* above) folds with the exact same `Accents::fold()`, so turning both on gives one consistent behaviour across paths. `suggest()` also folds the typed prefix, but only when the model's index pipeline itself folds.
+The LIKE path's accent handling (the `unicode.accent_insensitive` default and `->accentInsensitive()`, see *Unicode & Accent Insensitivity* above) folds with the exact same `Accents::fold()`, adding the folded term beside the typed one, so turning both on gives one consistent behaviour across paths. `suggest()` also folds the typed prefix, but only when the model's index pipeline itself folds.
 
 ### Stemming (Optional)
 
 Default: no stemming (`NullStemmer`). With `NullStemmer`, `running` only matches `running`, not `run` or `ran`.
 
-To enable Porter stemming:
+To enable Porter stemming, install the 1.x line of `wamania/php-stemmer` (a bare `composer require wamania/php-stemmer` installs 4.x, whose classes `PorterStemmer` cannot load):
 
 ```bash
-composer require wamania/php-stemmer
+composer require "wamania/php-stemmer:^1.2"
 ```
 
 ```php

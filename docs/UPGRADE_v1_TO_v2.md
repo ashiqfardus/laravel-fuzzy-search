@@ -21,11 +21,12 @@ In v2.x they route to their correct drivers (`FuzzyDriver`, `TrigramDriver`, `Si
 
 **Impact:** Top-N result rankings may shift for queries using these algorithms.
 
-**If you need the old behavior temporarily**, add to `config/fuzzy-search.php`:
-```php
-'legacy_dispatch' => true,
-```
-This silently falls back to `LevenshteinDriver` for unrecognised algorithm names (v1.x behavior). Remove once you have validated your results.
+**There is no switch back to the old routing.** `legacy_dispatch` does not restore it: that flag
+only sends an algorithm name the package does not know to `LevenshteinDriver` instead of throwing
+`InvalidAlgorithmException`, and only where a name goes straight to a driver: the `whereFuzzy`-style
+macros and `fallback()`. `using()` always rejects an unknown name. `fuzzy`, `trigram` and `simple`
+are known names, so they always run their own drivers. To keep v1.x's results for such a call,
+change it to `using('levenshtein')`.
 
 ---
 
@@ -55,7 +56,7 @@ The `metaphone` algorithm now uses PHP's `metaphone()` function against a precom
 ```bash
 php artisan fuzzy-search:add-shadow-column "App\Models\User" name --type=metaphone
 php artisan migrate
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh
+php artisan fuzzy-search:rebuild "App\Models\User"   # fills name_metaphone for existing rows
 ```
 
 ---
@@ -65,7 +66,7 @@ php artisan fuzzy-search:rebuild "App\Models\User" --fresh
 | Key | Default | Purpose |
 |---|---|---|
 | `max_candidates` | `1000` | Max SQL rows fetched before PHP rescore |
-| `legacy_dispatch` | `false` | Silence `InvalidAlgorithmException` for unknown algorithm names |
+| `legacy_dispatch` | `false` | Run an unknown algorithm name as `levenshtein` instead of throwing `InvalidAlgorithmException` in the `whereFuzzy`-style macros and `fallback()` (`using()` always throws for one); known names (`fuzzy`, `trigram`, `simple`, …) are not affected |
 
 ---
 
@@ -119,8 +120,16 @@ php artisan fuzzy-search:flush {Model}       # Remove all index entries for a mo
 // Drop-in addition to any existing search call
 $users = User::search('john')->useInvertedIndex()->get();
 
-// DB::table() callers — pass model class explicitly
-DB::table('users')->fuzzySearch(['name'], 'john')->useInvertedIndex('App\Models\User')->get();
+// DB::table() callers — build a SearchBuilder on the query and pass the model class explicitly
+// (DB::table()->fuzzySearch() is a query-builder macro and has no useInvertedIndex())
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
+
+(new SearchBuilder(DB::table('users'), app(FuzzySearch::class)))
+    ->search('john')
+    ->searchIn(['name'])
+    ->useInvertedIndex(\App\Models\User::class)
+    ->get();
 
 // didYouMean() now reads from the term dictionary (no table scan)
 $suggestions = User::search('jonh')->searchIn(['name'])->didYouMean(3);
