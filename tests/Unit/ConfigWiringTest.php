@@ -81,9 +81,9 @@ class ConfigWiringTest extends TestCase
     }
 
     /**
-     * tests/TestCase.php forces unicode.accent_insensitive to false, but the shipped default is
-     * true (M11) — so the setting every user actually gets was never exercised. A search under
-     * it must fold the accents off the term and still find the row.
+     * The shipped default for unicode.accent_insensitive is true (M11), and tests/TestCase.php
+     * loads the shipped config as is, so this runs under the setting every user gets. A search
+     * under it must fold the accents off the term and still find the row.
      *
      * typoTolerance(0) is what makes this a guard rather than a formality: with typo patterns on,
      * the one-character difference between "café" and "cafe" is covered whether accents are
