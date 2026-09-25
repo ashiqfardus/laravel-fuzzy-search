@@ -138,8 +138,14 @@ class Bm25Scorer
             default                           => "CAST({$key} AS VARCHAR)",
         };
 
-        $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key) {
-            $postings->selectRaw('1')
+        // MySQL (a MariaDB server ignores the hint): FirstMatch, one index probe per row. With
+        // model_id in utf8mb4_bin, and an index on the order column, MySQL chose a hash semi-join it
+        // could not key on the cast key, whose cost grew with the square of the rows: 3.6 s at 100k
+        // matches, where FirstMatch takes 0.16 s.
+        $select = $driver === DbDialect::MYSQL ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1';
+
+        $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key, $select) {
+            $postings->selectRaw($select)
                 ->from('fuzzy_index_postings as fzr')
                 ->where('fzr.model_type', $modelType)
                 ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
