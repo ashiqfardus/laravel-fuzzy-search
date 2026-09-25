@@ -94,6 +94,12 @@ class SearchBuilder
     /** cache() was called: it, not cache.enabled, decides whether get() caches (see cacheSeconds()). */
     protected bool $cacheCalled = false;
     protected ?string $cacheKey = null;
+    /**
+     * While get() fills its cache: what the search asked its rows to be decorated with (highlight
+     * terms, debug algorithm), for get() to apply to fresh and cached rows alike — see decorate().
+     * null otherwise, and applyHighlighting()/addDebugInfo() then decorate as they are called.
+     */
+    private ?array $decoration = null;
     protected bool $stableRankingEnabled = false;
     protected array $fallbackAlgorithms = [];
     protected ?int $debounceMs = null;
@@ -1144,39 +1150,105 @@ class SearchBuilder
         $store  = Cache::store(in_array($store, [null, '', 'default'], true) ? null : $store);
         $cached = $store->get($cacheKey);
 
-        if ($cached !== null) {
-            return $this->loadEagerRelations($cached);
+        // Anything else under the key (an entry written before 2.1) is a miss.
+        if (is_array($cached) && isset($cached['rows'])) {
+            return $this->fromCachePayload($cached);
         }
 
-        $results = $this->executeWithFallback();
+        $this->decoration = [];
 
-        // Ruling ER-58: the payload carries no relations. A with() constraint is a closure the key
-        // cannot hold, so each read loads the current request's own (loadEagerRelations()).
-        $store->put($cacheKey, $results->map(fn ($row) => $row instanceof Model ? $row->withoutRelations() : $row), $seconds);
+        try {
+            $results    = $this->executeWithFallback();
+            $decoration = $this->decoration;
+        } finally {
+            $this->decoration = null;
+        }
 
-        return $results;
+        $store->put($cacheKey, $this->cachePayload($results, $decoration), $seconds);
+
+        return $this->decorate($results, $decoration);
     }
 
     /**
-     * A cached result's relations, loaded as a live get() would have them (ruling ER-58): the
-     * caller's eager loads with their constraint closures, then the relation paths searchIn()
-     * reads (buildQuery() and indexedBaseQuery() add those after the caller's). Costs the
-     * eager-load queries on a cache hit.
+     * What get() caches (ruling ER-83): scalars and arrays only, so it unserialises under Laravel
+     * 13's cache.serializable_classes = false — each model's key and scores, or a plain query
+     * builder's rows as arrays — plus the columns searched and how the rows are decorated. No row
+     * visibility, highlighting or relation is stored: those belong to the request that reads it.
      */
-    private function loadEagerRelations(Collection $results): Collection
+    private function cachePayload(Collection $results, array $decoration): array
     {
-        if (!$this->query instanceof EloquentBuilder || !$results->first() instanceof Model) {
-            return $results;
+        $scores = array_flip(['_score', '_column_scores', '_raw_score']);
+
+        return [
+            'models'     => $results->first() instanceof Model,
+            'columns'    => $this->columnWeights,
+            'decoration' => $decoration,
+            'rows'       => $results->map(fn ($row) => $row instanceof Model
+                ? ['key' => $row->getKey(), 'scores' => array_intersect_key($row->getAttributes(), $scores)]
+                : (array) $row)->all(),
+        ];
+    }
+
+    /**
+     * A cached result for this request (rulings ER-58, ER-83): a plain query builder's rows as
+     * stdClass again; models re-read by key, in the cached order, through the current query — its
+     * global scopes, and its eager loads with their constraint closures plus the relation paths
+     * searchIn() reads — so a row deleted since is dropped and retrieved listeners run for this
+     * viewer. Then highlighted and debugged as a live get() would (decorate()). Costs the keyed
+     * read and its eager loads on a hit.
+     */
+    private function fromCachePayload(array $payload): Collection
+    {
+        // The columns an extended search detected on the miss (compileExtendedQuery()).
+        if ($this->searchableColumns === [] && $payload['columns'] !== []) {
+            $this->searchIn($payload['columns']);
         }
 
-        $model = $this->query->getModel();
-        $eager = $model->newQueryWithoutRelationships()
-            ->setEagerLoads($this->query->getEagerLoads())
-            ->with($this->relationPaths())
-            ->getEagerLoads();
+        if (!$payload['models']) {
+            $rows = array_map(fn (array $row) => (object) $row, $payload['rows']);
 
-        // Onto copies: a store that does not serialise (array) hands back the stored rows themselves.
-        return $eager === [] ? $results : $model->newCollection($results->map(fn (Model $row) => $row->withoutRelations())->all())->load($eager);
+            return $this->decorate($this->query instanceof EloquentBuilder ? $this->query->getModel()->newCollection($rows) : collect($rows), $payload['decoration']);
+        }
+
+        // Models come from the builder's own model, or from useInvertedIndex(Model::class) on a plain query builder.
+        $query = $this->modelBaseQuery((string) $this->resolveIndexModelClass());
+        if ($this->query instanceof EloquentBuilder && $this->relationPaths() !== []) {
+            $query->with($this->relationPaths());
+        }
+
+        $found = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($query, array_values(array_unique(array_column($payload['rows'], 'key'))))
+            ->keyBy(fn (Model $model) => $model->getKey());
+        $rows  = [];
+        $seen  = [];
+
+        foreach ($payload['rows'] as $row) {
+            if (($model = $found[$row['key']] ?? null) === null) {
+                continue;
+            }
+            // A join can repeat a model; each row keeps its own scores.
+            $model = isset($seen[$row['key']]) ? clone $model : $model;
+            $seen[$row['key']] = true;
+
+            foreach ($row['scores'] as $name => $value) {
+                $model->{$name} = $value;
+            }
+            $rows[] = $model;
+        }
+
+        return $this->decorate($query->getModel()->newCollection($rows), $payload['decoration']);
+    }
+
+    /**
+     * Highlighting and debug output for get()'s cached and fresh rows alike, as the search asked for
+     * them (see $decoration): computed for the current request, each row's own visibility included.
+     */
+    private function decorate(Collection $rows, array $decoration): Collection
+    {
+        if (array_key_exists('highlight', $decoration)) {
+            $rows = $this->applyHighlighting($rows, $decoration['highlight']);
+        }
+
+        return array_key_exists('debug', $decoration) ? $this->addDebugInfo($rows, $decoration['debug']) : $rows;
     }
 
     /**
@@ -2971,7 +3043,12 @@ class SearchBuilder
      */
     protected function applyHighlighting(Collection $results, ?array $terms = null): Collection
     {
-        $needles = $terms === null ? $this->termVariants($this->searchTerm) : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
+        if ($this->decoration !== null) {
+            $this->decoration['highlight'] = $terms; // get() highlights its cached and fresh rows alike
+            return $results;
+        }
+
+        $needles =$terms === null ? $this->termVariants($this->searchTerm) : array_values(array_filter(array_map('strval', $terms), fn ($t) => $t !== ''));
         if ($needles === [] || $needles === ['']) {
             return $results;
         }
@@ -3190,17 +3267,25 @@ class SearchBuilder
     }
 
     /**
-     * Add debug information
+     * Add debug information. $algorithm is the one the rows were found with (get() passes the
+     * one a fallback() ran, recorded when the search asked for this); null reads the current one.
      */
-    protected function addDebugInfo(Collection $results): Collection
+    protected function addDebugInfo(Collection $results, ?string $algorithm = null): Collection
     {
-        return $results->map(function ($item) {
+        $algorithm ??= $this->extendedQuery !== null ? 'extended' : ($this->algorithm ?? 'fuzzy');
+
+        if ($this->decoration !== null) {
+            $this->decoration['debug'] = $algorithm; // get() debugs its cached and fresh rows alike
+            return $results;
+        }
+
+        return $results->map(function ($item) use ($algorithm) {
             // The #5 rule: a column toArray() would not show is left out, as from _highlighted.
             $shown = array_flip(array_keys(array_filter($this->resolveColumnTargets(), fn (array $target) => $this->columnShown($item, $target))));
 
             $debug = [
                 'term' => $this->searchTerm,
-                'algorithm' => $this->extendedQuery !== null ? 'extended' : ($this->algorithm ?? 'fuzzy'),
+                'algorithm' => $algorithm,
                 'typo_tolerance' => $this->typoTolerance,
                 'prefix_boost' => $this->prefixBoostMultiplier,
                 'columns' => array_values(array_filter($this->searchableColumns, fn (string $column) => isset($shown[$column]))),
@@ -3224,7 +3309,7 @@ class SearchBuilder
     /**
      * The cache key: cache.prefix plus a hash of everything that changes get()'s rows or their
      * shape — the builder's settings, the caller's query (its SQL, bindings, model class and
-     * eager-load names; their constraints are applied on each read, see loadEagerRelations()) and
+     * eager-load names; their constraints are applied on each read, see fromCachePayload()) and
      * where it runs (connection, driver, host, port, database, table prefix and, on PostgreSQL,
      * search_path: one extra query when a search is cached), so two tenants or two highlight
      * styles never share an entry. null when a customScore() closure is set: a closure

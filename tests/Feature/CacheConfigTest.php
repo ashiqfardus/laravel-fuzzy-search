@@ -386,10 +386,11 @@ class CacheConfigTest extends TestCase
         $this->assertTrue($hit->first()->relationLoaded('author'));
         $this->assertSame('Tolkien', $hit->first()->author->name);
 
+        // Ruling ER-83: an entry holds keys and scores, never a model or its relations.
         foreach ($this->storedKeys() as $key) {
-            foreach (Cache::get($key) as $row) {
-                $this->assertSame([], $row->getRelations(), 'a stored row carries no relation');
-            }
+            $entry = Cache::get($key);
+            array_walk_recursive($entry, fn ($leaf) => $this->assertFalse(is_object($leaf), 'a stored entry holds an object'));
+            $this->assertSame(['key', 'scores'], array_keys($entry['rows'][0]));
         }
     }
 }

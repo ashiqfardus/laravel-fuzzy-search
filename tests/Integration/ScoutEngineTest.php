@@ -743,7 +743,8 @@ class ScoutEngineTest extends TestCase
             [$second, $secondQueries] = $queries($recipe);
 
             $this->assertGreaterThan(0, $firstQueries, "{$label}: the first call searches");
-            $this->assertSame(0, $secondQueries, "{$label}: the second call is served from the cache");
+            // A SearchBuilder hit re-reads its rows by key, one query (ruling ER-83); it never searches.
+            $this->assertSame(str_starts_with($label, 'Cache::') ? 0 : 1, $secondQueries, "{$label}: the second call is served from the cache");
             $this->assertSame($this->resultIds($first), $this->resultIds($second), $label);
         }
 
