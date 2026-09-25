@@ -271,9 +271,72 @@ class IndexManager
     /** @var array<string, Pipeline|false> model class → resolved override pipeline, or false = "uses the default" */
     private static array $pipelines = [];
 
+    /** @var array<string, true> connection|database|prefix => its postings table has statistics (PostgreSQL) */
+    private static array $analyzed = [];
+
+    /** Forget the per-process caches: the pipelines, and which PostgreSQL index tables have statistics. */
     public static function resetPipelineCache(): void
     {
         self::$pipelines = [];
+        self::$analyzed  = [];
+    }
+
+    /**
+     * PostgreSQL only: ANALYZE the index tables. On tables it has never analyzed, PostgreSQL takes
+     * about one posting per term, and the postings subquery that constrained and ordered searches
+     * run (Bm25Scorer::whereRanked()) became a nested loop over every posting for every row: 60–120 s
+     * at 50k rows until autovacuum's first ANALYZE (ruling ER-106). A rebuild ends with this, and
+     * the first index write into unanalyzed tables runs it (analyzeUnanalyzedIndex()). A user that
+     * does not own a table gets a WARNING, which skips that table and throws nothing.
+     */
+    public function analyzeIndex(): void
+    {
+        $connection = DB::connection();
+
+        if ($connection->getDriverName() !== DbDialect::PGSQL) {
+            return;
+        }
+
+        $grammar = $connection->getQueryGrammar();
+        $connection->statement('ANALYZE ' . implode(', ', array_map(
+            fn (string $table) => $grammar->wrapTable($table),
+            ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']
+        )));
+    }
+
+    /**
+     * After an index write on PostgreSQL: analyzeIndex() while the postings table has no row
+     * estimate, pg_class.reltuples <= 0 (-1: never analyzed, on PostgreSQL 14+; 0: analyzed, or
+     * indexed, while empty). Once it has one, this process reads the catalog no more. Only outside
+     * a transaction: inside the caller's, ANALYZE would hold its lock until the commit, and the next
+     * write outside one runs it.
+     */
+    private function analyzeUnanalyzedIndex(): void
+    {
+        $connection = DB::connection();
+
+        if ($connection->getDriverName() !== DbDialect::PGSQL || $connection->transactionLevel() > 0) {
+            return;
+        }
+
+        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+
+        if (isset(self::$analyzed[$id])) {
+            return;
+        }
+
+        $table = $connection->selectOne(
+            'select reltuples from pg_class where oid = to_regclass(?)',
+            [$connection->getQueryGrammar()->wrapTable('fuzzy_index_postings')]
+        );
+
+        if ($table !== null && (float) $table->reltuples > 0) {
+            self::$analyzed[$id] = true;
+
+            return;
+        }
+
+        $this->analyzeIndex();
     }
 
     /**
@@ -415,7 +478,7 @@ class IndexManager
      */
     private function write(string $modelType, array $keys, array $unsaved, bool $scout = false): int
     {
-        return DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
+        $indexed = DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
             $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
@@ -564,6 +627,10 @@ class IndexManager
 
             return count($byModel);
         }, self::ATTEMPTS);
+
+        $this->analyzeUnanalyzedIndex();
+
+        return $indexed;
     }
 
     /**

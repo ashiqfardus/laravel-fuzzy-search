@@ -72,6 +72,9 @@ class RebuildCommand extends Command
         $bar->finish();
         $this->newLine();
 
+        // Statistics for the rebuilt index (PostgreSQL; see IndexManager::analyzeIndex()).
+        $indexManager->analyzeIndex();
+
         // "Done." on an index that stayed empty reads like success. Say what happened and why.
         if ($indexed === 0) {
             $this->warn($total === 0
@@ -120,9 +123,12 @@ class RebuildCommand extends Command
             return self::SUCCESS;
         }
 
+        // Once the last job has run, statistics for the rebuilt index (PostgreSQL; see
+        // IndexManager::analyzeIndex()). Static: the callback is serialized with the batch.
         $batch = Bus::batch($jobs)
             ->onQueue($queue)
             ->name("fuzzy-search:rebuild:{$modelClass}")
+            ->finally(static fn () => app(IndexManager::class)->analyzeIndex())
             ->dispatch();
 
         $this->info("Batch dispatched: {$batch->id}");
