@@ -289,7 +289,9 @@ trait Searchable
      * The uncached auto-detection itself — see getAutoDetectedColumns(). Only text-typed database
      * columns are selected (SearchableColumns::isTextType(): a LIKE on a bigint or json column fails
      * on PostgreSQL); where the types cannot be read (Laravel 10 before Schema::getColumns()) every
-     * column is a candidate, as before. Columns whose cast is
+     * column is a candidate, as before. A json column is picked only where the database reports it
+     * as text (SQLite text, MariaDB longtext, SQL Server nvarchar(max)) and the model has no cast
+     * for it (ruling ER-90). Columns whose cast is
      * not text (an enum, an array, a custom cast class) are never selected: detection is a
      * heuristic, and the indexer cannot turn such a value into text. Nor is a column the model
      * hides from serialization ($hidden, or outside a non-empty $visible) or a secret by name:
