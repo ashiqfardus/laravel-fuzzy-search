@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 
 /**
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
@@ -32,7 +33,7 @@ final class RankedCandidates
      */
     public static function models(Builder $base, array $rankedIds, ?int $needed = null, ?int $chunkSize = null): EloquentCollection
     {
-        $key       = $base->getModel()->getQualifiedKeyName();
+        $key       = self::keyColumn($base);
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
@@ -61,7 +62,7 @@ final class RankedCandidates
      */
     public static function keys(Builder $base, array $rankedIds, ?int $needed = null, ?int $chunkSize = null): array
     {
-        $key       = $base->getModel()->getQualifiedKeyName();
+        $key       = self::keyColumn($base);
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
@@ -90,7 +91,7 @@ final class RankedCandidates
      */
     public static function countModels(Builder $query): int
     {
-        $key   = $query->getModel()->getQualifiedKeyName();
+        $key   = self::keyColumn($query);
         $query = (clone $query)->toBase();
 
         return (int) ($query->groups || $query->havings
@@ -122,13 +123,17 @@ final class RankedCandidates
         // the ranking holds every match.
         $whole = count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
-        if ((count($ids) > $chunk || !$whole) && self::onIndexConnection($base)) {
+        if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
             return self::whereMatches($base, $terms, $modelType, $columnWeights);
         }
 
         $ids = self::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
+        $key = self::keyColumn($base);
 
-        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => $query->whereKey($ids));
+        // whereKey()'s shape, on the key as the FROM names it: an integer list inlined, not bound.
+        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => in_array($model->getKeyType(), ['int', 'integer'], true)
+            ? $query->whereIntegerInRaw($key, $ids)
+            : $query->whereIn($key, $ids));
     }
 
     /**
@@ -147,12 +152,12 @@ final class RankedCandidates
      */
     public static function accepted(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): array
     {
-        if (!self::onIndexConnection($base)) {
+        if (!self::subqueryRuns($base)) {
             return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked))));
         }
 
         $query = self::whereMatches($base, $terms, $modelType, $columnWeights)->toBase()->reorder();
-        $key   = $base->getModel()->getQualifiedKeyName() . ' as ' . self::KEY_ALIAS;
+        $key   = self::keyColumn($base) . ' as ' . self::KEY_ALIAS;
 
         // The key alone, unless a HAVING may name an alias of the select list (withCount()'s
         // posts_count, which MySQL and MariaDB accept there).
@@ -210,16 +215,51 @@ final class RankedCandidates
     /** $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a global scope. */
     private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights): Builder
     {
-        $key = $base->getModel()->getQualifiedKeyName();
+        $key = self::keyColumn($base);
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
             ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights));
     }
 
-    /** Whether $base runs on the connection the index lives on, the default one, where the postings subquery can run. */
-    private static function onIndexConnection(Builder $base): bool
+    /**
+     * The key as $base's FROM names it (ruling ER-107): the alias's under from('users as u') or
+     * fromSub(…, 'u'), the table's otherwise. "users"."id" under an alias failed on every database.
+     * A FROM expression without an alias leaves the bare key.
+     */
+    public static function keyColumn(Builder $base): string
     {
-        return $base->getQuery()->getConnection() === DB::connection();
+        $model = $base->getModel();
+        $query = $base->getQuery();
+        $from  = $query->from;
+
+        if (is_string($from)) {
+            $alias = DbDialect::fromTable($from)[1];
+
+            return $alias === null ? $model->getQualifiedKeyName() : $alias . '.' . $model->getKeyName();
+        }
+
+        // fromSub() writes "(…) as <the alias, wrapped and prefixed>": read it back as the alias
+        // the grammar wraps and prefixes again.
+        $sql = $from instanceof \Illuminate\Contracts\Database\Query\Expression ? (string) $from->getValue($query->getGrammar()) : '';
+
+        if (preg_match('/\)\s+as\s+([^\s.]+)\s*$/i', $sql, $alias) !== 1) {
+            return $model->getKeyName();
+        }
+
+        $alias  = trim($alias[1], '"`[]');
+        $prefix = $query->getConnection()->getTablePrefix();
+
+        return ($prefix !== '' && str_starts_with($alias, $prefix) ? substr($alias, strlen($prefix)) : $alias) . '.' . $model->getKeyName();
+    }
+
+    /**
+     * Whether the postings subquery can restrict $base: on the connection the index lives on, the
+     * default one, and with a key it can name. A bare key inside the subquery would name the
+     * postings' own id.
+     */
+    private static function subqueryRuns(Builder $base): bool
+    {
+        return $base->getQuery()->getConnection() === DB::connection() && str_contains(self::keyColumn($base), '.');
     }
 
     /**

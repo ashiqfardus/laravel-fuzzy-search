@@ -1765,7 +1765,7 @@ class SearchBuilder
         }
 
         $this->applyExplicitOrder($query, true);
-        $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), $base->getModel()->getQualifiedKeyName(), $offset, $limit);
+        $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
 
         return ['total' => $total, 'page' => $this->attachBm25Scores(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $keys), $ranked, 0)];
     }

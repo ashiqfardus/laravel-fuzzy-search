@@ -77,6 +77,25 @@ class TablePrefixTest extends TestCase
         $this->assertSame(['Jon Snow'], User::search('john')->useInvertedIndex()->orderBy('name')->paginate(2, 'page', 2)->pluck('name')->all());
     }
 
+    /** Ruling ER-107: an aliased or a subquery FROM names the key through its alias, which carries the prefix too. */
+    public function test_an_aliased_or_subquery_from_reads_the_prefixed_tables(): void
+    {
+        $this->index();
+
+        foreach ([200, 1] as $chunk) {
+            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+            $sources = [
+                'from(users as u)' => fn () => User::search('doe')->typoTolerance(0)->from('users as u')->useInvertedIndex(),
+                'fromSub(…, u)'    => fn () => User::search('doe')->typoTolerance(0)->fromSub(DB::table('users'), 'u')->useInvertedIndex(),
+            ];
+
+            foreach ($sources as $label => $make) {
+                $this->assertSame(['Jane Doe', 'John Doe'], $make()->orderBy('name')->get()->pluck('name')->all(), "{$label}, chunk {$chunk}: orderBy");
+                $this->assertSame(['Jane Doe'], $make()->where('u.email', 'jane@example.com')->get()->pluck('name')->all(), "{$label}, chunk {$chunk}: constrained");
+            }
+        }
+    }
+
     public function test_did_you_mean_and_suggest_read_the_prefixed_dictionary(): void
     {
         $this->index();

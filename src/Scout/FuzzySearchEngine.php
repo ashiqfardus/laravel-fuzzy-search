@@ -163,6 +163,7 @@ class FuzzySearchEngine extends Engine
             return ['total' => $total, 'keys' => []];
         }
 
+        $key   = RankedCandidates::keyColumn($query);
         $query = $query->toBase();
 
         foreach ($orders as $order) {
@@ -170,11 +171,11 @@ class FuzzySearchEngine extends Engine
         }
 
         // SQL Server rejects a column named twice in ORDER BY.
-        if (array_intersect(array_column($orders, 'column'), [$model->getKeyName(), $model->getQualifiedKeyName()]) === []) {
-            $query->orderBy($model->getQualifiedKeyName(), 'desc');
+        if (array_intersect(array_column($orders, 'column'), [$model->getKeyName(), $model->getQualifiedKeyName(), $key]) === []) {
+            $query->orderBy($key, 'desc');
         }
 
-        return ['total' => $total, 'keys' => RankedCandidates::orderedKeys($query, $model->getQualifiedKeyName(), $offset, $limit)];
+        return ['total' => $total, 'keys' => RankedCandidates::orderedKeys($query, $key, $offset, $limit)];
     }
 
     /**
