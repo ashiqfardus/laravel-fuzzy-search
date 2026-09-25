@@ -4,7 +4,15 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit;
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\LazyCollection;
+
+/** Plain "users"-backed model: its default `created_at`/`updated_at` casts are Carbon (Stringable). */
+class InMemoryDateUser extends Model
+{
+    protected $table = 'users';
+    protected $guarded = [];
+}
 
 /** L12 (ruling ER-99): InMemory edge cases — a non-scalar column value, and an oversized LazyCollection. */
 class InMemorySearchEdgeCaseTest extends TestCase
@@ -71,5 +79,36 @@ class InMemorySearchEdgeCaseTest extends TestCase
 
         $this->assertCount(1, $results);
         $this->assertSame('John Doe', $results->first()['name']);
+    }
+
+    /**
+     * Fix round 1 (task review HIGH): a date/datetime-cast column — Carbon implements
+     * __toString()/\Stringable and must not be treated like an array/JSON-cast value. Every
+     * seeded user shares the same created_at, so searching its date substring must match all of them.
+     */
+    public function test_a_datetime_cast_column_still_matches_its_formatted_date_substring(): void
+    {
+        $users = InMemoryDateUser::all();
+        $dateSubstring = $users->first()->created_at->format('Y-m-d');
+
+        $results = FuzzySearch::on($users)->search($dateSubstring)->searchIn(['created_at'])->get();
+
+        $this->assertCount($users->count(), $results, 'a Carbon-cast created_at must still be searched via (string), not skipped');
+    }
+
+    /** A genuinely non-Stringable object (no __toString()) is skipped like an array — no fatal, no match. */
+    public function test_a_non_stringable_object_column_is_skipped_without_throwing(): void
+    {
+        $notStringable = new class {};
+
+        $items = [
+            ['thing' => $notStringable, 'name' => 'Widget'],
+            ['thing' => 'plain',        'name' => 'Other'],
+        ];
+
+        $results = FuzzySearch::on($items)->search('widget')->searchIn(['thing', 'name'])->get();
+
+        $this->assertCount(1, $results, 'the non-Stringable object column is skipped; the match comes through "name"');
+        $this->assertSame('Widget', $results->first()['name']);
     }
 }

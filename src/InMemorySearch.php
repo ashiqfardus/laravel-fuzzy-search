@@ -141,10 +141,13 @@ class InMemorySearch
                 // the column (ruling ER-84).
                 $raw = SearchableColumns::read($item, $col);
 
-                // An array or JSON-cast value isn't text (ruling ER-99, in line with ER-90's
-                // auto-detection, which excludes json columns too): skip it instead of letting
-                // (string) $raw warn "Array to string conversion" and count it as a match.
-                if ($raw !== null && !is_scalar($raw)) {
+                // An array or a non-Stringable object isn't text (ruling ER-99, in line with
+                // ER-90's auto-detection, which excludes json columns too): skip it instead of
+                // letting (string) $raw warn "Array to string conversion" (or fatal on an object
+                // with no __toString()) and count it as a match. A date/datetime cast — Carbon on
+                // created_at/updated_at included — implements \Stringable and keeps casting as
+                // before: ER-90 explicitly keeps those columns text-like.
+                if ($raw !== null && !is_scalar($raw) && !($raw instanceof \Stringable)) {
                     continue;
                 }
 
