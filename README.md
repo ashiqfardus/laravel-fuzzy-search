@@ -618,8 +618,8 @@ $analytics = User::search('john')
 
 ## Text Processing
 
-- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale.
-- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (lower-case word => its synonyms) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply no synonyms.
+- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale. An `extended()`/`searchBoolean()` query drops no stop words: every word in it stays a term of the query.
+- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (lower-case word => its synonyms) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
 - **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
 - **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
@@ -781,7 +781,7 @@ User::search('=John ^Doe !banned')->extended()->get();
 
 Operators: `'include`, `=exact`, `^prefix`, `suffix$`, `!exclude`, `|` (OR), `( )` (grouping), `~typo`, `field:term`, and quoted `"phrases"`.
 
-Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it.
+Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it. They apply no synonyms and drop no stop words: every word stays a term of the query.
 
 → Full guide: [docs/extended-syntax.md](docs/extended-syntax.md)
 
@@ -916,7 +916,7 @@ User::search($query)
     ->get();
 ```
 
-One search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds, with 100 to spare for your own `where()` and `filter()` values; those are not counted. Each term (every word under `tokenize()`, every `extended()` leaf, its accent-free form and each synonym) is matched on each column with up to `max_patterns` LIKE patterns. When the patterns would pass 2,000 bindings, every term-and-column pair gets an equal share and always keeps its plain contains pattern, so a very long query matches fewer typo variants instead of failing. A query that needs more than 2,000 values even at one pattern per pair throws `QuerySyntaxException` ("The query is too complex…"). A query within the budget builds the same SQL as before. The multi-column helpers (`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes, `tableSearch()`) share the same budget across their columns.
+One search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds, with 100 to spare for your own `where()` and `filter()` values; those are not counted. Each term (every word under `tokenize()`, every `extended()` leaf, its accent-free form, and each synonym, which an `extended()` query does not add) is matched on each column with up to `max_patterns` LIKE patterns. When the patterns would pass 2,000 bindings, every term-and-column pair gets an equal share and always keeps its plain contains pattern, so a very long query matches fewer typo variants instead of failing. A query that needs more than 2,000 values even at one pattern per pair throws `QuerySyntaxException` ("The query is too complex…"). A query within the budget builds the same SQL as before. The multi-column helpers (`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes, `tableSearch()`) share the same budget across their columns.
 
 > `debounce()` is deprecated and does nothing: a request that has already reached the server cannot be debounced. Debounce on the client instead (`wire:model.live.debounce.300ms` in Livewire, or a timer in JavaScript). It will be removed in v3.0.0.
 
@@ -1049,7 +1049,8 @@ return [
     ],
     
     'synonyms' => [
-        // Every SearchBuilder search's default synonyms (lower-case word => its synonyms):
+        // Default synonyms of every SearchBuilder search except extended()/searchBoolean()
+        // (lower-case word => its synonyms):
         // 'laptop' => ['notebook', 'computer'],
     ],
     

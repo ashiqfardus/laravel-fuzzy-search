@@ -53,6 +53,10 @@ $users = User::search('admin (john | jane)')->extended()->get();
 
 Relevance scores each positive leaf term on its own and adds the leaf scores up; an explicit `orderBy()` replaces the relevance order, and `stableRanking()` adds the primary key as the final tiebreak. While accent folding is on, a leaf and its accent-free form count once (the better of the two); with the shipped `unicode.accent_insensitive` default, `Müller` also matches `Muller`, and `!Müller` excludes both forms.
 
+### Synonyms and stop words
+
+An extended query applies no synonyms and drops no stop words. The `synonyms` config key, a model's `$searchable['synonyms']` and `$searchable['stop_words']`, `withSynonyms()`, `synonymGroup()` and `ignoreStopWords()` leave it as written: each word is a term the user asked for, and expanding or dropping one would change what the query's AND requires. So `the john` matches only rows that contain both `the` and `john`, even with `ignoreStopWords(['the'])`. To search alternatives, write them into the query: `(laptop | notebook)`.
+
 ### Limits
 
 | Limit | Default | Config key |
