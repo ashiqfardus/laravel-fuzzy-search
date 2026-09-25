@@ -57,7 +57,7 @@ Relevance scores each positive leaf term on its own and adds the leaf scores up;
 
 | Limit | Default | Config key |
 | --- | --- | --- |
-| Maximum tokens per query (words, `\|` and parentheses each count; a query throws once it reaches the limit, so 32 allows 31) | 32 | `query.max_tokens` |
+| Maximum tokens per query (words, `\|` and parentheses each count) | 32 | `query.max_tokens` |
 | Maximum nesting depth | 16 | `query.max_depth` |
 | Maximum characters per term | 128 | `query.max_term_length` |
 

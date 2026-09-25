@@ -102,7 +102,7 @@ class Lexer
                         continue;
                     }
                     $tokens[] = new Token($isNot ? Token::TYPE_NOT_FUZZY : Token::TYPE_FUZZY, mb_substr($phrase, 0, $maxTermLen, 'UTF-8'), $field);
-                    if (count($tokens) >= $maxTokens) {
+                    if (count($tokens) > $maxTokens) {
                         throw QuerySyntaxException::tokenLimitExceeded(count($tokens), $maxTokens);
                     }
                     continue;
@@ -180,7 +180,7 @@ class Lexer
                 $tokens[] = new Token($type, $term, $field);
             }
 
-            if (count($tokens) >= $maxTokens) {
+            if (count($tokens) > $maxTokens) {
                 throw QuerySyntaxException::tokenLimitExceeded(count($tokens), $maxTokens);
             }
         }

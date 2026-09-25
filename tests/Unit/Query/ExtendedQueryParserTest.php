@@ -76,6 +76,21 @@ class ExtendedQueryParserTest extends TestCase
         $this->parse('((((deep))))');
     }
 
+    /** ER-79 checked the depth limit too: max_depth levels of nesting parse, one more throws. */
+    public function test_exactly_max_depth_parses_and_one_more_throws(): void
+    {
+        config(['fuzzy-search.query.max_depth' => 3]);
+
+        $this->assertNotNull($this->parse('(((deep)))'));
+
+        try {
+            $this->parse('((((deep))))');
+            $this->fail('max_depth + 1 levels must throw');
+        } catch (\Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException $e) {
+            $this->assertStringContainsString('Query nesting depth 4 exceeds the configured maximum of 3', $e->getMessage());
+        }
+    }
+
     public function test_unbalanced_parens_throws(): void
     {
         $this->expectException(\Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException::class);

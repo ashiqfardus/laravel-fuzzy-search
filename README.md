@@ -946,7 +946,7 @@ try {
 - `InvalidAlgorithmException` - Invalid algorithm specified
 - `InvalidConfigException` - Configuration error
 - `SearchableColumnsNotFoundException` - No searchable columns found
-- `QuerySyntaxException` - Invalid `extended()` / `searchBoolean()` query: an unknown or ambiguous field, bad operator syntax (an unbalanced parenthesis, an unterminated quote, a misplaced `~` or `!`), a query with no searchable terms (`|`, `()`, a lone `!`) or a field scope with no term (`name:`), a query that reaches `query.max_tokens` tokens (32 by default, so at most 31: every word, `|` and parenthesis counts), or parentheses nested deeper than `query.max_depth` (16)
+- `QuerySyntaxException` - Invalid `extended()` / `searchBoolean()` query: an unknown or ambiguous field, bad operator syntax (an unbalanced parenthesis, an unterminated quote, a misplaced `~` or `!`), a query with no searchable terms (`|`, `()`, a lone `!`) or a field scope with no term (`name:`), a query of more than `query.max_tokens` tokens (32 by default; every word, `|` and parenthesis counts), or parentheses nested deeper than `query.max_depth` (16)
 
 ---
 

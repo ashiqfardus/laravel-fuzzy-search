@@ -158,6 +158,34 @@ class LexerTest extends TestCase
         $this->lexer->tokenize('a b c d e f g'); // 7 tokens, max 5
     }
 
+    /**
+     * ER-79: query.max_tokens is the most tokens a query may have. The Lexer threw on reaching
+     * it ("Query has 32 tokens, exceeding the configured maximum of 32"), so 32 allowed 31.
+     * Words, | and parentheses each count, and a quoted phrase is checked on its own branch.
+     */
+    public function test_exactly_max_tokens_parse_and_one_more_throws(): void
+    {
+        config(['fuzzy-search.query.max_tokens' => 5]);
+
+        $cases = [
+            'words'   => ['a b c d e', 'a b c d e f'],
+            'phrases' => ['a b c d "e"', 'a b c d e "f"'],
+            'OR'      => ['a | b | c', 'a | b | c d'],
+            'group'   => ['(a b) c', '(a b c) d'],
+        ];
+
+        foreach ($cases as $name => [$atLimit, $overLimit]) {
+            $this->assertCount(5, $this->lexer->tokenize($atLimit), "{$name}: exactly max_tokens tokens must parse");
+
+            try {
+                $this->lexer->tokenize($overLimit);
+                $this->fail("{$name}: max_tokens + 1 tokens must throw");
+            } catch (\Ashiqfardus\LaravelFuzzySearch\Exceptions\QuerySyntaxException $e) {
+                $this->assertStringContainsString('Query has 6 tokens, exceeding the configured maximum of 5', $e->getMessage(), $name);
+            }
+        }
+    }
+
     /** @param Token[] $tokens */
     private static function shape(array $tokens): array
     {
