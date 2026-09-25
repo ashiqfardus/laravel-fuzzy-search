@@ -40,21 +40,31 @@ class FuzzyDriver extends BaseDriver
      */
     protected function generatePatterns(string $value): array
     {
-        $value    = $this->normalizeTerm($value);
-        $chars    = $this->chars($value);
-        $len      = count($chars);
-        $patterns = [];
+        return $this->firstPatterns($this->patternCandidates($value));
+    }
+
+    /**
+     * Every pattern, highest signal first, built lazily: firstPatterns() stops pulling at
+     * max_patterns, so the rest are never built.
+     *
+     * @return \Generator<int, string>
+     */
+    protected function patternCandidates(string $value): \Generator
+    {
+        $value = $this->normalizeTerm($value);
+        $chars = $this->chars($value);
+        $len   = count($chars);
 
         // Distance 0 — always
-        $patterns[] = '%' . $this->escapeLike($value) . '%';
-        $patterns[] = $this->escapeLike($value) . '%';
+        yield '%' . $this->escapeLike($value) . '%';
+        yield $this->escapeLike($value) . '%';
 
         // Split on spaces for multi-word search (distance 0 signal)
         $words = explode(' ', $value);
         if (count($words) > 1) {
             foreach ($words as $word) {
                 if (mb_strlen($word, 'UTF-8') > 2) {
-                    $patterns[] = '%' . $this->escapeLike($word) . '%';
+                    yield '%' . $this->escapeLike($word) . '%';
                 }
             }
         }
@@ -63,14 +73,14 @@ class FuzzyDriver extends BaseDriver
 
         if ($distance >= 1) {
             for ($i = 0; $i < $len; $i++) { // omissions
-                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '%' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
+                yield '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '%' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
             }
             for ($i = 0; $i < $len; $i++) { // substitutions
-                $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
+                yield '%' . $this->escapeLike($this->slice($chars, 0, $i)) . '_' . $this->escapeLike($this->slice($chars, $i + 1)) . '%';
             }
             for ($i = 0; $i < $len - 1; $i++) { // transpositions
                 $transposed = $this->slice($chars, 0, $i) . $chars[$i + 1] . $chars[$i] . $this->slice($chars, $i + 2);
-                $patterns[] = '%' . $this->escapeLike($transposed) . '%';
+                yield '%' . $this->escapeLike($transposed) . '%';
             }
         }
 
@@ -78,17 +88,15 @@ class FuzzyDriver extends BaseDriver
             if ($len > 4) { // double-character removal
                 for ($i = 0; $i < $len - 1; $i++) {
                     if ($chars[$i] === $chars[$i + 1]) {
-                        $patterns[] = '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
+                        yield '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
                     }
                 }
             }
             if ($len > 3) { // word boundaries
-                $patterns[] = $this->escapeLike($chars[0]) . '%' . $this->escapeLike($this->slice($chars, -2));
-                $patterns[] = $this->escapeLike($this->slice($chars, 0, 2)) . '%' . $this->escapeLike($this->slice($chars, -1));
+                yield $this->escapeLike($chars[0]) . '%' . $this->escapeLike($this->slice($chars, -2));
+                yield $this->escapeLike($this->slice($chars, 0, 2)) . '%' . $this->escapeLike($this->slice($chars, -1));
             }
         }
-
-        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

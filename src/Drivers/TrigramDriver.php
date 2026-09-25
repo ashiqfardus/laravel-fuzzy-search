@@ -47,8 +47,7 @@ class TrigramDriver extends BaseDriver
      */
     protected function applyPatternBased(Builder $query, string $column, string $value, string $boolean): Builder
     {
-        $trigrams = $this->generateTrigrams($value);
-        $patterns = $this->trigramsToPatterns($trigrams, $this->normalizeTerm($value));
+        $patterns = $this->trigramsToPatterns($this->generateTrigrams($value), $this->normalizeTerm($value));
         $method = $boolean === 'or' ? 'orWhere' : 'where';
 
         return $query->$method(function ($q) use ($column, $patterns) {
@@ -75,26 +74,29 @@ class TrigramDriver extends BaseDriver
     }
 
     /**
-     * Convert trigrams to LIKE patterns
+     * Convert trigrams to LIKE patterns: the whole term first, so it is always kept (it was once
+     * rebuilt by concatenating the trigrams — "jjojohohnhn" for "john" — and never matched
+     * anything), then each trigram's. Built lazily: firstPatterns() stops at max_patterns.
+     * apply() goes through this and generateTrigrams(), so a subclass can override either.
      */
     protected function trigramsToPatterns(array $trigrams, string $value = ''): array
     {
-        $patterns = [];
+        return $this->firstPatterns($this->trigramPatterns($trigrams, $value));
+    }
+
+    /** @return \Generator<int, string> */
+    private function trigramPatterns(array $trigrams, string $value): \Generator
+    {
+        if ($value !== '') {
+            yield '%' . $this->escapeLike($value) . '%';
+        }
 
         foreach ($trigrams as $trigram) {
             $trigram = trim($trigram);
             if (!empty($trigram)) {
-                $patterns[] = '%' . $this->escapeLike($trigram) . '%';
+                yield '%' . $this->escapeLike($trigram) . '%';
             }
         }
-
-        // The whole term goes first so capPatterns() keeps it. (Previously this was rebuilt by
-        // concatenating the trigrams — "jjojohohnhn" for "john" — and never matched anything.)
-        if ($value !== '') {
-            array_unshift($patterns, '%' . $this->escapeLike($value) . '%');
-        }
-
-        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

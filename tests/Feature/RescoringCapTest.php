@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class LongDoc extends Model
 {
@@ -71,9 +72,20 @@ class RescoringCapTest extends TestCase
         $this->assertSame($scorer->score('abcabc', mb_substr($longTerm, 0, 255)), $scorer->score('abcabc', $longTerm));
     }
 
-    /** _raw_score at f8f2044, before the cap: values of 255 characters or fewer score exactly as they did. */
-    public function test_short_values_score_exactly_as_before(): void
+    public static function folding(): array
     {
+        return ['folding off' => [false], 'folding on, as shipped' => [true]];
+    }
+
+    /**
+     * _raw_score at f8f2044, before the cap: values of 255 characters or fewer score exactly as
+     * they did. An ASCII term has no folded form, so accent folding changes nothing (ER-65).
+     */
+    #[DataProvider('folding')]
+    public function test_short_values_score_exactly_as_before(bool $fold): void
+    {
+        config(['fuzzy-search.unicode.accent_insensitive' => $fold]);
+
         $scores = fn ($builder, string $key = 'name') => $builder->get()
             ->mapWithKeys(fn ($row) => [$row->{$key} => $row->_raw_score])->sortKeys()->all();
 
@@ -157,6 +169,20 @@ class RescoringCapTest extends TestCase
 
         // A tier still counts past the budget.
         $this->assertSame($scorer->rawScore($alice, [str_repeat('q', 251)]) + 60.0, $scorer->rawScore($alice, [str_repeat('q', 251), 'smith']));
+    }
+
+    /**
+     * Ruling ER-65: a term and its accent-folded twin are one group, and the budget counts the
+     * group once, by its longest member: 4 + 250 characters are within it, 4 + 4 + 250 are not.
+     */
+    public function test_the_budget_counts_a_folded_group_once(): void
+    {
+        $scorer = $this->scorer();
+        $john   = User::query()->where('name', 'John Doe')->first();
+        $long   = substr(str_repeat('johndoe', 40), 0, 250); // not contained in "john doe": similarity only
+
+        $this->assertGreaterThan($scorer->rawScore($john, ['john']), $scorer->rawScore($john, ['john', $long]), 'the long term earns its similarity floor');
+        $this->assertSame($scorer->rawScore($john, ['john', $long]), $scorer->rawScore($john, ['jöhn', 'john', $long]));
     }
 
     /**

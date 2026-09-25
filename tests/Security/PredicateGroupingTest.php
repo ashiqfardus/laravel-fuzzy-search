@@ -8,6 +8,8 @@ use Ashiqfardus\LaravelFuzzySearch\Drivers\SimilarTextDriver;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\SimpleDriver;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\SoundexDriver;
 use Ashiqfardus\LaravelFuzzySearch\Drivers\TrigramDriver;
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\FakesDriverConnections;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
@@ -74,6 +76,39 @@ class PredicateGroupingTest extends TestCase
 
         // Jon Snow, Johnny Bravo and Jane Doe all sound like "john" — none may leak past the email constraint.
         $this->assertSame(['john@example.com'], $emails);
+    }
+
+    /**
+     * An explicit accentInsensitive() on PostgreSQL with native functions ORs unaccent() beside the
+     * algorithm's own predicate: both must sit in one group, so a where() before the search, a
+     * filter() and a constraint chained after it still guard every match.
+     */
+    public function test_the_unaccent_alternative_stays_inside_the_algorithms_group(): void
+    {
+        config(['fuzzy-search.use_native_functions' => true]);
+
+        foreach (['fuzzy', 'levenshtein', 'trigram', 'soundex', 'similar_text', 'simple'] as $algorithm) {
+            $query = $this->fakeConnectionTable('pgsql', 'users');
+            app(FuzzySearch::class)->applyFuzzyWhere($query, 'name', 'john', $algorithm, ['accent_insensitive' => true]);
+            $query->where('tenant_id', 7);
+
+            $this->assertGroupedWithUnaccent($query->toSql(), "macro, {$algorithm}");
+
+            $sql = (new SearchBuilder($this->fakeConnectionTable('pgsql', 'users')->where('tenant_id', 7), app(FuzzySearch::class)))
+                ->search('john')->searchIn(['name', 'email'])->using($algorithm)->accentInsensitive()->filter('active', '=', 1)
+                ->toSql();
+
+            $this->assertGroupedWithUnaccent($sql, "builder, {$algorithm}");
+        }
+    }
+
+    private function assertGroupedWithUnaccent(string $sql, string $message): void
+    {
+        $where = substr($sql, stripos($sql, ' where ') + 7);
+        $where = stripos($where, ' order by ') === false ? $where : substr($where, 0, stripos($where, ' order by '));
+
+        $this->assertStringContainsString('unaccent(', $where, "{$message}: no unaccent() alternative");
+        $this->assertFalse($this->hasTopLevelOr($where), "{$message}: the unaccent() OR leaks past the other constraints: {$where}");
     }
 
     /** True when $where contains an OR outside every pair of parentheses. */

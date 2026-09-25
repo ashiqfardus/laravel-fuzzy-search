@@ -97,7 +97,7 @@ class JoinedColumnSearchTest extends TestCase
             'levenshtein'      => [fn ($m) => self::ids($s($m)->using('levenshtein')->get())],
             'soundex'          => [fn ($m) => self::ids($s($m)->using('soundex')->get())],
             'trigram'          => [fn ($m) => self::ids($s($m)->using('trigram')->get())],
-            'similar_text'     => [fn ($m) => self::ids($s($m)->using('similar_text')->get())],
+            'similar_text'     => [fn ($m) => self::ids($s($m, 'john doe')->using('similar_text')->get())], // within min_percentage of "John Doe"
             'like'             => [fn ($m) => self::ids($s($m)->using('like')->get())],
             'tokenize'         => [fn ($m) => self::ids($s($m, 'john doe')->tokenize()->get())],
             'tokenize matchAll' => [fn ($m) => self::ids($s($m, 'john doe')->tokenize()->matchAll()->get())],

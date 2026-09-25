@@ -9,18 +9,72 @@ use Illuminate\Database\Query\Builder;
 /**
  * SimilarText Driver
  *
- * SQL level: prefix LIKE — honest fallback because similar_text() has no
- * SQL equivalent on any supported database. The PHP-side scorer in
- * SearchBuilder::calculateRelevanceScores() uses PHP's similar_text() to
- * compute the actual score after candidates are fetched.
+ * SQL level: contains LIKE, because similar_text() has no SQL equivalent on any supported
+ * database. similar_text.min_percentage (per call: the min_percentage option) is still enforced
+ * in SQL: once the term is contained in the value, similar_text(term, value) is exactly
+ * 200·t / (t + v), so "at least p%" is a bound on the value's length — see maxValueLength().
+ * The PHP-side scorer in SearchBuilder::calculateRelevanceScores() scores the rows fetched.
  */
 class SimilarTextDriver extends BaseDriver
 {
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
-        DbDialect::whereLike($query, $column, '%' . $this->escapeLike(Utf8::lowerAscii($value)) . '%', $this->driver, $boolean);
+        $pattern = '%' . $this->escapeLike(Utf8::lowerAscii($value)) . '%';
+        $bound   = $this->matchBound($query, $column, $value);
 
-        return $query;
+        if ($bound === null) {
+            DbDialect::whereLike($query, $column, $pattern, $this->driver, $boolean);
+
+            return $query;
+        }
+
+        // One group, so an outer OR takes the LIKE and its bound together.
+        return $query->{$boolean === 'or' ? 'orWhere' : 'where'}(function (Builder $q) use ($column, $pattern, $bound) {
+            DbDialect::whereLike($q, $column, $pattern, $this->driver);
+            $q->whereRaw(...$bound);
+        });
+    }
+
+    /**
+     * The min_percentage length bound (see maxValueLength()), or null when it is off. t is the
+     * term's length or, under tokenize(), the whole search term's, which SearchBuilder hands
+     * FuzzySearch::applyTermWhere() as an argument (ruling ER-59; no option can set it).
+     */
+    public function matchBound(Builder $query, string $column, string $value): ?array
+    {
+        $whole = $this->config['similar_text'][\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::WHOLE_TERM_LENGTH] ?? null;
+        $max   = $this->maxValueLength(is_int($whole) ? $whole : mb_strlen($value, 'UTF-8'));
+
+        return $max === null ? null : [$this->characterLength($query, $column) . ' <= ?', [$max]];
+    }
+
+    /**
+     * The longest value, in characters, a t-character term still reaches min_percentage p in:
+     * 200·t / (t + v) >= p ⇔ v <= t·(200 − p) / p. null when min_percentage is 0 or null (off,
+     * the 2.0 behaviour). Characters, not bytes: PHP's similar_text() counts bytes, so on text
+     * with multibyte characters the bound is the character form of the same percentage.
+     */
+    private function maxValueLength(int $termLength): ?int
+    {
+        $percentage = (float) ($this->config['similar_text']['min_percentage'] ?? 0);
+
+        return $percentage > 0 ? (int) floor($termLength * (200 - $percentage) / $percentage) : null;
+    }
+
+    /**
+     * The column's length in characters, the column written as the LIKE beside it writes it
+     * (DbDialect::column()). SQL Server's LEN() ignores trailing spaces, so it measures the column
+     * with one character added, cast first so an int/decimal or legacy text/ntext column works too.
+     */
+    private function characterLength(Builder $query, string $column): string
+    {
+        $col = DbDialect::column($query, $column, $this->driver);
+
+        return match ($this->driver) {
+            DbDialect::SQLSRV => "(LEN(CAST({$col} AS NVARCHAR(MAX)) + N'x') - 1)",
+            DbDialect::SQLITE => "LENGTH({$col})",
+            default           => "CHAR_LENGTH({$col})", // MySQL, MariaDB, PostgreSQL
+        };
     }
 
     public function getRelevanceExpression(string $column, string $value): string

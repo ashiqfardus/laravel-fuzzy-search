@@ -154,10 +154,18 @@ final class DbDialect
     {
         $raw = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
-        if ($driver === self::PGSQL) {
-            $query->$raw(self::like(self::quoteIdentifier($column, $driver, $query->getGrammar()->getTablePrefix()), $driver, 'ILIKE'), [$pattern]);
-        } else {
-            $query->$raw(self::like($query->getGrammar()->wrap($column), $driver), [$pattern]);
-        }
+        $query->$raw(self::like(self::column($query, $column, $driver), $driver, self::likeOperator($driver)), [$pattern]);
+    }
+
+    /**
+     * $column as whereLike() writes it, for any other SQL that must name the same column: quoted
+     * with the table prefix on PostgreSQL, through the query's grammar (as where() writes it)
+     * everywhere else.
+     */
+    public static function column(object $query, string $column, string $driver): string
+    {
+        return $driver === self::PGSQL
+            ? self::quoteIdentifier($column, $driver, $query->getGrammar()->getTablePrefix())
+            : $query->getGrammar()->wrap($column);
     }
 }

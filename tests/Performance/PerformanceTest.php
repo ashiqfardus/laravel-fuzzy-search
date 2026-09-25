@@ -132,6 +132,7 @@ class PerformanceTest extends TestCase
     {
         $algorithms = ['like', 'levenshtein', 'soundex', 'similar_text'];
         $results = [];
+        config(['fuzzy-search.similar_text.min_percentage' => 0]); // about running each algorithm, not about the percentage bound
         
         foreach ($algorithms as $algorithm) {
             $results[$algorithm] = User::search('john')

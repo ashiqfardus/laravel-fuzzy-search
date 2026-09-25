@@ -58,12 +58,13 @@ trait Fuzzy
     }
 
     /**
-     * Scope for Levenshtein search
+     * Scope for Levenshtein search. $maxDistance overrides levenshtein.max_distance; 0 is exact
+     * containment, null keeps the config's.
      */
     public function scopeFuzzyLevenshtein($query, string $searchTerm, ?array $columns = null, ?int $maxDistance = null)
     {
         $columns = $columns ?? $this->getFuzzySearchableColumns();
-        $options = $maxDistance ? ['max_distance' => $maxDistance] : [];
+        $options = $maxDistance !== null ? ['max_distance' => $maxDistance] : [];
 
         return $query->whereFuzzyMultiple($columns, $searchTerm, 'levenshtein', $options);
     }
@@ -78,12 +79,13 @@ trait Fuzzy
     }
 
     /**
-     * Scope for Similar text search
+     * Scope for Similar text search. $minPercentage overrides similar_text.min_percentage; 0 turns
+     * the bound off, null keeps the config's.
      */
     public function scopeFuzzySimilar($query, string $searchTerm, ?array $columns = null, ?int $minPercentage = null)
     {
         $columns = $columns ?? $this->getFuzzySearchableColumns();
-        $options = $minPercentage ? ['min_percentage' => $minPercentage] : [];
+        $options = $minPercentage !== null ? ['min_percentage' => $minPercentage] : [];
 
         return $query->whereFuzzyMultiple($columns, $searchTerm, 'similar_text', $options);
     }

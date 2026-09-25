@@ -56,6 +56,12 @@ class FuzzySearch
         return $this->config ?? (array) config('fuzzy-search', []);
     }
 
+    /**
+     * @internal The driver-config key applyTermWhere() sets from its own argument, after the
+     *           caller's options are merged, so no option can set it.
+     */
+    public const WHOLE_TERM_LENGTH = 'whole_term_length';
+
     public function applyFuzzyWhere(
         Builder $query,
         string $column,
@@ -64,25 +70,61 @@ class FuzzySearch
         ?array $options = [],
         string $boolean = 'and'
     ): Builder {
+        return $this->applyTermWhere($query, $column, $value, $algorithm, $options ?? [], $boolean, null);
+    }
+
+    /**
+     * @internal applyFuzzyWhere() for SearchBuilder. $wholeTermLength is the whole search term's
+     * length under tokenize(), which similar_text's min_percentage bound measures instead of the
+     * token's (ruling ER-59). It is an argument, never an option: whatever a caller passes in
+     * $options, options() or a macro cannot widen the bound.
+     */
+    public function applyTermWhere(
+        Builder $query,
+        string $column,
+        string $value,
+        ?string $algorithm,
+        array $options,
+        string $boolean,
+        ?int $wholeTermLength
+    ): Builder {
         $this->assertValidColumn($column);
 
-        $value = Utf8::clean($value); // every macro and Fuzzy scope binds its term here or in applyFuzzyOrder()
+        $value = $this->term($value);
 
         $algorithm = $algorithm ?? $this->currentConfig()['default_algorithm'] ?? 'fuzzy';
-        $mergedConfig = $this->mergeOptions($algorithm, $options ?? []);
+        $mergedConfig = $this->mergeOptions($algorithm, $options);
+        $mergedConfig[$algorithm][self::WHOLE_TERM_LENGTH] = $wholeTermLength;
+        $driver = $this->resolveDriver($algorithm, $query, $mergedConfig);
 
-        // accent_insensitive is a per-call flag, not a global config key.
-        // The global config/fuzzy-search.php 'unicode.accent_insensitive' key
-        // has no effect here by design — the Postgres unaccent path requires
-        // explicit opt-in via ->accentInsensitive() at the query level.
+        // $options['accent_insensitive'] is the explicit opt-in: ->accentInsensitive(), the model's
+        // $searchable['accent_insensitive'], a preset, or a macro's own option. SearchBuilder never
+        // passes the global unicode.accent_insensitive default here — that one only adds the term's
+        // folded form as a variant. On PostgreSQL with use_native_functions the opt-in ORs
+        // unaccent(col) ILIKE unaccent(?) beside the algorithm's predicate, in one group so an
+        // outer AND still binds both; the algorithm (and its typo tolerance) stays, and the
+        // alternative carries the driver's matchBound() (similar_text's min_percentage). It needs
+        // the unaccent extension.
         if (($options['accent_insensitive'] ?? false)
             && $this->getDriver($query) === self::DRIVER_PGSQL
             && ($this->currentConfig()['use_native_functions'] ?? false)
         ) {
-            return $this->applyWithUnaccent($query, $column, $value, $boolean);
+            return $query->{$boolean === 'or' ? 'orWhere' : 'where'}(function (Builder $group) use ($driver, $column, $value) {
+                $driver->apply($group, $column, $value);
+
+                if (($bound = $driver->matchBound($group, $column, $value)) === null) {
+                    $this->applyWithUnaccent($group, $column, $value, 'or');
+
+                    return;
+                }
+
+                $group->orWhere(function (Builder $alternative) use ($column, $value, $bound) {
+                    $this->applyWithUnaccent($alternative, $column, $value, 'and');
+                    $alternative->whereRaw(...$bound);
+                });
+            });
         }
 
-        $driver = $this->resolveDriver($algorithm, $query, $mergedConfig);
         return $driver->apply($query, $column, $value, $boolean);
     }
 
@@ -121,7 +163,28 @@ class FuzzySearch
             default                         => "CASE WHEN {$col} LIKE ? THEN 0 ELSE 1 END",
         };
 
-        return $query->orderByRaw("{$expression} {$direction}", [Utf8::clean($value)]);
+        return $query->orderByRaw("{$expression} {$direction}", [$this->term($value)]);
+    }
+
+    /**
+     * Every macro, Fuzzy scope and SearchBuilder condition binds its term through here (the two
+     * public entry points above): invalid UTF-8 dropped and capped at query.max_term_length, so
+     * no driver generates patterns from a longer term than search() would.
+     */
+    private function term(string $value): string
+    {
+        return self::capTerm(Utf8::clean($value));
+    }
+
+    /**
+     * Truncate a term to query.max_term_length characters (never bytes). The one cap every path
+     * applies: SearchBuilder::capSearchTerm(), tableSearch() and the applyFuzzy*() entry points.
+     *
+     * @internal
+     */
+    public static function capTerm(string $term): string
+    {
+        return mb_substr($term, 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
     }
 
     /**
@@ -141,7 +204,7 @@ class FuzzySearch
      * survives a join. For a relation column keep Filament's own `searchable()`.
      *
      * The term is trimmed and capped at query.max_term_length before it reaches a driver — the
-     * table search box is unbounded user input (see SearchBuilder::capSearchTerm()).
+     * table search box is unbounded user input (see capTerm()).
      */
     public static function tableSearch(array|string|null $columns = null, ?string $algorithm = null, array $options = []): \Closure
     {
@@ -154,7 +217,7 @@ class FuzzySearch
                     : [],
             };
 
-            $search = mb_substr(trim(Utf8::clean($search)), 0, (int) config('fuzzy-search.query.max_term_length', 128), 'UTF-8');
+            $search = self::capTerm(trim(Utf8::clean($search)));
 
             if ($search === '') {
                 return $query;
@@ -183,21 +246,34 @@ class FuzzySearch
         }
     }
 
+    /** Compares at most the first 255 characters of each string — see scoringInput(). */
     public static function levenshteinDistance(string $str1, string $str2, array $options = []): int
     {
         return levenshtein(
-            strtolower($str1),
-            strtolower($str2),
+            strtolower(self::scoringInput($str1)),
+            strtolower(self::scoringInput($str2)),
             $options['cost_insert']  ?? 1,
             $options['cost_replace'] ?? 1,
             $options['cost_delete']  ?? 1
         );
     }
 
+    /** Compares at most the first 255 characters of each string — see scoringInput(). */
     public static function similarityPercentage(string $str1, string $str2): float
     {
-        similar_text(strtolower($str1), strtolower($str2), $percent);
+        similar_text(strtolower(self::scoringInput($str1)), strtolower(self::scoringInput($str2)), $percent);
         return $percent;
+    }
+
+    /**
+     * levenshtein() is O(n·m) and similar_text() worse, so a scoring call on a user term and a
+     * column value (the Fuzzy trait's filterFuzzy()/sortByFuzzy(), SearchBuilder's rescoring) sees
+     * only their first 255 characters. A string of 255 characters or fewer is passed through byte
+     * for byte (mb_substr() would turn an invalid byte into "?"), so it scores exactly as before.
+     */
+    private static function scoringInput(string $value): string
+    {
+        return mb_strlen($value, 'UTF-8') <= 255 ? $value : mb_substr($value, 0, 255, 'UTF-8');
     }
 
     protected function resolveDriver(string $algorithm, Builder $query, array $config): BaseDriver

@@ -75,23 +75,33 @@ class SoundexDriver extends BaseDriver
      */
     protected function generatePhoneticPatterns(string $value): array
     {
-        $value    = $this->normalizeTerm($value);
-        $len      = mb_strlen($value, 'UTF-8');
-        $patterns = [];
+        return $this->firstPatterns($this->patternCandidates($value));
+    }
+
+    /**
+     * Every pattern, exact substring first, built lazily: firstPatterns() stops pulling at
+     * max_patterns.
+     *
+     * @return \Generator<int, string>
+     */
+    protected function patternCandidates(string $value): \Generator
+    {
+        $value = $this->normalizeTerm($value);
+        $len   = mb_strlen($value, 'UTF-8');
 
         // Exact substring — always include
-        $patterns[] = '%' . $this->escapeLike($value) . '%';
+        yield '%' . $this->escapeLike($value) . '%';
 
         // First 3+ chars prefix
         if ($len >= 4) {
-            $patterns[] = $this->escapeLike(mb_substr($value, 0, 3, 'UTF-8')) . '%';
+            yield $this->escapeLike(mb_substr($value, 0, 3, 'UTF-8')) . '%';
         }
 
         // Vowel-stripped consonant skeleton
         if ($len > 2) {
             $consonants = mb_substr($value, 0, 1, 'UTF-8') . preg_replace('/[aeiou]/i', '', mb_substr($value, 1, null, 'UTF-8'));
             if (mb_strlen($consonants, 'UTF-8') >= 2 && $consonants !== $value) {
-                $patterns[] = '%' . $this->escapeLike($consonants) . '%';
+                yield '%' . $this->escapeLike($consonants) . '%';
             }
         }
 
@@ -108,12 +118,10 @@ class SoundexDriver extends BaseDriver
             if (str_contains($value, $from)) {
                 $replaced = str_replace($from, $to, $value);
                 if ($replaced !== $value) {
-                    $patterns[] = '%' . $this->escapeLike($replaced) . '%';
+                    yield '%' . $this->escapeLike($replaced) . '%';
                 }
             }
         }
-
-        return $this->capPatterns($patterns);
     }
 
     public function getRelevanceExpression(string $column, string $value): string

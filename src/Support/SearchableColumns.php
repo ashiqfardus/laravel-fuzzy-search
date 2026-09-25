@@ -17,7 +17,7 @@ use Illuminate\Database\Eloquent\Model;
  * process (a tenant model that switches either gets its own entry): it reads the
  * table's columns, and it is called on every save (shadow columns), every indexed row and every
  * search. Declared columns never reach it. The cache is as long-lived as
- * SearchableObserver::$columnCache and onTable()'s listings — a schema change needs
+ * SearchableObserver::$columnCache and onTable()'s and typesOn()'s listings — a schema change needs
  * a fresh process (or reset(), which the test suite calls between cases).
  */
 final class SearchableColumns
@@ -44,6 +44,9 @@ final class SearchableColumns
 
     /** @var array<string, string[]> "connection|table" => column names */
     private static array $listings = [];
+
+    /** @var array<string, array<string, string>> "connection|table" => column => database type */
+    private static array $types = [];
 
     /**
      * @param  array<string|int, string|int> $columns
@@ -99,8 +102,9 @@ final class SearchableColumns
     }
 
     /**
-     * The table's column names, memoised per connection and table like detect(). A table that
-     * cannot be read gives [] and is not cached.
+     * The table's column names, memoised per connection and table like detect(). They come from
+     * typesOn()'s read where the types are readable, so detection and this listing read the schema
+     * once. A table that cannot be read gives [] and is not cached.
      *
      * @return string[]
      */
@@ -112,6 +116,11 @@ final class SearchableColumns
             return self::$listings[$key];
         }
 
+        // The same read as typesOn() (and so detection) where the types are readable.
+        if (($types = self::typesOn($connection, $table)) !== []) {
+            return self::$listings[$key] = array_map('strval', array_keys($types));
+        }
+
         try {
             $columns = $connection->getSchemaBuilder()->getColumnListing($table);
         } catch (\Throwable) {
@@ -119,6 +128,68 @@ final class SearchableColumns
         }
 
         return $columns === [] ? [] : self::$listings[$key] = $columns;
+    }
+
+    /**
+     * The table's columns and their database types (Schema::getColumns()'s type_name, lower case),
+     * memoised per connection and table like onTable(). [] when the types cannot be read — Laravel 10
+     * before Schema::getColumns() existed, or a table that cannot be listed — and then not cached:
+     * auto-detection then keeps its untyped behaviour.
+     *
+     * @return array<string, string> column => type
+     */
+    public static function typesOn(Connection $connection, string $table): array
+    {
+        $key    = $connection->getName() . '|' . $table;
+        $schema = $connection->getSchemaBuilder();
+
+        if (isset(self::$types[$key]) || !method_exists($schema, 'getColumns')) {
+            return self::$types[$key] ?? [];
+        }
+
+        try {
+            $columns = $schema->getColumns($table);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        $types = [];
+        foreach ($columns as $column) {
+            $types[(string) $column['name']] = strtolower((string) $column['type_name']);
+        }
+
+        return $types === [] ? [] : self::$types[$key] = $types;
+    }
+
+    /**
+     * Database types that hold text a LIKE can search on every supported database, by their exact
+     * names: char/varchar/text in all their sizes and spellings (nchar, nvarchar, ntext, bpchar,
+     * character varying, citext, clob, SQLite's `string` and other TEXT-affinity spellings), plus
+     * MySQL/MariaDB enum and set. Only whole names count: a PostgreSQL enum or domain is named by its
+     * own type (`charge_status`), and its ILIKE fails like a number's.
+     */
+    private const TEXT_TYPES = [
+        'char', 'character', 'varchar', 'character varying', 'varying character', 'bpchar', 'nchar',
+        'national character', 'native character', 'nvarchar', 'national character varying',
+        'text', 'tinytext', 'mediumtext', 'longtext', 'ntext', 'citext', 'clob', 'string', 'enum', 'set',
+    ];
+
+    /**
+     * Whether a database column type holds text a LIKE can search: TEXT_TYPES, in any letter
+     * case and with any size or parameters (`varchar(255)`) stripped. Numbers, booleans, dates,
+     * json, uuid, binary types, PostgreSQL arrays (`_text`) and user-defined types are not.
+     *
+     * @param string|null $type the column's type from typesOn(), or null when it could not be read
+     */
+    public static function isTextType(?string $type): bool
+    {
+        // Unknown: keep the column, as detection did before types were read. '' is SQLite's
+        // column declared without a type, which stores text as given (ruling ER-60).
+        if ($type === null || $type === '') {
+            return true;
+        }
+
+        return in_array(strtolower(trim(explode('(', $type, 2)[0])), self::TEXT_TYPES, true);
     }
 
     /**
@@ -177,5 +248,6 @@ final class SearchableColumns
     {
         self::$detected = [];
         self::$listings = [];
+        self::$types    = [];
     }
 }
