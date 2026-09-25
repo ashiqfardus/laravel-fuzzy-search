@@ -437,9 +437,10 @@ class IndexManagerTest extends TestCase
 
         $manager->indexModel($model);
 
-        // The upsert that inserts new terms and, on a conflict, raises doc_count.
+        // The upsert that inserts new terms and, on a conflict, raises doc_count: an INSERT, or
+        // on SQL Server a MERGE.
         $termUpserts = array_values(array_filter($queries, fn ($q) =>
-            str_starts_with(strtolower($q['query']), 'insert') && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], '+ 1')
+            preg_match('/^\s*(insert|merge)\b/i', $q['query']) && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], '+ 1')
         ));
 
         $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
