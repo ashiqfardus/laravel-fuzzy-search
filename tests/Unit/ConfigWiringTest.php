@@ -108,9 +108,9 @@ class ConfigWiringTest extends TestCase
     }
 
     /**
-     * Pins the shipped config/fuzzy-search.php defaults independently of TestCase's mirror,
-     * so a regression like shipping 'normalize' => true (the inert v2.0 value, now live) is
-     * caught even though tests/TestCase.php hardcodes its own defaults.
+     * Pins the shipped config/fuzzy-search.php defaults, so a regression like shipping
+     * 'normalize' => true (the inert v2.0 value, now live) is caught: the suite runs on the
+     * shipped file, so it would otherwise just run on the changed value.
      */
     public function test_published_config_declares_the_wired_defaults(): void
     {

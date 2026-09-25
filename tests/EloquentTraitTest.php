@@ -41,7 +41,7 @@ class EloquentTraitTest extends TestCase
 
     public function test_fuzzy_levenshtein_scope_accepts_a_max_distance_of_zero(): void
     {
-        // 0 is exact containment, not "use the configured distance" (3 in the test config).
+        // 0 is exact containment, not "use the configured distance" (2 as shipped).
         $names = User::fuzzyLevenshtein('jon', ['name'], 0)->pluck('name')->all();
 
         $this->assertSame(['Jon Snow'], $names);

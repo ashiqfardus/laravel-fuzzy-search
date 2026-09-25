@@ -17,7 +17,7 @@ require_once __DIR__ . '/../TestModels.php';
  * form, like a synonym. It used to replace the typed term, so "Müller" searched "Muller" and missed
  * "Zoë Müller" wherever the column is not folded (SQLite, PostgreSQL, SQL Server). On PostgreSQL
  * with use_native_functions, unaccent() is OR'd beside the algorithm only on an explicit opt-in.
- * tests/TestCase.php ships the key false, so every test here sets it.
+ * The suite runs on the shipped true; setUp() still sets it, so these tests hold if the default changes.
  */
 class AccentVariantTest extends TestCase
 {
@@ -320,7 +320,10 @@ class AccentVariantTest extends TestCase
         }
 
         try {
-            config(['fuzzy-search.use_native_functions' => true]);
+            // Native levenshtein on PostgreSQL is whole-value similarity() > 1 - distance / length:
+            // "Zoë Müller" scores 0.64 against "Müller", over the 0.5 floor at distance 3 but under
+            // 0.67 at the shipped 2. This test is about unaccent's absence, not that threshold.
+            config(['fuzzy-search.use_native_functions' => true, 'fuzzy-search.levenshtein.max_distance' => 3]);
 
             foreach (['trigram', 'levenshtein', 'soundex'] as $algorithm) {
                 $names = $this->builder()->search('Müller')->searchIn(['name'])->using($algorithm)->get()->pluck('name')->all();

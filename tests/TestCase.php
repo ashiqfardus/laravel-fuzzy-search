@@ -23,84 +23,17 @@ abstract class TestCase extends BaseTestCase
         // the whole suite to a real server (see tests/Concerns/ConfiguresDatabaseConnection).
         $this->configureTestDatabaseConnection($app);
 
-        // Fuzzy search config — mirrors config/fuzzy-search.php defaults so tests exercise
-        // the published values rather than silently falling back to config() null returns.
-        // `presets` is taken from the published file itself, never copied: preset() reads
-        // config('fuzzy-search.presets'), so a mirror without that key made every preset throw
-        // InvalidConfigException, and a copy would test the copy instead of what ships.
-        $shipped = require __DIR__ . '/../config/fuzzy-search.php';
+        // The suite runs on the shipped config/fuzzy-search.php, loaded whole. A hand-kept
+        // copy drifted from it (default_algorithm, levenshtein.max_distance, indexing.async,
+        // unicode.accent_insensitive) and hid bugs that show only at the shipped values.
+        // A test that needs another value sets it locally, with a comment saying why.
+        // Tests\Unit\ShippedConfigTest fails on any change here it does not list.
+        $app['config']->set('fuzzy-search', require __DIR__ . '/../config/fuzzy-search.php');
 
-        $app['config']->set('fuzzy-search', [
-            'presets'            => $shipped['presets'],
-            'default_algorithm'  => 'levenshtein',
-            'allow_empty_search' => false,
-            'min_search_length'  => 2, // matches config/fuzzy-search.php default
-            'max_candidates'     => 1000,
-            'levenshtein' => [
-                'max_distance' => 3,
-                'cost_insert'  => 1,
-                'cost_replace' => 1,
-                'cost_delete'  => 1,
-            ],
-            'similar_text' => [
-                'min_percentage' => 70,
-            ],
-            'like' => [
-                'case_insensitive' => true,
-            ],
-            'use_native_functions' => false,
-            'indexing' => [
-                'enabled'            => false,
-                'async'              => false,
-                'queue'              => 'default',
-                'chunk_size'         => 500,
-                'tokenizer'          => \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer::class,
-                'stemmer'            => \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer::class,
-                'max_tokens_per_doc' => 5000,
-                'accent_insensitive' => false,
-                'job'                => ['tries' => 3, 'backoff' => [10, 60, 300], 'timeout' => 120],
-            ],
-            'bm25' => [
-                'k1'                    => 1.5,
-                'b'                     => 0.75,
-                'max_postings_per_term' => 50000,
-                'candidate_chunk'       => 200,
-                'fuzzy'                 => ['candidate_pool' => 500, 'max_expansions' => 5, 'damping' => true],
-                'prefix'                => ['max_expansions' => 10],
-            ],
-            'query' => [
-                'max_depth'  => 16,
-                'max_tokens' => 32,
-            ],
-            'in_memory' => [
-                'max_items'      => 10000,
-                'min_similarity' => 60,
-            ],
-            'scoring' => ['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50],
-            'performance' => ['max_patterns' => 100],
-            'highlighting' => ['enabled' => false, 'tag_open' => '<em>', 'tag_close' => '</em>'],
-            'unicode' => ['normalize' => false, 'accent_insensitive' => false],
-            'typo_tolerance' => ['enabled' => true, 'max_distance' => 2, 'min_word_length' => 4],
-            'locale' => 'en',
-            'stop_words' => [
-                'en' => ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it'],
-                'de' => ['der', 'die', 'das', 'und', 'oder', 'aber', 'in', 'auf', 'an', 'zu', 'für', 'von'],
-                'fr' => ['le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'mais', 'dans', 'sur', 'à'],
-                'es' => ['el', 'la', 'los', 'las', 'un', 'una', 'y', 'o', 'pero', 'en', 'sobre', 'a'],
-                'it' => ['il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'una', 'e', 'o', 'ma', 'in', 'su', 'per', 'di', 'a', 'da', 'che', 'non', 'con'],
-                'pt' => ['o', 'a', 'os', 'as', 'um', 'uma', 'e', 'ou', 'mas', 'em', 'no', 'na', 'de', 'do', 'da', 'para', 'com', 'que', 'não', 'por'],
-                'nl' => ['de', 'het', 'een', 'en', 'of', 'maar', 'in', 'op', 'aan', 'te', 'voor', 'van', 'is', 'dat', 'die', 'met', 'niet', 'zijn', 'er'],
-                'ru' => ['и', 'в', 'не', 'на', 'я', 'что', 'он', 'с', 'а', 'как', 'это', 'по', 'но', 'из', 'у', 'за', 'от', 'то', 'же', 'к'],
-            ],
-            'analytics' => [
-                'enabled'        => false,
-                'queue'          => null,
-                'sample_rate'    => 1.0,
-                'retention_days' => 30,
-                'hash_terms'     => false,
-                'table'          => 'fuzzy_search_logs',
-            ],
-        ]);
+        // indexing.async ships true and needs no override: on the sync connection the job a save
+        // dispatches runs before save() returns. Testbench defaults to sync on Laravel 12 and 13;
+        // this holds it on every version (Laravel 11+ itself defaults to the database queue).
+        $app['config']->set('queue.default', 'sync');
     }
 
     protected function defineDatabaseMigrations(): void
