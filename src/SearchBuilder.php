@@ -596,24 +596,26 @@ class SearchBuilder
     /**
      * Add synonyms (word => its synonyms), on top of config('fuzzy-search.synonyms'); a word set
      * again replaces its earlier synonyms. Each word is folded as expandWithSynonyms() folds the
-     * term it looks up (Utf8::lowerAscii()), so 'Laptop' is the word 'laptop' — the config, the
-     * model's $searchable['synonyms'] and the query all come through here. The synonyms are kept as
-     * written: they are searched like the user's own words.
+     * term it looks up, with mb_strtolower() (ruling ER-100: a PHP lookup, so D1's ASCII-only SQL
+     * rule does not apply), so 'Laptop' is the word 'laptop' and 'Ägypten' the word 'ägypten' — the
+     * config, the model's $searchable['synonyms'] and the query all come through here. The
+     * synonyms are kept as written: they are searched like the user's own words.
      */
     public function withSynonyms(array $synonyms): self
     {
         foreach ($synonyms as $word => $alternatives) {
-            $this->synonyms[Utf8::lowerAscii((string) $word)] = $alternatives;
+            $this->synonyms[mb_strtolower((string) $word, 'UTF-8')] = $alternatives;
         }
         return $this;
     }
 
     /**
-     * Add synonym group (all words in group are treated as equivalent)
+     * Add synonym group (all words in group are treated as equivalent), each folded as
+     * withSynonyms() folds a word.
      */
     public function synonymGroup(array $words): self
     {
-        $this->synonymGroups[] = array_map('strtolower', $words);
+        $this->synonymGroups[] = array_map(fn ($word) => mb_strtolower((string) $word, 'UTF-8'), $words);
         return $this;
     }
 
@@ -2658,7 +2660,7 @@ class SearchBuilder
     protected function expandWithSynonyms(string $term): array
     {
         $terms = [$term];
-        $lowerTerm = Utf8::lowerAscii($term);
+        $lowerTerm = mb_strtolower($term, 'UTF-8'); // as withSynonyms() and synonymGroup() fold their words (ER-100)
 
         // Check direct synonyms
         if (isset($this->synonyms[$lowerTerm])) {
