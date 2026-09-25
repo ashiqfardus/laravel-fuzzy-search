@@ -20,6 +20,11 @@ class IndexManager
     private const POSTING_ROWS_PER_UPSERT = 400;
     private const ROWS_PER_UPSERT         = 500;
 
+    // Every model id is bound as a string: model_id is a varchar, and an integer bound against it
+    // makes MySQL/MariaDB compare numerically and SQL Server convert the column, so neither can
+    // seek the key. The claim's FOR UPDATE then scans, and locks, every document row of the
+    // model type: writes for different rows waited on each other and deadlocked (1213).
+
     private Pipeline $default;
 
     public function __construct(
@@ -56,7 +61,7 @@ class IndexManager
         }
 
         $modelType = get_class($model);
-        $modelId   = $model->getKey();
+        $modelId   = (string) $model->getKey(); // bound as a string: see the note at the top of the class
         $columns   = $model->getSearchableColumns();
 
         $byColumn = $this->buildTokenFrequencyMap($model, $columns);
@@ -135,6 +140,8 @@ class IndexManager
      */
     public function removeFromIndex(string $modelType, int|string $modelId): void
     {
+        $modelId = (string) $modelId; // bound as a string: see the note at the top of the class
+
         DB::transaction(function () use ($modelType, $modelId) {
             // Waits for a write to this row in flight; 0 = it was not indexed.
             $oldDocLength = $this->claimDocuments($modelType, [$modelId])[$modelId] ?? 0;
@@ -187,6 +194,7 @@ class IndexManager
      */
     private function claimDocuments(string $modelType, array $modelIds): array
     {
+        $modelIds = array_map('strval', $modelIds);
         sort($modelIds, SORT_STRING);
         $indexed = [];
 
@@ -221,7 +229,7 @@ class IndexManager
      */
     private function deletePostings(string $modelType, array $modelIds): void
     {
-        foreach (array_chunk($modelIds, 1000) as $chunk) {
+        foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
             $counts = DB::table('fuzzy_index_postings')
                 ->where('model_type', $modelType)
                 ->whereIn('model_id', $chunk)
@@ -435,7 +443,7 @@ class IndexManager
         // int by PHP, and SQL Server's MERGE ... USING (VALUES (...)) fails when the 'term'
         // column mixes int and string bindings. Cast back to string.
         $allTerms = array_map('strval', array_keys($allTerms));
-        $modelIds = array_keys($tokensByModel);
+        $modelIds = array_map('strval', array_keys($tokensByModel)); // PHP made '10' an int key
 
         return DB::transaction(function () use ($modelType, $tokensByModel, $columnsByModel, $allTerms, $modelIds) {
             // Claim the batch's document rows (see claimDocuments()): a live IndexModelJob or
@@ -481,7 +489,7 @@ class IndexManager
                 $docLength = array_sum($tokens);
                 $documentRows[] = [
                     'model_type' => $modelType,
-                    'model_id'   => $modelId,
+                    'model_id'   => (string) $modelId,
                     'doc_length' => $docLength,
                 ];
                 foreach ($this->postingRows($columnsByModel[$modelId], $termIds, $modelType, $modelId) as $row) {
@@ -690,7 +698,7 @@ class IndexManager
                 $rows[] = [
                     'term_id'     => $termIds[$term],
                     'model_type'  => $modelType,
-                    'model_id'    => $modelId,
+                    'model_id'    => (string) $modelId,
                     'column_name' => (string) $column,
                     'frequency'   => $frequency,
                 ];
