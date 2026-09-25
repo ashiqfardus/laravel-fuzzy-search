@@ -814,9 +814,13 @@ class IndexManager
      * upsert() for a key another write may insert at the same moment: a new document row, a new
      * word, a model type's meta row. SQL Server's MERGE decides "not matched" without locking the
      * missing key, so two writes both insert it and the second fails (2601/2627) once the first
-     * commits; run again, the MERGE finds the row and updates it. Only the failed statement rolls
-     * back, so the write keeps its transaction and its locks. The other databases' upserts take
-     * the conflict branch instead.
+     * commits; run again, the MERGE finds the row and updates it. That holds only while
+     * XACT_ABORT is off (@@OPTIONS & 16384 = 0, SQL Server's default): then only the failed
+     * statement rolls back, and the write keeps its transaction and its locks. With XACT_ABORT on,
+     * the error has rolled back the whole write, and the driver silently opens a new transaction
+     * at the next statement, so a re-run would commit the rest of the write without its start.
+     * The error is rethrown instead: the write fails and rolls back whole, and the queue retries
+     * it (ER-76). The other databases' upserts take the conflict branch instead.
      */
     private function upsertShared(string $table, array $rows, array $uniqueBy, array $update): void
     {
@@ -826,7 +830,8 @@ class IndexManager
             0,
             fn (\Throwable $e) => $e instanceof \Illuminate\Database\QueryException
                 && in_array($e->errorInfo[1] ?? null, [2601, 2627], true)
-                && DB::connection()->getDriverName() === 'sqlsrv',
+                && DB::connection()->getDriverName() === 'sqlsrv'
+                && (int) DB::selectOne('select @@options & 16384 as xa')->xa === 0,
         );
     }
 
