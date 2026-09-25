@@ -340,10 +340,15 @@ class IndexManager
      * with one chunked statement per distinct doc_count increment, not one per term, and the
      * postings and document rows in chunked upserts.
      *
+     * $scout: the Scout engine's update() (ER-72). The rows are re-read as Scout's own jobs read
+     * them, without global scopes, and a trashed row stays indexed while scout.soft_delete is on,
+     * so Scout's onlyTrashed() and withTrashed() find it. Everything else reads through the
+     * model's query: its global scopes, and SoftDeletes, whose trashed rows leave the index.
+     *
      * @param  iterable<Model> $models
      * @return int the number of models indexed
      */
-    public function indexBatch(iterable $models): int
+    public function indexBatch(iterable $models, bool $scout = false): int
     {
         $modelType = null;
         $keys      = [];
@@ -358,7 +363,7 @@ class IndexManager
             }
         }
 
-        return $modelType === null ? 0 : $this->write($modelType, array_values($keys), $unsaved);
+        return $modelType === null ? 0 : $this->write($modelType, array_values($keys), $unsaved, $scout);
     }
 
     /**
@@ -377,16 +382,17 @@ class IndexManager
      *
      * @param  list<int|string>     $keys    saved models, reloaded here
      * @param  array<string, Model> $unsaved key => instance, indexed as given
+     * @param  bool                 $scout   re-read with Scout's visibility (see indexBatch())
      * @return int the number of models indexed
      */
-    private function write(string $modelType, array $keys, array $unsaved): int
+    private function write(string $modelType, array $keys, array $unsaved, bool $scout = false): int
     {
-        return DB::transaction(function () use ($modelType, $keys, $unsaved) {
+        return DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
             $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
             $byModel = []; // id => [column => [term => frequency]]
-            foreach ($this->reload($modelType, $keys) + $unsaved as $id => $model) {
+            foreach ($this->reload($modelType, $keys, $scout) + $unsaved as $id => $model) {
                 if (!self::indexesModel($model)) {
                     continue;
                 }
@@ -494,19 +500,28 @@ class IndexManager
     }
 
     /**
-     * The saved rows among $keys as committed now, keyed by id, leaving out a soft-deleted row.
-     * Loaded through IndexQuery, so a model's searchIndexQuery() eager loads (the relations a
-     * searchableText() hook reads) apply to single-row writes as well as to rebuilds.
+     * The saved rows among $keys as committed now, keyed by id. Loaded through IndexQuery, so a
+     * model's searchIndexQuery() eager loads (the relations a searchableText() hook reads) apply
+     * to single-row writes as well as to rebuilds. The model's global scopes apply and a trashed
+     * row is left out, unless $scout: then no global scope applies, as in Scout's own jobs, and
+     * a trashed row is kept while scout.soft_delete is on (ER-72).
      *
      * @param  list<int|string>    $keys
      * @return array<string, Model>
      */
-    private function reload(string $modelType, array $keys): array
+    private function reload(string $modelType, array $keys, bool $scout): array
     {
-        $rows = [];
+        $keepTrashed = $scout && config('scout.soft_delete', false);
+        $rows        = [];
+
         foreach (array_chunk($keys, 1000) as $chunk) {
-            foreach (IndexQuery::for($modelType)->whereKey($chunk)->get() as $model) {
-                if (!(method_exists($model, 'trashed') && $model->trashed())) {
+            $query = IndexQuery::for($modelType);
+            if ($scout) {
+                $query->withoutGlobalScopes();
+            }
+
+            foreach ($query->whereKey($chunk)->get() as $model) {
+                if ($keepTrashed || !(method_exists($model, 'trashed') && $model->trashed())) {
                     $rows[(string) $model->getKey()] = $model;
                 }
             }
