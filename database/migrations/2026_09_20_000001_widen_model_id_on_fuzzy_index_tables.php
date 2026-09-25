@@ -89,8 +89,13 @@ return new class extends Migration
         }
 
         if ($driver === DbDialect::SQLSRV && $postings) {
-            Schema::table('fuzzy_index_postings', function (Blueprint $table) {
-                $table->unique(['term_id', 'model_type', 'model_id', 'column_name'], 'postings_unique_idx');
+            // The key 2026_09_18_000001 left: without column_name when its column is gone (a test
+            // that recreated the table), as that migration's own down() allows.
+            $unique = Schema::hasColumn('fuzzy_index_postings', 'column_name')
+                ? ['term_id', 'model_type', 'model_id', 'column_name']
+                : ['term_id', 'model_type', 'model_id'];
+            Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($unique) {
+                $table->unique($unique, 'postings_unique_idx');
                 $table->index(['model_type', 'model_id'], 'postings_model_idx');
             });
         }
