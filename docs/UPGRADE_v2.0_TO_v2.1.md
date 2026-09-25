@@ -339,7 +339,7 @@ No code changes required — these are bug fixes in the package itself:
 - Nothing to change for existing calls — table-qualified column names (`table.column`) are unchanged.
 - `_highlighted`/`_matches` gain dotted keys only when you search relation columns.
 - `AstCompiler::compile()` (internal, `@internal`) gained an optional fourth argument.
-- `AstCompiler::__construct()` (internal) gained optional second and third arguments (`int $typoDistance`, `array $fuzzyOptions`).
+- `AstCompiler::__construct()` (internal) gained optional arguments (`int $typoDistance`, `array $fuzzyOptions`, `array $qualified`, `?array $listed`).
 - **`searchIn()` relation paths need a `Relation` return type or a declared `$searchable` column.** A dotted segment is followed only when it is a public, non-static method with no required parameters, not defined by Laravel or this package, that declares a `Relation` return type — or when the full path is listed in the model's `$searchable['columns']`. Anything else throws `InvalidArgumentException` naming the fix, before any SQL, without calling the method. Add return types to relation methods you search through (`public function author(): BelongsTo`), or list the path in `$searchable['columns']`. Relations defined by Laravel's own traits (for example `Notifiable::notifications()`) are not followed; wrap one in a method of your own with a return type.
 - A dotted name that starts with a table of the query (the FROM table, a joined table, or an alias) is that table's column. If a relation you search through has the same name as a table you join, alias the join.
 
