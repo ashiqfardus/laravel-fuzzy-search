@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch;
 
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
 use Illuminate\Support\Collection;
@@ -88,6 +89,7 @@ class InMemorySearch
         );
     }
 
+    /** @throws EmptySearchTermException for '' unless allow_empty_search is on */
     public function get(): Collection
     {
         // Like SearchBuilder::matchesNothing(): only invalid UTF-8, or below min_search_length.
@@ -95,7 +97,12 @@ class InMemorySearch
             return collect();
         }
 
+        // Ruling ER-46, as every SearchBuilder terminal applies it: '' (or whitespace) throws, and
+        // lists the items only with allow_empty_search.
         if ($this->term === '') {
+            if (!config('fuzzy-search.allow_empty_search', false)) {
+                throw new EmptySearchTermException();
+            }
             return $this->items->slice($this->offset, $this->limit)->values();
         }
 
