@@ -97,6 +97,7 @@ analytics, `suggest()` and the tokenizers.
 - **`paginate()` and `simplePaginate()` clamp `perPage`** to between 1 and `max_candidates` — see [page sizes](#paginate-page-sizes).
 - **`~`, `field:` and `!` are read differently by `extended()`** — see [Extended syntax](#extended-syntax--and-field-are-operators-now).
 - **`suggest()` on an indexed model completes from the dictionary** — see [below](#suggest-on-an-indexed-model-now-completes-from-the-dictionary).
+- **Synonym words ignore case.** `withSynonyms()`, `$searchable['synonyms']`, the `synonyms` config and `synonymGroup()` store each word lower-cased (`mb_strtolower()`), as the term is looked up, so `'Laptop' => [...]` now expands `laptop` and `'Ägypten' => [...]` expands `ägypten` on both paths. Two words that differ only in case are one word, and the later one wins.
 - **`ignoreStopWords('en')` prefers the configured list**, which is shorter than the built-in one — see [Tokenizers](#tokenizers-per-model-pipelines-accent-folding-and-stop-word-files-new).
 
 ### Exceptions
@@ -234,7 +235,7 @@ were parsed into the config array but never read by the package. As of 2.1.0 the
 | `unicode.normalize` | NFC-normalise search terms by default | Ignored — normalization was opt-in per query only | `false` |
 | `similar_text.min_percentage` | The least `similar_text()` percentage a `similar_text` match may have, enforced in SQL as a length bound (a match is at most `t·(200 − p) / p` characters for a `t`-character term) | Ignored — `similar_text` matched every value containing the term | `70` |
 | `cache.enabled` / `driver` / `ttl` / `prefix` | Cache every `get()`, `first()` and `simplePaginate()` without calling `cache()`; the store; the lifetime in **seconds**; the generated keys' prefix | Ignored — only `cache()` cached, for its own minutes | `false` / `'default'` / `3600` / `'fuzzy_search_'` |
-| `synonyms` | Default synonyms (lower-case word => its synonyms) for every `SearchBuilder` search except an `extended()`/`searchBoolean()` query, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top | Ignored — only `$searchable['synonyms']` and `withSynonyms()` reached a search | `[]` |
+| `synonyms` | Default synonyms (word => its synonyms; case is ignored) for every `SearchBuilder` search except an `extended()`/`searchBoolean()` query, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top | Ignored — only `$searchable['synonyms']` and `withSynonyms()` reached a search | `[]` |
 
 **If you left these keys untouched** (or never published `config/fuzzy-search.php`), nothing
 changes for the first four rows: the new defaults reproduce the same values the PHP scorer already

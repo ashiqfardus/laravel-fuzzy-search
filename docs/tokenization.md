@@ -52,7 +52,7 @@ User::search('laptop')
     ->get();
 ```
 
-Synonyms for every search go in the `synonyms` config key (lower-case word => its synonyms). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms and drops no stop words (see [the extended syntax](extended-syntax.md#synonyms-and-stop-words)). The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
+Synonyms for every search go in the `synonyms` config key (word => its synonyms; case is ignored, non-ASCII letters included). Every `SearchBuilder` starts from them, as if `withSynonyms()` were called first; a model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms and drops no stop words (see [the extended syntax](extended-syntax.md#synonyms-and-stop-words)). The Scout engine, `FuzzySearch::on()` and the query-builder macros apply no synonyms.
 
 ### Language / Locale Awareness
 

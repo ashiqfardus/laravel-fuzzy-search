@@ -161,11 +161,13 @@ return [
     | Synonyms
     |--------------------------------------------------------------------------
     |
-    | Every search's default synonyms: a lower-case word => the words it also
-    | finds, as if withSynonyms() were called first. A model's
+    | Default synonyms of every SearchBuilder search except an extended() or
+    | searchBoolean() query: a word => the words it also finds, as if
+    | withSynonyms() were called first. Case is ignored, non-ASCII letters
+    | included ('Laptop' and 'laptop' are one word). A model's
     | $searchable['synonyms'] and a query's withSynonyms() are merged on top;
-    | a word they also set takes their synonyms. The Scout engine, FuzzySearch::on()
-    | and the query-builder macros apply none.
+    | a word they also set takes their synonyms. The Scout engine,
+    | FuzzySearch::on() and the query-builder macros apply none.
     |
     */
     'synonyms' => [
