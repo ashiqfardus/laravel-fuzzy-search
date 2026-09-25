@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Schema;
  */
 class SearchIndexTest extends TestCase
 {
+    private const PERFORM_REINDEX_DEPRECATED = User::class . '::performReindex() is deprecated since v2.0.0. Use php artisan fuzzy-search:rebuild instead.';
+
     protected string $indexTable = 'search_index';
 
     protected function setUp(): void
@@ -30,6 +32,12 @@ class SearchIndexTest extends TestCase
         
         // Create table manually for SQLite compatibility
         $this->createIndexTable();
+    }
+
+    /** User::performReindex() is deprecated: each call raises exactly its notice. */
+    private function performReindex(): void
+    {
+        $this->assertSame([self::PERFORM_REINDEX_DEPRECATED], $this->deprecationsFrom(fn () => User::performReindex()));
     }
 
     protected function createIndexTable(): void
@@ -77,7 +85,7 @@ class SearchIndexTest extends TestCase
     {
         DB::table($this->indexTable)->truncate();
         
-        User::performReindex();
+        $this->performReindex();
 
         $indexCount = DB::table($this->indexTable)->count();
         $userCount = DB::table('users')->count();
@@ -89,7 +97,7 @@ class SearchIndexTest extends TestCase
     {
         DB::table($this->indexTable)->truncate();
         
-        User::performReindex();
+        $this->performReindex();
 
         $record = DB::table($this->indexTable)->first();
         
@@ -101,7 +109,7 @@ class SearchIndexTest extends TestCase
     {
         DB::table($this->indexTable)->truncate();
         
-        User::performReindex();
+        $this->performReindex();
 
         $record = DB::table($this->indexTable)->first();
         
@@ -112,11 +120,11 @@ class SearchIndexTest extends TestCase
     public function test_reindex_clears_existing_entries(): void
     {
         // First reindex
-        User::performReindex();
+        $this->performReindex();
         $countBefore = DB::table($this->indexTable)->count();
 
         // Second reindex should not double the entries
-        User::performReindex();
+        $this->performReindex();
         $countAfter = DB::table($this->indexTable)->count();
 
         $this->assertEquals($countBefore, $countAfter);
@@ -131,7 +139,7 @@ class SearchIndexTest extends TestCase
     public function test_index_can_be_queried(): void
     {
         DB::table($this->indexTable)->truncate();
-        User::performReindex();
+        $this->performReindex();
 
         $results = DB::table($this->indexTable)
             ->where('content', 'LIKE', '%John%')
@@ -143,7 +151,7 @@ class SearchIndexTest extends TestCase
     public function test_index_stores_model_id(): void
     {
         DB::table($this->indexTable)->truncate();
-        User::performReindex();
+        $this->performReindex();
 
         $record = DB::table($this->indexTable)->first();
         

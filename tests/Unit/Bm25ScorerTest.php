@@ -122,7 +122,11 @@ class Bm25ScorerTest extends TestCase
         $manager->indexModel($model::find($u1));
         $manager->indexModel($model::find($u2));
 
-        $results = $model::search('laravel')->useIndex()->get();
+        $deprecations = $this->deprecationsFrom(function () use ($model, &$results) {
+            $results = $model::search('laravel')->useIndex()->get();
+        });
+
+        $this->assertSame(['useIndex() is deprecated since v2.0.0; use useInvertedIndex() instead.'], $deprecations);
 
         $this->assertGreaterThan(0, $results->count());
         $this->assertEquals($u2, $results->first()->id); // u2 has 'laravel' twice → higher BM25
@@ -207,7 +211,11 @@ class Bm25ScorerTest extends TestCase
         }
 
         // Paginate via BM25 path
-        $page1 = $model::search('laravel')->useIndex()->paginate(5);
+        $deprecations = $this->deprecationsFrom(function () use ($model, &$page1) {
+            $page1 = $model::search('laravel')->useIndex()->paginate(5);
+        });
+
+        $this->assertSame(['useIndex() is deprecated since v2.0.0; use useInvertedIndex() instead.'], $deprecations);
 
         $this->assertInstanceOf(\Illuminate\Contracts\Pagination\LengthAwarePaginator::class, $page1);
         $this->assertGreaterThan(0, $page1->count());

@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Integration;
 
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearchServiceProvider;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ConfiguresDatabaseConnection;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ReportsSourceDeprecations;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
 /**
@@ -15,7 +16,7 @@ use Orchestra\Testbench\TestCase as BaseTestCase;
  */
 abstract class DatabaseTestCase extends BaseTestCase
 {
-    use ConfiguresDatabaseConnection;
+    use ConfiguresDatabaseConnection, ReportsSourceDeprecations;
 
     protected function getPackageProviders($app): array
     {
@@ -27,16 +28,18 @@ abstract class DatabaseTestCase extends BaseTestCase
         parent::setUp();
         $this->setUpSchema();
         $this->seedFixtures();
+
+        // Last, above Laravel's error handler: a src/ deprecation fails the run (failOnDeprecation).
+        $this->reportSourceDeprecations();
     }
 
     protected function defineEnvironment($app): void
     {
         $this->configureTestDatabaseConnection($app);
 
-        $app['config']->set('fuzzy-search', array_merge(
-            require __DIR__ . '/../../config/fuzzy-search.php',
-            ['use_native_functions' => false, 'legacy_dispatch' => false]
-        ));
+        // The shipped config, loaded whole, as in TestCase. Tests\Integration\ShippedConfigTest
+        // fails on any override here.
+        $app['config']->set('fuzzy-search', require __DIR__ . '/../../config/fuzzy-search.php');
     }
 
     protected function setUpSchema(): void

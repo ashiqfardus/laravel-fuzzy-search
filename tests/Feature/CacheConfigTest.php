@@ -117,7 +117,6 @@ class CacheConfigTest extends TestCase
             'debugScore'      => $base()->debugScore()->key(),
             'model class'     => $base(OtherClassUser::query())->key(),
             'eager loads'     => $base(User::query()->with('roles'))->key(),
-            'index model'     => $base()->useInvertedIndex(OtherClassUser::class)->key(),
             'connection'      => $base(DB::connection('fuzzy_tenant_a')->table('users'))->key(),
         ];
 
@@ -125,6 +124,13 @@ class CacheConfigTest extends TestCase
             $this->assertNotSame($key, $variant, $property);
         }
 
+        // Against the same search on another index model: against no index model at all, the
+        // use_search_index flag alone told them apart.
+        $this->assertNotSame(
+            $base()->useInvertedIndex(User::class)->key(),
+            $base()->useInvertedIndex(OtherClassUser::class)->key(),
+            'index model'
+        );
         $this->assertNotSame(
             $base(DB::connection('fuzzy_tenant_a')->table('users'))->key(),
             $base(DB::connection('fuzzy_tenant_b')->table('users'))->key(),

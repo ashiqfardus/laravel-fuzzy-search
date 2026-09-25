@@ -59,14 +59,8 @@ class DidYouMeanTest extends TestCase
 
         $suggestions = $this->makeBuilder('laravle')->didYouMean(3);
 
-        if (!empty($suggestions)) {
-            $first = $suggestions[0];
-            $this->assertArrayHasKey('term', $first);
-            $this->assertArrayHasKey('distance', $first);
-            $this->assertArrayHasKey('confidence', $first);
-        } else {
-            $this->markTestSkipped('No suggestion returned (edit distance > threshold)');
-        }
+        // A transposition is two edits, well inside the 3 a 7-letter term reaches: 1 - 2/7.
+        $this->assertSame([['term' => 'laravel', 'distance' => 2, 'confidence' => 0.71]], $suggestions);
     }
 
     public function test_did_you_mean_sorts_by_distance_then_doc_count(): void

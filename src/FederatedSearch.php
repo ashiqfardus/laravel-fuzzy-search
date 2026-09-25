@@ -262,6 +262,13 @@ class FederatedSearch
         if ($hasSearchable) {
             $weighted = $this->weightedColumnsExistingOn(new $modelClass());
 
+            // searchIn() named columns, but this model's table has none of them: contribute
+            // nothing, exactly as the non-Searchable branch below does (ruling L10) — instead
+            // of silently falling back to the model's own configured columns.
+            if (!empty($this->columnWeights) && empty($weighted)) {
+                return null;
+            }
+
             // searchOn() applies the model's own $searchable configuration — algorithm, typo
             // tolerance, stop words, synonyms, accents, options — with the narrowed columns
             // replacing the configured ones. An algorithm, options or a tolerance set on this

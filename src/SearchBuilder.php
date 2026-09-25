@@ -230,8 +230,8 @@ class SearchBuilder
             return ['relation' => null, 'column' => $column]; // a table of the query (ER-57)
         }
 
-        if ($model !== null && $this->isRelationPath($model, $segments, $column)) {
-            return ['relation' => implode('.', $segments), 'column' => $leaf];
+        if ($model !== null && ($relation = $this->relationPath($model, $segments, $column)) !== null) {
+            return ['relation' => $relation, 'column' => $leaf];
         }
 
         if (count($segments) === 1) {
@@ -273,14 +273,20 @@ class SearchBuilder
     }
 
     /**
-     * True when every segment is a relation method, following the chain model by model. A first
-     * segment that names no method is not a relation (a two-segment name is then table.column).
+     * The relation path when every segment is a relation method, following the chain model by
+     * model; null when the first segment names no method (a two-segment name is then table.column).
      * Any other segment is called only when isReachableRelation() allows it, and must return a
      * Relation; anything else throws, naming that segment, without calling it (ruling ER-50):
      * searchIn() can carry request input, and `unguard.body` or `save.body` would otherwise run
      * that method.
+     *
+     * Each segment is returned as its method declares it: PHP finds `Author()` for author(), but
+     * whereHas(), the eager load that keeps the caller's own (eagerLoadRelationPaths()),
+     * relationLoaded(), $hidden and the suggest and message filters all compare the name as
+     * written, so `Author.name` loaded a second, unconstrained relation beside the caller's
+     * `with('author:id,name')` and passed `$hidden = ['author']`.
      */
-    protected function isRelationPath(Model $model, array $segments, string $column): bool
+    protected function relationPath(Model $model, array $segments, string $column): ?string
     {
         $current = $model;
         // Declared config only: auto-detected columns never hold a dotted path, and detecting them
@@ -289,9 +295,11 @@ class SearchBuilder
             && $model->hasDeclaredSearchableColumns()
             && in_array($column, $model->getSearchableColumns(), true);
 
+        $path = [];
+
         foreach ($segments as $i => $segment) {
             if ($i === 0 && !method_exists($current, $segment)) {
-                return false;
+                return null;
             }
 
             $relation = method_exists($current, $segment) && $this->isReachableRelation($current, $segment, $declared)
@@ -302,10 +310,11 @@ class SearchBuilder
                 throw self::notARelation($column, $current, $segment);
             }
 
+            $path[]  = (new \ReflectionMethod($current, $segment))->getName();
             $current = $relation->getRelated();
         }
 
-        return true;
+        return implode('.', $path);
     }
 
     private static function notARelation(string $column, Model $model, string $segment): \InvalidArgumentException
@@ -371,6 +380,18 @@ class SearchBuilder
     protected function relationPaths(): array
     {
         return array_values(array_unique(array_column($this->relationTargets(), 'relation')));
+    }
+
+    /**
+     * Eager-load $paths on $query, keeping the caller's own eager loads: with() replaces an entry of
+     * the same name, and a nested path ("author.company") its prefix ("author") too, so a caller's
+     * `with('author:id,name')` or `with(['comments' => $approvedOnly])` became an unconstrained load
+     * that returned the columns and rows the caller had left out.
+     */
+    private function eagerLoadRelationPaths(EloquentBuilder $query, array $paths): void
+    {
+        $own = $query->getEagerLoads();
+        $query->with($paths)->setEagerLoads(array_merge($query->getEagerLoads(), $own));
     }
 
     /**
@@ -574,20 +595,27 @@ class SearchBuilder
 
     /**
      * Add synonyms (word => its synonyms), on top of config('fuzzy-search.synonyms'); a word set
-     * again replaces its earlier synonyms.
+     * again replaces its earlier synonyms. Each word is folded as expandWithSynonyms() folds the
+     * term it looks up, with mb_strtolower() (ruling ER-100: a PHP lookup, so D1's ASCII-only SQL
+     * rule does not apply), so 'Laptop' is the word 'laptop' and 'Ägypten' the word 'ägypten' — the
+     * config, the model's $searchable['synonyms'] and the query all come through here. The
+     * synonyms are kept as written: they are searched like the user's own words.
      */
     public function withSynonyms(array $synonyms): self
     {
-        $this->synonyms = array_merge($this->synonyms, $synonyms);
+        foreach ($synonyms as $word => $alternatives) {
+            $this->synonyms[mb_strtolower((string) $word, 'UTF-8')] = $alternatives;
+        }
         return $this;
     }
 
     /**
-     * Add synonym group (all words in group are treated as equivalent)
+     * Add synonym group (all words in group are treated as equivalent), each folded as
+     * withSynonyms() folds a word.
      */
     public function synonymGroup(array $words): self
     {
-        $this->synonymGroups[] = array_map('strtolower', $words);
+        $this->synonymGroups[] = array_map(fn ($word) => mb_strtolower((string) $word, 'UTF-8'), $words);
         return $this;
     }
 
@@ -1201,11 +1229,13 @@ class SearchBuilder
      * visibility, highlighting or relation is stored: those belong to the request that reads it.
      *
      * Models are stored by key only when a re-read by key gives back exactly the cached rows: every
-     * row has a key of its own (ruling ER-92) and the query has no join and no union (ER-93; toBase(),
-     * so a global scope's join counts). A re-read returns every row the query holds for a key, and
-     * under a join or a union that can be another row than the one cached, even when the key is
-     * cached once (first(), take(), a page, a search on the joined column). Any other rows are
-     * stored as the attributes the database returned for them.
+     * row has a key of its own (ruling ER-92), the query has no join and no union (ER-93; toBase(),
+     * so a global scope's join counts), and it reads the model's table by its own name. A re-read
+     * returns every row the query holds for a key, and under a join or a union that can be another
+     * row than the one cached, even when the key is cached once (first(), take(), a page, a search
+     * on the joined column); and it filters on the model's qualified key ("users"."id"), which a FROM
+     * under an alias or a fromSub() does not have. Any other rows are stored as the attributes the
+     * database returned for them.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
@@ -1215,7 +1245,7 @@ class SearchBuilder
         $models = match (true) {
             !$results->first() instanceof Model => false,
             !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys)
-                && empty($base->joins) && empty($base->unions) => 'key',
+                && empty($base->joins) && empty($base->unions) && $base->from === $results->first()->getTable() => 'key',
             default => 'attributes',
         };
 
@@ -1257,7 +1287,7 @@ class SearchBuilder
         // Models come from the builder's own model, or from useInvertedIndex(Model::class) on a plain query builder.
         $query = $this->modelBaseQuery((string) $this->resolveIndexModelClass());
         if ($this->query instanceof EloquentBuilder && $this->relationPaths() !== []) {
-            $query->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($query, $this->relationPaths());
         }
 
         if ($payload['models'] === 'attributes') {
@@ -1541,7 +1571,7 @@ class SearchBuilder
         // highlighting on BM25 results read loaded relations instead of issuing one
         // query per row (mirrors buildQuery()'s LIKE/extended-path eager load).
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $base->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($base, $this->relationPaths());
         }
 
         foreach ($this->filters as $filter) {
@@ -1809,11 +1839,18 @@ class SearchBuilder
 
         $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query)))
+        // Ruling ER-95: an unknown field's message, shown to whoever typed the query, names only the
+        // fields the model shows. Every column is still matched, hidden ones included (ER-66).
+        $listed = array_values(array_map(
+            fn (array $t) => $t['relation'] === null ? self::lastSegment($t['column']) : $t['relation'] . '.' . $t['column'],
+            $this->suggestTargets()
+        ));
+
+        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
             ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $this->query->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($this->query, $this->relationPaths());
         }
 
         foreach ($this->filters as $filter) {
@@ -2207,12 +2244,13 @@ class SearchBuilder
     }
 
     /**
-     * Get first result.
+     * Get first result: a model on an Eloquent source, a row on a query builder (stdClass, or an
+     * array under an array fetch mode), or null.
      *
      * The limit it sets is restored afterwards (as simplePaginate() does with its look-ahead),
      * so first() leaves the builder exactly as it found it.
      */
-    public function first(): ?Model
+    public function first(): Model|\stdClass|array|null
     {
         $limit       = $this->limit;
         $this->limit = 1;
@@ -2391,7 +2429,7 @@ class SearchBuilder
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
         // highlighting read loaded relations instead of issuing one query per row.
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
-            $this->query->with($this->relationPaths());
+            $this->eagerLoadRelationPaths($this->query, $this->relationPaths());
         }
 
         // Apply filters
@@ -2556,7 +2594,7 @@ class SearchBuilder
     protected function expandWithSynonyms(string $term): array
     {
         $terms = [$term];
-        $lowerTerm = Utf8::lowerAscii($term);
+        $lowerTerm = mb_strtolower($term, 'UTF-8'); // as withSynonyms() and synonymGroup() fold their words (ER-100)
 
         // Check direct synonyms
         if (isset($this->synonyms[$lowerTerm])) {
@@ -3642,19 +3680,20 @@ class SearchBuilder
         });
 
         if ($suggestQuery instanceof EloquentBuilder && $paths !== []) {
-            $suggestQuery->with($paths);
+            $this->eagerLoadRelationPaths($suggestQuery, $paths);
         }
 
         return $suggestQuery;
     }
 
     /**
-     * The searchIn() targets suggest()'s table scan matches and reads: those the model does not
-     * hide by its class-level $hidden/$visible (for a relation column, each segment on the model
-     * that holds it, then the leaf on the related model). A row that matches only through a
-     * hidden column can yield no suggestion (ER-51), so matching it would only use up the rows
-     * the scan fetches (NF-1). Only the WHERE narrows (ruling ER-67): the SELECT stays as it is,
-     * so an accessor that reads a hidden attribute still has it (Q13).
+     * The searchIn() targets suggest()'s table scan matches and reads, and extended()'s unknown-field
+     * message names: those the model does not hide by its class-level $hidden/$visible (for a
+     * relation column, each segment on the model that holds it, then the leaf on the related model).
+     * For suggest(): a row that matches only through a hidden column can yield no suggestion
+     * (ER-51), so matching it would only use up the rows the scan fetches (NF-1). Only the WHERE
+     * narrows (ruling ER-67): the SELECT stays as it is, so an accessor that reads a hidden
+     * attribute still has it (Q13).
      *
      * @return array<string, array{relation: ?string, column: string}>
      */

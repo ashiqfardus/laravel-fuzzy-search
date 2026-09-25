@@ -85,7 +85,7 @@ class RelationColumnResolutionTest extends TestCase
     public function test_an_untyped_method_is_rejected_without_being_called(): void
     {
         // Ruling ER-50: brokenRelation() has no Relation return type and its path is not in
-        // $searchable['columns'], so isRelationPath() throws before calling it (it would throw a
+        // $searchable['columns'], so relationPath() throws before calling it (it would throw a
         // RuntimeException if it ran). It is never mistaken for the v2.0 table.column.
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage(Post::class . "::brokenRelation is not a relation: declare a Relation return type or list the path in \$searchable['columns']");
