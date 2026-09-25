@@ -105,12 +105,13 @@ class Bm25Scorer
     }
 
     /**
-     * Restrict $query, a query on $modelType's table, to the documents rank() can score for $terms,
-     * without binding their ids (ruling ER-82): EXISTS one of their postings under a column that is
-     * not weighted out, matched on $qualifiedKey. The bindings are the model type and the terms, so
-     * the ordered index walks read only matches, however many there are. model_id is a string
-     * column, so the key is compared as a string (PostgreSQL has no integer = varchar operator);
-     * only for a query on the connection the index lives on, the default one.
+     * Restrict $query, a query on $modelType's table, to the documents that hold $terms, those past
+     * rank()'s max_postings_per_term too, without binding their ids (ruling ER-82): EXISTS one of
+     * their postings under a column that is not weighted out, matched on $qualifiedKey. The bindings
+     * are the model type and the terms, so an ordered index page reads only matches, however many
+     * there are. model_id is a string column, so the key is compared as a string (PostgreSQL has no
+     * integer = varchar operator); only for a query on the connection the index lives on, the
+     * default one.
      *
      * On MySQL and MariaDB a string cast takes the connection's collation, and a connection whose
      * collation differs from model_id's failed with 1267 "Illegal mix of collations". The key is

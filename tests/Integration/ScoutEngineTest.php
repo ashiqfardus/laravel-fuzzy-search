@@ -663,13 +663,13 @@ class ScoutEngineTest extends TestCase
         config(['fuzzy-search.bm25.candidate_chunk' => 2]);
 
         // cursor() fetched the whole ordered key column, and pdo_mysql and pdo_pgsql buffer all of
-        // it before the first row; each statement of the walk now reads at most 1,000 rows (SQL
-        // Server writes the first page as TOP 1000, later ones as FETCH NEXT 1000 ROWS).
+        // it before the first row. The ordered read is now the page itself, Scout's default 15 rows
+        // (H1, round 8): SQL Server writes it as TOP 15 or FETCH NEXT 15 ROWS.
         $walk = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->get());
 
         $this->assertNotEmpty($walk);
         foreach ($walk as [$sql]) {
-            $this->assertMatchesRegularExpression('/\blimit 1000\b|\btop 1000\b|\bfetch next 1000 rows\b/i', $sql, "an unbounded walk: {$sql}");
+            $this->assertMatchesRegularExpression('/\blimit 15\b|\btop 15\b|\bfetch next 15 rows\b/i', $sql, "not the page: {$sql}");
         }
     }
 

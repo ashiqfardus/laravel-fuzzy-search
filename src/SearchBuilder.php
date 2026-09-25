@@ -1032,9 +1032,6 @@ class SearchBuilder
     private const WHITESPACE = '/[ \t\n\r\x0B\f]+/';
 
 
-    /** The alias the ordered index walk reads the key under — see orderedIndexedKeys(). */
-    private const WALK_KEY = 'fuzzy_walk_key';
-
     /** Fluent builder methods safe to forward (prefix match: "where" covers whereIn, whereHas, ...). */
     private const FORWARDABLE_PREFIXES = [
         'where', 'orWhere', 'with', 'without', 'join', 'leftJoin', 'rightJoin', 'crossJoin',
@@ -1522,7 +1519,10 @@ class SearchBuilder
 
         $base = $this->indexedBaseQuery($modelClass);
 
-        if (empty($ranked) || $this->offset >= count($ranked)) {
+        if ($ranked !== [] && $this->sortBy !== []) {
+            ['total' => $total, 'page' => $sorted] = $this->orderedIndexedPage($modelClass, $base, $ranked, $this->offset, $this->limit);
+            $this->matched = $total > 0;
+        } elseif (empty($ranked) || $this->offset >= count($ranked)) {
             // Fall through instead of returning early (the shape paginateIndexed() already
             // uses): a search that matched nothing must still dispatch FuzzySearchExecuted,
             // or zero-result analytics never sees a miss on the index path. A page that starts
@@ -1713,9 +1713,11 @@ class SearchBuilder
      * Set _raw_score / _score on the ranked window of models and return it best first. The raw
      * score is the BM25 score through the model's getSearchScore() override, if it has one (see
      * searchScore()), which can reorder the window. _score is normalised against the window's best
-     * row: the ranking walk always starts at rank 1 of what the query can see, so it is the same on
-     * every page and scores stay comparable across pages. Not the first entry of $ranked: a row
-     * the query hides, such as another tenant's, would set the scale and reveal what it contains.
+     * row: in rank order the window always starts at rank 1 of what the query can see, so it is the
+     * same on every page and scores stay comparable across pages (under orderBy() the window is the
+     * page). Not the first entry of $ranked: a row the query hides, such as another tenant's, would
+     * set the scale and reveal what it contains. A row $ranked lacks, a match past the ranking's cap
+     * that an ordered page serves, scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep the window's order:
      * BM25 past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
@@ -1737,79 +1739,42 @@ class SearchBuilder
     }
 
     /**
-     * The index path's first $end matches the constrained $base accepts, scored: in rank order,
-     * or, with orderBy(), in that order (see orderedIndexedKeys()).
+     * The index path's first $end matches the constrained $base accepts, in rank order, scored.
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
     private function indexedWindow(string $modelClass, EloquentBuilder $base, array $ranked, int $end): Collection
     {
-        if ($this->sortBy === []) {
-            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($ranked), $this->bm25Window($modelClass, $end));
+        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($ranked), $this->bm25Window($modelClass, $end));
 
-            return $this->attachBm25Scores($models, $ranked, (int) config('fuzzy-search.max_candidates', 1000));
-        }
-
-        $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $this->orderedIndexedKeys($modelClass, $base, $ranked, $end));
-
-        return $this->attachBm25Scores($models, $ranked, 0);
+        return $this->attachBm25Scores($models, $ranked, (int) config('fuzzy-search.max_candidates', 1000));
     }
 
     /**
-     * With orderBy(), the keys of the first $needed matches in that order: $base's rows sorted by
-     * applyExplicitOrder()'s columns and then the key, keeping those the ranking matched. The query
-     * reads only ranked documents (ruling ER-82): up to one bm25.candidate_chunk of matches it is
-     * restricted to their ids; past that, a subquery on the postings restricts it
-     * (Bm25Scorer::whereRanked()), so no id list can pass SQL Server's 2,100-parameter limit. That
-     * subquery needs the index on the model's connection; on another one the ordered window is the
-     * top max_candidates ranked ids (at least one chunk), listed, and deeper matches are not served.
-     * It reads a page of 1,000 rows at a time: lazy(), never one buffered result (pdo_mysql and
-     * pdo_pgsql fetch a whole result set before its first row). The key ends the order, so it is
-     * total and no row moves between pages. It stops once $needed matches are found: one ordered
-     * query per 1,000 matches it passes, never a row that did not match.
-     *
-     * The caller's select list stays — an order may name its alias (withCount()'s posts_count, a
-     * selectRaw() column) — and the key is read through an alias of its own.
+     * With orderBy(): the total and the page [$offset, $offset + $limit) of the matches $base accepts,
+     * in applyExplicitOrder()'s order, which ends on the key. The query reads only matches
+     * (RankedCandidates::matches(): on the index's connection every one, past
+     * bm25.max_postings_per_term too), so its count is the total, a page past it reads no row, and
+     * the page is one offset/limit read however deep (RankedCandidates::orderedKeys()). A match past
+     * the cap has no BM25 score, so its _score is 0 (ruling ER-96: scoring the page's ids would
+     * repeat rank()'s statistics queries); _score is normalised against the page's best row.
      *
      * @param  array<int|string, float> $ranked model_id => score
-     * @return array<int|string>
+     * @return array{total: int, page: Collection}
      */
-    private function orderedIndexedKeys(string $modelClass, EloquentBuilder $base, array $ranked, int $needed): array
+    private function orderedIndexedPage(string $modelClass, EloquentBuilder $base, array $ranked, int $offset, int $limit): array
     {
-        $model = $base->getModel();
-        $ids   = array_keys($ranked);
-        $query = clone $base;
-        $chunk = max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200));
+        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, $modelClass, $this->columnWeights);
+        $total = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::countModels($query);
 
-        // Global scopes, as RankedCandidates adds its ids, so a caller's where(A)->orWhere(B) is grouped first.
-        if (count($ids) > $chunk && $base->getQuery()->getConnection() === DB::connection()) {
-            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class)
-                ->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $this->indexedTermWeights, $modelClass, $this->columnWeights));
-        } else {
-            $ids = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
-            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
+        if ($offset >= $total || $limit < 1) {
+            return ['total' => $total, 'page' => collect()];
         }
 
         $this->applyExplicitOrder($query, true);
+        $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), $base->getModel()->getQualifiedKeyName(), $offset, $limit);
 
-        $walk = $query->toBase();
-        $walk->columns ??= ['*'];
-        $walk->addSelect($model->getQualifiedKeyName() . ' as ' . self::WALK_KEY);
-        $keys = [];
-
-        foreach ($walk->lazy(1000) as $row) {
-            $key = $row->{self::WALK_KEY};
-
-            if (isset($ranked[$key])) {
-                $keys[$key] = true; // a join may repeat a model
-
-                if (count($keys) >= $needed) {
-                    break;
-                }
-            }
-        }
-
-        return array_keys($keys);
+        return ['total' => $total, 'page' => $this->attachBm25Scores(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $keys), $ranked, 0)];
     }
 
     /**
@@ -2164,14 +2129,14 @@ class SearchBuilder
         $page   = $this->resolvePage($page, $pageName, $perPage);
         $offset = ($page - 1) * $perPage;
 
-        ['total' => $total, 'ranked' => $ranked, 'base' => $base] = $this->indexedRankingAndTotal($modelClass);
+        ['total' => $total, 'ranked' => $ranked, 'base' => $base, 'page' => $sorted] = $this->indexedRankingAndTotal($modelClass, $offset, $perPage);
 
-        if (empty($ranked) || $offset >= count($ranked)) {
-            $sorted = collect(); // past every match: no walk (ruling ER-82)
-        } else {
-            // Page: walk the matches against the constrained query until offset + perPage
-            // rows are collected, then slice.
-            $sorted = $this->indexedWindow($modelClass, $base, $ranked, $offset + $perPage)->slice($offset, $perPage)->values();
+        // With orderBy() the page came with the total (orderedIndexedPage()).
+        if ($sorted === null) {
+            $sorted = empty($ranked) || $offset >= count($ranked)
+                ? collect() // past every match: no walk (ruling ER-82)
+                // Walk the matches against the constrained query until offset + perPage rows are collected, then slice.
+                : $this->indexedWindow($modelClass, $base, $ranked, $offset + $perPage)->slice($offset, $perPage)->values();
         }
 
         if ($this->highlightTagOpen) {
@@ -2196,11 +2161,12 @@ class SearchBuilder
      * Rank the current search term against $modelClass's BM25 index and total the matches
      * against the constrained base query. Shared by paginateIndexed() (which also builds the
      * page from the returned ranking/base) and count() (which only needs the total), so the
-     * two can never disagree.
+     * two can never disagree. With orderBy() the total and the page [$offset, $offset + $limit)
+     * come from one query (orderedIndexedPage()); otherwise the page is null.
      *
-     * @return array{total: int, ranked: array<int|string, float>, base: EloquentBuilder}
+     * @return array{total: int, ranked: array<int|string, float>, base: EloquentBuilder, page: ?Collection}
      */
-    protected function indexedRankingAndTotal(string $modelClass): array
+    protected function indexedRankingAndTotal(string $modelClass, int $offset = 0, int $limit = 0): array
     {
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
@@ -2210,7 +2176,11 @@ class SearchBuilder
         $base   = $this->indexedBaseQuery($modelClass);
 
         if (empty($ranked)) {
-            return ['total' => 0, 'ranked' => $ranked, 'base' => $base];
+            return ['total' => 0, 'ranked' => $ranked, 'base' => $base, 'page' => $this->sortBy !== [] ? collect() : null];
+        }
+
+        if ($this->sortBy !== []) {
+            return ['ranked' => $ranked, 'base' => $base] + $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
         }
 
         // Total: under constraints, count the ranked ids the constrained query accepts
@@ -2219,7 +2189,7 @@ class SearchBuilder
             ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::count($base, array_keys($ranked))
             : $scorer->count($terms, $modelClass, $this->columnWeights);
 
-        return ['total' => $total, 'ranked' => $ranked, 'base' => $base];
+        return ['total' => $total, 'ranked' => $ranked, 'base' => $base, 'page' => null];
     }
 
     /**
@@ -2479,10 +2449,10 @@ class SearchBuilder
 
     /**
      * orderBy()'s columns, in the order the calls were made, then stableRanking()'s key as the
-     * tiebreak ($endOnKey: always — the index walk needs a total order). On every path (LIKE,
-     * extended, index) an explicit order is the result order: PHP rescoring still sets _score but
-     * does not re-sort by it (calculateRelevanceScores()), and the index path walks its matches in
-     * this order (orderedIndexedKeys()).
+     * tiebreak ($endOnKey: always — the index path's offset/limit page needs a total order). On
+     * every path (LIKE, extended, index) an explicit order is the result order: PHP rescoring still
+     * sets _score but does not re-sort by it (calculateRelevanceScores()), and the index path reads
+     * its matches in this order (orderedIndexedPage()).
      */
     private function applyExplicitOrder(Builder|EloquentBuilder $query, bool $endOnKey = false): void
     {

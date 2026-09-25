@@ -106,7 +106,12 @@ class IndexWalkBoundTest extends TestCase
             ];
 
             foreach ($terminals as $terminal => $call) {
-                $this->assertSame([], $this->usersQueries($call), "{$label} {$terminal}: page 1000 read the model's table");
+                $queries = $this->usersQueries($call);
+
+                // H1 (round 8): under orderBy() the ranking stops at the posting cap, so the ordered
+                // query's own count decides where the matches end: one COUNT, and no row read.
+                $this->assertSame($label === 'orderBy' ? 1 : 0, count($queries), "{$label} {$terminal}: page 1000 read the model's table\n" . implode("\n", $queries));
+                $this->assertSame([], $this->ordered($queries), "{$label} {$terminal}: page 1000 read ordered rows");
             }
         }
 

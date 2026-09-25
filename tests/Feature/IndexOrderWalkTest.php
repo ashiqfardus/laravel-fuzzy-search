@@ -89,8 +89,11 @@ class IndexOrderWalkTest extends TestCase
         }
     }
 
-    /** Finding 12: past one candidate chunk the walk reads the ordered table a bounded page at a time. */
-    public function test_the_walk_reads_bounded_pages(): void
+    /**
+     * Finding 12: past one candidate chunk the ordered read is bounded, never one unbounded result.
+     * H1 (round 8): it reads the page itself, get()'s 15 rows, not 1,000 rows at a time from the first.
+     */
+    public function test_the_ordered_read_is_bounded_by_the_page(): void
     {
         app(IndexManager::class)->indexBatch(User::all());
         config(['fuzzy-search.bm25.candidate_chunk' => 1]);
@@ -104,7 +107,7 @@ class IndexOrderWalkTest extends TestCase
         $this->assertSame(['John Doe', 'Johnny Bravo', 'Jon Snow'], $names);
         $this->assertNotSame([], $walk);
         foreach ($walk as $sql) {
-            $this->assertStringContainsString('1000', $sql, 'a page of 1,000 rows, not one unbounded result');
+            $this->assertMatchesRegularExpression('/\blimit 15\b|\btop 15\b|\bfetch next 15 rows\b/i', $sql, "not the page: {$sql}");
         }
     }
 

@@ -26,9 +26,6 @@ use Laravel\Scout\Exceptions\NotSupportedException;
  */
 class FuzzySearchEngine extends Engine
 {
-    /** The alias the ordered walk reads the key under — see orderedKeys(). */
-    private const WALK_KEY = 'fuzzy_walk_key';
-
     public function __construct(
         private IndexManager $indexManager,
         private Bm25Scorer   $scorer,
@@ -58,13 +55,17 @@ class FuzzySearchEngine extends Engine
         $ranked = $this->scorer->rank($terms, $modelType, $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
 
-        // 'total' is the match count — the ranked ids (that satisfy the constraints) — not
-        // the size of the page cut from them.
-        $total = $query === null || empty($ranked) ? count($ranked) : RankedCandidates::count($query, array_keys($ranked));
-        $keys  = $this->resultKeys($builder, $query, $orders, $ranked, $limit);
+        if ($orders !== [] && $ranked !== []) {
+            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, 0, $limit);
+        } else {
+            // 'total' is the match count — the ranked ids (that satisfy the constraints) — not
+            // the size of the page cut from them.
+            $total = $query === null || empty($ranked) ? count($ranked) : RankedCandidates::count($query, array_keys($ranked));
+            $keys  = $this->resultKeys($query, $ranked, $limit);
+        }
 
         return [
-            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, 0, $limit)), $builder->model),
+            'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
             'total'   => $total,
         ];
     }
@@ -84,41 +85,38 @@ class FuzzySearchEngine extends Engine
         $ranked = $this->scorer->rank($terms, $modelType, $weights);
         $query  = $this->constrainedQuery($builder);
 
-        // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
-        $total = $query === null || empty($ranked)
-            ? $this->scorer->count($terms, $modelType, $weights)
-            : RankedCandidates::count($query, array_keys($ranked));
-        // A page past every ranked id is empty: never walk to it.
-        $keys  = $offset < count($ranked) ? $this->resultKeys($builder, $query, $orders, $ranked, $offset + $perPage) : [];
+        if ($orders !== [] && $ranked !== []) {
+            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $offset, $perPage);
+        } else {
+            // count() runs a single COUNT(DISTINCT model_id) query for the true total (C13)
+            $total = $query === null || empty($ranked)
+                ? $this->scorer->count($terms, $modelType, $weights)
+                : RankedCandidates::count($query, array_keys($ranked));
+            // A page past every ranked id is empty: never walk to it.
+            $keys  = $offset < count($ranked) ? array_slice($this->resultKeys($query, $ranked, $offset + $perPage), $offset, $perPage) : [];
+        }
 
         return [
-            'results' => $this->hydrate($this->pick($ranked, array_slice($keys, $offset, $perPage)), $builder->model),
+            'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
             'total'   => $total,
         ];
     }
 
     /**
-     * The first $needed matches, in result order: the ranking, cut after the builder's
-     * constraints (otherwise a selective where() returns a short or empty page while matches
-     * exist further down the ranking) — or, with orderBy(), the builder's own order.
+     * The first $needed matches in rank order, the ranking cut after the builder's constraints
+     * (otherwise a selective where() returns a short or empty page while matches exist further down
+     * the ranking).
      *
-     * @param  array<int, array{column: string, direction: string}> $orders
-     * @param  array<int|string, float>                             $ranked model_id => score, best first
+     * @param  array<int|string, float> $ranked model_id => score, best first
      * @return array<int|string>
      */
-    private function resultKeys(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, int $needed): array
+    private function resultKeys(?EloquentBuilder $query, array $ranked, int $needed): array
     {
         if (empty($ranked)) {
             return [];
         }
 
-        if ($orders !== []) {
-            return $this->orderedKeys($query ?? $builder->model->newQuery(), $orders, $ranked, $needed, $this->terms($builder), $this->columnWeights($builder));
-        }
-
-        return $query === null
-            ? array_slice(array_keys($ranked), 0, $needed)
-            : RankedCandidates::keys($query, array_keys($ranked), $needed);
+        return array_slice($query === null ? array_keys($ranked) : RankedCandidates::keys($query, array_keys($ranked), $needed), 0, $needed);
     }
 
     /**
@@ -138,47 +136,30 @@ class FuzzySearchEngine extends Engine
     }
 
     /**
-     * The first $needed ranked ids that $query returns, in the builder's order, then by key
-     * descending for ties (Scout's database engine breaks them the same way, and a tie must not
-     * move between one page's query and the next).
-     *
-     * The query reads only ranked documents, as SearchBuilder's ordered walk does (ruling ER-82):
-     * up to one bm25.candidate_chunk of matches the ids restrict it; past that, where binding every
-     * id could exceed SQL Server's 2,100-parameter limit, a subquery on the postings does
-     * (Bm25Scorer::whereRanked()). That needs the index on the model's connection; on another one
-     * the order covers the top max_candidates ranked ids (at least one chunk), listed. The keys are
-     * read a page of 1,000 at a time (lazy(), never one buffered result set: pdo_mysql and pdo_pgsql
-     * fetch a whole result before its first row) until $needed of them are ranked. The database
-     * still decides the order, and the key tie-break makes it total, so no key moves between one
-     * page of the walk and the next.
+     * With orderBy(): the total and the keys of the page [$offset, $offset + $limit) of the matches
+     * the builder's constraints accept, in the builder's order, then by key descending for ties
+     * (Scout's database engine breaks them the same way, and a tie must not move between one page's
+     * query and the next). As on SearchBuilder's ordered page, the query reads only matches
+     * (RankedCandidates::matches(): on the index's connection every one, past
+     * bm25.max_postings_per_term too), so its count is the total, a page past it reads no row, and
+     * the page is one offset/limit read however deep (RankedCandidates::orderedKeys()). A match past
+     * the cap has no BM25 score: its score is 0.
      *
      * @param  array<int, array{column: string, direction: string}> $orders
-     * @param  array<int|string, float>                             $ranked
-     * @param  string[]                                             $terms   the terms $ranked was scored for
-     * @param  array<string, int|float>                             $weights the column weights it was scored with
-     * @return array<int|string>
+     * @param  array<int|string, float>                             $ranked model_id => score
+     * @return array{total: int, keys: array<int|string>}
      */
-    private function orderedKeys(EloquentBuilder $query, array $orders, array $ranked, int $needed, array $terms, array $weights): array
+    private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, int $offset, int $limit): array
     {
-        $model = $query->getModel();
-        $ids   = array_keys($ranked);
-        $chunk = max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200));
+        $model = $builder->model;
+        $query = RankedCandidates::matches($query ?? $model->newQuery(), $ranked, $this->terms($builder), $model::class, $this->columnWeights($builder));
+        $total = RankedCandidates::countModels($query);
 
-        $query = clone $query;
-
-        // Added the way RankedCandidates does, so a caller's where(A)->orWhere(B) is wrapped first.
-        if (count($ids) > $chunk && $query->getQuery()->getConnection() === DB::connection()) {
-            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $this->scorer->whereRanked($q->getQuery(), $model->getQualifiedKeyName(), $terms, $model::class, $weights));
-        } else {
-            $ids = RankedCandidates::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
-            $query->withGlobalScope(self::class, fn (EloquentBuilder $q) => $q->whereKey($ids));
+        if ($offset >= $total || $limit < 1) {
+            return ['total' => $total, 'keys' => []];
         }
 
-        // The caller's select list stays, as in SearchBuilder's walk: an order may name its alias
-        // (withCount()'s posts_count, a selectRaw() column). The key is read through its own alias.
         $query = $query->toBase();
-        $query->columns ??= ['*'];
-        $query->addSelect($model->getQualifiedKeyName() . ' as ' . self::WALK_KEY);
 
         foreach ($orders as $order) {
             $query->orderBy($order['column'], $order['direction']);
@@ -189,21 +170,7 @@ class FuzzySearchEngine extends Engine
             $query->orderBy($model->getQualifiedKeyName(), 'desc');
         }
 
-        $keys = [];
-
-        foreach ($query->lazy(1000) as $row) {
-            $key = $row->{self::WALK_KEY};
-
-            if (isset($ranked[$key])) {
-                $keys[$key] = true; // a join may repeat a model
-
-                if (count($keys) >= $needed) {
-                    break;
-                }
-            }
-        }
-
-        return array_keys($keys);
+        return ['total' => $total, 'keys' => RankedCandidates::orderedKeys($query, $model->getQualifiedKeyName(), $offset, $limit)];
     }
 
     /**
@@ -317,7 +284,7 @@ class FuzzySearchEngine extends Engine
     {
         $picked = [];
         foreach ($keys as $key) {
-            $picked[$key] = $ranked[$key];
+            $picked[$key] = $ranked[$key] ?? 0.0; // an ordered page's match past the ranking's cap
         }
         return $picked;
     }
