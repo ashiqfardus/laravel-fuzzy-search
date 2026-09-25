@@ -274,11 +274,15 @@ class IndexManager
     /** @var array<string, true> connection|database|prefix => its postings table has statistics (PostgreSQL) */
     private static array $analyzed = [];
 
+    /** @var array<string, true> connection|database|prefix => a check waits for the transaction's commit */
+    private static array $pendingChecks = [];
+
     /** Forget the per-process caches: the pipelines, and which PostgreSQL index tables have statistics. */
     public static function resetPipelineCache(): void
     {
-        self::$pipelines = [];
-        self::$analyzed  = [];
+        self::$pipelines     = [];
+        self::$analyzed      = [];
+        self::$pendingChecks = [];
     }
 
     /**
@@ -311,20 +315,41 @@ class IndexManager
      * pages against relpages). Statistics taken on a one-row first write said every term had one
      * posting, and after 50k more rows every search took about 100 s (ruling ER-110). This process
      * stops reading the catalog once they describe 10,000 postings or more: autovacuum's 10% scale
-     * factor keeps them in proportion from there. Only outside a transaction: inside the caller's,
-     * ANALYZE would hold its lock until the commit, and the next write outside one runs it.
+     * factor keeps them in proportion from there.
+     *
+     * Inside the caller's transaction ANALYZE would hold its lock until the commit, so the check
+     * waits for the commit (ruling ER-111): once, however many index writes the transaction held,
+     * and not at all when it rolls back, which drops the callback. A bulk import in one transaction
+     * (Scout's default config gives every engine write the app's transaction) otherwise left the
+     * tables unanalyzed. The check never runs inside a transaction: under DatabaseTransactions,
+     * Laravel's testing manager runs the callback at once, and it would defer itself again without
+     * end.
      */
     private function analyzeUnanalyzedIndex(): void
     {
         $connection = DB::connection();
 
-        if ($connection->getDriverName() !== DbDialect::PGSQL || $connection->transactionLevel() > 0) {
+        if ($connection->getDriverName() !== DbDialect::PGSQL) {
             return;
         }
 
         $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
 
         if (isset(self::$analyzed[$id])) {
+            return;
+        }
+
+        if ($connection->transactionLevel() > 0) {
+            // Each write registers a callback (a rollback drops the ones it held); the first to run
+            // at the commit checks, and the others find nothing pending.
+            self::$pendingChecks[$id] = true;
+            $connection->afterCommit(function () use ($connection, $id) {
+                if ($connection->transactionLevel() === 0 && isset(self::$pendingChecks[$id])) {
+                    unset(self::$pendingChecks[$id]);
+                    $this->analyzeUnanalyzedIndex();
+                }
+            });
+
             return;
         }
 

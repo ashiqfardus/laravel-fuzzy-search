@@ -103,6 +103,70 @@ class PostgresIndexStatisticsTest extends TestCase
         $this->assertSame(0, $catalog, 'no catalog read or ANALYZE once the statistics describe the table');
     }
 
+    /** @return string[] the package's catalog reads (not reltuples()'s) and ANALYZE statements $call runs */
+    private function checks(\Closure $call): array
+    {
+        $checks = [];
+        DB::listen(function ($query) use (&$checks) {
+            if (str_contains($query->sql, 'pg_relation_size') || stripos($query->sql, 'analyze') === 0) {
+                $checks[] = $query->sql;
+            }
+        });
+
+        try {
+            $call();
+        } finally {
+            DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+        }
+
+        return $checks;
+    }
+
+    /**
+     * Ruling ER-111. Inside a transaction an index write cannot analyze (ANALYZE would hold its lock
+     * until the commit), and it skipped the check: a bulk import in one transaction, which Scout's
+     * default config gives every engine write, left the tables unanalyzed after the commit. The check
+     * now runs when the transaction commits, once however many index writes it held.
+     */
+    public function test_index_writes_inside_a_transaction_are_checked_once_when_it_commits(): void
+    {
+        $inside = null;
+        $checks = $this->checks(function () use (&$inside) {
+            DB::transaction(function () use (&$inside) {
+                foreach (['Zebra 1%', 'Zebra 2%', 'Zebra 3%'] as $names) {
+                    app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', $names)->get());
+                }
+                $inside = $this->reltuples('fuzzy_index_postings');
+            });
+        });
+
+        $this->assertLessThanOrEqual(0, $inside, 'nothing analyzed inside the transaction');
+        $this->assertCount(2, $checks, 'one catalog read and one ANALYZE, at the commit: ' . implode(' | ', $checks));
+        $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'));
+    }
+
+    /** Ruling ER-111: a rolled-back transaction runs no check, and the next commit still runs its own. */
+    public function test_a_rolled_back_transaction_runs_no_check(): void
+    {
+        $checks = $this->checks(function () {
+            try {
+                DB::transaction(function () {
+                    app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', 'Zebra%')->get());
+
+                    throw new \RuntimeException('roll back');
+                });
+            } catch (\RuntimeException) {
+            }
+        });
+
+        $this->assertSame([], $checks);
+        $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_postings'));
+
+        DB::transaction(fn () => app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', 'Zebra%')->get()));
+
+        $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'));
+    }
+
     /** Statistics taken on a few rows would describe the rebuilt index badly: a rebuild refreshes them. */
     public function test_a_rebuild_analyzes_the_index_tables(): void
     {
