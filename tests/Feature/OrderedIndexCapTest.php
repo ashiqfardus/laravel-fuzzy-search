@@ -98,8 +98,9 @@ class OrderedIndexCapTest extends TestCase
             $this->assertSame($this->zebras(285, 15), $make()->simplePaginate(15, 'page', 20)->pluck('name')->all(), "{$label}: simplePaginate's last page");
             $this->assertFalse($make()->simplePaginate(15, 'page', 20)->hasMorePages(), "{$label}: nothing after the last page");
 
-            // Ruling ER-96: a match rank() stopped before has no BM25 score, so its raw score is 0.
-            $this->assertCount(40, array_filter($served, fn ($model) => $model->_raw_score > 0), "{$label}: only the ranked matches carry a score");
+            // Ruling ER-96: a match rank() stopped before has no BM25 score, so it scores exactly 0.
+            $this->assertScores(array_map(fn ($model) => $model->_raw_score, $served), "{$label}: _raw_score");
+            $this->assertScores(array_map(fn ($model) => $model->_score, $served), "{$label}: _score");
         }
     }
 
@@ -123,12 +124,30 @@ class OrderedIndexCapTest extends TestCase
                 $paginator = $make()->paginate(15, 'page', $page);
                 $this->assertSame(300, $paginator->total(), "{$label}: total on page {$page}");
                 $this->assertCount(15, $paginator->items(), "{$label}: page {$page} is full");
-                $served = [...$served, ...collect($paginator->items())->pluck('name')->all()];
+                $served = [...$served, ...$paginator->items()];
             }
 
-            $this->assertSame($this->zebras(0, 300), $served, "{$label}: the pages serve every match once, in order");
+            $this->assertSame($this->zebras(0, 300), array_column(array_map(fn ($m) => $m->toArray(), $served), 'name'), "{$label}: the pages serve every match once, in order");
             $this->assertSame([], $make()->paginate(15, 'page', 21)->items(), "{$label}: the page past the last is empty");
+            $this->assertScores(array_map(fn ($model) => $model->_score, $served), "{$label}: _score");
         }
+    }
+
+    /**
+     * Every score is a finite number >= 0 (A5). The zebras all score alike, so the 40 matches the
+     * capped ranking holds score above 0, and the 260 past it exactly 0.
+     *
+     * @param array<int, mixed> $scores
+     */
+    private function assertScores(array $scores, string $message): void
+    {
+        foreach ($scores as $score) {
+            $this->assertIsFloat($score, $message);
+            $this->assertTrue(is_finite($score) && $score >= 0, "{$message}: {$score}");
+        }
+
+        $this->assertCount(260, array_filter($scores, fn ($score) => $score === 0.0), "{$message}: past the cap, exactly 0");
+        $this->assertCount(40, array_filter($scores, fn ($score) => $score > 0), "{$message}: the ranked matches");
     }
 
     /** Past 1,000 matches the walk took one more ordered query per 1,000 rows it passed. */
