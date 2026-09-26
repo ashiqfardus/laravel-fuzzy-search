@@ -299,7 +299,10 @@ jobs:
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
       - name: SQL Server log (on failure)
         if: failure()
-        run: docker logs ${{ job.services.sqlsrv.id }} 2>&1 | tail -300
+        run: |
+          docker logs ${{ job.services.sqlsrv.id }} 2>&1 | tail -300
+          # A stack or crash dump's details go to the log directory, not to stdout.
+          docker exec ${{ job.services.sqlsrv.id }} bash -c 'ls -la /var/opt/mssql/log; for f in /var/opt/mssql/log/SQLDump*.txt; do [ -f "$f" ] && { echo "== $f"; head -150 "$f"; }; done; tail -80 /var/opt/mssql/log/errorlog' 2>&1 || true
 
   # ── Filament v4 / v5 ──────────────────────────────────────────────────────
   # require-dev pins Filament v3 (it spans the whole matrix); this job swaps in v4 and v5.
