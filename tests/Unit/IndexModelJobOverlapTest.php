@@ -310,7 +310,13 @@ class IndexModelJobOverlapTest extends TestCase
         // documents table with few rows scans it, so on a first index it waits for the other
         // batch's uncommitted placeholders: a wait at the upsert, not at the claim, and no
         // deadlock (see the parallel batch test). There the writes only have to succeed.
-        $ordered = !($this->dbDriver === 'sqlite' || ($batches && !$reindex && $this->dbDriver === 'sqlsrv'));
+        // On SQL Server in CI the handshake's forked child breaks the parent's next connection
+        // (08S01 TCP 0x2746 in the next test's setUp, with nothing in the server's errorlog):
+        // Microsoft's Linux ODBC driver under fork, as in the parallel-batch race (ER-94). There
+        // the writes only have to succeed; the ordering runs against a local SQL Server.
+        $ordered = !($this->dbDriver === 'sqlite'
+            || ($batches && !$reindex && $this->dbDriver === 'sqlsrv')
+            || ($this->dbDriver === 'sqlsrv' && getenv('CI')));
         [$childError, $parentError, $parentFirst, $childFinished, $childPaused] = $ordered
             ? $this->raceOrdered($child, $parent, $at)
             : [...$this->race($child, $parent, $at, 1_000_000, 300_000), null, null, null];
