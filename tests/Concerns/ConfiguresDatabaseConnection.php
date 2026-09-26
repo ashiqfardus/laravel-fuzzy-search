@@ -122,6 +122,10 @@ trait ConfiguresDatabaseConnection
                 'charset'                => 'utf8',
                 'trust_server_certificate' => true,
                 'encrypt'                => env('DB_TEST_ENCRYPT', 'no'),
+                // No ODBC connection pooling: the race tests fork, and a child connecting with
+                // the parent's DSN could be handed the parent's pooled connection, sharing its
+                // socket, which breaks the parent's next connection (08S01 on Linux CI).
+                'pooling'                => false,
             ];
         }
 
