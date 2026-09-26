@@ -105,7 +105,10 @@ class ScoutVisibilityTest extends TestCase
             $this->assertEqualsCanonicalizing(['Zed Alpha', 'Zed Beta', 'Zed Gamma'], $names($search()->get()), "chunk {$chunk}: unordered get");
             $this->assertSame(3, $search()->paginate(2)->total(), "chunk {$chunk}: unordered total");
             $this->assertSame(['Zed Alpha', 'Zed Beta', 'Zed Gamma'], $names($search()->orderBy('name')->get()), "chunk {$chunk}: orderBy get");
-            $this->assertSame(['Zed Gamma', 'Zed Beta', 'Zed Alpha'], $names($search()->latest()->get()), "chunk {$chunk}: latest get");
+            // Scout's Builder has latest() from 10.x releases after 10.0.0 (the lowest-deps floor).
+            if (method_exists(\Laravel\Scout\Builder::class, 'latest')) {
+                $this->assertSame(['Zed Gamma', 'Zed Beta', 'Zed Alpha'], $names($search()->latest()->get()), "chunk {$chunk}: latest get");
+            }
 
             $page = $search()->orderBy('name')->paginate(2);
             $this->assertSame(3, $page->total(), "chunk {$chunk}: orderBy total");
