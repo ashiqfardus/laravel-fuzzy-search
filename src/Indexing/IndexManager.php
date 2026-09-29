@@ -306,8 +306,10 @@ class IndexManager
      * thrown. Thrown from the check at a commit, it reached the caller of a DB::transaction() that
      * had committed, and Laravel skipped the transaction's later after-commit callbacks; thrown at
      * the end of a rebuild, it failed a rebuild that had indexed every row. Inside the caller's
-     * transaction (a rebuild run in one) it runs under a savepoint: on PostgreSQL a failed statement
-     * aborts the whole transaction, and the caller's next statement would fail instead.
+     * transaction (a rebuild run in one, or an --async rebuild's finally() on the sync queue, inside
+     * the batch store's transaction) it runs under a savepoint, rolled back on any failure: on
+     * PostgreSQL a failed statement aborts the whole transaction, so the caller's next statement
+     * failed instead, and a batch's COMMIT rolled back the whole rebuilt index.
      */
     public function analyzeIndex(bool $whenStale = false): void
     {
@@ -338,9 +340,29 @@ class IndexManager
             )));
         };
 
+        $level = $connection->transactionLevel();
+
         try {
-            $connection->transactionLevel() > 0 ? $connection->transaction($analyze) : $analyze();
+            if ($level > 0) {
+                $connection->beginTransaction(); // a savepoint
+            }
+            $analyze();
+            if ($level > 0) {
+                $connection->commit();
+            }
         } catch (\Throwable $e) {
+            // Back to the savepoint before report(), which may write through this connection. Not
+            // transaction(): on a deadlock or a serialization failure it drops the level without
+            // ROLLBACK TO SAVEPOINT (MySQL has rolled the whole transaction back by then), and
+            // PostgreSQL's stayed aborted. Nothing to undo when the savepoint itself failed.
+            try {
+                if ($connection->transactionLevel() > $level) {
+                    $connection->rollBack($level);
+                }
+            } catch (\Throwable) {
+                // a lost connection: the caller's transaction went with it
+            }
+
             report($e);
         }
     }

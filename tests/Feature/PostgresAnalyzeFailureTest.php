@@ -201,4 +201,36 @@ class PostgresAnalyzeFailureTest extends TestCase
         $this->assertSame(User::count(), DB::table('fuzzy_index_documents')->count());
         $this->assertLockTimeoutsReported();
     }
+
+    /**
+     * On a deadlock or a serialization failure, Laravel's nested transaction() drops its level
+     * without ROLLBACK TO SAVEPOINT (MySQL has rolled the whole transaction back by then), so on
+     * PostgreSQL the caller's transaction stayed aborted: its next statement failed with 25P02. The
+     * savepoint is rolled back on any failure. The deadlock is staged: the ANALYZE inside the caller's
+     * transaction aborts it, as a deadlock victim's is, then fails with PostgreSQL's message.
+     */
+    public function test_a_deadlocked_analyze_inside_the_callers_transaction_leaves_it_usable(): void
+    {
+        $connection = DB::connection();
+        $connection->beforeExecuting(function (string $query) use ($connection) {
+            if (stripos($query, 'analyze') === 0 && $connection->transactionLevel() > 0) {
+                try {
+                    $connection->getPdo()->exec('select 1 / 0');
+                } catch (\PDOException) {
+                }
+
+                throw new \PDOException('SQLSTATE[40P01]: Deadlock detected: 7 ERROR:  deadlock detected');
+            }
+        });
+
+        DB::transaction(function () {
+            $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => User::class]));
+            DB::table('products')->insert(['title' => 'After the rebuild', 'price' => 10]);
+        });
+
+        $this->assertSame(1, DB::table('products')->where('title', 'After the rebuild')->count());
+        $this->assertSame(User::count(), DB::table('fuzzy_index_documents')->count());
+        $this->assertCount(1, $this->reported);
+        $this->assertStringContainsString('deadlock detected', $this->reported[0]->getMessage());
+    }
 }
