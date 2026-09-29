@@ -141,7 +141,10 @@ class Bm25Scorer
         // MySQL (a MariaDB server ignores the hint): FirstMatch, one index probe per row. With
         // model_id in utf8mb4_bin, and an index on the order column, MySQL chose a hash semi-join it
         // could not key on the cast key, whose cost grew with the square of the rows: 3.6 s at 100k
-        // matches, where FirstMatch takes 0.16 s.
+        // matches, where FirstMatch takes 0.16 s. MySQL chose FirstMatch itself for a constrained
+        // search's key read of 1,000 to 50,000 ranked ids (200k rows). For 5 ids the hint forced a scan
+        // of the table (0.3 s, where a hash join driven by the postings took 0.04 s), which is one reason
+        // RankedCandidates::accepted() checks a short ranking by key instead.
         $select = $driver === DbDialect::MYSQL ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1';
 
         $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key, $select) {
