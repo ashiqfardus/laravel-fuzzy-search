@@ -12,10 +12,10 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 /**
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
  * rank order, so a selective filter fills its page from lower-ranked matches instead of
- * coming back short, and totals reflect the constraints. On the index's own connection the
- * matches a query accepts are read through a subquery on the postings (accepted(),
- * matches()); otherwise ids are visited best-first in chunks and only rows the query
- * returns are kept.
+ * coming back short, and totals reflect the constraints. A short ranking is checked by id, a
+ * chunk at a time; on the index's own connection a longer one is read through a subquery on the
+ * postings (accepted(), matches()); otherwise ids are visited best-first in chunks and only rows
+ * the query returns are kept.
  *
  * @internal This class is not part of the public API and may change without notice.
  */
@@ -64,7 +64,7 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
-            $found = array_flip(self::among($base, $key, $chunk)->pluck($key)->all());
+            $found = array_flip(self::keyRead(self::among($base, $key, $chunk))->pluck(self::KEY_ALIAS)->all());
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
@@ -137,11 +137,15 @@ final class RankedCandidates
     /**
      * $ranked cut to the documents $base accepts, in rank order: what a page in rank order serves and
      * its total counts, so a constrained search serves the rows of the unconstrained one that the
-     * constraint accepts, and none past the ranking's cap. On the index's own connection one query
-     * reads the keys of every match $base accepts, through the postings subquery
-     * (Bm25Scorer::whereRanked()), however long the ranking is: the key is selected, and the rows
-     * are streamed (cursor()), keeping those the ranking holds. On another connection, where that
-     * subquery cannot run, the ranked ids are checked a chunk at a time.
+     * constraint accepts, and none past the ranking's cap. A ranking of at most
+     * max(bm25.candidate_chunk, max_candidates) ids is checked by key, a chunk at a time (keys()), so
+     * the rows read are bounded by the ranking, however large the table (ruling D10). On the index's
+     * own connection a longer one is read in one query, through the postings subquery
+     * (Bm25Scorer::whereRanked()), however many rows match: the key is selected, and the rows are
+     * streamed (cursor()), keeping those the ranking holds. That subquery compares the postings with a
+     * cast of the key, so no database can drive the read from them: it reads every row the constraint
+     * accepts (a SoftDeletes table whole), which a rare term's ranking cannot justify. On another
+     * connection, where that subquery cannot run, the ranked ids are checked a chunk at a time.
      *
      * @param  array<int|string, float>                $ranked        model_id => score, best first
      * @param  array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -150,16 +154,32 @@ final class RankedCandidates
      */
     public static function accepted(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): array
     {
-        if (!self::subqueryRuns($base)) {
+        if (count($ranked) <= max(self::chunkSize(null), (int) config('fuzzy-search.max_candidates', 1000)) || !self::subqueryRuns($base)) {
             return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked))));
         }
 
-        $query = self::whereMatches($base, $terms, $modelType, $columnWeights)->toBase()->reorder();
-        $key   = self::keyColumn($base) . ' as ' . self::KEY_ALIAS;
+        $accepted = [];
 
-        // The key alone, unless a HAVING may name an alias of the select list (withCount()'s
-        // posts_count, which MySQL and MariaDB accept there). select(), not the column list alone:
-        // it drops the dropped columns' bindings (a constrained withCount()) too.
+        foreach (self::keyRead(self::whereMatches($base, $terms, $modelType, $columnWeights))->cursor() as $row) {
+            if (isset($ranked[$row->{self::KEY_ALIAS}])) {
+                $accepted[$row->{self::KEY_ALIAS}] = true;
+            }
+        }
+
+        return array_intersect_key($ranked, $accepted);
+    }
+
+    /**
+     * $query's read of its keys, under KEY_ALIAS, in no order: the key alone, unless a HAVING may name
+     * an alias of the select list (withCount()'s posts_count, which MySQL and MariaDB accept there).
+     * select(), not the column list alone: it drops the dropped columns' bindings (a constrained
+     * withCount()) too.
+     */
+    private static function keyRead(Builder $query): QueryBuilder
+    {
+        $key   = self::keyColumn($query) . ' as ' . self::KEY_ALIAS;
+        $query = $query->toBase()->reorder();
+
         if ($query->havings) {
             $query->columns ??= ['*'];
             $query->addSelect($key);
@@ -167,15 +187,7 @@ final class RankedCandidates
             $query->select($key);
         }
 
-        $accepted = [];
-
-        foreach ($query->cursor() as $row) {
-            if (isset($ranked[$row->{self::KEY_ALIAS}])) {
-                $accepted[$row->{self::KEY_ALIAS}] = true;
-            }
-        }
-
-        return array_intersect_key($ranked, $accepted);
+        return $query;
     }
 
     /**

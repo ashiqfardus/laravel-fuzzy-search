@@ -28,9 +28,11 @@ class ConstrainedScoutUser extends \Illuminate\Database\Eloquent\Model
  * M2 (round 8). Any constraint on an index search — a tenant where(), a SoftDeletes model — counted
  * the ranking 500 ids per COUNT and walked it bm25.candidate_chunk ids per query: 354 queries for one
  * page of a small tenant among 50k matches. The index's own connection now reads the matches the
- * constraint accepts in one query, through the postings subquery, whatever the ranking's size. The
- * pages serve what total() counts, and a constrained search serves the unconstrained search's rows
- * that the constraint accepts, in the same order.
+ * constraint accepts in one query, through the postings subquery, once the ranking holds more than
+ * max(candidate_chunk, max_candidates) ids; a shorter one is checked by key, at most that many ids,
+ * a chunk per query (ruling D10, round 9: the subquery read the whole table). The pages serve what
+ * total() counts, and a constrained search serves the unconstrained search's rows that the
+ * constraint accepts, in the same order.
  */
 class ConstrainedIndexCostTest extends TestCase
 {
@@ -83,22 +85,30 @@ class ConstrainedIndexCostTest extends TestCase
         ];
     }
 
-    public function test_a_constrained_index_search_costs_the_same_queries_however_many_rows_match(): void
+    public function test_a_constrained_index_search_costs_a_bounded_number_of_queries_however_many_rows_match(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {
             $this->markTestSkipped('laravel/scout not installed.');
         }
 
-        config(['scout.driver' => 'fuzzy-search', 'fuzzy-search.bm25.candidate_chunk' => 20]);
-        $this->seedZebras(0, 150);
+        // A ranking of up to max(20, 100) ids is checked by key, 20 per query; a longer one through the postings.
+        config(['scout.driver' => 'fuzzy-search', 'fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.max_candidates' => 100]);
+        $this->seedZebras(0, 60);
         DB::table('users')->whereIn('name', ['Zebra 0001', 'Zebra 0002', 'Zebra 0004'])->update(['deleted_at' => now()]); // trashed, still indexed
-        $this->costs(); // warms the once-per-process reads, such as MySQL's model_id collation
-        $small = $this->costs();
+        $this->costs(); // warms the once-per-process reads
+        $short = $this->costs();
+
+        $this->seedZebras(60, 150);
+        $this->costs(); // and the subquery's, such as MySQL's model_id collation
+        $long = $this->costs();
 
         $this->seedZebras(150, 1100);
         $this->assertSame(1097, SoftDeletedUser::search('zebra')->typoTolerance(0)->useInvertedIndex()->count());
 
-        $this->assertSame($small, $this->costs());
+        $this->assertSame($long, $this->costs(), 'the postings subquery: the same queries however many rows match');
+
+        // By key: a read per 20 ids where the subquery takes 1, never more than 100 / 20 of them.
+        $this->assertSame([], array_filter($short, fn ($cost, $terminal) => $cost > $long[$terminal] + 100 / 20 - 1, ARRAY_FILTER_USE_BOTH), json_encode([$short, $long]));
     }
 
     /**
