@@ -9,14 +9,30 @@ use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
+use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Laravel\Scout\Builder;
+use Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase;
 use Laravel\Scout\Engines\Engine;
 use Laravel\Scout\Exceptions\NotSupportedException;
+
+// Scout 10.1 added PaginatesEloquentModelsUsingDatabase, the contract that hands the engine
+// paginate() and simplePaginate() with their page name (see paginateUsingDatabase()). Scout 10.0
+// has none, and paginates every engine itself: an empty stand-in lets the engine load there.
+if (interface_exists(PaginatesEloquentModelsUsingDatabase::class)) {
+    class_alias(PaginatesEloquentModelsUsingDatabase::class, PaginatesWithItsOwnTotal::class);
+} else {
+    /** @internal Scout 10.0's stand-in for PaginatesEloquentModelsUsingDatabase, which no Builder checks. */
+    interface PaginatesWithItsOwnTotal
+    {
+    }
+}
 
 /**
  * Scout engine adapter — bundled in core, registered conditionally
@@ -24,7 +40,7 @@ use Laravel\Scout\Exceptions\NotSupportedException;
  *
  * Activate with: SCOUT_DRIVER=fuzzy-search in .env
  */
-class FuzzySearchEngine extends Engine
+class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 {
     public function __construct(
         private IndexManager $indexManager,
@@ -62,6 +78,60 @@ class FuzzySearchEngine extends Engine
         $page    = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
 
         return $this->results($builder, ($page - 1) * $perPage, $perPage);
+    }
+
+    /**
+     * Scout's paginate(), built as Scout's Builder builds it (the same paginator binding, page,
+     * path and page name; the Builder then appends the query), with the total results() counted.
+     * Scout's own total re-counts a query() callback's matches: it re-reads the key of every
+     * match and binds them all in one whereIn() (Builder::getTotalCount()), past SQL Server's
+     * 2,100 bindings on a string key. The engine has already applied the callback
+     * (constrainedQuery()), so its total counts only what the callback accepts.
+     *
+     * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
+     */
+    public function paginateUsingDatabase(Builder $builder, $perPage, $pageName, $page)
+    {
+        $page    = $page ?: Paginator::resolveCurrentPage($pageName);
+        $perPage = $perPage ?: $builder->model->getPerPage();
+        $results = $this->paginate($builder, $perPage, $page);
+
+        return Container::getInstance()->makeWith(LengthAwarePaginator::class, [
+            'items'       => $this->pageModels($builder, $results),
+            'total'       => $results['total'],
+            'perPage'     => $perPage,
+            'currentPage' => $page,
+            'options'     => ['path' => Paginator::resolveCurrentPath(), 'pageName' => $pageName],
+        ]);
+    }
+
+    /**
+     * Scout's simplePaginate(), built as Scout's Builder builds it; see paginateUsingDatabase().
+     *
+     * @return \Illuminate\Contracts\Pagination\Paginator
+     */
+    public function simplePaginateUsingDatabase(Builder $builder, $perPage, $pageName, $page)
+    {
+        $page    = $page ?: Paginator::resolveCurrentPage($pageName);
+        $perPage = $perPage ?: $builder->model->getPerPage();
+        $results = $this->paginate($builder, $perPage, $page);
+
+        return Container::getInstance()->makeWith(Paginator::class, [
+            'items'       => $this->pageModels($builder, $results),
+            'perPage'     => $perPage,
+            'currentPage' => $page,
+            'options'     => ['path' => Paginator::resolveCurrentPath(), 'pageName' => $pageName],
+        ])->hasMorePagesWhen(($perPage * $page) < $results['total']);
+    }
+
+    /** A page's models, after Scout's withRawResults() callback (Scout 10.13+) has seen the raw page. */
+    private function pageModels(Builder $builder, array $results): EloquentCollection
+    {
+        if (method_exists($builder, 'applyAfterRawSearchCallback')) {
+            $results = $builder->applyAfterRawSearchCallback($results);
+        }
+
+        return $builder->model->newCollection($this->map($builder, $results, $builder->model)->all());
     }
 
     /**
