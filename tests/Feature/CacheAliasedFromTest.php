@@ -21,7 +21,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
  * The keyed re-read has worked under an alias since ER-107, so the first two tests pass either way.
  * The rule still decides the last one: a fromSub() whose subquery joins one-to-many holds several
  * rows for a key, a re-read returns all of them, and a hit served the last (omega) where the miss
- * served the first (alpha).
+ * served the first (alpha). simplePaginate()'s look-ahead row (Jane's beta) has another key, so the
+ * keys it caches are distinct and the rule alone decides there too.
  */
 class CacheAliasedFromTest extends TestCase
 {
@@ -68,8 +69,9 @@ class CacheAliasedFromTest extends TestCase
     public static function oneRowTerminals(): array
     {
         return [
-            'take(1)->get()' => [fn (SearchBuilder $search) => $search->take(1)->get()],
-            'first()'        => [fn (SearchBuilder $search) => collect([$search->first()])],
+            'take(1)->get()'    => [fn (SearchBuilder $search) => $search->take(1)->get()],
+            'first()'           => [fn (SearchBuilder $search) => collect([$search->first()])],
+            'simplePaginate(1)' => [fn (SearchBuilder $search) => collect($search->simplePaginate(1)->items())],
         ];
     }
 
@@ -83,12 +85,17 @@ class CacheAliasedFromTest extends TestCase
             $table->string('body');
         });
         $john = DB::table('users')->where('name', 'John Doe')->value('id');
-        DB::table('cache_notes')->insert([['user_id' => $john, 'body' => 'alpha'], ['user_id' => $john, 'body' => 'omega']]);
+        $jane = DB::table('users')->where('name', 'Jane Doe')->value('id');
+        DB::table('cache_notes')->insert([
+            ['user_id' => $john, 'body' => 'alpha'],
+            ['user_id' => $jane, 'body' => 'beta'],
+            ['user_id' => $john, 'body' => 'omega'],
+        ]);
 
         $run = fn () => $terminal((new SearchBuilder(
             User::query()->fromSub(DB::table('users')->join('cache_notes', 'cache_notes.user_id', '=', 'users.id')->select('users.*', 'cache_notes.body as note'), 'u')->orderBy('note'),
             app(FuzzySearch::class)
-        ))->search('john doe')->searchIn(['name'])->using('like')->cache(60))
+        ))->search('doe')->searchIn(['name'])->using('like')->cache(60))
             ->map(fn ($user) => $user->name . '/' . $user->note)->all();
 
         $miss = $run();
