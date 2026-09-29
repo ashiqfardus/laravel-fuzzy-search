@@ -22,8 +22,8 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
  */
 final class RankedCandidates
 {
-    /** The alias an ordered read selects the key under, beside the caller's select list (see orderedKeys()). */
-    private const KEY_ALIAS = 'fuzzy_walk_key';
+    /** The alias a read selects the key under, beside the caller's select list (see models(), orderedKeys() and the Scout engine's map()). */
+    public const KEY_ALIAS = 'fuzzy_walk_key';
 
     /** The scope whereMatches() restricts a query with; among() adds its own, so the two never replace each other. */
     private const MATCHES = 'fuzzy-search:matches';
@@ -68,14 +68,20 @@ final class RankedCandidates
 
     /**
      * The key a read selected under KEY_ALIAS, taken out of $model's attributes and original (Model
-     * has no public way to drop an original attribute); null when the row has none.
+     * has no public way to drop an original attribute), or $model's own key when the read selected
+     * none (an app's getScoutModelsByIds() that reads without the query() callback). Null when the
+     * row has no key (a ROLLUP's summary row): the caller skips it.
      */
-    private static function takeKey(Model $model): int|string|null
+    public static function takeKey(Model $model): int|string|null
     {
         $alias = self::KEY_ALIAS;
 
         return (function () use ($alias) {
-            $key = $this->attributes[$alias] ?? null;
+            if (!array_key_exists($alias, $this->attributes)) {
+                return $this->getKey();
+            }
+
+            $key = $this->attributes[$alias];
             unset($this->attributes[$alias], $this->original[$alias]);
 
             return $key;
@@ -94,7 +100,7 @@ final class RankedCandidates
     }
 
     /** $query's select list, every column when it names none, with $key beside it under KEY_ALIAS. */
-    private static function selectKey(QueryBuilder $query, string $key): QueryBuilder
+    public static function selectKey(QueryBuilder $query, string $key): QueryBuilder
     {
         $query->columns ??= ['*'];
 

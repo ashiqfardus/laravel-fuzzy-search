@@ -44,9 +44,6 @@ if (interface_exists(PaginatesEloquentModelsUsingDatabase::class)) {
  */
 class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 {
-    /** The alias map() reads the page's keys under, beside the select list: RankedCandidates' own (see modelsById()). */
-    private const KEY_ALIAS = 'fuzzy_walk_key';
-
     public function __construct(
         private IndexManager $indexManager,
         private Bm25Scorer   $scorer,
@@ -421,11 +418,11 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     /**
      * The models the model's getScoutModelsByIds() reads for $ids (an app's override of it, or of
      * queryScoutModelsByIds(), as every Scout engine's map() calls it), keyed by their ids. The key
-     * is read under KEY_ALIAS beside the select list, through the query() callback that
-     * queryScoutModelsByIds() applies, in a scope applied after the model's own (which may select()),
-     * so a row is matched to its id when a select() leaves the key out (ruling D13), as
-     * RankedCandidates reads it; the alias is then taken out of the model's attributes and original,
-     * so it never reaches them. A union is read as one derived table, and an override that reads
+     * is read under RankedCandidates::KEY_ALIAS beside the select list, through the query() callback
+     * that queryScoutModelsByIds() applies, in a scope applied after the model's own (which may
+     * select()), so a row is matched to its id when a select() leaves the key out (ruling D13), as
+     * RankedCandidates reads it; RankedCandidates::takeKey() then takes the alias out of the model's
+     * attributes and original, so it never reaches them. A union is read as one derived table, and an override that reads
      * without the callback selects no alias: its models are matched by their own key.
      *
      * @param  array<int|string> $ids
@@ -447,18 +444,13 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
                 $query->setQuery($rows->getQuery())->withoutGlobalScopes();
             }
 
-            $query->withGlobalScope(self::KEY_ALIAS, function (EloquentBuilder $query) {
-                if (!$query->getQuery()->unions) {
-                    $query->getQuery()->columns ??= ['*'];
-                    $query->addSelect(RankedCandidates::keyColumn($query) . ' as ' . self::KEY_ALIAS);
-                }
-            });
+            $query->withGlobalScope(RankedCandidates::KEY_ALIAS, fn (EloquentBuilder $query) => RankedCandidates::selectKey($query->getQuery(), RankedCandidates::keyColumn($query)));
         };
 
         $models = [];
 
         foreach ($model->getScoutModelsByIds($builder, $ids) as $found) {
-            $id = self::takeKey($found);
+            $id = RankedCandidates::takeKey($found);
 
             if ($id !== null) {
                 $models[$id] = $found;
@@ -466,23 +458,6 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         return $models;
-    }
-
-    /** The key a read selected under KEY_ALIAS, taken out of $model's attributes and original, or $model's own key. */
-    private static function takeKey(\Illuminate\Database\Eloquent\Model $model): int|string|null
-    {
-        $alias = self::KEY_ALIAS;
-
-        return (function () use ($alias) {
-            if (!array_key_exists($alias, $this->attributes)) {
-                return $this->getKey();
-            }
-
-            $key = $this->attributes[$alias];
-            unset($this->attributes[$alias], $this->original[$alias]);
-
-            return $key;
-        })->call($model);
     }
 
     public function lazyMap(Builder $builder, $results, $model): \Illuminate\Support\LazyCollection
