@@ -45,14 +45,20 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize(null)) as $chunk) {
-            $found = self::among($base, $key, $chunk)
-                ->withGlobalScope(self::KEY_ALIAS, function (Builder $query) use ($key) {
-                    if (!$query->getQuery()->unions) {
-                        self::selectKey($query->getQuery(), $key);
-                    }
-                })
-                ->get()
-                ->keyBy(fn (Model $model) => self::takeKey($model));
+            $read = self::among($base, $key, $chunk)->withGlobalScope(self::KEY_ALIAS, function (Builder $query) use ($key) {
+                if (!$query->getQuery()->unions) {
+                    self::selectKey($query->getQuery(), $key);
+                }
+            });
+            $found = [];
+
+            // A model's first row: a join may repeat it, and MariaDB gives a ROLLUP's summary row the
+            // last group's key under the alias, where its own key is NULL. A row without one is skipped.
+            foreach ($read->get() as $model) {
+                if (($id = self::takeKey($model)) !== null) {
+                    $found[$id] ??= $model;
+                }
+            }
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
@@ -84,6 +90,17 @@ final class RankedCandidates
         })->call($model);
     }
 
+    /**
+     * The keys $read selected under KEY_ALIAS, in its order, less any NULL: a row without a key
+     * (a ROLLUP's summary row; the ids a read is restricted to keep out every other) matches no id.
+     *
+     * @return array<int|string>
+     */
+    private static function keysOf(QueryBuilder $read): array
+    {
+        return $read->pluck(self::KEY_ALIAS)->whereNotNull()->values()->all();
+    }
+
     /** $query's select list, every column when it names none, with $key beside it under KEY_ALIAS. */
     private static function selectKey(QueryBuilder $query, string $key): QueryBuilder
     {
@@ -105,7 +122,7 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
-            $found = array_flip(self::keyRead(self::among($base, $key, $chunk))->pluck(self::KEY_ALIAS)->all());
+            $found = array_flip(self::keysOf(self::keyRead(self::among($base, $key, $chunk))));
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
@@ -209,7 +226,7 @@ final class RankedCandidates
             $ids  = array_keys($ranked);
             $read = (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIntegerInRaw($key, $ids));
 
-            return array_intersect_key($ranked, array_flip(self::keyRead($read)->pluck(self::KEY_ALIAS)->all()));
+            return array_intersect_key($ranked, array_flip(self::keysOf(self::keyRead($read))));
         }
 
         $bound = !$int && DbDialect::isMySqlFamily($driver);
@@ -221,7 +238,7 @@ final class RankedCandidates
         $accepted = [];
 
         foreach (self::keyRead(self::whereMatches($base, $terms, $modelType, $columnWeights))->cursor() as $row) {
-            if (isset($ranked[$row->{self::KEY_ALIAS}])) {
+            if ($row->{self::KEY_ALIAS} !== null && isset($ranked[$row->{self::KEY_ALIAS}])) {
                 $accepted[$row->{self::KEY_ALIAS}] = true;
             }
         }
@@ -281,7 +298,7 @@ final class RankedCandidates
                 $page->orderBy($sort['column'], $sort['direction']);
             }
 
-            return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+            return self::keysOf($page->offset($offset)->limit($limit));
         }
 
         if ($order === 'joined') {
@@ -302,19 +319,21 @@ final class RankedCandidates
                 $page->orderBy('fuzzy_order_' . $i, $sort['direction']);
             }
 
-            return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+            return self::keysOf($page->offset($offset)->limit($limit));
         }
 
         self::selectKey($query, $qualifiedKey);
 
         if ($order === 'rows') {
-            return $query->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+            return self::keysOf($query->offset($offset)->limit($limit));
         }
 
         $keys = [];
 
         foreach ($query->lazy(1000) as $row) {
-            $keys[$row->{self::KEY_ALIAS}] = true;
+            if ($row->{self::KEY_ALIAS} !== null) {
+                $keys[$row->{self::KEY_ALIAS}] = true;
+            }
 
             if (count($keys) >= $offset + $limit) {
                 break;

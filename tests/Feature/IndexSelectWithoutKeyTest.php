@@ -65,4 +65,29 @@ class IndexSelectWithoutKeyTest extends TestCase
             'cache miss and hit' => [$row('John Doe'), $row('Jane Doe'), $row('John Doe'), $row('Jane Doe')],
         ], $served);
     }
+
+    /**
+     * A read's row whose key is NULL matches no ranked id, and is skipped: a ROLLUP's summary row
+     * failed the key reads (array_flip() of a null) and, on PHP 8.5, used null as an array offset.
+     * The ids a read is restricted to keep every other NULL key out (a right join's row, say).
+     */
+    public function test_a_row_without_a_key_is_skipped(): void
+    {
+        if ($this->dbDriver === 'sqlite') {
+            $this->markTestSkipped('SQLite has no ROLLUP; the CI MySQL, MariaDB, PostgreSQL and SQL Server jobs run this.');
+        }
+
+        $rollup = in_array($this->dbDriver, ['mysql', 'mariadb'], true) ? 'users.id with rollup' : 'rollup(users.id)';
+        $make   = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()
+            ->select('users.id')->selectRaw('max(users.name) as name')->groupByRaw($rollup);
+
+        $page = $make()->paginate(1, 'page', 2);
+
+        $this->assertSame([['John Doe', 'Jane Doe'], 2, 2, ['Jane Doe']], [
+            $make()->get()->pluck('name')->all(),
+            $make()->count(),
+            $page->total(),
+            $page->pluck('name')->all(),
+        ]);
+    }
 }
