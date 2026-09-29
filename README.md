@@ -813,6 +813,8 @@ A model on this driver needs the package's `Searchable` trait beside Scout's, as
 
 `orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), every match past `bm25.max_postings_per_term` included, and `_score` still carries each one's BM25 score (0 past that cap). The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
 
+The engine counts and pages through the model's global scopes, and through the constraints you put on Scout's builder with `where()`, `whereIn()` and `whereNotIn()`: a row either hides is neither served nor counted. On Scout 10.1 and later the engine builds `paginate()` and `simplePaginate()` itself, with the total it has already counted. See [Authorization](docs/integrations.md#authorization).
+
 Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty query matches nothing, with or without `allow_empty_search`. Scout searches fire no `FuzzySearchExecuted` event.
 
 → Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
