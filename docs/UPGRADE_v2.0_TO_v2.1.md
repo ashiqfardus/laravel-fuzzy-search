@@ -209,8 +209,9 @@ analytics, `suggest()` and the tokenizers.
 - **New config keys:** `indexing.job` (`tries`, `backoff`, `timeout`) bounds retries of
   `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) is the largest ranking an
   ordered index search lists by id, the chunk the index path hydrates a page's rows and a cache hit
-  re-reads rows in, and, for a model on another connection than the index, the chunk its ranking is
-  checked against the constraints in.
+  re-reads rows in, and, on SQL Server or for a string key on PostgreSQL or SQLite, the chunk a
+  constrained relevance search checks a ranking of at most `max(bm25.candidate_chunk, max_candidates)`
+  ids in (on another connection than the index, where that subquery cannot run, any length of ranking).
 - **`indexing.table` was removed** — see [Removed config keys](#removed-config-keys).
 - **`FuzzySearch::$config` is now nullable (`?array`)** and is null when the class is container-built; subclasses that read `$this->config` must call `currentConfig()` instead.
 - **TrigramDriver's LIKE fallback cap raised from 10 to 100.** It now caps its pattern list at
@@ -409,13 +410,11 @@ through `get()`) now agree.
 - **A plain query builder keeps its `where()`s on the index path.** `new SearchBuilder(DB::table('notes')->where(...), app(FuzzySearch::class))`
   with `useInvertedIndex(Note::class)` used to search every row the model can see. It now runs inside
   the model's query, so the builder's wheres and joins apply alongside the model's global scopes.
-  The builder must select from the model's table (an alias works: `DB::table('notes as n')`), and
-  a narrowed `select()` must include the primary key: the ranked rows are matched back by it, so
-  without it the search returns no rows while `count()` and `paginate()->total()` still count them.
-- **A `join()` that narrows the rows counts as a constraint, like a `where()`.** On the index path,
-  `count()` and `paginate()->total()` now count only the models the join lets through (each once,
-  however many rows it joins), and `suggest()` / `didYouMean()` treat the query as constrained
-  (see below).
+  The builder must select from the model's table (an alias works: `DB::table('notes as n')`). A
+  narrowed `select()` may leave out the primary key: the package reads it beside your columns under
+  an alias of its own, which never reaches the rows it returns.
+- **A `join()` that narrows the rows counts as a constraint, like a `where()`, and so do a `having()`, a `groupBy()`, a union and a `fromSub()`.** On the index path, `count()` and `paginate()->total()` now count only the models these let through (each once, however many rows a join repeats it in), and `suggest()` / `didYouMean()` treat the query as constrained (see below). A union is read as one derived table, so its parts' matches are served in relevance order and under `orderBy()`. In relevance order a model that a one-to-many join repeats is served once, with the joined columns of the first of its rows the database returns; 2.0 served a copy per joined row.
+- **A constrained relevance search checks its ranking by key.** On every database but SQL Server an integer key is checked in one query with the ranked ids inlined, and a string key on MySQL or MariaDB 10,000 bound ids per query; on SQL Server, and for a string key on PostgreSQL or SQLite, `bm25.candidate_chunk` still sizes the check (see [New config keys](#config-and-php-api)). No setting changes; a rare term under SoftDeletes or a tenant scope no longer reads the whole model table.
 - **`didYouMean()` ranks the closest term first,** then the most common, and its reach scales with
   the term's length (1 edit for 2–3 characters, 2 for 4–5, 3 from 6) instead of a fixed 3: a short
   term gets fewer, closer alternatives.
@@ -456,7 +455,7 @@ through `get()`) now agree.
 ## `suggest()` on an indexed model now completes from the dictionary
 
 - **Completions changed for indexed models.** In v2.0, `suggest()` always scanned the table and returned column values as stored. As of v2.1.0, when the model has a `fuzzy_index_meta` row (it has been BM25-indexed), `suggest()` instead completes the last word of the term from that model's dictionary — completions are **lower-case dictionary terms**, not the column value as written, and any earlier words in a multi-word term are kept as typed (`"Bob jo"` → `"Bob john"`).
-- **Constrained queries keep the table scan.** When the base query carries a `where()`, a `join()`, a forwarded scope or a global scope other than `SoftDeletes`, the default `'auto'` mode uses the table scan even on an indexed model, because the dictionary is scoped to the model, not to the query. `->suggestFrom('index')` forces the dictionary and ignores those constraints. With `indexing.async` (the default) a trashed row's terms leave the dictionary only when the queued index job runs.
+- **Constrained queries keep the table scan.** When the base query carries a `where()`, a `join()`, a `having()`, a `groupBy()`, a union, a `fromSub()`, a forwarded scope or a global scope other than `SoftDeletes`, the default `'auto'` mode uses the table scan even on an indexed model, because the dictionary is scoped to the model, not to the query. `->suggestFrom('index')` forces the dictionary and ignores those constraints. With `indexing.async` (the default) a trashed row's terms leave the dictionary only when the queued index job runs.
 - **Restore v2.0 behaviour** by calling `->suggestFrom('table')`, which forces the table scan regardless of whether the model is indexed.
 - Un-indexed models are unaffected — they always used, and still use, the table scan.
 
