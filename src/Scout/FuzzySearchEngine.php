@@ -44,6 +44,9 @@ if (interface_exists(PaginatesEloquentModelsUsingDatabase::class)) {
  */
 class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 {
+    /** The alias map() reads the page's keys under, beside the select list: RankedCandidates' own (see modelsById()). */
+    private const KEY_ALIAS = 'fuzzy_walk_key';
+
     public function __construct(
         private IndexManager $indexManager,
         private Bm25Scorer   $scorer,
@@ -399,20 +402,58 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             return $model->newCollection();
         }
 
-        $ids      = $this->mapIds($results)->toArray();
-        $scoreMap = collect($results['results'])->pluck('score', 'model_id');
-        $position = array_flip($ids);
-
-        $models = $model->getScoutModelsByIds($builder, $ids);
+        $scores = collect($results['results'])->pluck('score', 'model_id');
+        $models = $this->modelsById($model->queryScoutModelsByIds($builder, $this->mapIds($results)->all()));
+        $page   = [];
 
         // The order search()/paginate() chose — relevance, or the builder's orderBy() — not the
         // order the database happened to return the rows in.
-        return $models->sortBy(fn($m) => $position[$m->getKey()] ?? PHP_INT_MAX)
-            ->map(function ($m) use ($scoreMap) {
-                $m->_score = round((float) ($scoreMap[$m->getKey()] ?? 0), 6);
-                return $m;
-            })
-            ->values();
+        foreach ($scores as $id => $score) {
+            if (isset($models[$id])) {
+                $models[$id]->_score = round((float) $score, 6);
+                $page[]              = $models[$id];
+            }
+        }
+
+        return $model->newCollection($page);
+    }
+
+    /**
+     * The models $query reads (Scout's getScoutModelsByIds() query), keyed by their ids. The key is
+     * read under KEY_ALIAS beside the select list, in a scope applied after the model's own (which
+     * may select()), so a row is matched to its id when a query() callback's select() leaves the key
+     * out (ruling D13), as RankedCandidates reads it; the alias is then taken out of the model, so it
+     * never reaches its attributes. A union's parts share one select list: its models are matched by
+     * their own key.
+     *
+     * @return array<int|string, \Illuminate\Database\Eloquent\Model>
+     */
+    private function modelsById(EloquentBuilder $query): array
+    {
+        $query->withGlobalScope(self::KEY_ALIAS, function (EloquentBuilder $query) {
+            if (!$query->getQuery()->unions) {
+                $query->getQuery()->columns ??= ['*'];
+                $query->addSelect(RankedCandidates::keyColumn($query) . ' as ' . self::KEY_ALIAS);
+            }
+        });
+
+        $models = [];
+
+        foreach ($query->get() as $model) {
+            $attributes = $model->getAttributes();
+            $id         = $attributes[self::KEY_ALIAS] ?? $model->getKey();
+
+            if (array_key_exists(self::KEY_ALIAS, $attributes)) {
+                unset($attributes[self::KEY_ALIAS]);
+                $model->setRawAttributes($attributes, true); // as the read hydrated it, alias aside
+            }
+
+            if ($id !== null) {
+                $models[$id] = $model;
+            }
+        }
+
+        return $models;
     }
 
     public function lazyMap(Builder $builder, $results, $model): \Illuminate\Support\LazyCollection
