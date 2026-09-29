@@ -271,7 +271,7 @@ class IndexManager
     /** @var array<string, Pipeline|false> model class → resolved override pipeline, or false = "uses the default" */
     private static array $pipelines = [];
 
-    /** @var array<string, true> connection|database|prefix => its postings table has statistics (PostgreSQL) */
+    /** @var array<string, true> connection|database|prefix|search_path => its postings table's statistics describe it (PostgreSQL) */
     private static array $analyzed = [];
 
     /** @var array<string, true> connection|database|prefix => a check waits for the transaction's commit */
@@ -290,16 +290,28 @@ class IndexManager
      * about one posting per term, and the postings subquery that constrained and ordered searches
      * run (Bm25Scorer::whereRanked()) became a nested loop over every posting for every row: 60–120 s
      * at 50k rows until autovacuum's first ANALYZE (ruling ER-106). A rebuild ends with this, and an
-     * index write runs it while the statistics do not describe the table (analyzeUnanalyzedIndex()).
-     * A user that does not own a table gets a WARNING, which skips that table and throws nothing.
+     * index write runs it while the statistics do not describe the table ($whenStale; see
+     * analyzeUnanalyzedIndex()). A user that does not own a table gets a WARNING, which skips that
+     * table and throws nothing.
      *
      * Not while the postings table is under 16 pages (128 kB, about 1,000 postings; ruling ER-112).
      * Statistics from a tiny first write or rebuild planned the writes after it as if the index held
      * a few rows: inside one transaction, where nothing re-plans until the commit, every posting's
      * foreign-key check scanned the whole terms table, and a 50k-row index took 127 s instead of
      * 10 s. PostgreSQL costs a never-analyzed table at 10 pages at least, which plans them well.
+     *
+     * Best-effort (ruling D9): statistics only make searches faster, and the index they describe is
+     * written already, so a failure here, in the check's catalog read as in the ANALYZE (a
+     * lock_timeout while autovacuum holds the table, a lost connection), is report()ed and never
+     * thrown. Thrown from the check at a commit, it reached the caller of a DB::transaction() that
+     * had committed, and Laravel skipped the transaction's later after-commit callbacks; thrown at
+     * the end of a rebuild, it failed a rebuild that had indexed every row. Inside the caller's
+     * transaction (a rebuild run in one, or an --async rebuild's finally() on the sync queue, inside
+     * the batch store's transaction) it runs under a savepoint, rolled back on any failure: on
+     * PostgreSQL a failed statement aborts the whole transaction, so the caller's next statement
+     * failed instead, and a batch's COMMIT rolled back the whole rebuilt index.
      */
-    public function analyzeIndex(): void
+    public function analyzeIndex(bool $whenStale = false): void
     {
         $connection = DB::connection();
 
@@ -307,31 +319,57 @@ class IndexManager
             return;
         }
 
-        $grammar = $connection->getQueryGrammar();
-        $pages   = $connection->selectOne(
-            "select pg_relation_size(to_regclass(?)) / current_setting('block_size')::int as pages",
-            [$grammar->wrapTable('fuzzy_index_postings')]
-        )->pages;
+        $analyze = function () use ($connection, $whenStale) {
+            if ($whenStale && !$this->statisticsStale($connection)) {
+                return;
+            }
 
-        if ((int) $pages < 16) {
-            return;
+            $grammar = $connection->getQueryGrammar();
+            $pages   = $connection->selectOne(
+                "select pg_relation_size(to_regclass(?)) / current_setting('block_size')::int as pages",
+                [$grammar->wrapTable('fuzzy_index_postings')]
+            )->pages;
+
+            if ((int) $pages < 16) {
+                return;
+            }
+
+            $connection->statement('ANALYZE ' . implode(', ', array_map(
+                fn (string $table) => $grammar->wrapTable($table),
+                ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']
+            )));
+        };
+
+        $level = $connection->transactionLevel();
+
+        try {
+            if ($level > 0) {
+                $connection->beginTransaction(); // a savepoint
+            }
+            $analyze();
+            if ($level > 0) {
+                $connection->commit();
+            }
+        } catch (\Throwable $e) {
+            // Back to the savepoint before report(), which may write through this connection. Not
+            // transaction(): on a deadlock or a serialization failure it drops the level without
+            // ROLLBACK TO SAVEPOINT (MySQL has rolled the whole transaction back by then), and
+            // PostgreSQL's stayed aborted. Nothing to undo when the savepoint itself failed.
+            try {
+                if ($connection->transactionLevel() > $level) {
+                    $connection->rollBack($level);
+                }
+            } catch (\Throwable) {
+                // a lost connection: the caller's transaction went with it
+            }
+
+            report($e);
         }
-
-        $connection->statement('ANALYZE ' . implode(', ', array_map(
-            fn (string $table) => $grammar->wrapTable($table),
-            ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']
-        )));
     }
 
     /**
      * After an index write on PostgreSQL: analyzeIndex() while the statistics do not describe the
-     * postings table, because it has none (pg_class.reltuples <= 0: -1, never analyzed, on PostgreSQL
-     * 14+; 0, analyzed or indexed while empty) or has more than doubled since they were taken (its
-     * pages against relpages), and not before the table reaches analyzeIndex()'s 16 pages. Statistics
-     * taken on a small table stood for the table it grew into: after a one-row first write and 50k
-     * more rows, every search took about 100 s (ruling ER-110). This process stops reading the
-     * catalog once they describe 10,000 postings or more: autovacuum's 10% scale factor keeps them
-     * in proportion from there.
+     * postings table (statisticsStale()), and not before it reaches analyzeIndex()'s 16 pages.
      *
      * Inside the caller's transaction ANALYZE would hold its lock until the commit, so the check
      * waits for the commit (ruling ER-111): once, however many index writes the transaction held,
@@ -349,15 +387,10 @@ class IndexManager
             return;
         }
 
-        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
-
-        if (isset(self::$analyzed[$id])) {
-            return;
-        }
-
         if ($connection->transactionLevel() > 0) {
             // Each write registers a callback (a rollback drops the ones it held); the first to run
             // at the commit checks, and the others find nothing pending.
+            $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
             self::$pendingChecks[$id] = true;
             $connection->afterCommit(function () use ($connection, $id) {
                 if ($connection->transactionLevel() === 0 && isset(self::$pendingChecks[$id])) {
@@ -369,6 +402,29 @@ class IndexManager
             return;
         }
 
+        $this->analyzeIndex(whenStale: true);
+    }
+
+    /**
+     * Whether the statistics do not describe the postings table: it has none (pg_class.reltuples
+     * <= 0: -1, never analyzed, on PostgreSQL 14+; 0, analyzed or indexed while empty) or has more
+     * than doubled since they were taken (its pages against relpages). Statistics taken on a small
+     * table stood for the table it grew into: after a one-row first write and 50k more rows, every
+     * search took about 100 s (ruling ER-110). This process stops reading the catalog once they
+     * describe 10,000 postings or more: autovacuum's 10% scale factor keeps them in proportion from
+     * there. It remembers that per search_path too, which it reads on every check: schema-per-tenant
+     * PostgreSQL switches it on one connection and database, and a worker that had indexed one
+     * tenant past 10,000 postings never analyzed another's tables.
+     */
+    private function statisticsStale(\Illuminate\Database\Connection $connection): bool
+    {
+        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix()
+            . '|' . $connection->selectOne("select current_setting('search_path') as search_path")->search_path;
+
+        if (isset(self::$analyzed[$id])) {
+            return false;
+        }
+
         $table = $connection->selectOne(
             "select reltuples, relpages, pg_relation_size(oid) / current_setting('block_size')::int as pages from pg_class where oid = to_regclass(?)",
             [$connection->getQueryGrammar()->wrapTable('fuzzy_index_postings')]
@@ -378,9 +434,9 @@ class IndexManager
 
         if ($described && (float) $table->reltuples >= 10000) {
             self::$analyzed[$id] = true;
-        } elseif (!$described) {
-            $this->analyzeIndex();
         }
+
+        return !$described;
     }
 
     /**
@@ -531,7 +587,10 @@ class IndexManager
                 if (!self::indexesModel($model)) {
                     continue;
                 }
-                $byColumn = $this->buildTokenFrequencyMap($model, $model->getSearchableColumns());
+                // A Scout model may have only the searchableText() hook, which is enough to be
+                // indexed (ruling D11): getSearchableColumns() is the package trait's.
+                $columns  = method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : [];
+                $byColumn = $this->buildTokenFrequencyMap($model, $columns);
                 if ($this->mergeColumnFrequencies($byColumn) !== []) {
                     $byModel[$id] = $byColumn;
                 }
