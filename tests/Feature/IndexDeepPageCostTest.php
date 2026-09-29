@@ -101,7 +101,8 @@ class IndexDeepPageCostTest extends TestCase
     {
         $this->seedZetas();
 
-        // 1000 (the default): the constraint checks the ranked ids by key; 50: the postings subquery.
+        // 1000 (the default) and 50: on SQL Server, the constraint checks the 300 ranked ids by key,
+        // then through the postings subquery; elsewhere, by key in one read either way.
         foreach ([1000, 50] as $maxCandidates) {
             config(['fuzzy-search.max_candidates' => $maxCandidates]);
 

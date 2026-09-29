@@ -28,7 +28,8 @@ class RowsReadScoutUser extends \Illuminate\Database\Eloquent\Model
  * H2 (round 9), ruling D10, measured where it showed: MySQL. A constrained search for a rare term
  * read the whole model table, one index probe of the postings per row under the SEMIJOIN(FIRSTMATCH)
  * hint, whatever the ranking held: 266 ms at 200k rows for a term with 5 matches. The rows the
- * storage engine reads (the Handler_read_* counters) are now bounded by the ranking, not the table.
+ * storage engine reads (the Handler_read_* counters) are now bounded by the ranking, not the table,
+ * however long the ranking is.
  */
 class ConstrainedRankingRowsReadTest extends TestCase
 {
@@ -46,10 +47,14 @@ class ConstrainedRankingRowsReadTest extends TestCase
             $this->markTestSkipped('laravel/scout not installed.');
         }
 
-        // ROWS items, 5 of them quokkas.
+        // ROWS items: 5 of them quokkas, and 30 others wombats.
         foreach (array_chunk(range(1, self::ROWS), 500) as $chunk) {
             DB::table('users')->insert(array_map(fn ($i) => [
-                'name'  => ($i % (self::ROWS / 5) === 0 ? 'Quokka ' : '') . sprintf('Item %04d', $i),
+                'name'  => match (true) {
+                    $i % (self::ROWS / 5) === 0 => 'Quokka ',
+                    $i % 100 === 50             => 'Wombat ',
+                    default                     => '',
+                } . sprintf('Item %04d', $i),
                 'email' => "i{$i}@tenant-" . ($i % 2) . '.test',
             ], $chunk));
         }
@@ -78,26 +83,54 @@ class ConstrainedRankingRowsReadTest extends TestCase
         return $this->handlerReads() - $before - $idle;
     }
 
-    public function test_a_rare_term_reads_rows_bounded_by_its_ranking_not_the_table(): void
+    /** @return array<string, \Closure(): void> each constrained read of $term, asserting it serves its $matches rows */
+    private function reads(string $term, int $matches): array
     {
-        $scout = fn () => new \Laravel\Scout\Builder(new RowsReadScoutUser, 'quokka', null, true); // soft_delete, as Scout's search() passes it
-        $reads = [
-            'SoftDeletes get'       => fn () => $this->assertCount(5, SoftDeletedUser::search('quokka')->typoTolerance(0)->useInvertedIndex()->get()),
-            'SoftDeletes paginate'  => fn () => $this->assertSame(5, SoftDeletedUser::search('quokka')->typoTolerance(0)->useInvertedIndex()->paginate(15)->total()),
-            'SoftDeletes count'     => fn () => $this->assertSame(5, SoftDeletedUser::search('quokka')->typoTolerance(0)->useInvertedIndex()->count()),
-            'where() get'           => fn () => $this->assertCount(5, User::search('quokka')->typoTolerance(0)->useInvertedIndex()->where('email', 'like', '%.test')->get()),
-            'Scout soft_delete get' => fn () => $this->assertCount(5, $scout()->get()),
-            'Scout paginate'        => fn () => $this->assertSame(5, $scout()->paginate(15)->total()),
-            'Scout query()'         => fn () => $this->assertCount(5, $scout()->query(fn ($query) => $query->where('email', 'like', '%.test'))->get()),
+        $scout = fn () => new \Laravel\Scout\Builder(new RowsReadScoutUser, $term, null, true); // soft_delete, as Scout's search() passes it
+        $index = fn (string $class) => $class::search($term)->typoTolerance(0)->useInvertedIndex();
+
+        return [
+            'SoftDeletes get'       => fn () => $this->assertCount($matches, $index(SoftDeletedUser::class)->take(50)->get()),
+            'SoftDeletes paginate'  => fn () => $this->assertSame($matches, $index(SoftDeletedUser::class)->paginate(15)->total()),
+            'SoftDeletes count'     => fn () => $this->assertSame($matches, $index(SoftDeletedUser::class)->count()),
+            'where() get'           => fn () => $this->assertCount($matches, $index(User::class)->where('email', 'like', '%.test')->take(50)->get()),
+            'Scout soft_delete get' => fn () => $this->assertCount($matches, $scout()->take(50)->get()),
+            'Scout paginate'        => fn () => $this->assertSame($matches, $scout()->paginate(15)->total()),
+            'Scout query()'         => fn () => $this->assertCount($matches, $scout()->query(fn ($query) => $query->where('email', 'like', '%.test'))->take(50)->get()),
         ];
+    }
+
+    /** @return array<string, int> the rows each constrained read of $term reads */
+    private function rowsReadFor(string $term, int $matches): array
+    {
+        $reads = $this->reads($term, $matches);
 
         foreach ($reads as $read) {
             $read(); // warms the once-per-process reads, such as the model_id collation
         }
 
-        $rows = array_map(fn (\Closure $read) => $this->rowsRead($read), $reads);
+        return array_map(fn (\Closure $read) => $this->rowsRead($read), $reads);
+    }
 
-        // A ranking of 5: the postings, the dictionary and the 5 rows, a few reads each. The table has 3,007 rows.
-        $this->assertSame(array_fill_keys(array_keys($reads), true), array_map(fn (int $read) => $read < 200, $rows), json_encode($rows));
+    /**
+     * A ranking of 5 ids, and (ruling ER-124, round 9's fix round) one of 30 past
+     * max(candidate_chunk, max_candidates), which the postings subquery read: every row the
+     * constraint accepts, twice the table's 3,007. The postings, the dictionary and the ranked rows
+     * take a few reads per ranked id.
+     */
+    public function test_a_constrained_search_reads_rows_bounded_by_its_ranking_not_the_table(): void
+    {
+        $rare = $this->rowsReadFor('quokka', 5);
+
+        config(['fuzzy-search.bm25.candidate_chunk' => 5, 'fuzzy-search.max_candidates' => 10]);
+        $long = $this->rowsReadFor('wombat', 30);
+
+        $bounded = fn (array $rows, int $ranked) => array_map(fn (int $read) => $read < 40 * $ranked, $rows);
+
+        $this->assertSame(
+            ['5 ranked ids' => array_fill_keys(array_keys($rare), true), '30 ranked ids' => array_fill_keys(array_keys($long), true)],
+            ['5 ranked ids' => $bounded($rare, 5), '30 ranked ids' => $bounded($long, 30)],
+            json_encode(['5 ranked ids' => $rare, '30 ranked ids' => $long])
+        );
     }
 }

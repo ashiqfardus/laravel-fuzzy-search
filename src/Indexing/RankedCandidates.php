@@ -13,10 +13,10 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 /**
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
  * rank order, so a selective filter fills its page from lower-ranked matches instead of
- * coming back short, and totals reflect the constraints. A short ranking is checked by id, a
- * chunk at a time; on the index's own connection a longer one is read through a subquery on the
- * postings (accepted(), matches()); otherwise ids are visited best-first in chunks and only rows
- * the query returns are kept.
+ * coming back short, and totals reflect the constraints. The ranking is checked by id (in one read
+ * for an integer key, see accepted()); on the index's own connection an ordered read, and on SQL
+ * Server a long ranking, is restricted by a subquery on the postings (matches(), accepted());
+ * otherwise ids are visited best-first in chunks and only rows the query returns are kept.
  *
  * @internal This class is not part of the public API and may change without notice.
  */
@@ -178,15 +178,21 @@ final class RankedCandidates
     /**
      * $ranked cut to the documents $base accepts, in rank order: what a page in rank order serves and
      * its total counts, so a constrained search serves the rows of the unconstrained one that the
-     * constraint accepts, and none past the ranking's cap. A ranking of at most
-     * max(bm25.candidate_chunk, max_candidates) ids is checked by key, a chunk at a time (keys()), so
-     * the rows read are bounded by the ranking, however large the table (ruling D10). On the index's
-     * own connection a longer one is read in one query, through the postings subquery
-     * (Bm25Scorer::whereRanked()), however many rows match: the key is selected, and the rows are
-     * streamed (cursor()), keeping those the ranking holds. That subquery compares the postings with a
-     * cast of the key, so no database can drive the read from them: it reads every row the constraint
-     * accepts (a SoftDeletes table whole), which a rare term's ranking cannot justify. On another
-     * connection, where that subquery cannot run, the ranked ids are checked a chunk at a time.
+     * constraint accepts, and none past the ranking's cap. The ranking is checked by key, so the rows
+     * read are bounded by the ranking, however large the table (rulings D10 and ER-124):
+     *  - an integer key, on every database but SQL Server: the whole ranking in one read, its ids
+     *    inlined as matches() lists them (about 1 ms per 1,000 ids, no binding limit);
+     *  - a string key on MySQL or MariaDB: 10,000 bound ids per read (they allow 65,535 bindings);
+     *  - otherwise a ranking of at most max(bm25.candidate_chunk, max_candidates) ids, a chunk at a
+     *    time (keys()). A longer one, on the index's own connection, is read in one query through the
+     *    postings subquery (Bm25Scorer::whereRanked()), however many rows match, streamed (cursor())
+     *    and kept where the ranking holds them. That subquery compares the postings with a cast of the
+     *    key, so no database can drive the read from them: it reads every row the constraint accepts
+     *    (a SoftDeletes table whole). SQL Server compiles every new inlined list (8.7 s for 50,000
+     *    ids) and caps a statement's expressions, and its 2,100 bindings allow no long bound list;
+     *    there, and for a string key on PostgreSQL and SQLite, this is D10's shape as it was. On
+     *    another connection, where the subquery cannot run, the ranked ids are checked a chunk at a
+     *    time.
      *
      * @param  array<int|string, float>                $ranked        model_id => score, best first
      * @param  array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -195,8 +201,21 @@ final class RankedCandidates
      */
     public static function accepted(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): array
     {
-        if (count($ranked) <= max(self::chunkSize(null), (int) config('fuzzy-search.max_candidates', 1000)) || !self::subqueryRuns($base)) {
-            return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked))));
+        $driver = $base->getQuery()->getConnection()->getDriverName();
+        $int    = in_array($base->getModel()->getKeyType(), ['int', 'integer'], true);
+
+        if ($int && $driver !== DbDialect::SQLSRV) {
+            $key  = self::keyColumn($base);
+            $ids  = array_keys($ranked);
+            $read = (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIntegerInRaw($key, $ids));
+
+            return array_intersect_key($ranked, array_flip(self::keyRead($read)->pluck(self::KEY_ALIAS)->all()));
+        }
+
+        $bound = !$int && DbDialect::isMySqlFamily($driver);
+
+        if ($bound || count($ranked) <= max(self::chunkSize(null), (int) config('fuzzy-search.max_candidates', 1000)) || !self::subqueryRuns($base)) {
+            return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked), null, $bound ? 10000 : null)));
         }
 
         $accepted = [];
