@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
@@ -28,10 +29,15 @@ final class RankedCandidates
     private const MATCHES = 'fuzzy-search:matches';
 
     /**
-     * The models among $rankedIds that $base returns, in rank order, $rankedIds read a chunk at a
-     * time. A row the query hides, or whose id is stale, is skipped.
+     * The models among $rankedIds that $base returns, in rank order and keyed by their ids,
+     * $rankedIds read a chunk at a time. A row the query hides, or whose id is stale, is skipped. The
+     * key is read under an alias of its own beside the select list, so a row is matched to its id when
+     * the select leaves the key out (ruling D13) or a join's id replaces it; the alias is then taken
+     * out of the model, so it never reaches its attributes. A union's parts share one select list: its
+     * models are matched by their own key.
      *
      * @param  array<int|string> $rankedIds best first
+     * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
      */
     public static function models(Builder $base, array $rankedIds): EloquentCollection
     {
@@ -39,16 +45,51 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize(null)) as $chunk) {
-            $found = self::among($base, $key, $chunk)->get()->keyBy(fn ($model) => $model->getKey());
+            $found = self::among($base, $key, $chunk)
+                ->withGlobalScope(self::KEY_ALIAS, function (Builder $query) use ($key) {
+                    if (!$query->getQuery()->unions) {
+                        self::selectKey($query->getQuery(), $key);
+                    }
+                })
+                ->get()
+                ->keyBy(fn (Model $model) => self::takeKey($model));
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
-                    $collected[] = $found[$id];
+                    $collected[$id] = $found[$id];
                 }
             }
         }
 
         return $base->getModel()->newCollection($collected);
+    }
+
+    /**
+     * The key a read selected under KEY_ALIAS, taken out of $model's attributes and original (Model
+     * has no public way to drop an original attribute), or $model's own key if the read selected none.
+     */
+    private static function takeKey(Model $model): int|string|null
+    {
+        $alias = self::KEY_ALIAS;
+
+        return (function () use ($alias) {
+            if (!array_key_exists($alias, $this->attributes)) {
+                return $this->getKey();
+            }
+
+            $key = $this->attributes[$alias];
+            unset($this->attributes[$alias], $this->original[$alias]);
+
+            return $key;
+        })->call($model);
+    }
+
+    /** $query's select list, every column when it names none, with $key beside it under KEY_ALIAS. */
+    private static function selectKey(QueryBuilder $query, string $key): QueryBuilder
+    {
+        $query->columns ??= ['*'];
+
+        return $query->addSelect($key . ' as ' . self::KEY_ALIAS);
     }
 
     /**
@@ -179,21 +220,14 @@ final class RankedCandidates
     private static function keyRead(Builder $query): QueryBuilder
     {
         $name  = $query->getModel()->getKeyName();
-        $key   = self::keyColumn($query) . ' as ' . self::KEY_ALIAS;
+        $key   = self::keyColumn($query);
         $query = $query->toBase()->reorder();
 
-        if ($query->unions) {
-            return $query->newQuery()->fromSub($query, 'fuzzy_rows')->select('fuzzy_rows.' . $name . ' as ' . self::KEY_ALIAS);
-        }
-
-        if ($query->havings) {
-            $query->columns ??= ['*'];
-            $query->addSelect($key);
-        } else {
-            $query->select($key);
-        }
-
-        return $query;
+        return match (true) {
+            !empty($query->unions)  => $query->newQuery()->fromSub($query, 'fuzzy_rows')->select('fuzzy_rows.' . $name . ' as ' . self::KEY_ALIAS),
+            !empty($query->havings) => self::selectKey($query, $key),
+            default                 => $query->select($key . ' as ' . self::KEY_ALIAS),
+        };
     }
 
     /**
@@ -252,8 +286,7 @@ final class RankedCandidates
             return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
         }
 
-        $query->columns ??= ['*'];
-        $query->addSelect($key);
+        self::selectKey($query, $qualifiedKey);
 
         if ($order === 'rows') {
             return $query->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();

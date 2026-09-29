@@ -1716,15 +1716,16 @@ class SearchBuilder
     }
 
     /**
-     * Set _raw_score / _score on the ranked models and return them best first. The raw score is the
-     * BM25 score through the model's getSearchScore() override, if it has one (see searchScore()),
-     * which can reorder the window it re-ranks. _score is normalised against $anchor, the score of the
-     * first row the query accepts (in rank order without a hook: the same on every page, so scores
-     * stay comparable across pages), or against the best row among $models when that is higher: the
-     * hook's window, which a page in rank order is read with, or the page under orderBy(). Not the
-     * first entry of $ranked: a row the query hides, such as another tenant's, would set the scale
-     * and reveal what it contains. A row $ranked lacks, a match past the ranking's cap that an
-     * ordered page serves, scores 0.
+     * Set _raw_score / _score on the ranked models, keyed by their ids (RankedCandidates::models(),
+     * so a model whose select left its key out is scored too), and return them best first. The raw
+     * score is the BM25 score through the model's getSearchScore() override, if it has one (see
+     * searchScore()), which can reorder the window it re-ranks. _score is normalised against $anchor,
+     * the score of the first row the query accepts (in rank order without a hook: the same on every
+     * page, so scores stay comparable across pages), or against the best row among $models when that
+     * is higher: the hook's window, which a page in rank order is read with, or the page under
+     * orderBy(). Not the first entry of $ranked: a row the query hides, such as another tenant's,
+     * would set the scale and reveal what it contains. A row $ranked lacks, a match past the
+     * ranking's cap that an ordered page serves, scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
      * past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
@@ -1733,7 +1734,7 @@ class SearchBuilder
      */
     protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX, ?float $anchor = null): Collection
     {
-        $scores = $models->mapWithKeys(fn ($item, $i) => [$i => $this->searchScore($item, (float) ($ranked[$item->getKey()] ?? 0))]);
+        $scores = $models->map(fn ($item, $id) => $this->searchScore($item, (float) ($ranked[$id] ?? 0)));
         $top    = max($anchor ?? 0.0, (float) ($scores->max() ?? 0));
 
         // arsort() is stable: rows the hook left tied keep their BM25 rank.
@@ -2195,7 +2196,7 @@ class SearchBuilder
             $rerank = $this->bm25Window($modelClass);
             $window = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, 0, $rerank));
             $start  = max($offset, $rerank);
-            $models = $window->concat(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
+            $models = $window->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
             $page   = $this->attachBm25Scores($models, $ranked, $window->count(), $rerank > 0 ? null : $accepted[$keys[0]])
                 ->slice(min($offset, $window->count()), $limit)->values();
         }
