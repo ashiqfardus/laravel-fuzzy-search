@@ -67,13 +67,13 @@ class InMemorySearch
 
     public function take(int $limit): self
     {
-        $this->limit = $limit;
+        $this->limit = max(0, $limit);
         return $this;
     }
 
     public function skip(int $offset): self
     {
-        $this->offset = $offset;
+        $this->offset = max(0, $offset);
         return $this;
     }
 
