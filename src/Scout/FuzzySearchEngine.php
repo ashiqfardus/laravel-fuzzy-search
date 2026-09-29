@@ -13,6 +13,7 @@ use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Collection;
@@ -21,6 +22,7 @@ use Laravel\Scout\Builder;
 use Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase;
 use Laravel\Scout\Engines\Engine;
 use Laravel\Scout\Exceptions\NotSupportedException;
+use Laravel\Scout\SearchableScope;
 
 // Scout 10.1 added PaginatesEloquentModelsUsingDatabase, the contract that hands the engine
 // paginate() and simplePaginate() with their page name (see paginateUsingDatabase()). Scout 10.0
@@ -138,10 +140,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * The page [$offset, $offset + $limit) of the builder's matches, scored, and their total: the
      * match count, not the size of the page cut from them, and what the pages serve, as on
      * SearchBuilder's index path. In rank order it is the ranked matches the builder's constraints
-     * accept (RankedCandidates::accepted()), cut after the constraints (otherwise a selective where()
-     * returns a short or empty page while matches exist further down the ranking), and none past
-     * bm25.max_postings_per_term, where the ranking ends. With orderBy() it is every match the
-     * constraints accept, in that order (orderedPage()). A page past the total reads no row.
+     * and the model's global scopes accept (RankedCandidates::accepted()), cut after the constraints
+     * (otherwise a selective where() returns a short or empty page while matches exist further down
+     * the ranking), and none past bm25.max_postings_per_term, where the ranking ends. With orderBy()
+     * it is every match they accept, in that order (orderedPage()). A page past the total reads no row.
      *
      * @return array{results: Collection, total: int}
      */
@@ -222,9 +224,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     {
         $model = $builder->model;
 
-        // No constraint means no __soft_deleted where either: withTrashed(), or scout.soft_delete off,
-        // when no trashed row is indexed. constrainedQuery() reads that state as withTrashed() too;
-        // newQuery()'s SoftDeletes scope dropped the trashed matches that total() counted.
+        // No constraint means no global scope that hides a row, and no __soft_deleted where either:
+        // withTrashed(), or scout.soft_delete off, when no trashed row is indexed. constrainedQuery()
+        // reads that state as withTrashed() too; newQuery()'s SoftDeletes scope dropped the trashed
+        // matches that total() counted.
         $query ??= in_array(SoftDeletes::class, class_uses_recursive($model), true) ? $model->newQuery()->withTrashed() : $model->newQuery();
         $query   = RankedCandidates::matches($query, $ranked, $terms, $model::class, $this->columnWeights($builder));
         $total   = RankedCandidates::countModels($query);
@@ -293,8 +296,8 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     }
 
     /**
-     * The Eloquent query the ranking must be checked against, or null when the Scout
-     * builder carries no constraints (the ranking is then used as-is).
+     * The Eloquent query the ranking must be checked against, or null when neither the Scout
+     * builder nor a global scope of the model constrains it (the ranking is then used as-is).
      */
     private function constrainedQuery(Builder $builder): ?EloquentBuilder
     {
@@ -320,8 +323,15 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             $wheres[] = [$field, $operator, $value];
         }
 
+        // A global scope counts as a constraint (ruling D12). Scout indexes the rows it hides (its
+        // jobs read without global scopes) and loads the page's models through it, so unchecked,
+        // a hidden row counted in the relevance-order total while orderBy() skipped it. Two scopes
+        // are not constraints: SoftDeletes' (the __soft_deleted where decides trashed rows, as
+        // below) and Scout's own SearchableScope, which only adds builder macros.
+        $scopes = array_diff_key($builder->model->getGlobalScopes(), [SoftDeletingScope::class => true, SearchableScope::class => true]);
+
         if (empty($wheres) && empty($whereIns) && empty($whereNotIns)
-            && $builder->queryCallback === null && $softDeleted === null) {
+            && $builder->queryCallback === null && $softDeleted === null && $scopes === []) {
             return null;
         }
 
