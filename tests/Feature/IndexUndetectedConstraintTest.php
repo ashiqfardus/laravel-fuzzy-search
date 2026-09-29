@@ -14,8 +14,8 @@ use Illuminate\Support\Facades\DB;
  * served its ranking as it stood, so total() and count() counted matches the pages never served
  * under a having(), a GROUP BY or a FROM subquery: a fromSub() tenant scope holding one "Doe" had
  * a total of 2, which told the tenant a match existed outside it. Those constrain it too now, and
- * so do unions, whose keys are read from the union's rows (a union beside a where() failed: the key
- * read left the union's parts with select lists of different lengths).
+ * so do unions, which the index path reads as one derived table (a union beside a where() failed:
+ * the key read left the union's parts with select lists of different lengths).
  */
 class IndexUndetectedConstraintTest extends TestCase
 {
