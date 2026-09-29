@@ -2475,20 +2475,15 @@ class SearchBuilder
             return;
         }
 
-        // Stable ranking. An aliased FROM has no "users"."id", only its alias's, and a fromSub() has
-        // neither (2.0 ordered by the bare key). A plain builder's bare "id" is qualified under a
-        // join like a searched column: a join selecting both tables' columns makes it ambiguous.
+        // Stable ranking, on the key as the FROM names it (RankedCandidates::keyColumn()): an aliased
+        // FROM or a fromSub() has no "users"."id", only its alias's, and the bare key 2.0 ordered a
+        // fromSub() by is ambiguous once it joins a table with an id of its own. A plain builder's
+        // bare "id" is qualified under a join like a searched column: a join selecting both tables'
+        // columns makes it ambiguous.
         if ($query instanceof EloquentBuilder) {
             $model     = $query->getModel();
-            $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($query->toBase()->from);
-            $keyColumn = match (true) {
-                $from === null    => $model->getKeyName(),
-                $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
-                default           => $model->getQualifiedKeyName(),
-            };
-            // The alias's key too: under fromSub() the tie-break is the bare key, and SQL Server
-            // rejects an order by u.id followed by id.
-            $names = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn, \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($query)];
+            $keyColumn = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($query);
+            $names     = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn];
         } else {
             $keyColumn = ($this->qualifiedColumnMap($query)['id'] ?? '') . 'id';
             $names     = ['id', $keyColumn];
