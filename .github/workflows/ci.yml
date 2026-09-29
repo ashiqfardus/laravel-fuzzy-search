@@ -50,6 +50,14 @@ jobs:
           composer install --no-interaction --prefer-dist
       - name: Run tests (SQLite)
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
+      # A compile-time deprecation (a signature, a declaration) in a file the tests never load
+      # before the providers boot, such as the service provider itself, escapes the test run's
+      # guard; `php -l` compiles each shipped file. It prints a deprecation but exits 0.
+      - name: Lint shipped files for compile-time deprecations (PHP ${{ matrix.php }})
+        if: matrix.php == '8.5'
+        run: |
+          out=$(find src config database -name '*.php' -exec php -d error_reporting=-1 -d display_errors=stderr -l {} \; 2>&1)
+          if echo "$out" | grep -i 'deprecated'; then exit 1; fi
 
   # ── MySQL 8 ───────────────────────────────────────────────────────────────
   # Representative subset: PHP 8.2/8.3/8.4 × Laravel 10/12/13
