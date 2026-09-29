@@ -75,7 +75,7 @@ The model needs no `$searchable` property; add one to choose the columns (and th
 
 The engine does not call `toSearchableArray()`: it indexes the `$searchable` columns (declared or auto-detected) or a `searchableText()` hook. For the same reason, `where()`, `whereIn()` and `whereNotIn()` name columns of the model's table, as on Scout's database engine: a field that only `toSearchableArray()` has throws an unknown-column `QueryException` (on SQLite it raises no error and matches no row).
 
-The engine indexes what the package's trait declares. A model with Scout's `Searchable` alone throws `LogicException` when it is indexed (`searchable()`, `scout:import`, a save) or searched. Deleting and flushing it still work.
+The engine indexes what the package's trait declares. A model with Scout's `Searchable` alone throws `LogicException` when it is indexed (`searchable()`, `scout:import`, a save) or searched. Deleting and flushing it still work, except for a `SoftDeletes` model under `scout.soft_delete`: Scout re-indexes the trashed row, so `delete()` trashes the row and then throws that `LogicException`. The row stays trashed: the throw does not undo the delete. With `scout.queue` on, `delete()` returns and the queued job throws.
 
 ### Relevance Scores
 

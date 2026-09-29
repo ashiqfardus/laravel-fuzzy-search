@@ -809,7 +809,7 @@ SCOUT_DRIVER=fuzzy-search
 
 It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync. Scout's semantic and hybrid search (`semantic()`, `hybrid()`, Scout 11.6+) are not supported by this engine: both throw `NotSupportedException`.
 
-A model on this driver needs the package's `Searchable` trait beside Scout's, as the [recipe](docs/integrations.md#usage) shows. A model with Scout's trait alone has nothing to index: indexing or searching it throws `LogicException`, naming the trait.
+A model on this driver needs the package's `Searchable` trait beside Scout's, as the [recipe](docs/integrations.md#usage) shows. A model with Scout's trait alone has nothing to index: indexing or searching it throws `LogicException`, naming the trait. Under `scout.soft_delete`, deleting a `SoftDeletes` one re-indexes it, so `delete()` trashes the row and then throws; the row stays trashed.
 
 `orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), every match past `bm25.max_postings_per_term` included, and `_score` still carries each one's BM25 score (0 past that cap). The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
 
