@@ -392,8 +392,11 @@ final class RankedCandidates
      * ER-127): every read here restricts the union's rows to ranked ids, adds the key to the select
      * list or orders the rows, and on a union each of those reached only its first part (the other
      * parts were read whole, or their select lists no longer matched). The model's scopes already
-     * apply inside that part, and the eager loads are carried over. $base itself when it has no
-     * union, so a second call changes nothing.
+     * apply inside that part, and the eager loads are carried over. The union's own order is dropped
+     * when it has no limit or offset of its own: it cannot change which rows the union holds, and SQL
+     * Server rejects an ORDER BY in a derived table without TOP or OFFSET (a union with a limit stays
+     * unsupported there, as on the LIKE path). $base itself when it has no union, so a second call
+     * changes nothing.
      */
     public static function rows(Builder $base): Builder
     {
@@ -401,6 +404,11 @@ final class RankedCandidates
 
         if (!$query->unions) {
             return $base;
+        }
+
+        if ($query->unionLimit === null && $query->unionOffset === null) {
+            $query->unionOrders            = null;
+            $query->bindings['unionOrder'] = [];
         }
 
         $model = $base->getModel();

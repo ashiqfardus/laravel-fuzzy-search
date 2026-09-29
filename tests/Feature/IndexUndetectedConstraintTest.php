@@ -138,4 +138,29 @@ class IndexUndetectedConstraintTest extends TestCase
         $this->assertNotSame([], $asFromSub);
         $this->assertSame($asFromSub, $asUnion);
     }
+
+    /**
+     * A union's own orderBy() orders nothing once the union is one derived table, and SQL Server
+     * rejects an ORDER BY in a derived table without TOP or OFFSET, so it is dropped when the union
+     * has no limit or offset of its own.
+     */
+    public function test_a_union_with_an_order_of_its_own_in_either_order(): void
+    {
+        $union = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()
+            ->query(fn ($query) => $query->where('email', 'jane@example.com')->union(User::query()->where('name', 'John Doe'))->orderBy('name', 'desc'));
+
+        $found = [];
+        foreach (['rank order' => $union, 'orderBy()' => fn () => $union()->orderBy('name')] as $order => $make) {
+            try {
+                $found[$order] = [$make()->get()->pluck('name')->all(), $make()->count(), $make()->paginate(1, 'page', 2)->pluck('name')->all()];
+            } catch (\Illuminate\Database\QueryException $e) {
+                $found[$order] = strtok($e->getMessage(), "\n");
+            }
+        }
+
+        $this->assertSame([
+            'rank order' => [['John Doe', 'Jane Doe'], 2, ['Jane Doe']],
+            'orderBy()'  => [['Jane Doe', 'John Doe'], 2, ['John Doe']],
+        ], $found);
+    }
 }
