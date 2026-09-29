@@ -2997,7 +2997,7 @@ class SearchBuilder
 
     /**
      * shows() for a searchIn() column, judged on $row alone: a dotted name by its relation when
-     * the row has that relation loaded ("author.name"), else by its last part ("teams.name" is
+     * the row has that relation loaded, whatever case the path is typed in ("author.name"), else by its last part ("teams.name" is
      * the attribute "name"). The related rows' own rule applies where their values are read.
      *
      * @internal FuzzySearchResource re-applies it to a row as it renders
@@ -3006,7 +3006,17 @@ class SearchBuilder
     {
         $head = strstr($column, '.', true);
 
-        return self::shows($row, $head !== false && $row instanceof Model && $row->relationLoaded($head) ? $head : self::lastSegment($column));
+        // searchIn() may type the path in another case ("Author.name"): the relation is loaded, and
+        // hidden, under its declared name (relationPath()).
+        if ($head !== false && $row instanceof Model) {
+            foreach (array_keys($row->getRelations()) as $name) {
+                if (strcasecmp((string) $name, $head) === 0) {
+                    return self::shows($row, (string) $name);
+                }
+            }
+        }
+
+        return self::shows($row, self::lastSegment($column));
     }
 
     /**
