@@ -474,6 +474,12 @@ composer benchmark
 
 A run fails on any warning PHPUnit records and on any deprecation raised in `src/`, `config/` or `database/` from the service provider's `boot()` on, the shipped config and the migrations included (`failOnWarning`, `failOnDeprecation`); a risky test does not fail it. A test of a deprecated method must catch its notice and assert it: `$this->assertSame([$message], $this->deprecationsFrom(fn () => …))`, with `deprecationsFrom()` from `Tests\Concerns\ReportsSourceDeprecations`. In a test that boots the application (`Tests\TestCase`, `Tests\Integration\DatabaseTestCase`), a deprecation raised by vendor code or by the test itself is logged by Laravel and does not fail the run; one raised in the provider's `register()` does not fail it either, and neither does a compile-time deprecation in the provider file itself (it is compiled while the providers register): both come before the test's handler is in place, and Laravel discards them. In a test that extends `PHPUnit\Framework\TestCase` directly, any deprecation fails the run.
 
+CI closes the provider file's gap with a lint step: on the PHP 8.5 SQLite cells, `php -l` compiles every PHP file in `src/`, `config/` and `database/` with all errors reported, and the job fails when the output mentions a deprecation. A deprecation that `register()` raises at run time is still not caught. To run the step locally on PHP 8.5:
+
+```bash
+find src config database -name '*.php' -exec php -d error_reporting=-1 -d display_errors=stderr -l {} \; 2>&1 | grep -i deprecated
+```
+
 ### Test Coverage
 
 Aim for:

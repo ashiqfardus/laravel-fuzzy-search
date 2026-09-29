@@ -236,10 +236,13 @@ return [
         /*
          * candidate_chunk: an ordered index search lists the ranked ids when the ranking
          * holds every match and has at most this many; above it, a subquery on the
-         * postings restricts the read. It is also the chunk the index path hydrates a
-         * page's rows in and a cache hit re-reads rows in, and, for a model on another
-         * connection than the index, the chunk its ranking is checked against the
-         * constraints in.
+         * postings restricts the read. On SQL Server, and for a string key on PostgreSQL or
+         * SQLite, a constrained relevance search checks a ranking of at most
+         * max(candidate_chunk, max_candidates) ids by key, this many per query, and reads a
+         * longer one through that subquery. It is also the chunk the index path hydrates a
+         * page's rows in and a cache hit re-reads rows in, and, for such a model on another
+         * connection than the index, the chunk its ranking of any length is checked against
+         * the constraints in.
          */
         'candidate_chunk' => 200,
         /*
