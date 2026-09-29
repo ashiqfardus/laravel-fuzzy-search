@@ -34,10 +34,18 @@ class PostgresIndexStatisticsTest extends TestCase
         }
     }
 
+    /** A second schema test_a_search_path_switch_checks_the_other_schemas_index() switched to. */
+    private ?string $tenantSchema = null;
+
     protected function tearDown(): void
     {
         if ($this->dbDriver === 'pgsql') {
             Schema::dropIfExists('job_batches');
+
+            if ($this->tenantSchema !== null) {
+                $this->switchSearchPath('public');
+                DB::statement("drop schema if exists {$this->tenantSchema} cascade");
+            }
         }
 
         parent::tearDown();
@@ -105,8 +113,8 @@ class PostgresIndexStatisticsTest extends TestCase
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_documents'));
     }
 
-    /** Ruling ER-110: once the statistics describe at least 10,000 postings, an index write reads the catalog no more. */
-    public function test_an_index_described_at_ten_thousand_postings_is_checked_no_more(): void
+    /** Index past 10,000 postings, then the check that finds them described and caches it (ER-110). */
+    private function indexPastTenThousandPostings(): void
     {
         $rows = array_map(fn ($i) => ['name' => "Quagga {$i} alpha beta gamma delta", 'email' => "q{$i}@example.test"], range(1, 3000)); // about 27k postings: the last statistics, on at least half of them, hold 10,000
         foreach (array_chunk($rows, 250) as $chunk) {
@@ -117,6 +125,12 @@ class PostgresIndexStatisticsTest extends TestCase
         app(IndexManager::class)->indexBatch(User::query()->where('name', 'Zebra 1')->get()); // the check that caches it
 
         $this->assertGreaterThanOrEqual(10000, $this->reltuples('fuzzy_index_postings'));
+    }
+
+    /** Ruling ER-110: once the statistics describe at least 10,000 postings, an index write reads the catalog no more. */
+    public function test_an_index_described_at_ten_thousand_postings_is_checked_no_more(): void
+    {
+        $this->indexPastTenThousandPostings();
 
         $catalog = 0;
         DB::listen(function ($query) use (&$catalog) {
@@ -127,6 +141,45 @@ class PostgresIndexStatisticsTest extends TestCase
         }
 
         $this->assertSame(0, $catalog, 'no catalog read or ANALYZE once the statistics describe the table');
+    }
+
+    /** Reconnect with $schema as the search_path, as stancl/tenancy's PostgreSQL schema manager does per tenant. */
+    private function switchSearchPath(string $schema): void
+    {
+        config(['database.connections.' . DB::getDefaultConnection() . '.search_path' => $schema]);
+        DB::purge();
+    }
+
+    /**
+     * L11 (round 9). Schema-per-tenant PostgreSQL switches search_path on one connection name and
+     * database. The check's cache of "described" was keyed by connection, database and table prefix,
+     * so a worker that had indexed one tenant past 10,000 postings never analyzed another tenant's
+     * tables: its searches ran on unanalyzed tables until autovacuum's first ANALYZE (ER-106).
+     */
+    public function test_a_search_path_switch_checks_the_other_schemas_index(): void
+    {
+        $this->indexPastTenThousandPostings(); // the public schema's index is described, and cached
+
+        $this->tenantSchema = 'fuzzy_tenant_b';
+        DB::statement("drop schema if exists {$this->tenantSchema} cascade");
+        DB::statement("create schema {$this->tenantSchema}");
+        $this->switchSearchPath($this->tenantSchema);
+        $this->artisan('migrate', ['--path' => realpath(__DIR__ . '/../../database/migrations'), '--realpath' => true])->assertExitCode(0);
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->string('email');
+            $table->timestamps();
+            $table->timestamp('deleted_at')->nullable();
+        });
+        DB::table('users')->insert(array_map(fn ($i) => ['name' => "Okapi {$i}", 'email' => "o{$i}@example.test"], range(1, 300)));
+
+        foreach (User::query()->orderBy('id')->get()->chunk(100) as $users) {
+            app(IndexManager::class)->indexBatch($users);
+        }
+
+        $this->assertSame(300, DB::table('fuzzy_index_documents')->count(), 'the tenant\'s own index tables');
+        $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'), 'the tenant\'s postings were analyzed');
     }
 
     /** @return string[] the package's catalog reads (not reltuples()'s) and ANALYZE statements $call runs */

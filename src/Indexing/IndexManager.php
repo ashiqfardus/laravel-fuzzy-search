@@ -271,7 +271,7 @@ class IndexManager
     /** @var array<string, Pipeline|false> model class → resolved override pipeline, or false = "uses the default" */
     private static array $pipelines = [];
 
-    /** @var array<string, true> connection|database|prefix => its postings table has statistics (PostgreSQL) */
+    /** @var array<string, true> connection|database|prefix|search_path => its postings table's statistics describe it (PostgreSQL) */
     private static array $analyzed = [];
 
     /** @var array<string, true> connection|database|prefix => a check waits for the transaction's commit */
@@ -390,11 +390,14 @@ class IndexManager
      * table stood for the table it grew into: after a one-row first write and 50k more rows, every
      * search took about 100 s (ruling ER-110). This process stops reading the catalog once they
      * describe 10,000 postings or more: autovacuum's 10% scale factor keeps them in proportion from
-     * there.
+     * there. It remembers that per search_path too, which it reads on every check: schema-per-tenant
+     * PostgreSQL switches it on one connection and database, and a worker that had indexed one
+     * tenant past 10,000 postings never analyzed another's tables.
      */
     private function statisticsStale(\Illuminate\Database\Connection $connection): bool
     {
-        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix()
+            . '|' . $connection->selectOne("select current_setting('search_path') as search_path")->search_path;
 
         if (isset(self::$analyzed[$id])) {
             return false;
