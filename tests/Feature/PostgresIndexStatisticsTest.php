@@ -194,10 +194,16 @@ class PostgresIndexStatisticsTest extends TestCase
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'));
     }
 
-    /** Statistics taken on a few rows would describe the rebuilt index badly: a rebuild refreshes them. */
+    /**
+     * Statistics taken part way through would describe the rebuilt index badly: a rebuild refreshes
+     * them once every row is indexed (ER-106). L13 (round 9): four chunks of 100 (307 users). The
+     * index writes' own check (ER-110) analyzes the table after the third, at 20 pages, and not again,
+     * so the last chunk's postings are only in the rebuild's own statistics. On one chunk that check
+     * took them all, and the test passed without the rebuild's ANALYZE.
+     */
     public function test_a_rebuild_analyzes_the_index_tables(): void
     {
-        app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', 'Zebra 1%')->limit(5)->get());
+        config(['fuzzy-search.indexing.chunk_size' => 100]);
 
         $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
 
@@ -223,9 +229,19 @@ class PostgresIndexStatisticsTest extends TestCase
         $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_terms'));
     }
 
+    /**
+     * As the sync rebuild, in four jobs. The batch is stored on a connection of its own: on the sync
+     * queue the jobs run inside the batch store's transaction, and on the index's connection that
+     * deferred their checks to its commit, where a worker runs each job outside any transaction.
+     */
     public function test_an_async_rebuild_analyzes_the_index_tables_once_its_batch_finishes(): void
     {
-        config(['queue.batching.database' => config('database.default'), 'queue.default' => 'sync']);
+        config([
+            'database.connections.batches'     => config('database.connections.' . config('database.default')),
+            'queue.batching.database'          => 'batches',
+            'queue.default'                    => 'sync',
+            'fuzzy-search.indexing.chunk_size' => 100,
+        ]);
         Schema::dropIfExists('job_batches');
         Schema::create('job_batches', function (Blueprint $table) {
             $table->string('id')->primary();
@@ -239,10 +255,10 @@ class PostgresIndexStatisticsTest extends TestCase
             $table->integer('created_at');
             $table->integer('finished_at')->nullable();
         });
-        app(IndexManager::class)->indexBatch(User::query()->where('name', 'like', 'Zebra 1%')->limit(5)->get());
 
         $this->artisan('fuzzy-search:rebuild', ['model' => User::class, '--async' => true])->assertExitCode(0);
 
         $this->assertSame((float) DB::table('fuzzy_index_postings')->count(), $this->reltuples('fuzzy_index_postings'));
+        $this->assertSame((float) DB::table('fuzzy_index_documents')->count(), $this->reltuples('fuzzy_index_documents'));
     }
 }
