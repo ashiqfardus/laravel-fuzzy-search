@@ -403,7 +403,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         $scores = collect($results['results'])->pluck('score', 'model_id');
-        $models = $this->modelsById($model->queryScoutModelsByIds($builder, $this->mapIds($results)->all()));
+        $models = $this->modelsById($builder, $model, $this->mapIds($results)->all());
         $page   = [];
 
         // The order search()/paginate() chose — relevance, or the builder's orderBy() — not the
@@ -419,41 +419,63 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     }
 
     /**
-     * The models $query reads (Scout's getScoutModelsByIds() query), keyed by their ids. The key is
-     * read under KEY_ALIAS beside the select list, in a scope applied after the model's own (which
-     * may select()), so a row is matched to its id when a query() callback's select() leaves the key
-     * out (ruling D13), as RankedCandidates reads it; the alias is then taken out of the model, so it
-     * never reaches its attributes. A union's parts share one select list: its models are matched by
-     * their own key.
+     * The models the model's getScoutModelsByIds() reads for $ids (an app's override of it, or of
+     * queryScoutModelsByIds(), as every Scout engine's map() calls it), keyed by their ids. The key
+     * is read under KEY_ALIAS beside the select list, through the query() callback that
+     * queryScoutModelsByIds() applies, in a scope applied after the model's own (which may select()),
+     * so a row is matched to its id when a select() leaves the key out (ruling D13), as
+     * RankedCandidates reads it; the alias is then taken out of the model's attributes and original,
+     * so it never reaches them. A union's parts share one select list, and an override that reads
+     * without the callback selects no alias: those models are matched by their own key.
      *
+     * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
      */
-    private function modelsById(EloquentBuilder $query): array
+    private function modelsById(Builder $builder, \Illuminate\Database\Eloquent\Model $model, array $ids): array
     {
-        $query->withGlobalScope(self::KEY_ALIAS, function (EloquentBuilder $query) {
-            if (!$query->getQuery()->unions) {
-                $query->getQuery()->columns ??= ['*'];
-                $query->addSelect(RankedCandidates::keyColumn($query) . ' as ' . self::KEY_ALIAS);
+        $callback               = $builder->queryCallback;
+        $builder                = clone $builder;
+        $builder->queryCallback = function ($query) use ($callback) {
+            if ($callback !== null) {
+                call_user_func($callback, $query);
             }
-        });
+
+            $query->withGlobalScope(self::KEY_ALIAS, function (EloquentBuilder $query) {
+                if (!$query->getQuery()->unions) {
+                    $query->getQuery()->columns ??= ['*'];
+                    $query->addSelect(RankedCandidates::keyColumn($query) . ' as ' . self::KEY_ALIAS);
+                }
+            });
+        };
 
         $models = [];
 
-        foreach ($query->get() as $model) {
-            $attributes = $model->getAttributes();
-            $id         = $attributes[self::KEY_ALIAS] ?? $model->getKey();
-
-            if (array_key_exists(self::KEY_ALIAS, $attributes)) {
-                unset($attributes[self::KEY_ALIAS]);
-                $model->setRawAttributes($attributes, true); // as the read hydrated it, alias aside
-            }
+        foreach ($model->getScoutModelsByIds($builder, $ids) as $found) {
+            $id = self::takeKey($found);
 
             if ($id !== null) {
-                $models[$id] = $model;
+                $models[$id] = $found;
             }
         }
 
         return $models;
+    }
+
+    /** The key a read selected under KEY_ALIAS, taken out of $model's attributes and original, or $model's own key. */
+    private static function takeKey(\Illuminate\Database\Eloquent\Model $model): int|string|null
+    {
+        $alias = self::KEY_ALIAS;
+
+        return (function () use ($alias) {
+            if (!array_key_exists($alias, $this->attributes)) {
+                return $this->getKey();
+            }
+
+            $key = $this->attributes[$alias];
+            unset($this->attributes[$alias], $this->original[$alias]);
+
+            return $key;
+        })->call($model);
     }
 
     public function lazyMap(Builder $builder, $results, $model): \Illuminate\Support\LazyCollection

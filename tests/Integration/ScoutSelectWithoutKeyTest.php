@@ -52,6 +52,38 @@ class ScoutSlimScopeUser extends Model
     }
 }
 
+/** The recipe, with an app's getScoutModelsByIds() override that eager-loads and filters, as Scout's engines honour it. */
+class ScoutOverrideUser extends Model
+{
+    use Searchable, FuzzySearchable {
+        FuzzySearchable::search insteadof Searchable;
+        Searchable::search as scoutSearch;
+        FuzzySearchable::bootSearchable insteadof Searchable;
+        Searchable::bootSearchable as bootScoutSearchable;
+    }
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['name' => 10]];
+
+    protected static function booted(): void
+    {
+        static::bootScoutSearchable();
+        static::retrieved(fn ($user) => $user->email = strtoupper($user->email));
+    }
+
+    public function namesakes()
+    {
+        return $this->hasMany(self::class, 'name', 'name');
+    }
+
+    public function getScoutModelsByIds(\Laravel\Scout\Builder $builder, array $ids)
+    {
+        return $this->queryScoutModelsByIds($builder, $ids)->with('namesakes')->where('email', '!=', 'mid@example.com')->get();
+    }
+}
+
 /**
  * The Scout side of L10 (round 9), ruling D13. map() read the page's models through Scout's
  * getScoutModelsByIds() and put them in the page's order, and gave them their scores, by their
@@ -125,6 +157,29 @@ class ScoutSelectWithoutKeyTest extends TestCase
             'orderBy paginate'   => [$row('Zed Low'), $row('Zed Mid zed')],
             'constrained get'    => [$row('Zed Top zed zed'), $row('Zed Low')],
         ], $served);
+    }
+
+    /**
+     * map() reads the page through the model's getScoutModelsByIds(), as every Scout engine does, so
+     * an app's override of it (a filter, an eager load) still applies, and the alias it reads the key
+     * under leaves the model's original alone: a change a retrieved hook made is still dirty.
+     */
+    public function test_an_override_of_get_scout_models_by_ids_is_honoured(): void
+    {
+        ScoutOverrideUser::withoutEvents(fn () => ScoutOverrideUser::where('name', 'like', 'Zed%')->get()->searchable());
+
+        $scores = ScoutSlimUser::scoutSearch('zed')->get()->pluck('_score', 'name')->all();
+
+        foreach (['full' => fn () => ScoutOverrideUser::scoutSearch('zed'), 'slim' => fn () => ScoutOverrideUser::scoutSearch('zed')->query(fn ($query) => $query->select('name', 'email'))] as $label => $make) {
+            $users = $make()->get();
+
+            $this->assertSame(['Zed Top zed zed', 'Zed Low'], $users->pluck('name')->all(), "{$label}: the override's where() drops Mid");
+            $this->assertSame([$scores['Zed Top zed zed'], $scores['Zed Low']], $users->pluck('_score')->all(), $label);
+            $this->assertTrue($users->every(fn ($user) => $user->relationLoaded('namesakes')), "{$label}: the override's with()");
+            $this->assertSame(['email'], array_keys(array_diff_key($users->first()->getDirty(), ['_score' => 0])), "{$label}: the retrieved hook's change is still dirty");
+            $this->assertArrayNotHasKey('fuzzy_walk_key', $users->first()->getRawOriginal(), $label);
+            $this->assertSame(['Zed Top zed zed'], collect($make()->paginate(2)->items())->pluck('name')->all(), "{$label}: paginate");
+        }
     }
 
     public function test_a_global_scope_that_selects_without_the_key(): void
