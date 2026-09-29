@@ -1561,11 +1561,19 @@ class SearchBuilder
 
     /**
      * The Eloquent query BM25 candidates are checked against: modelBaseQuery() plus any
-     * filter()/filterIn() constraints. Always a fresh clone.
+     * filter()/filterIn() constraints, a union read as a derived table. Always a fresh clone.
      */
     protected function indexedBaseQuery(string $modelClass): EloquentBuilder
     {
-        $base = $this->modelBaseQuery($modelClass);
+        $base  = $this->modelBaseQuery($modelClass);
+        $query = $base->toBase();
+
+        // A union is read as one derived table named as the model's table (ruling ER-125): a read
+        // restricted to ids or ordered restricts and orders the union's rows, not its first part's.
+        // The model's scopes already apply inside that part.
+        if ($query->unions) {
+            $base = $base->getModel()->newQueryWithoutScopes()->fromSub($query, $base->getModel()->getTable())->setEagerLoads($base->getEagerLoads());
+        }
 
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
         // highlighting on BM25 results read loaded relations instead of issuing one

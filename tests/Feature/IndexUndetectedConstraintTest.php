@@ -74,4 +74,53 @@ class IndexUndetectedConstraintTest extends TestCase
         $this->assertSame($where('jo')->suggest(), $scoped('jo')->suggest());
         $this->assertSame(array_column($where('jonh')->didYouMean(), 'term'), array_column($scoped('jonh')->didYouMean(), 'term'));
     }
+
+    /**
+     * A union is read as one derived table (ruling ER-125). orderBy() with a union threw in the COUNT of
+     * its matches, which named "users"."id" outside the union, and a page in rank order read the
+     * union's other parts whole, since the ranked ids restricted only its first.
+     */
+    public function test_a_union_serves_the_matches_either_part_holds_in_either_order(): void
+    {
+        $union = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()->where('email', 'jane@example.com')
+            ->query(fn ($query) => $query->union(User::query()->where('name', 'John Doe')));
+
+        $found = [];
+        foreach (['rank order' => $union, 'orderBy()' => fn () => $union()->orderBy('name')] as $order => $make) {
+            try {
+                $found[$order] = self::served($make);
+            } catch (\Illuminate\Database\QueryException $e) {
+                $found[$order] = strtok($e->getMessage(), "\n");
+            }
+        }
+
+        $this->assertSame([
+            'rank order' => [2, 2, ['John Doe'], ['Jane Doe'], ['John Doe', 'Jane Doe']],
+            'orderBy()'  => [2, 2, ['Jane Doe'], ['John Doe'], ['Jane Doe', 'John Doe']],
+        ], $found);
+    }
+
+    public function test_a_union_page_hydrates_its_own_rows(): void
+    {
+        $hydrated = 0;
+        \Illuminate\Support\Facades\Event::listen('eloquent.retrieved: ' . User::class, function () use (&$hydrated) {
+            $hydrated++;
+        });
+
+        // The union's other part is every row.
+        $union = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()->query(fn ($query) => $query->union(User::query()));
+        $pages = [];
+
+        foreach (['rank order' => $union, 'orderBy()' => fn () => $union()->orderBy('name')] as $order => $make) {
+            $hydrated = 0;
+
+            try {
+                $pages[$order] = [$make()->paginate(1, 'page', 2)->pluck('name')->all(), $hydrated];
+            } catch (\Illuminate\Database\QueryException $e) {
+                $pages[$order] = strtok($e->getMessage(), "\n");
+            }
+        }
+
+        $this->assertSame(['rank order' => [['Jane Doe'], 1], 'orderBy()' => [['John Doe'], 1]], $pages);
+    }
 }

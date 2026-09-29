@@ -33,8 +33,8 @@ final class RankedCandidates
      * $rankedIds read a chunk at a time. A row the query hides, or whose id is stale, is skipped. The
      * key is read under an alias of its own beside the select list, so a row is matched to its id when
      * the select leaves the key out (ruling D13) or a join's id replaces it; the alias is then taken
-     * out of the model, so it never reaches its attributes. A union's parts share one select list: its
-     * models are matched by their own key.
+     * out of the model, so it never reaches its attributes. The index path reads a union as a derived
+     * table (SearchBuilder::indexedBaseQuery()), so no read here adds a column to one part of it.
      *
      * @param  array<int|string> $rankedIds best first
      * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
@@ -45,11 +45,7 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize(null)) as $chunk) {
-            $read = self::among($base, $key, $chunk)->withGlobalScope(self::KEY_ALIAS, function (Builder $query) use ($key) {
-                if (!$query->getQuery()->unions) {
-                    self::selectKey($query->getQuery(), $key);
-                }
-            });
+            $read = self::among($base, $key, $chunk)->withGlobalScope(self::KEY_ALIAS, fn (Builder $query) => self::selectKey($query->getQuery(), $key));
             $found = [];
 
             // A model's first row: a join may repeat it, and MariaDB gives a ROLLUP's summary row the
@@ -72,18 +68,14 @@ final class RankedCandidates
 
     /**
      * The key a read selected under KEY_ALIAS, taken out of $model's attributes and original (Model
-     * has no public way to drop an original attribute), or $model's own key if the read selected none.
+     * has no public way to drop an original attribute); null when the row has none.
      */
     private static function takeKey(Model $model): int|string|null
     {
         $alias = self::KEY_ALIAS;
 
         return (function () use ($alias) {
-            if (!array_key_exists($alias, $this->attributes)) {
-                return $this->getKey();
-            }
-
-            $key = $this->attributes[$alias];
+            $key = $this->attributes[$alias] ?? null;
             unset($this->attributes[$alias], $this->original[$alias]);
 
             return $key;
@@ -250,20 +242,14 @@ final class RankedCandidates
      * $query's read of its keys, under KEY_ALIAS, in no order: the key alone, unless a HAVING may name
      * an alias of the select list (withCount()'s posts_count, which MySQL and MariaDB accept there).
      * select(), not the column list alone: it drops the dropped columns' bindings (a constrained
-     * withCount()) too. A union's parts share one select list, so its rows are read as they are, and
-     * the key by its own name.
+     * withCount()) too.
      */
     private static function keyRead(Builder $query): QueryBuilder
     {
-        $name  = $query->getModel()->getKeyName();
         $key   = self::keyColumn($query);
         $query = $query->toBase()->reorder();
 
-        return match (true) {
-            !empty($query->unions)  => $query->newQuery()->fromSub($query, 'fuzzy_rows')->select('fuzzy_rows.' . $name . ' as ' . self::KEY_ALIAS),
-            !empty($query->havings) => self::selectKey($query, $key),
-            default                 => $query->select($key . ' as ' . self::KEY_ALIAS),
-        };
+        return $query->havings ? self::selectKey($query, $key) : $query->select($key . ' as ' . self::KEY_ALIAS);
     }
 
     /**
