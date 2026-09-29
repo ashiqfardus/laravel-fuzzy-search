@@ -1685,15 +1685,16 @@ class SearchBuilder
     }
 
     /**
-     * True when the base query carries any WHERE or JOIN (filters, caller wheres and joins,
-     * global scopes), i.e. the BM25 ranking cannot be used as-is. A join can hide rows as
-     * surely as a where. having(), unions and a from-subquery are not detected.
+     * True when the base query can hide rows (filters, caller wheres and joins, global scopes), i.e.
+     * the BM25 ranking cannot be used as-is. A join, a HAVING, a GROUP BY, a union or a FROM that is
+     * not a table name (fromSub()) can hide rows as surely as a where.
      */
     protected function hasIndexedConstraints(Builder|EloquentBuilder $base): bool
     {
         $query = $base instanceof EloquentBuilder ? $base->toBase() : $base;
 
-        return !empty($query->wheres) || !empty($query->joins);
+        return !empty($query->wheres) || !empty($query->joins) || !empty($query->havings) || !empty($query->groups)
+            || !empty($query->unions) || !is_string($query->from);
     }
 
     /**

@@ -173,12 +173,18 @@ final class RankedCandidates
      * $query's read of its keys, under KEY_ALIAS, in no order: the key alone, unless a HAVING may name
      * an alias of the select list (withCount()'s posts_count, which MySQL and MariaDB accept there).
      * select(), not the column list alone: it drops the dropped columns' bindings (a constrained
-     * withCount()) too.
+     * withCount()) too. A union's parts share one select list, so its rows are read as they are, and
+     * the key by its own name.
      */
     private static function keyRead(Builder $query): QueryBuilder
     {
+        $name  = $query->getModel()->getKeyName();
         $key   = self::keyColumn($query) . ' as ' . self::KEY_ALIAS;
         $query = $query->toBase()->reorder();
+
+        if ($query->unions) {
+            return $query->newQuery()->fromSub($query, 'fuzzy_rows')->select('fuzzy_rows.' . $name . ' as ' . self::KEY_ALIAS);
+        }
 
         if ($query->havings) {
             $query->columns ??= ['*'];
