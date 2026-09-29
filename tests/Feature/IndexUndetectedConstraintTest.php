@@ -123,4 +123,19 @@ class IndexUndetectedConstraintTest extends TestCase
 
         $this->assertSame(['rank order' => [['Jane Doe'], 1], 'orderBy()' => [['John Doe'], 1]], $pages);
     }
+
+    /**
+     * didYouMean() checks its candidates against the base query's keys (ruling ER-127): under a union
+     * base that read added a column to the union's first part only, and failed.
+     */
+    public function test_did_you_mean_under_a_union_reads_the_union_as_one_table(): void
+    {
+        $union = fn () => User::query()->where('email', 'like', 'jo%')->union(User::query()->where('name', 'Bob Johnson'));
+
+        $asUnion   = array_column(User::search('jonh')->useInvertedIndex()->query(fn ($query) => $query->where('email', 'like', 'jo%')->union(User::query()->where('name', 'Bob Johnson')))->didYouMean(), 'term');
+        $asFromSub = array_column(User::search('jonh')->useInvertedIndex()->fromSub($union(), 'users')->didYouMean(), 'term');
+
+        $this->assertNotSame([], $asFromSub);
+        $this->assertSame($asFromSub, $asUnion);
+    }
 }

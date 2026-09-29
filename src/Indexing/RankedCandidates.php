@@ -33,14 +33,14 @@ final class RankedCandidates
      * $rankedIds read a chunk at a time. A row the query hides, or whose id is stale, is skipped. The
      * key is read under an alias of its own beside the select list, so a row is matched to its id when
      * the select leaves the key out (ruling D13) or a join's id replaces it; the alias is then taken
-     * out of the model, so it never reaches its attributes. The index path reads a union as a derived
-     * table (SearchBuilder::indexedBaseQuery()), so no read here adds a column to one part of it.
+     * out of the model, so it never reaches its attributes. A union is read as one table (rows()).
      *
      * @param  array<int|string> $rankedIds best first
      * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
      */
     public static function models(Builder $base, array $rankedIds): EloquentCollection
     {
+        $base      = self::rows($base);
         $key       = self::keyColumn($base);
         $collected = [];
 
@@ -110,6 +110,7 @@ final class RankedCandidates
      */
     public static function keys(Builder $base, array $rankedIds, ?int $needed = null, ?int $chunkSize = null): array
     {
+        $base      = self::rows($base);
         $key       = self::keyColumn($base);
         $collected = [];
 
@@ -162,6 +163,7 @@ final class RankedCandidates
      */
     public static function matches(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): Builder
     {
+        $base  = self::rows($base);
         $model = $base->getModel();
         $ids   = array_keys($ranked);
         $chunk = self::chunkSize(null);
@@ -210,6 +212,7 @@ final class RankedCandidates
      */
     public static function accepted(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): array
     {
+        $base   = self::rows($base);
         $driver = $base->getQuery()->getConnection()->getDriverName();
         $int    = in_array($base->getModel()->getKeyType(), ['int', 'integer'], true);
 
@@ -382,6 +385,27 @@ final class RankedCandidates
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
             ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights));
+    }
+
+    /**
+     * $base, with a union read as one derived table named as the model's table (rulings ER-125,
+     * ER-127): every read here restricts the union's rows to ranked ids, adds the key to the select
+     * list or orders the rows, and on a union each of those reached only its first part (the other
+     * parts were read whole, or their select lists no longer matched). The model's scopes already
+     * apply inside that part, and the eager loads are carried over. $base itself when it has no
+     * union, so a second call changes nothing.
+     */
+    public static function rows(Builder $base): Builder
+    {
+        $query = $base->toBase();
+
+        if (!$query->unions) {
+            return $base;
+        }
+
+        $model = $base->getModel();
+
+        return $model->newQueryWithoutScopes()->fromSub($query, $model->getTable())->setEagerLoads($base->getEagerLoads());
     }
 
     /**
