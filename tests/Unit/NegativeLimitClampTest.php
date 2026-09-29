@@ -42,6 +42,19 @@ class NegativeLimitClampTest extends TestCase
     {
         $this->assertCount(0, FederatedSearch::across([LikeUser::class])->search('john')->searchIn(['name'])->using('like')->limit(-1)->get());
         $this->assertCount(0, FederatedSearch::across([LikeUser::class])->search('john')->searchIn(['name'])->using('like')->limit(0)->get());
-        $this->assertGreaterThan(0, FederatedSearch::across([LikeUser::class])->search('john')->searchIn(['name'])->using('like')->limit(5)->get()->count());
+        $all = FederatedSearch::across([LikeUser::class])->search('john')->searchIn(['name'])->using('like')->limit(50)->get()->count();
+        $this->assertGreaterThan(1, $all);
+        $this->assertCount(1, FederatedSearch::across([LikeUser::class])->search('john')->searchIn(['name'])->using('like')->limit(1)->get());
+        $this->assertCount(min(5, $all), FederatedSearch::across([LikeUser::class])->search('john')->searchIn(['name'])->using('like')->limit(5)->get());
+    }
+
+    public function test_in_memory_empty_query_path_clamps_too(): void
+    {
+        config(['fuzzy-search.allow_empty_search' => true]);
+        $empty = fn (int $skip, int $take) => FuzzySearch::on(self::ITEMS)->search('')->searchIn(['name'])->skip($skip)->take($take)->get()->count();
+
+        $this->assertSame(0, $empty(0, -1));
+        $this->assertSame(2, $empty(-1, 2));
+        $this->assertSame(2, $empty(1, 5));
     }
 }
