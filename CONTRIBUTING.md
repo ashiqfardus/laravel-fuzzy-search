@@ -472,7 +472,7 @@ vendor/bin/phpunit --filter test_it_searches_correctly
 composer benchmark
 ```
 
-A run fails on any warning PHPUnit records and on any deprecation raised in `src/` (`failOnWarning`, `failOnDeprecation`); a risky test does not fail it. A test of a deprecated method must catch its notice and assert it: `$this->assertSame([$message], $this->deprecationsFrom(fn () => …))`, with `deprecationsFrom()` from `Tests\Concerns\ReportsSourceDeprecations`. In a test that boots the application (`Tests\TestCase`, `Tests\Integration\DatabaseTestCase`), a deprecation raised by vendor code is logged by Laravel and does not fail the run; in a test that extends `PHPUnit\Framework\TestCase` directly, any deprecation does.
+A run fails on any warning PHPUnit records and on any deprecation raised in `src/`, `config/` or `database/` from the service provider's `boot()` on, the shipped config and the migrations included (`failOnWarning`, `failOnDeprecation`); a risky test does not fail it. A test of a deprecated method must catch its notice and assert it: `$this->assertSame([$message], $this->deprecationsFrom(fn () => …))`, with `deprecationsFrom()` from `Tests\Concerns\ReportsSourceDeprecations`. In a test that boots the application (`Tests\TestCase`, `Tests\Integration\DatabaseTestCase`), a deprecation raised by vendor code or by the test itself is logged by Laravel and does not fail the run; one raised in the provider's `register()` does not fail it either, and neither does a compile-time deprecation in the provider file itself (it is compiled while the providers register): both come before the test's handler is in place, and Laravel discards them. In a test that extends `PHPUnit\Framework\TestCase` directly, any deprecation fails the run.
 
 ### Test Coverage
 

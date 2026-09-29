@@ -101,7 +101,7 @@ class FederatedSearch
      */
     public function limit(int $limit): self
     {
-        $this->limit = $limit;
+        $this->limit = max(0, $limit);
         return $this;
     }
 

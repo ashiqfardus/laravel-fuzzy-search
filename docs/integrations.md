@@ -73,9 +73,9 @@ $users = User::scoutSearch('john')->get();  // Scout's builder, when you need it
 
 The model needs no `$searchable` property; add one to choose the columns (and their weights) instead of relying on auto-detection.
 
-The engine does not call `toSearchableArray()`: it indexes the `$searchable` columns (declared or auto-detected) or a `searchableText()` hook.
+The engine does not call `toSearchableArray()`: it indexes the `$searchable` columns (declared or auto-detected) or a `searchableText()` hook. For the same reason, `where()`, `whereIn()` and `whereNotIn()` name columns of the model's table, as on Scout's database engine: a field that only `toSearchableArray()` has throws an unknown-column `QueryException` (on SQLite it raises no error: SQLite reads the unknown name as a string, so `where()` and `whereIn()` match no row and `whereNotIn()` excludes none).
 
-The engine indexes what the package's trait declares. A model with Scout's `Searchable` alone throws `LogicException` when it is indexed (`searchable()`, `scout:import`, a save) or searched. Deleting and flushing it still work.
+The engine indexes what the package's trait declares. A model with Scout's `Searchable` alone throws `LogicException` when it is indexed (`searchable()`, `scout:import`, a save) or searched. Deleting and flushing it still work, except for a `SoftDeletes` model under `scout.soft_delete`: Scout re-indexes the trashed row, so `delete()` trashes the row and then throws that `LogicException`. The throw does not undo the delete, so the row stays trashed, unless the delete ran inside your own `DB::transaction()` with `scout.after_commit` off, where the exception rolls that transaction back. With `scout.queue` on, `delete()` returns and the queued job throws, except on the `sync` queue connection, where `delete()` throws as above.
 
 ### Relevance Scores
 
@@ -86,6 +86,8 @@ foreach (User::scoutSearch('laravel')->get() as $user) {
     echo $user->name . ': ' . $user->_score;
 }
 ```
+
+`_score` is a real attribute on the model, so a Scout result is a read model: `save()` on it fails with an unknown-column error. Re-fetch the row by key before changing it, or `unset($user->_score)` first.
 
 ### Authorization
 
@@ -247,8 +249,10 @@ Wraps one result row (Eloquent model or array) and adds the package's underscore
 use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchResource;
 
 Route::get('/search', function (Request $request) {
-    // An empty term throws EmptySearchTermException, a 500, so an empty box is a 404 here too
-    $user = $request->filled('q') ? User::search($request->query('q'))->highlight('mark')->first() : null;
+    // search() needs a non-empty string: an empty q throws EmptySearchTermException and ?q[]= a TypeError,
+    // both a 500, so they are a 404 here too
+    $q = $request->query('q');
+    $user = is_string($q) && filled($q) ? User::search($q)->highlight('mark')->first() : null;
     abort_unless($user, 404); // ->first() can return null; the resource would render {} for it
 
     return new FuzzySearchResource($user);
@@ -264,7 +268,8 @@ use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
 
 Route::get('/search', function (Request $request) {
     $q = $request->query('q');
-    abort_if(blank($q), 422, 'Enter a search term.'); // an empty term throws EmptySearchTermException, a 500
+    // search() needs a non-empty string: an empty q throws EmptySearchTermException and ?q[]= a TypeError, both a 500
+    abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.');
 
     return FuzzySearchCollection::fromBuilder(
         User::search($q)->highlight('mark'),

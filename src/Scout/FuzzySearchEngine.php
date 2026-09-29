@@ -9,14 +9,32 @@ use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Support\Utf8;
+use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\SoftDeletingScope;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Laravel\Scout\Builder;
+use Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase;
 use Laravel\Scout\Engines\Engine;
 use Laravel\Scout\Exceptions\NotSupportedException;
+use Laravel\Scout\SearchableScope;
+
+// Scout 10.1 added PaginatesEloquentModelsUsingDatabase, the contract that hands the engine
+// paginate() and simplePaginate() with their page name (see paginateUsingDatabase()). Scout 10.0
+// has none, and paginates every engine itself: an empty stand-in lets the engine load there.
+if (interface_exists(PaginatesEloquentModelsUsingDatabase::class)) {
+    class_alias(PaginatesEloquentModelsUsingDatabase::class, PaginatesWithItsOwnTotal::class);
+} else {
+    /** @internal Scout 10.0's stand-in for PaginatesEloquentModelsUsingDatabase, which no Builder checks. */
+    interface PaginatesWithItsOwnTotal
+    {
+    }
+}
 
 /**
  * Scout engine adapter — bundled in core, registered conditionally
@@ -24,8 +42,11 @@ use Laravel\Scout\Exceptions\NotSupportedException;
  *
  * Activate with: SCOUT_DRIVER=fuzzy-search in .env
  */
-class FuzzySearchEngine extends Engine
+class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 {
+    /** The alias map() reads the page's keys under, beside the select list: RankedCandidates' own (see modelsById()). */
+    private const KEY_ALIAS = 'fuzzy_walk_key';
+
     public function __construct(
         private IndexManager $indexManager,
         private Bm25Scorer   $scorer,
@@ -65,13 +86,67 @@ class FuzzySearchEngine extends Engine
     }
 
     /**
+     * Scout's paginate(), built as Scout's Builder builds it (the same paginator binding, page,
+     * path and page name; the Builder then appends the query), with the total results() counted.
+     * Scout's own total re-counts a query() callback's matches: it re-reads the key of every
+     * match and binds them all in one whereIn() (Builder::getTotalCount()), past SQL Server's
+     * 2,100 bindings on a string key. The engine has already applied the callback
+     * (constrainedQuery()), so its total counts only what the callback accepts.
+     *
+     * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
+     */
+    public function paginateUsingDatabase(Builder $builder, $perPage, $pageName, $page)
+    {
+        $page    = $page ?: Paginator::resolveCurrentPage($pageName);
+        $perPage = $perPage ?: $builder->model->getPerPage();
+        $results = $this->paginate($builder, $perPage, $page);
+
+        return Container::getInstance()->makeWith(LengthAwarePaginator::class, [
+            'items'       => $this->pageModels($builder, $results),
+            'total'       => $results['total'],
+            'perPage'     => $perPage,
+            'currentPage' => $page,
+            'options'     => ['path' => Paginator::resolveCurrentPath(), 'pageName' => $pageName],
+        ]);
+    }
+
+    /**
+     * Scout's simplePaginate(), built as Scout's Builder builds it; see paginateUsingDatabase().
+     *
+     * @return \Illuminate\Contracts\Pagination\Paginator
+     */
+    public function simplePaginateUsingDatabase(Builder $builder, $perPage, $pageName, $page)
+    {
+        $page    = $page ?: Paginator::resolveCurrentPage($pageName);
+        $perPage = $perPage ?: $builder->model->getPerPage();
+        $results = $this->paginate($builder, $perPage, $page);
+
+        return Container::getInstance()->makeWith(Paginator::class, [
+            'items'       => $this->pageModels($builder, $results),
+            'perPage'     => $perPage,
+            'currentPage' => $page,
+            'options'     => ['path' => Paginator::resolveCurrentPath(), 'pageName' => $pageName],
+        ])->hasMorePagesWhen(($perPage * $page) < $results['total']);
+    }
+
+    /** A page's models, after Scout's withRawResults() callback (Scout 10.13+) has seen the raw page. */
+    private function pageModels(Builder $builder, array $results): EloquentCollection
+    {
+        if (method_exists($builder, 'applyAfterRawSearchCallback')) {
+            $results = $builder->applyAfterRawSearchCallback($results);
+        }
+
+        return $builder->model->newCollection($this->map($builder, $results, $builder->model)->all());
+    }
+
+    /**
      * The page [$offset, $offset + $limit) of the builder's matches, scored, and their total: the
      * match count, not the size of the page cut from them, and what the pages serve, as on
      * SearchBuilder's index path. In rank order it is the ranked matches the builder's constraints
-     * accept (RankedCandidates::accepted()), cut after the constraints (otherwise a selective where()
-     * returns a short or empty page while matches exist further down the ranking), and none past
-     * bm25.max_postings_per_term, where the ranking ends. With orderBy() it is every match the
-     * constraints accept, in that order (orderedPage()). A page past the total reads no row.
+     * and the model's global scopes accept (RankedCandidates::accepted()), cut after the constraints
+     * (otherwise a selective where() returns a short or empty page while matches exist further down
+     * the ranking), and none past bm25.max_postings_per_term, where the ranking ends. With orderBy()
+     * it is every match they accept, in that order (orderedPage()). A page past the total reads no row.
      *
      * @return array{results: Collection, total: int}
      */
@@ -152,9 +227,10 @@ class FuzzySearchEngine extends Engine
     {
         $model = $builder->model;
 
-        // No constraint means no __soft_deleted where either: withTrashed(), or scout.soft_delete off,
-        // when no trashed row is indexed. constrainedQuery() reads that state as withTrashed() too;
-        // newQuery()'s SoftDeletes scope dropped the trashed matches that total() counted.
+        // No constraint means no global scope that hides a row, and no __soft_deleted where either:
+        // withTrashed(), or scout.soft_delete off, when no trashed row is indexed. constrainedQuery()
+        // reads that state as withTrashed() too; newQuery()'s SoftDeletes scope dropped the trashed
+        // matches that total() counted.
         $query ??= in_array(SoftDeletes::class, class_uses_recursive($model), true) ? $model->newQuery()->withTrashed() : $model->newQuery();
         $query   = RankedCandidates::matches($query, $ranked, $terms, $model::class, $this->columnWeights($builder));
         $total   = RankedCandidates::countModels($query);
@@ -223,8 +299,8 @@ class FuzzySearchEngine extends Engine
     }
 
     /**
-     * The Eloquent query the ranking must be checked against, or null when the Scout
-     * builder carries no constraints (the ranking is then used as-is).
+     * The Eloquent query the ranking must be checked against, or null when neither the Scout
+     * builder nor a global scope of the model constrains it (the ranking is then used as-is).
      */
     private function constrainedQuery(Builder $builder): ?EloquentBuilder
     {
@@ -250,8 +326,15 @@ class FuzzySearchEngine extends Engine
             $wheres[] = [$field, $operator, $value];
         }
 
+        // A global scope counts as a constraint (ruling D12). Scout indexes the rows it hides (its
+        // jobs read without global scopes) and loads the page's models through it, so unchecked,
+        // a hidden row counted in the relevance-order total while orderBy() skipped it. Two scopes
+        // are not constraints: SoftDeletes' (the __soft_deleted where decides trashed rows, as
+        // below) and Scout's own SearchableScope, which only adds builder macros.
+        $scopes = array_diff_key($builder->model->getGlobalScopes(), [SoftDeletingScope::class => true, SearchableScope::class => true]);
+
         if (empty($wheres) && empty($whereIns) && empty($whereNotIns)
-            && $builder->queryCallback === null && $softDeleted === null) {
+            && $builder->queryCallback === null && $softDeleted === null && $scopes === []) {
             return null;
         }
 
@@ -319,20 +402,80 @@ class FuzzySearchEngine extends Engine
             return $model->newCollection();
         }
 
-        $ids      = $this->mapIds($results)->toArray();
-        $scoreMap = collect($results['results'])->pluck('score', 'model_id');
-        $position = array_flip($ids);
-
-        $models = $model->getScoutModelsByIds($builder, $ids);
+        $scores = collect($results['results'])->pluck('score', 'model_id');
+        $models = $this->modelsById($builder, $model, $this->mapIds($results)->all());
+        $page   = [];
 
         // The order search()/paginate() chose — relevance, or the builder's orderBy() — not the
         // order the database happened to return the rows in.
-        return $models->sortBy(fn($m) => $position[$m->getKey()] ?? PHP_INT_MAX)
-            ->map(function ($m) use ($scoreMap) {
-                $m->_score = round((float) ($scoreMap[$m->getKey()] ?? 0), 6);
-                return $m;
-            })
-            ->values();
+        foreach ($scores as $id => $score) {
+            if (isset($models[$id])) {
+                $models[$id]->_score = round((float) $score, 6);
+                $page[]              = $models[$id];
+            }
+        }
+
+        return $model->newCollection($page);
+    }
+
+    /**
+     * The models the model's getScoutModelsByIds() reads for $ids (an app's override of it, or of
+     * queryScoutModelsByIds(), as every Scout engine's map() calls it), keyed by their ids. The key
+     * is read under KEY_ALIAS beside the select list, through the query() callback that
+     * queryScoutModelsByIds() applies, in a scope applied after the model's own (which may select()),
+     * so a row is matched to its id when a select() leaves the key out (ruling D13), as
+     * RankedCandidates reads it; the alias is then taken out of the model's attributes and original,
+     * so it never reaches them. A union's parts share one select list, and an override that reads
+     * without the callback selects no alias: those models are matched by their own key.
+     *
+     * @param  array<int|string> $ids
+     * @return array<int|string, \Illuminate\Database\Eloquent\Model>
+     */
+    private function modelsById(Builder $builder, \Illuminate\Database\Eloquent\Model $model, array $ids): array
+    {
+        $callback               = $builder->queryCallback;
+        $builder                = clone $builder;
+        $builder->queryCallback = function ($query) use ($callback) {
+            if ($callback !== null) {
+                call_user_func($callback, $query);
+            }
+
+            $query->withGlobalScope(self::KEY_ALIAS, function (EloquentBuilder $query) {
+                if (!$query->getQuery()->unions) {
+                    $query->getQuery()->columns ??= ['*'];
+                    $query->addSelect(RankedCandidates::keyColumn($query) . ' as ' . self::KEY_ALIAS);
+                }
+            });
+        };
+
+        $models = [];
+
+        foreach ($model->getScoutModelsByIds($builder, $ids) as $found) {
+            $id = self::takeKey($found);
+
+            if ($id !== null) {
+                $models[$id] = $found;
+            }
+        }
+
+        return $models;
+    }
+
+    /** The key a read selected under KEY_ALIAS, taken out of $model's attributes and original, or $model's own key. */
+    private static function takeKey(\Illuminate\Database\Eloquent\Model $model): int|string|null
+    {
+        $alias = self::KEY_ALIAS;
+
+        return (function () use ($alias) {
+            if (!array_key_exists($alias, $this->attributes)) {
+                return $this->getKey();
+            }
+
+            $key = $this->attributes[$alias];
+            unset($this->attributes[$alias], $this->original[$alias]);
+
+            return $key;
+        })->call($model);
     }
 
     public function lazyMap(Builder $builder, $results, $model): \Illuminate\Support\LazyCollection

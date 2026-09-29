@@ -3010,9 +3010,10 @@ class SearchBuilder
     }
 
     /**
-     * shows() for a searchIn() column, judged on $row alone: a dotted name by its relation when
-     * the row has that relation loaded ("author.name"), else by its last part ("teams.name" is
-     * the attribute "name"). The related rows' own rule applies where their values are read.
+     * shows() for a searchIn() column, judged on $row alone: a dotted name by its relation path
+     * when the row has the first relation loaded (pathShown()), else by its last part ("teams.name"
+     * is the attribute "name"). The path may be typed in another case ("Author.name"): the relation
+     * is loaded, and hidden, under its declared name (relationPath()).
      *
      * @internal FuzzySearchResource re-applies it to a row as it renders
      */
@@ -3020,7 +3021,11 @@ class SearchBuilder
     {
         $head = strstr($column, '.', true);
 
-        return self::shows($row, $head !== false && $row instanceof Model && $row->relationLoaded($head) ? $head : self::lastSegment($column));
+        if ($head !== false && $row instanceof Model && self::loadedRelationName($row, $head) !== null) {
+            return self::pathShown($row, explode('.', $column));
+        }
+
+        return self::shows($row, self::lastSegment($column));
     }
 
     /**
@@ -3036,15 +3041,27 @@ class SearchBuilder
             return self::shows($item, self::lastSegment($target['column']));
         }
 
+        return self::pathShown($item, [...explode('.', $target['relation']), $target['column']]);
+    }
+
+    /**
+     * shows() for each key of a relation path on every related row loaded along it, so a relation
+     * or column hidden at any depth hides the path.
+     *
+     * @param string[] $keys relation names, then the leaf column
+     */
+    private static function pathShown(mixed $item, array $keys): bool
+    {
         $rows = [$item];
-        foreach ([...explode('.', $target['relation']), $target['column']] as $key) {
+        foreach ($keys as $key) {
             $next = [];
             foreach ($rows as $row) {
-                if (!self::shows($row, $key)) {
+                $loaded = $row instanceof Model ? self::loadedRelationName($row, $key) : null;
+                if (!self::shows($row, $loaded ?? $key)) {
                     return false;
                 }
-                if ($row instanceof Model && $row->relationLoaded($key)) {
-                    $related = $row->getRelation($key);
+                if ($loaded !== null) {
+                    $related = $row->getRelation($loaded);
                     foreach ($related instanceof \Illuminate\Support\Collection ? $related : [$related] as $one) {
                         if ($one !== null) {
                             $next[] = $one;
@@ -3056,6 +3073,18 @@ class SearchBuilder
         }
 
         return true;
+    }
+
+    /** The name $row holds the relation $key under, whatever case $key is typed in, or null when it is not loaded. */
+    private static function loadedRelationName(Model $row, string $key): ?string
+    {
+        foreach (array_keys($row->getRelations()) as $name) {
+            if (strcasecmp((string) $name, $key) === 0) {
+                return (string) $name;
+            }
+        }
+
+        return null;
     }
 
     /**
