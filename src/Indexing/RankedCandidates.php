@@ -28,26 +28,23 @@ final class RankedCandidates
     private const MATCHES = 'fuzzy-search:matches';
 
     /**
-     * Models satisfying $base, in rank order, stopping once $needed have been collected.
+     * The models among $rankedIds that $base returns, in rank order, $rankedIds read a chunk at a
+     * time. A row the query hides, or whose id is stale, is skipped.
      *
      * @param  array<int|string> $rankedIds best first
      */
-    public static function models(Builder $base, array $rankedIds, ?int $needed = null, ?int $chunkSize = null): EloquentCollection
+    public static function models(Builder $base, array $rankedIds): EloquentCollection
     {
         $key       = self::keyColumn($base);
         $collected = [];
 
-        foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
+        foreach (array_chunk($rankedIds, self::chunkSize(null)) as $chunk) {
             $found = self::among($base, $key, $chunk)->get()->keyBy(fn ($model) => $model->getKey());
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
                     $collected[] = $found[$id];
                 }
-            }
-
-            if ($needed !== null && count($collected) >= $needed) {
-                break;
             }
         }
 
