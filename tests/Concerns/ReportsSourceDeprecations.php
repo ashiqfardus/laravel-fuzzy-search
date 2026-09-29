@@ -6,13 +6,18 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Concerns;
  * While a test runs, Laravel's error handler sits above PHPUnit's and logs every deprecation, so
  * phpunit.xml's failOnDeprecation never saw one raised in the package. This handler hands
  * deprecations raised in src/, config/ or database/ (the migrations) to PHPUnit and everything else
- * (vendor code, the tests themselves) to the handler it replaced. The application's teardown pops it.
+ * (vendor code, the tests themselves) to the handler it replaced. The teardown pops it, with every
+ * other handler, except at the lowest-deps floor (Testbench 8.0, Laravel 10.0), which leaves it as
+ * it leaves Laravel's own handler: the stack grows by two a test there, and only the newest pair is
+ * ever called.
  *
  * The test bases push it first thing in defineEnvironment(), which Testbench runs after Laravel's
  * handler is installed and before the providers boot, so the service provider's boot(), the shipped
- * config the bases load, the migrations and the test are all covered. The provider's register()
- * runs before that and is not. Laravel drops every deprecation raised before the application is bootstrapped, which is after the
- * providers boot, so the deprecations log channel misses both boot() and register().
+ * config the bases load, the migrations and the test are all covered. Two things come earlier and
+ * are not: the provider's register(), and a compile-time deprecation in the provider file itself
+ * (an implicitly nullable parameter, say), which is compiled once per process while the providers
+ * register. Laravel drops every deprecation raised before the application is bootstrapped, which is
+ * after the providers boot, so the deprecations log channel misses both of those and boot() too.
  *
  * A test of a deprecated method captures the notice with deprecationsFrom() and asserts it.
  */
