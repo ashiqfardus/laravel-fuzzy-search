@@ -25,7 +25,9 @@ class SemiJoinArticle extends Model
  * the postings subquery of an ordered or constrained index search as a hash semi-join it could not
  * key on the cast key, and its cost grew with the square of the rows: 0.18 s at 20k matches, 3.6 s
  * at 100k, where one index probe per row (FirstMatch) takes 0.03 s and 0.16 s. The subquery now
- * asks MySQL for FirstMatch. The assertion reads the plan, never a timing.
+ * asks MySQL for FirstMatch. The assertions read the SQL and the plan, never a timing: the plan
+ * depends on sampled statistics, and without the hint it came out a hash join only about 2 runs in
+ * 3 (L14, round 9), so the hint itself is asserted too.
  */
 class MySqlPostingsSemiJoinTest extends TestCase
 {
@@ -87,6 +89,8 @@ class MySqlPostingsSemiJoinTest extends TestCase
         $this->assertCount(3, $reads, 'the ordered COUNT and page, and the constrained key read');
 
         foreach ($reads as [$sql, $bindings]) {
+            $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
+
             $plan = implode("\n", array_map(fn ($row) => (string) current((array) $row), DB::select('EXPLAIN FORMAT=TREE ' . $sql, $bindings)));
             $this->assertStringNotContainsStringIgnoringCase('hash join', $plan, "{$sql}\n{$plan}");
         }
