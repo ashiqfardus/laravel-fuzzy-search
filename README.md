@@ -392,7 +392,7 @@ foreach ($users as $user) {
 }
 ```
 
-Search results are read models. The values a search adds are real attributes on each row: `_score` and `_raw_score`; `_highlighted` and `_matches` with `highlight()` (or `highlighting.enabled`); `_debug` with `debugScore()`; and `_model_type` and `_model_class` on a `FederatedSearch` result. So `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving. `withRelevance(false)` adds no `_score` or `_raw_score`, except on the index path (`useInvertedIndex()`), which adds both whatever `withRelevance()` says.
+Search results are read models. The values a search adds are real attributes on each row: `_score` and `_raw_score`; `_highlighted` and `_matches` with `highlight()` (or `highlighting.enabled`); `_debug` with `debugScore()`; `_model_type` and `_model_class` on a `FederatedSearch` result; and `_score` on every Scout result (`get()`, `paginate()`, `cursor()`). So `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving. `withRelevance(false)` adds no `_score` or `_raw_score`, except on the index path (`useInvertedIndex()`), which adds both whatever `withRelevance()` says.
 
 ### Prefix Boosting
 
@@ -809,7 +809,7 @@ SCOUT_DRIVER=fuzzy-search
 
 It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync. Scout's semantic and hybrid search (`semantic()`, `hybrid()`, Scout 11.6+) are not supported by this engine: both throw `NotSupportedException`.
 
-A model on this driver needs the package's `Searchable` trait beside Scout's, as the [recipe](docs/integrations.md#usage) shows. A model with Scout's trait alone has nothing to index: indexing or searching it throws `LogicException`, naming the trait.
+A model on this driver needs the package's `Searchable` trait beside Scout's, as the [recipe](docs/integrations.md#usage) shows. A model with Scout's trait alone has nothing to index: indexing or searching it throws `LogicException`, naming the trait. Under `scout.soft_delete`, deleting a `SoftDeletes` one re-indexes it, so `delete()` trashes the row and then throws; the row stays trashed.
 
 `orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), every match past `bm25.max_postings_per_term` included, and `_score` still carries each one's BM25 score (0 past that cap). The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
 
@@ -840,7 +840,8 @@ Supports Filament v3, v4 and v5. Filament is a soft dependency — nothing in th
 `FuzzySearchResource` wraps one result row, and `FuzzySearchCollection::fromBuilder()` wraps a paginated search, into normal Laravel API responses with the package's underscore-prefixed fields alongside the plain attributes.
 
 ```php
-abort_if(blank($q), 422, 'Enter a search term.'); // an empty term throws EmptySearchTermException, a 500
+$q = $request->query('q');
+abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.'); // an empty q or ?q[]= would be a 500
 
 return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
 ```
