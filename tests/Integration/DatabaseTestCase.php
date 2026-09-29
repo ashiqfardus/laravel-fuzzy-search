@@ -28,13 +28,13 @@ abstract class DatabaseTestCase extends BaseTestCase
         parent::setUp();
         $this->setUpSchema();
         $this->seedFixtures();
-
-        // Last, above Laravel's error handler: a src/ deprecation fails the run (failOnDeprecation).
-        $this->reportSourceDeprecations();
     }
 
     protected function defineEnvironment($app): void
     {
+        // First, as in TestCase: a src/ or database/ deprecation from the providers' boot on fails the run.
+        $this->reportSourceDeprecations();
+
         $this->configureTestDatabaseConnection($app);
 
         // The shipped config, loaded whole, as in TestCase. Tests\Integration\ShippedConfigTest
