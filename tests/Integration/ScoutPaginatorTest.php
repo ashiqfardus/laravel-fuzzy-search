@@ -210,4 +210,41 @@ class ScoutPaginatorTest extends TestCase
             $this->assertSame(['zed item 00015', 'zed item 00024'], [$default->items()[0]->name, $default->items()[9]->name], $label);
         }
     }
+
+    /**
+     * Scout's Builder runs a withRawResults() callback on the raw page before map() only on the
+     * pages it builds itself; the pages the engine builds must run it too, once, on the raw
+     * ['results', 'total'] page, with the total taken from the page as it was before the callback.
+     */
+    public function test_the_with_raw_results_callback_sees_each_raw_page_once(): void
+    {
+        if (!method_exists(\Laravel\Scout\Builder::class, 'withRawResults')) {
+            $this->markTestSkipped('Scout < 10.13 has no withRawResults().');
+        }
+
+        $this->seedDocs(25);
+        $this->onRequest('http://localhost/docs?p=1');
+
+        foreach (['paginate' => fn ($search) => $search->paginate(10, 'p'), 'simplePaginate' => fn ($search) => $search->simplePaginate(10, 'p')] as $label => $page) {
+            $raw       = [];
+            $paginator = $page($this->queryCallback()->orderBy('name')->withRawResults(function (array $results) use (&$raw) {
+                $raw[] = $results;
+
+                // Drop the first match, and claim a total the paginator must not take.
+                return ['results' => $results['results']->slice(1)->values(), 'total' => 99];
+            }));
+
+            $this->assertCount(1, $raw, "{$label}: the callback ran once");
+            $this->assertSame(['results', 'total'], array_keys($raw[0]), $label);
+            $this->assertSame(25, $raw[0]['total'], $label);
+            $this->assertCount(10, $raw[0]['results'], $label);
+            $this->assertSame(array_map(fn ($i) => sprintf('zed item %05d', $i), range(1, 9)), collect($paginator->items())->pluck('name')->all(), "{$label}: the callback's page");
+
+            if ($paginator instanceof LengthAwarePaginator) {
+                $this->assertSame([25, 3], [$paginator->total(), $paginator->lastPage()], "{$label}: the total before the callback");
+            } else {
+                $this->assertTrue($paginator->hasMorePages(), "{$label}: hasMorePages from the total before the callback");
+            }
+        }
+    }
 }
