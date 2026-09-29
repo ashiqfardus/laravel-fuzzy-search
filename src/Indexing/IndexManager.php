@@ -531,7 +531,10 @@ class IndexManager
                 if (!self::indexesModel($model)) {
                     continue;
                 }
-                $byColumn = $this->buildTokenFrequencyMap($model, $model->getSearchableColumns());
+                // A Scout model may have only the searchableText() hook, which is enough to be
+                // indexed (ruling D11): getSearchableColumns() is the package trait's.
+                $columns  = method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : [];
+                $byColumn = $this->buildTokenFrequencyMap($model, $columns);
                 if ($this->mergeColumnFrequencies($byColumn) !== []) {
                     $byModel[$id] = $byColumn;
                 }
