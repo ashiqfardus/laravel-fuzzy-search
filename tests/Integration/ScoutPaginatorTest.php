@@ -225,6 +225,11 @@ class ScoutPaginatorTest extends TestCase
         $this->seedDocs(25);
         $this->onRequest('http://localhost/docs?p=1');
 
+        // Scout 10.13 to 10.14.0 ran the callback and ignored what it returned; 10.14.1 serves its return.
+        $served = (new \Laravel\Scout\Builder(new ScoutTenantDoc, 'zed'))->withRawResults(fn () => ['served'])->applyAfterRawSearchCallback(['raw']) === ['served']
+            ? range(1, 9)
+            : range(0, 9);
+
         foreach (['paginate' => fn ($search) => $search->paginate(10, 'p'), 'simplePaginate' => fn ($search) => $search->simplePaginate(10, 'p')] as $label => $page) {
             $raw       = [];
             $paginator = $page($this->queryCallback()->orderBy('name')->withRawResults(function (array $results) use (&$raw) {
@@ -238,7 +243,7 @@ class ScoutPaginatorTest extends TestCase
             $this->assertSame(['results', 'total'], array_keys($raw[0]), $label);
             $this->assertSame(25, $raw[0]['total'], $label);
             $this->assertCount(10, $raw[0]['results'], $label);
-            $this->assertSame(array_map(fn ($i) => sprintf('zed item %05d', $i), range(1, 9)), collect($paginator->items())->pluck('name')->all(), "{$label}: the callback's page");
+            $this->assertSame(array_map(fn ($i) => sprintf('zed item %05d', $i), $served), collect($paginator->items())->pluck('name')->all(), "{$label}: the callback's page");
 
             if ($paginator instanceof LengthAwarePaginator) {
                 $this->assertSame([25, 3], [$paginator->total(), $paginator->lastPage()], "{$label}: the total before the callback");
