@@ -103,7 +103,11 @@ class ScoutPaginatorTest extends TestCase
         return ScoutTenantDoc::scoutSearch('zed')->query(fn ($query) => $query->where('tenant_id', 1));
     }
 
-    /** @return array{0: mixed, 1: int} the result, and the most bindings any one of its queries sent */
+    /**
+     * @return array{0: mixed, 1: int} the result, and the most bindings any one of its queries sent. On
+     * MySQL and MariaDB the engine checks a string ranking by key, 10,000 bound ids per read (ruling
+     * ER-124, well under their 65,535), and that key read is left out.
+     */
     private function withMaxBindings(\Closure $run): array
     {
         DB::flushQueryLog();
@@ -111,7 +115,10 @@ class ScoutPaginatorTest extends TestCase
 
         try {
             $result = $run();
-            $max    = (int) collect(DB::getQueryLog())->max(fn ($query) => count($query['bindings']));
+            $mysql  = in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true);
+            $max    = (int) collect(DB::getQueryLog())
+                ->reject(fn ($query) => $mysql && preg_match('/^select \S+ as `fuzzy_walk_key` from /', $query['query']) === 1)
+                ->max(fn ($query) => count($query['bindings']));
         } finally {
             DB::disableQueryLog();
         }

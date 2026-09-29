@@ -170,7 +170,7 @@ class JoinedColumnSearchTest extends TestCase
             'alias'               => [fn () => $eloquent(User::query()->from('users as u')), 'id', '"u"."id"'],
             'alias and join'      => [fn () => $eloquent(User::query()->from('users as u')->join('teams', 'teams.user_id', '=', 'u.id')->select('u.*')), 'id', '"u"."id"'],
             'scope join'          => [fn () => $eloquent(TeamUser::query()), 'id', '"users"."id"'],
-            'fromSub'             => [fn () => $eloquent(User::query()->fromSub(DB::table('users'), 'u')), 'id', '"id"'],
+            'fromSub'             => [fn () => $eloquent(User::query()->fromSub(DB::table('users'), 'u')), 'id', '"u"."id"'],
             'plain, users.*'      => [fn () => $plain(DB::table('users')->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*')), 'id', '"users"."id"'],
             // select * carries teams.id as well: the row's own key is teams.user_id.
             'plain, select *'     => [fn () => $plain(DB::table('users')->join('teams', 'teams.user_id', '=', 'users.id')), 'user_id', '"users"."id"'],
@@ -193,6 +193,43 @@ class JoinedColumnSearchTest extends TestCase
         }
 
         $this->assertSame(array_fill_keys(array_keys($shapes), [$expected, true]), $found);
+    }
+
+    /**
+     * L1 (round 9). An ordered index page breaks ties on the key, which under fromSub() was the bare
+     * "id": ambiguous once the query joins a table with an id of its own, on every database. The
+     * tie-break is now the key as the FROM names it ("u"."id"), as under an aliased FROM.
+     */
+    public function test_an_ordered_index_page_over_a_join_under_a_from_subquery(): void
+    {
+        app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->indexBatch(User::all());
+
+        $sources = [
+            'from users'      => [fn () => User::search('example')->typoTolerance(0)->useInvertedIndex()->join('teams', 'teams.user_id', '=', 'users.id')->select('users.*'), 'users'],
+            'fromSub(..., u)' => [fn () => User::search('example')->typoTolerance(0)->useInvertedIndex()->fromSub(DB::table('users'), 'u')->join('teams', 'teams.user_id', '=', 'u.id')->select('u.*'), 'u'],
+        ];
+
+        $found = [];
+        foreach ($sources as $label => [$make, $table]) {
+            foreach (['own' => "{$table}.name", 'joined' => 'teams.name'] as $order => $column) {
+                try {
+                    $found[$label][$order] = [
+                        $make()->orderBy($column)->get()->pluck('name')->all(),
+                        $make()->orderBy($column, 'desc')->paginate(2, 'page', 2)->pluck('name')->all(),
+                        $make()->orderBy($column)->count(),
+                    ];
+                } catch (\Illuminate\Database\QueryException $e) {
+                    $found[$label][$order] = strtok($e->getMessage(), "\n");
+                }
+            }
+        }
+
+        $expected = [
+            'own'    => [['Alice Smith', 'Bob Johnson', 'Charlie Brown', 'Jane Doe', 'John Doe', 'Johnny Bravo', 'Jon Snow'], ['John Doe', 'Jane Doe'], 7],
+            'joined' => [['Johnny Bravo', 'Jane Doe', 'John Doe', 'Jon Snow', 'Bob Johnson', 'Alice Smith', 'Charlie Brown'], ['Bob Johnson', 'Jon Snow'], 7],
+        ];
+
+        $this->assertSame(['from users' => $expected, 'fromSub(..., u)' => $expected], $found);
     }
 
     public function test_a_forwarded_join(): void

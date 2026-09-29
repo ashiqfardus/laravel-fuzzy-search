@@ -168,7 +168,8 @@ class IndexWalkBoundTest extends TestCase
         for ($page = 1; $page <= 21; $page++) {
             $names = [...$names, ...$make()->paginate(15, 'page', $page)->pluck('name')->all()];
         }
-        $walks = array_values(array_filter(DB::getQueryLog(), fn (array $q) => str_contains($q['query'], 'fuzzy_walk_key')));
+        // The ordered reads: the page's rows are read by key under the same alias, in no order.
+        $walks = array_values(array_filter(DB::getQueryLog(), fn (array $q) => str_contains($q['query'], 'fuzzy_walk_key') && stripos($q['query'], 'order by') !== false));
         DB::disableQueryLog();
 
         $this->assertSame(array_map(fn ($i) => sprintf('Zebra %03d', $i), range(5, 299)), $names);

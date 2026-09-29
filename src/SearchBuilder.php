@@ -1561,11 +1561,12 @@ class SearchBuilder
 
     /**
      * The Eloquent query BM25 candidates are checked against: modelBaseQuery() plus any
-     * filter()/filterIn() constraints. Always a fresh clone.
+     * filter()/filterIn() constraints, a union read as a derived table. Always a fresh clone.
      */
     protected function indexedBaseQuery(string $modelClass): EloquentBuilder
     {
-        $base = $this->modelBaseQuery($modelClass);
+        // A union is read as one derived table (RankedCandidates::rows()), so the filters below apply to its rows.
+        $base = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::rows($this->modelBaseQuery($modelClass));
 
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
         // highlighting on BM25 results read loaded relations instead of issuing one
@@ -1685,15 +1686,16 @@ class SearchBuilder
     }
 
     /**
-     * True when the base query carries any WHERE or JOIN (filters, caller wheres and joins,
-     * global scopes), i.e. the BM25 ranking cannot be used as-is. A join can hide rows as
-     * surely as a where. having(), unions and a from-subquery are not detected.
+     * True when the base query can hide rows (filters, caller wheres and joins, global scopes), i.e.
+     * the BM25 ranking cannot be used as-is. A join, a HAVING, a GROUP BY, a union or a FROM that is
+     * not a table name (fromSub()) can hide rows as surely as a where.
      */
     protected function hasIndexedConstraints(Builder|EloquentBuilder $base): bool
     {
         $query = $base instanceof EloquentBuilder ? $base->toBase() : $base;
 
-        return !empty($query->wheres) || !empty($query->joins);
+        return !empty($query->wheres) || !empty($query->joins) || !empty($query->havings) || !empty($query->groups)
+            || !empty($query->unions) || !is_string($query->from);
     }
 
     /**
@@ -1715,24 +1717,26 @@ class SearchBuilder
     }
 
     /**
-     * Set _raw_score / _score on the ranked window of models and return it best first. The raw
+     * Set _raw_score / _score on the ranked models, keyed by their ids (RankedCandidates::models(),
+     * so a model whose select left its key out is scored too), and return them best first. The raw
      * score is the BM25 score through the model's getSearchScore() override, if it has one (see
-     * searchScore()), which can reorder the window. _score is normalised against the window's best
-     * row: in rank order the window always starts at rank 1 of what the query can see, so it is the
-     * same on every page and scores stay comparable across pages (under orderBy() the window is the
-     * page). Not the first entry of $ranked: a row the query hides, such as another tenant's, would
-     * set the scale and reveal what it contains. A row $ranked lacks, a match past the ranking's cap
-     * that an ordered page serves, scores 0.
+     * searchScore()), which can reorder the window it re-ranks. _score is normalised against $anchor,
+     * the score of the first row the query accepts (in rank order without a hook: the same on every
+     * page, so scores stay comparable across pages), or against the best row among $models when that
+     * is higher: the hook's window, which a page in rank order is read with, or the page under
+     * orderBy(). Not the first entry of $ranked: a row the query hides, such as another tenant's,
+     * would set the scale and reveal what it contains. A row $ranked lacks, a match past the
+     * ranking's cap that an ordered page serves, scores 0.
      *
-     * Only the first $rerank rows are re-ranked by their scores; the rest keep the window's order:
-     * BM25 past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
+     * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
+     * past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
-    protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX): Collection
+    protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX, ?float $anchor = null): Collection
     {
-        $scores = $models->mapWithKeys(fn ($item, $i) => [$i => $this->searchScore($item, (float) ($ranked[$item->getKey()] ?? 0))]);
-        $top    = (float) ($scores->max() ?? 0);
+        $scores = $models->map(fn ($item, $id) => $this->searchScore($item, (float) ($ranked[$id] ?? 0)));
+        $top    = max($anchor ?? 0.0, (float) ($scores->max() ?? 0));
 
         // arsort() is stable: rows the hook left tied keep their BM25 rank.
         return $scores->take($rerank)->sortDesc()->union($scores->slice($rerank))->map(function (float $raw, $i) use ($models, $top) {
@@ -1771,15 +1775,14 @@ class SearchBuilder
     }
 
     /**
-     * How many ranked rows the index path hydrates for a page that ends at $end: $end, or at least
-     * max_candidates when the model overrides getSearchScore(). Its scores re-rank a fixed window of
-     * the first max_candidates matches, the window the LIKE path rescores, so every page is cut from
-     * one ordering (ruling ER-88); rows past it keep the BM25 order, as the LIKE path serves its
-     * deeper pages in database order. Without a hook the scores are the BM25 order already.
+     * How many of the first ranked rows getSearchScore() re-ranks: max_candidates when the model
+     * overrides it, the window the LIKE path rescores, so every page is cut from one ordering (ruling
+     * ER-88); rows past it keep the BM25 order, as the LIKE path serves its deeper pages in database
+     * order. None without a hook: the scores are the BM25 order already.
      */
-    private function bm25Window(string $modelClass, int $end): int
+    private function bm25Window(string $modelClass): int
     {
-        return self::hasSearchScoreHook($modelClass) ? max($end, (int) config('fuzzy-search.max_candidates', 1000)) : $end;
+        return self::hasSearchScoreHook($modelClass) ? (int) config('fuzzy-search.max_candidates', 1000) : 0;
     }
 
     /**
@@ -2185,9 +2188,18 @@ class SearchBuilder
             : $ranked;
         $page     = collect();
 
+        // Only the page's own rows are read, however deep the page, except getSearchScore()'s window,
+        // which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
+        // cut from that ordering. A page past it reads the window too, for the scale of _score. An id
+        // whose row is gone is skipped, and its page comes back one row short.
         if ($offset < count($accepted) && $limit > 0) {
-            $models = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_keys($accepted), $this->bm25Window($modelClass, $offset + $limit));
-            $page   = $this->attachBm25Scores($models, $ranked, (int) config('fuzzy-search.max_candidates', 1000))->slice($offset, $limit)->values();
+            $keys   = array_keys($accepted);
+            $rerank = $this->bm25Window($modelClass);
+            $window = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, 0, $rerank));
+            $start  = max($offset, $rerank);
+            $models = $window->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
+            $page   = $this->attachBm25Scores($models, $ranked, $window->count(), $rerank > 0 ? null : $accepted[$keys[0]])
+                ->slice(min($offset, $window->count()), $limit)->values();
         }
 
         return ['ranked' => $ranked, 'total' => count($accepted), 'page' => $page];
@@ -2466,20 +2478,15 @@ class SearchBuilder
             return;
         }
 
-        // Stable ranking. An aliased FROM has no "users"."id", only its alias's, and a fromSub() has
-        // neither (2.0 ordered by the bare key). A plain builder's bare "id" is qualified under a
-        // join like a searched column: a join selecting both tables' columns makes it ambiguous.
+        // Stable ranking, on the key as the FROM names it (RankedCandidates::keyColumn()): an aliased
+        // FROM or a fromSub() has no "users"."id", only its alias's, and the bare key 2.0 ordered a
+        // fromSub() by is ambiguous once it joins a table with an id of its own. A plain builder's
+        // bare "id" is qualified under a join like a searched column: a join selecting both tables'
+        // columns makes it ambiguous.
         if ($query instanceof EloquentBuilder) {
             $model     = $query->getModel();
-            $from      = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($query->toBase()->from);
-            $keyColumn = match (true) {
-                $from === null    => $model->getKeyName(),
-                $from[1] !== null => $from[1] . '.' . $model->getKeyName(),
-                default           => $model->getQualifiedKeyName(),
-            };
-            // The alias's key too: under fromSub() the tie-break is the bare key, and SQL Server
-            // rejects an order by u.id followed by id.
-            $names = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn, \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($query)];
+            $keyColumn = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($query);
+            $names     = [$model->getKeyName(), $model->getQualifiedKeyName(), $keyColumn];
         } else {
             $keyColumn = ($this->qualifiedColumnMap($query)['id'] ?? '') . 'id';
             $names     = ['id', $keyColumn];

@@ -22,10 +22,12 @@ class SemiJoinArticle extends Model
 
 /**
  * MySQL, once model_id is utf8mb4_bin (round 8, M8). With an index on the order column, MySQL ran
- * the postings subquery of an ordered or constrained index search as a hash semi-join it could not
+ * the postings subquery of an ordered index search as a hash semi-join it could not
  * key on the cast key, and its cost grew with the square of the rows: 0.18 s at 20k matches, 3.6 s
  * at 100k, where one index probe per row (FirstMatch) takes 0.03 s and 0.16 s. The subquery now
- * asks MySQL for FirstMatch. The assertion reads the plan, never a timing.
+ * asks MySQL for FirstMatch. The assertions read the SQL and the plan, never a timing: the plan
+ * depends on sampled statistics, and without the hint it came out a hash join only about 2 runs in
+ * 3 (L14, round 9), so the hint itself is asserted too.
  */
 class MySqlPostingsSemiJoinTest extends TestCase
 {
@@ -41,7 +43,6 @@ class MySqlPostingsSemiJoinTest extends TestCase
         Schema::create('semijoin_articles', function ($table) {
             $table->id();
             $table->string('title')->index();
-            $table->unsignedInteger('shelf')->default(1);
         });
 
         foreach (array_chunk(range(0, 19999), 1000) as $chunk) {
@@ -79,14 +80,14 @@ class MySqlPostingsSemiJoinTest extends TestCase
 
     public function test_the_postings_subquery_is_never_a_hash_semi_join(): void
     {
-        $reads = [
-            ...$this->postingsReads(fn () => SemiJoinArticle::search('alpha')->typoTolerance(0)->useInvertedIndex()->orderBy('title')->paginate(10, 'page', 900)),
-            ...$this->postingsReads(fn () => SemiJoinArticle::search('alpha')->typoTolerance(0)->useInvertedIndex()->where('shelf', 1)->paginate(10)),
-        ];
+        // A constrained search in rank order checks the ranking by key, not through this subquery (ruling ER-124).
+        $reads = $this->postingsReads(fn () => SemiJoinArticle::search('alpha')->typoTolerance(0)->useInvertedIndex()->orderBy('title')->paginate(10, 'page', 900));
 
-        $this->assertCount(3, $reads, 'the ordered COUNT and page, and the constrained key read');
+        $this->assertCount(2, $reads, 'the ordered COUNT and page');
 
         foreach ($reads as [$sql, $bindings]) {
+            $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
+
             $plan = implode("\n", array_map(fn ($row) => (string) current((array) $row), DB::select('EXPLAIN FORMAT=TREE ' . $sql, $bindings)));
             $this->assertStringNotContainsStringIgnoringCase('hash join', $plan, "{$sql}\n{$plan}");
         }

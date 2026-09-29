@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
@@ -12,46 +13,98 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 /**
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
  * rank order, so a selective filter fills its page from lower-ranked matches instead of
- * coming back short, and totals reflect the constraints. On the index's own connection the
- * matches a query accepts are read through a subquery on the postings (accepted(),
- * matches()); otherwise ids are visited best-first in chunks and only rows the query
- * returns are kept.
+ * coming back short, and totals reflect the constraints. The ranking is checked by id (in one read
+ * for an integer key, see accepted()); on the index's own connection an ordered read, and on SQL
+ * Server a long ranking, is restricted by a subquery on the postings (matches(), accepted());
+ * otherwise ids are visited best-first in chunks and only rows the query returns are kept.
  *
  * @internal This class is not part of the public API and may change without notice.
  */
 final class RankedCandidates
 {
-    /** The alias an ordered read selects the key under, beside the caller's select list (see orderedKeys()). */
-    private const KEY_ALIAS = 'fuzzy_walk_key';
+    /** The alias a read selects the key under, beside the caller's select list (see models(), orderedKeys() and the Scout engine's map()). */
+    public const KEY_ALIAS = 'fuzzy_walk_key';
 
     /** The scope whereMatches() restricts a query with; among() adds its own, so the two never replace each other. */
     private const MATCHES = 'fuzzy-search:matches';
 
     /**
-     * Models satisfying $base, in rank order, stopping once $needed have been collected.
+     * The models among $rankedIds that $base returns, in rank order and keyed by their ids,
+     * $rankedIds read a chunk at a time. A row the query hides, or whose id is stale, is skipped. The
+     * key is read under an alias of its own beside the select list, so a row is matched to its id when
+     * the select leaves the key out (ruling D13) or a join's id replaces it; the alias is then taken
+     * out of the model, so it never reaches its attributes. A union is read as one table (rows()).
      *
      * @param  array<int|string> $rankedIds best first
+     * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
      */
-    public static function models(Builder $base, array $rankedIds, ?int $needed = null, ?int $chunkSize = null): EloquentCollection
+    public static function models(Builder $base, array $rankedIds): EloquentCollection
     {
+        $base      = self::rows($base);
         $key       = self::keyColumn($base);
         $collected = [];
 
-        foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
-            $found = self::among($base, $key, $chunk)->get()->keyBy(fn ($model) => $model->getKey());
+        foreach (array_chunk($rankedIds, self::chunkSize(null)) as $chunk) {
+            $read = self::among($base, $key, $chunk)->withGlobalScope(self::KEY_ALIAS, fn (Builder $query) => self::selectKey($query->getQuery(), $key));
+            $found = [];
 
-            foreach ($chunk as $id) {
-                if (isset($found[$id])) {
-                    $collected[] = $found[$id];
+            // A model's first row: a join may repeat it, and MariaDB gives a ROLLUP's summary row the
+            // last group's key under the alias, where its own key is NULL. A row without one is skipped.
+            foreach ($read->get() as $model) {
+                if (($id = self::takeKey($model)) !== null) {
+                    $found[$id] ??= $model;
                 }
             }
 
-            if ($needed !== null && count($collected) >= $needed) {
-                break;
+            foreach ($chunk as $id) {
+                if (isset($found[$id])) {
+                    $collected[$id] = $found[$id];
+                }
             }
         }
 
         return $base->getModel()->newCollection($collected);
+    }
+
+    /**
+     * The key a read selected under KEY_ALIAS, taken out of $model's attributes and original (Model
+     * has no public way to drop an original attribute), or $model's own key when the read selected
+     * none (an app's getScoutModelsByIds() that reads without the query() callback). Null when the
+     * row has no key (a ROLLUP's summary row): the caller skips it.
+     */
+    public static function takeKey(Model $model): int|string|null
+    {
+        $alias = self::KEY_ALIAS;
+
+        return (function () use ($alias) {
+            if (!array_key_exists($alias, $this->attributes)) {
+                return $this->getKey();
+            }
+
+            $key = $this->attributes[$alias];
+            unset($this->attributes[$alias], $this->original[$alias]);
+
+            return $key;
+        })->call($model);
+    }
+
+    /**
+     * The keys $read selected under KEY_ALIAS, in its order, less any NULL: a row without a key
+     * (a ROLLUP's summary row; the ids a read is restricted to keep out every other) matches no id.
+     *
+     * @return array<int|string>
+     */
+    private static function keysOf(QueryBuilder $read): array
+    {
+        return $read->pluck(self::KEY_ALIAS)->whereNotNull()->values()->all();
+    }
+
+    /** $query's select list, every column when it names none, with $key beside it under KEY_ALIAS. */
+    public static function selectKey(QueryBuilder $query, string $key): QueryBuilder
+    {
+        $query->columns ??= ['*'];
+
+        return $query->addSelect($key . ' as ' . self::KEY_ALIAS);
     }
 
     /**
@@ -63,11 +116,12 @@ final class RankedCandidates
      */
     public static function keys(Builder $base, array $rankedIds, ?int $needed = null, ?int $chunkSize = null): array
     {
+        $base      = self::rows($base);
         $key       = self::keyColumn($base);
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize($chunkSize)) as $chunk) {
-            $found = array_flip(self::among($base, $key, $chunk)->pluck($key)->all());
+            $found = array_flip(self::keysOf(self::keyRead(self::among($base, $key, $chunk))));
 
             foreach ($chunk as $id) {
                 if (isset($found[$id])) {
@@ -115,6 +169,7 @@ final class RankedCandidates
      */
     public static function matches(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): Builder
     {
+        $base  = self::rows($base);
         $model = $base->getModel();
         $ids   = array_keys($ranked);
         $chunk = self::chunkSize(null);
@@ -140,11 +195,21 @@ final class RankedCandidates
     /**
      * $ranked cut to the documents $base accepts, in rank order: what a page in rank order serves and
      * its total counts, so a constrained search serves the rows of the unconstrained one that the
-     * constraint accepts, and none past the ranking's cap. On the index's own connection one query
-     * reads the keys of every match $base accepts, through the postings subquery
-     * (Bm25Scorer::whereRanked()), however long the ranking is: the key is selected, and the rows
-     * are streamed (cursor()), keeping those the ranking holds. On another connection, where that
-     * subquery cannot run, the ranked ids are checked a chunk at a time.
+     * constraint accepts, and none past the ranking's cap. The ranking is checked by key, so the rows
+     * read are bounded by the ranking, however large the table (rulings D10 and ER-124):
+     *  - an integer key, on every database but SQL Server: the whole ranking in one read, its ids
+     *    inlined as matches() lists them (about 1 ms per 1,000 ids, no binding limit);
+     *  - a string key on MySQL or MariaDB: 10,000 bound ids per read (they allow 65,535 bindings);
+     *  - otherwise a ranking of at most max(bm25.candidate_chunk, max_candidates) ids, a chunk at a
+     *    time (keys()). A longer one, on the index's own connection, is read in one query through the
+     *    postings subquery (Bm25Scorer::whereRanked()), however many rows match, streamed (cursor())
+     *    and kept where the ranking holds them. That subquery compares the postings with a cast of the
+     *    key, so no database can drive the read from them: it reads every row the constraint accepts
+     *    (a SoftDeletes table whole). SQL Server compiles every new inlined list (8.7 s for 50,000
+     *    ids) and caps a statement's expressions, and its 2,100 bindings allow no long bound list;
+     *    there, and for a string key on PostgreSQL and SQLite, this is D10's shape as it was. On
+     *    another connection, where the subquery cannot run, the ranked ids are checked a chunk at a
+     *    time.
      *
      * @param  array<int|string, float>                $ranked        model_id => score, best first
      * @param  array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -153,32 +218,47 @@ final class RankedCandidates
      */
     public static function accepted(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): array
     {
-        if (!self::subqueryRuns($base)) {
-            return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked))));
+        $base   = self::rows($base);
+        $driver = $base->getQuery()->getConnection()->getDriverName();
+        $int    = in_array($base->getModel()->getKeyType(), ['int', 'integer'], true);
+
+        if ($int && $driver !== DbDialect::SQLSRV) {
+            $key  = self::keyColumn($base);
+            $ids  = array_keys($ranked);
+            $read = (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIntegerInRaw($key, $ids));
+
+            return array_intersect_key($ranked, array_flip(self::keysOf(self::keyRead($read))));
         }
 
-        $query = self::whereMatches($base, $terms, $modelType, $columnWeights)->toBase()->reorder();
-        $key   = self::keyColumn($base) . ' as ' . self::KEY_ALIAS;
+        $bound = !$int && DbDialect::isMySqlFamily($driver);
 
-        // The key alone, unless a HAVING may name an alias of the select list (withCount()'s
-        // posts_count, which MySQL and MariaDB accept there). select(), not the column list alone:
-        // it drops the dropped columns' bindings (a constrained withCount()) too.
-        if ($query->havings) {
-            $query->columns ??= ['*'];
-            $query->addSelect($key);
-        } else {
-            $query->select($key);
+        if ($bound || count($ranked) <= max(self::chunkSize(null), (int) config('fuzzy-search.max_candidates', 1000)) || !self::subqueryRuns($base)) {
+            return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked), null, $bound ? 10000 : null)));
         }
 
         $accepted = [];
 
-        foreach ($query->cursor() as $row) {
-            if (isset($ranked[$row->{self::KEY_ALIAS}])) {
+        foreach (self::keyRead(self::whereMatches($base, $terms, $modelType, $columnWeights))->cursor() as $row) {
+            if ($row->{self::KEY_ALIAS} !== null && isset($ranked[$row->{self::KEY_ALIAS}])) {
                 $accepted[$row->{self::KEY_ALIAS}] = true;
             }
         }
 
         return array_intersect_key($ranked, $accepted);
+    }
+
+    /**
+     * $query's read of its keys, under KEY_ALIAS, in no order: the key alone, unless a HAVING may name
+     * an alias of the select list (withCount()'s posts_count, which MySQL and MariaDB accept there).
+     * select(), not the column list alone: it drops the dropped columns' bindings (a constrained
+     * withCount()) too.
+     */
+    private static function keyRead(Builder $query): QueryBuilder
+    {
+        $key   = self::keyColumn($query);
+        $query = $query->toBase()->reorder();
+
+        return $query->havings ? self::selectKey($query, $key) : $query->select($key . ' as ' . self::KEY_ALIAS);
     }
 
     /**
@@ -213,7 +293,7 @@ final class RankedCandidates
                 $page->orderBy($sort['column'], $sort['direction']);
             }
 
-            return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+            return self::keysOf($page->offset($offset)->limit($limit));
         }
 
         if ($order === 'joined') {
@@ -234,20 +314,21 @@ final class RankedCandidates
                 $page->orderBy('fuzzy_order_' . $i, $sort['direction']);
             }
 
-            return $page->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+            return self::keysOf($page->offset($offset)->limit($limit));
         }
 
-        $query->columns ??= ['*'];
-        $query->addSelect($key);
+        self::selectKey($query, $qualifiedKey);
 
         if ($order === 'rows') {
-            return $query->offset($offset)->limit($limit)->pluck(self::KEY_ALIAS)->all();
+            return self::keysOf($query->offset($offset)->limit($limit));
         }
 
         $keys = [];
 
         foreach ($query->lazy(1000) as $row) {
-            $keys[$row->{self::KEY_ALIAS}] = true;
+            if ($row->{self::KEY_ALIAS} !== null) {
+                $keys[$row->{self::KEY_ALIAS}] = true;
+            }
 
             if (count($keys) >= $offset + $limit) {
                 break;
@@ -310,6 +391,35 @@ final class RankedCandidates
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
             ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights));
+    }
+
+    /**
+     * $base, with a union read as one derived table named as the model's table (rulings ER-125,
+     * ER-127): every read here restricts the union's rows to ranked ids, adds the key to the select
+     * list or orders the rows, and on a union each of those reached only its first part (the other
+     * parts were read whole, or their select lists no longer matched). The model's scopes already
+     * apply inside that part, and the eager loads are carried over. The union's own order is dropped
+     * when it has no limit or offset of its own: it cannot change which rows the union holds, and SQL
+     * Server rejects an ORDER BY in a derived table without TOP or OFFSET (a union with a limit stays
+     * unsupported there, as on the LIKE path). $base itself when it has no union, so a second call
+     * changes nothing.
+     */
+    public static function rows(Builder $base): Builder
+    {
+        $query = $base->toBase();
+
+        if (!$query->unions) {
+            return $base;
+        }
+
+        if ($query->unionLimit === null && $query->unionOffset === null) {
+            $query->unionOrders            = null;
+            $query->bindings['unionOrder'] = [];
+        }
+
+        $model = $base->getModel();
+
+        return $model->newQueryWithoutScopes()->fromSub($query, $model->getTable())->setEagerLoads($base->getEagerLoads());
     }
 
     /**
