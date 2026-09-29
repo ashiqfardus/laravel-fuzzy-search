@@ -425,8 +425,8 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * queryScoutModelsByIds() applies, in a scope applied after the model's own (which may select()),
      * so a row is matched to its id when a select() leaves the key out (ruling D13), as
      * RankedCandidates reads it; the alias is then taken out of the model's attributes and original,
-     * so it never reaches them. A union's parts share one select list, and an override that reads
-     * without the callback selects no alias: those models are matched by their own key.
+     * so it never reaches them. A union is read as one derived table, and an override that reads
+     * without the callback selects no alias: its models are matched by their own key.
      *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
@@ -438,6 +438,13 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         $builder->queryCallback = function ($query) use ($callback) {
             if ($callback !== null) {
                 call_user_func($callback, $query);
+            }
+
+            // A union is read as one derived table (RankedCandidates::rows()), so the ids Scout then
+            // restricts the query to restrict every part of it, not only its first. Its scopes apply
+            // inside that table already.
+            if (($rows = RankedCandidates::rows($query)) !== $query) {
+                $query->setQuery($rows->getQuery())->withoutGlobalScopes();
             }
 
             $query->withGlobalScope(self::KEY_ALIAS, function (EloquentBuilder $query) {
