@@ -1233,9 +1233,9 @@ class SearchBuilder
      * so a global scope's join counts), and it reads the model's table by its own name. A re-read
      * returns every row the query holds for a key, and under a join or a union that can be another
      * row than the one cached, even when the key is cached once (first(), take(), a page, a search
-     * on the joined column); and it filters on the model's qualified key ("users"."id"), which a FROM
-     * under an alias or a fromSub() does not have. Any other rows are stored as the attributes the
-     * database returned for them.
+     * on the joined column). A fromSub() can hold such a join where $base->joins does not show it,
+     * so a FROM other than the model's own table counts as one (CacheAliasedFromTest). Any other rows
+     * are stored as the attributes the database returned for them.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
