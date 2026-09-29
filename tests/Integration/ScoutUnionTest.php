@@ -81,11 +81,16 @@ class ScoutUnionTest extends TestCase
             }
         }
 
+        // Scout 10.0 has no PaginatesEloquentModelsUsingDatabase: Scout re-counts a query() callback's
+        // matches itself (the documented M1 limit there), and its re-count reads the union's other part
+        // whole. From 10.1 the engine paginates with the total it counted.
+        $total = interface_exists(\Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase::class) ? 2 : 3;
+
         $this->assertSame([
             'get'              => [['John Doe', 'Jane Doe'], 2],
-            'paginate page 2'  => [[2, ['Jane Doe']], 1],
+            'paginate page 2'  => [[$total, ['Jane Doe']], 1],
             'orderBy get'      => [['Jane Doe', 'John Doe'], 2],
-            'orderBy paginate' => [[2, ['John Doe']], 1],
+            'orderBy paginate' => [[$total, ['John Doe']], 1],
         ], $found);
     }
 }
