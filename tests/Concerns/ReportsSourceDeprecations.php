@@ -5,13 +5,13 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Concerns;
 /**
  * While a test runs, Laravel's error handler sits above PHPUnit's and logs every deprecation, so
  * phpunit.xml's failOnDeprecation never saw one raised in the package. This handler hands
- * deprecations raised in src/ or database/ (the migrations) to PHPUnit and everything else (vendor
- * code, the tests themselves) to the handler it replaced. The application's teardown pops it.
+ * deprecations raised in src/, config/ or database/ (the migrations) to PHPUnit and everything else
+ * (vendor code, the tests themselves) to the handler it replaced. The application's teardown pops it.
  *
  * The test bases push it first thing in defineEnvironment(), which Testbench runs after Laravel's
- * handler is installed and before the providers boot, so the service provider's boot(), the
- * migrations and the test are all covered. The provider's register() runs before that and is not.
- * Laravel drops every deprecation raised before the application is bootstrapped, which is after the
+ * handler is installed and before the providers boot, so the service provider's boot(), the shipped
+ * config the bases load, the migrations and the test are all covered. The provider's register()
+ * runs before that and is not. Laravel drops every deprecation raised before the application is bootstrapped, which is after the
  * providers boot, so the deprecations log channel misses both boot() and register().
  *
  * A test of a deprecated method captures the notice with deprecationsFrom() and asserts it.
@@ -33,12 +33,18 @@ trait ReportsSourceDeprecations
         });
     }
 
-    /** True for a file the package ships and an app runs: src/, and database/ for the migrations. */
+    /** True for a file the package ships and an app runs: src/, config/ and database/ (the migrations). */
     protected static function isPackageFile(string $file): bool
     {
         $root = realpath(__DIR__ . '/../..') . DIRECTORY_SEPARATOR;
 
-        return str_starts_with($file, $root . 'src' . DIRECTORY_SEPARATOR) || str_starts_with($file, $root . 'database' . DIRECTORY_SEPARATOR);
+        foreach (['src', 'config', 'database'] as $dir) {
+            if (str_starts_with($file, $root . $dir . DIRECTORY_SEPARATOR)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @return string[] the E_USER_DEPRECATED messages $callback raised */

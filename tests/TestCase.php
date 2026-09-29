@@ -21,7 +21,8 @@ abstract class TestCase extends BaseTestCase
     protected function defineEnvironment($app): void
     {
         // First, above Laravel's error handler and before the providers boot: a deprecation raised in
-        // src/ or database/ from here on (the provider's boot(), a migration, the test) fails the run.
+        // src/, config/ or database/ from here on (the provider's boot(), the config loaded below, a
+        // migration, the test) fails the run.
         $this->reportSourceDeprecations();
 
         // sqlite :memory: by default; DB_TEST_DRIVER=mysql|mariadb|pgsql|sqlsrv switches

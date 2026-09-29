@@ -32,7 +32,7 @@ abstract class DatabaseTestCase extends BaseTestCase
 
     protected function defineEnvironment($app): void
     {
-        // First, as in TestCase: a src/ or database/ deprecation from the providers' boot on fails the run.
+        // First, as in TestCase: a src/, config/ or database/ deprecation from the providers' boot on fails the run.
         $this->reportSourceDeprecations();
 
         $this->configureTestDatabaseConnection($app);

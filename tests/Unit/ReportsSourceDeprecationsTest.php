@@ -6,9 +6,9 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 
 /**
  * The source-deprecation forwarder (Tests\Concerns\ReportsSourceDeprecations) must already be the
- * error handler on top when the service provider boots, and must count database/ as package code,
- * so a deprecation raised in the provider's boot() or in a migration fails the run. Pushed after
- * parent::setUp() and matching src/ only, it missed both.
+ * error handler on top when the service provider boots, and must count config/ and database/ as
+ * package code, so a deprecation raised in the provider's boot(), the shipped config or a migration
+ * fails the run. Pushed after parent::setUp() and matching src/ only, it missed all three.
  */
 class ReportsSourceDeprecationsTest extends TestCase
 {
@@ -32,11 +32,12 @@ class ReportsSourceDeprecationsTest extends TestCase
         $this->assertSame(realpath(__DIR__ . '/../Concerns/ReportsSourceDeprecations.php'), $this->handlerAtBoot);
     }
 
-    public function test_src_and_database_are_package_code(): void
+    public function test_src_config_and_database_are_package_code(): void
     {
         $root = realpath(__DIR__ . '/../..') . DIRECTORY_SEPARATOR;
 
         $this->assertTrue(self::isPackageFile($root . 'src' . DIRECTORY_SEPARATOR . 'FuzzySearchServiceProvider.php'));
+        $this->assertTrue(self::isPackageFile($root . 'config' . DIRECTORY_SEPARATOR . 'fuzzy-search.php'));
         $this->assertTrue(self::isPackageFile($root . 'database' . DIRECTORY_SEPARATOR . 'migrations' . DIRECTORY_SEPARATOR . 'create.php'));
         $this->assertFalse(self::isPackageFile($root . 'tests' . DIRECTORY_SEPARATOR . 'TestCase.php'));
         $this->assertFalse(self::isPackageFile($root . 'vendor' . DIRECTORY_SEPARATOR . 'laravel' . DIRECTORY_SEPARATOR . 'Str.php'));
