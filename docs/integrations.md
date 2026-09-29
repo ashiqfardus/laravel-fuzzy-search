@@ -87,6 +87,8 @@ foreach (User::scoutSearch('laravel')->get() as $user) {
 }
 ```
 
+`_score` is a real attribute on the model, so a Scout result is a read model: `save()` on it fails with an unknown-column error. Re-fetch the row by key before changing it, or `unset($user->_score)` first.
+
 ### Authorization
 
 Scout applies the model's global scopes only when it loads the page's models, so a row a scope hides drops out of the page but still counts in `total()`. Put the constraints on the Scout query, where the engine counts and pages through them:
