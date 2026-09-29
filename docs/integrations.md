@@ -247,8 +247,10 @@ Wraps one result row (Eloquent model or array) and adds the package's underscore
 use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchResource;
 
 Route::get('/search', function (Request $request) {
-    // An empty term throws EmptySearchTermException, a 500, so an empty box is a 404 here too
-    $user = $request->filled('q') ? User::search($request->query('q'))->highlight('mark')->first() : null;
+    // search() needs a non-empty string: an empty q throws EmptySearchTermException and ?q[]= a TypeError,
+    // both a 500, so they are a 404 here too
+    $q = $request->query('q');
+    $user = is_string($q) && filled($q) ? User::search($q)->highlight('mark')->first() : null;
     abort_unless($user, 404); // ->first() can return null; the resource would render {} for it
 
     return new FuzzySearchResource($user);
@@ -264,7 +266,8 @@ use Ashiqfardus\LaravelFuzzySearch\Http\Resources\FuzzySearchCollection;
 
 Route::get('/search', function (Request $request) {
     $q = $request->query('q');
-    abort_if(blank($q), 422, 'Enter a search term.'); // an empty term throws EmptySearchTermException, a 500
+    // search() needs a non-empty string: an empty q throws EmptySearchTermException and ?q[]= a TypeError, both a 500
+    abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.');
 
     return FuzzySearchCollection::fromBuilder(
         User::search($q)->highlight('mark'),

@@ -840,7 +840,8 @@ Supports Filament v3, v4 and v5. Filament is a soft dependency — nothing in th
 `FuzzySearchResource` wraps one result row, and `FuzzySearchCollection::fromBuilder()` wraps a paginated search, into normal Laravel API responses with the package's underscore-prefixed fields alongside the plain attributes.
 
 ```php
-abort_if(blank($q), 422, 'Enter a search term.'); // an empty term throws EmptySearchTermException, a 500
+$q = $request->query('q');
+abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.'); // an empty q or ?q[]= would be a 500
 
 return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
 ```
