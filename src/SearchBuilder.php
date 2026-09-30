@@ -1560,9 +1560,9 @@ class SearchBuilder
         $limit = $this->reportedResultCap ?? $this->limit;
 
         // fallback() decides on whether the search matched a row at all, not on this page's rows.
-        ['ranked' => $ranked, 'total' => $total, 'positions' => $positions, 'page' => $sorted] = $this->indexedResults($modelClass, $this->offset, $limit);
+        ['ranked' => $ranked, 'total' => $total, 'more' => $more, 'page' => $sorted] = $this->indexedResults($modelClass, $this->offset, $limit);
         $this->matched   = $total > 0;
-        $this->morePages = $this->reportedResultCap === null ? null : $this->offset + $limit < $positions;
+        $this->morePages = $this->reportedResultCap === null ? null : $more;
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));
@@ -1592,6 +1592,10 @@ class SearchBuilder
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
             $this->eagerLoadRelationPaths($base, $this->relationPaths());
         }
+
+        // The caller's where(A)->orWhere(B) as one group before the filters (RE-1); the ranking's
+        // own restriction is a global scope, which Eloquent groups itself.
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($base);
 
         foreach ($this->filters as $filter) {
             if ($filter['operator'] === 'IN') {
@@ -1862,6 +1866,9 @@ class SearchBuilder
             : ($this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query);
 
         $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+
+        // The caller's where(A)->orWhere(B) as one group, before the query and the filters (RE-1).
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
         // Ruling ER-95: an unknown field's message, shown to whoever typed the query, names only the
         // fields the model shows. Every column is still matched, hidden ones included (ER-66).
@@ -2184,11 +2191,10 @@ class SearchBuilder
      *  - with orderBy(), every match the base query accepts, in that order (orderedIndexedPage()).
      * Constraints (filters, wheres, scopes) apply before the cut, so a selective filter fills its
      * page from lower-ranked matches instead of coming back short or empty. A page past the total is
-     * empty and reads no row (ruling ER-82). positions is how many places the pages are cut from:
-     * the total, less the ids in getSearchScore()'s window whose rows are gone. simplePaginate()
-     * reads from it whether a page follows (ruling ER-133).
+     * empty and reads no row (ruling ER-82). more says whether matches follow the page, which
+     * simplePaginate() reads (ruling ER-133).
      *
-     * @return array{ranked: array<int|string, float>, total: int, positions: int, page: Collection}
+     * @return array{ranked: array<int|string, float>, total: int, more: bool, page: Collection}
      */
     protected function indexedResults(string $modelClass, int $offset, int $limit): array
     {
@@ -2199,20 +2205,20 @@ class SearchBuilder
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
-            return ['ranked' => [], 'total' => 0, 'positions' => 0, 'page' => collect()];
+            return ['ranked' => [], 'total' => 0, 'more' => false, 'page' => collect()];
         }
 
         if ($this->sortBy !== []) {
             $ordered = $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
 
-            return ['ranked' => $ranked, 'positions' => $ordered['total']] + $ordered;
+            return ['ranked' => $ranked, 'more' => $offset + $limit < $ordered['total']] + $ordered;
         }
 
         $accepted  = $this->hasIndexedConstraints($base)
             ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, $modelClass, $this->columnWeights)
             : $ranked;
         $page      = collect();
-        $positions = count($accepted);
+        $more      = false;
 
         // Only the page's own rows are read, however deep the page, except getSearchScore()'s window,
         // which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
@@ -2226,7 +2232,10 @@ class SearchBuilder
             $window     = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, 0, $rerank));
             $start      = max($offset, $rerank);
             $models     = $window->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
-            $positions -= min($rerank, count($keys)) - $window->count();
+
+            // Pages inside the window are cut from the rows it holds, pages past it from the ranks
+            // (RA-1): matches follow while either region has a place left after this page.
+            $more = $offset + $limit < $window->count() || max($offset + $limit, min($rerank, count($keys))) < count($keys);
 
             // first() found no row: the keys that follow, a chunk at a time until one has a row, then that row.
             if ($this->firstReadsOn && $models->count() <= min($offset, $window->count())) {
@@ -2238,7 +2247,7 @@ class SearchBuilder
                 ->slice(min($offset, $window->count()), $limit)->values();
         }
 
-        return ['ranked' => $ranked, 'total' => count($accepted), 'positions' => $positions, 'page' => $page];
+        return ['ranked' => $ranked, 'total' => count($accepted), 'more' => $more, 'page' => $page];
     }
 
     /**
@@ -2471,6 +2480,9 @@ class SearchBuilder
     protected function buildQuery(): void
     {
         $this->capSearchTerm(); // see capSearchTerm(): the LIKE path's one call
+
+        // The caller's where(A)->orWhere(B) as one group, before the search and the filters (RE-1).
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
         // Process search term
         $searchTerm = $this->processSearchTerm($this->searchTerm);
@@ -3770,8 +3782,9 @@ class SearchBuilder
     {
         $driver = $this->query->getConnection()->getDriverName();
 
-        // Clone query to avoid modifying the original
+        // Clone query to avoid modifying the original, the caller's where(A)->orWhere(B) as one group (RE-1)
         $suggestQuery = clone $this->query;
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($suggestQuery);
 
         $targets = $this->suggestTargets();
         $paths   = array_values(array_unique(array_column(array_filter($targets, fn (array $t) => $t['relation'] !== null), 'relation')));

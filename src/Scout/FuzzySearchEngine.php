@@ -397,8 +397,12 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             $query->whereNotIn($field, $values);
         }
 
+        // The callback's wheres as one group when one is an or, so the builder's where()s above and
+        // the ranking hold for all of them, as a scope's are grouped (RE-1).
         if ($builder->queryCallback !== null) {
+            $wheres = count($query->getQuery()->wheres);
             call_user_func($builder->queryCallback, $query);
+            RankedCandidates::groupOrWheres($query, $wheres);
         }
 
         return $query;
@@ -477,6 +481,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         $builder->queryCallback = function ($query) use ($callback) {
             if ($callback !== null) {
                 call_user_func($callback, $query);
+                RankedCandidates::groupOrWheres($query); // the page's ids, which Scout adds next, hold for every branch (RE-1)
             }
 
             // A union is read as one derived table (RankedCandidates::rows()), so the ids Scout then

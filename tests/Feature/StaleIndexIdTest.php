@@ -83,7 +83,7 @@ class StaleIndexIdTest extends TestCase
     {
         $names = $sizes = $more = [];
 
-        for ($page = 1; $page <= 5 && ($page === 1 || end($more)); $page++) {
+        for ($page = 1; $page <= 20 && ($page === 1 || end($more)); $page++) {
             $paginator = $make()->simplePaginate($perPage, 'page', $page);
             $names     = [...$names, ...collect($paginator->items())->pluck('name')->all()];
             $sizes[]   = count($paginator->items());
@@ -116,6 +116,32 @@ class StaleIndexIdTest extends TestCase
         $byName = $left;
         sort($byName);
         $this->assertSame([$byName, [15, 15, 9], [true, true, false]], $this->followSimplePages(fn () => $this->search()->orderBy('name')), 'orderBy()');
+    }
+
+    /**
+     * RA-1 (round 10 deep review): a getSearchScore() model whose ranking is longer than the window
+     * the hook re-ranks (max_candidates), with stale ids inside the window. A page inside the window
+     * is cut from the rows it holds, a page past it from the ranks, so hasMorePages() comes from each
+     * region: it stopped as many rows early as the window has stale ids.
+     */
+    public function test_simple_paginate_reaches_every_row_past_a_hook_window_with_stale_ids(): void
+    {
+        config(['fuzzy-search.max_candidates' => 10, 'fuzzy-search.bm25.candidate_chunk' => 10]);
+        $hook = fn () => $this->search(StaleIdHookUser::class);
+
+        $left = $this->deleteRanks(0, 1, 2, 3, 4);
+        $all  = array_merge(...array_map(fn (int $page) => $hook()->paginate(5, 'page', $page)->pluck('name')->all(), range(1, 8)));
+        $this->assertSame($left, $all, 'paginate() serves all 35 rows');
+        $this->assertSame([$left, [5, 0, 5, 5, 5, 5, 5, 5], [true, true, true, true, true, true, true, false]], $this->followSimplePages($hook, 5), '5 stale ids, pages of 5');
+    }
+
+    /** RA-1: one stale id in the window, pages of 3 that run across the window's edge. */
+    public function test_simple_paginate_reaches_the_last_row_past_a_hook_window_with_one_stale_id(): void
+    {
+        config(['fuzzy-search.max_candidates' => 10, 'fuzzy-search.bm25.candidate_chunk' => 10]);
+
+        $left = $this->deleteRanks(2);
+        $this->assertSame($left, $this->followSimplePages(fn () => $this->search(StaleIdHookUser::class), 3)[0]);
     }
 
     public function test_paginate_leaves_a_page_with_a_stale_id_one_row_short(): void

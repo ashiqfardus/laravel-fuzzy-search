@@ -193,6 +193,8 @@ $users = User::search('john')
 
 Executing methods that would bypass the search conditions (`delete()`, `exists()`, `pluck()`, `update()`, …) are not forwarded and throw a `BadMethodCallException` — call `get()`, `first()`, `count()` or `paginate()` instead.
 
+The search holds for every condition you forward: `->where('status', 'active')->orWhere('featured', true)` reads `(status = active or featured) and <the search>`, as if you had grouped the two yourself, and `filter()` holds for both branches too.
+
 `latest()`, `oldest()`, `inRandomOrder()` and `reorder()` are forwarded to the underlying query: they only shape which rows make it into the candidate window, since the relevance `ORDER BY` is appended after them and PHP-side rescoring re-sorts by `_score` whenever `withRelevance` is on (the default) — call `withRelevance(false)` if you want the forwarded order to stick. The builder's own `orderBy()` is different: it replaces the relevance order on every path (see [Pagination](#pagination)). The closure passed to `when()`, `unless()` or `tap()` receives the underlying Eloquent builder, not the `SearchBuilder`.
 
 Under a join (a forwarded `join()`, one inside `query()`, or a global scope's), the model's own searched columns are qualified with its table (or the FROM alias) automatically, so a joined table with a column of the same name is not ambiguous; to search the joined table's column, write it dotted: `searchIn(['teams.name'])`. Select the model's columns (`select('users.*')`) as with any Eloquent join, or the joined table's same-named columns (`id`, `name`) overwrite the model's attributes, and scoring, highlighting and `useInvertedIndex()` read the wrong values.
