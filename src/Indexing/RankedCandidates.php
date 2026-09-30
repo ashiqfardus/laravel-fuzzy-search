@@ -33,8 +33,12 @@ final class RankedCandidates
      * The models among $rankedIds that $base returns, in rank order and keyed by their ids,
      * $rankedIds read a chunk at a time. A row the query hides, or whose id is stale, is skipped. The
      * key is read under an alias of its own beside the select list, so a row is matched to its id when
-     * the select leaves the key out (ruling D13) or a join's id replaces it; the alias is then taken
-     * out of the model, so it never reaches its attributes. A union is read as one table (rows()).
+     * the select leaves the key out (ruling D13) or a join's id replaces it. Each chunk is read as
+     * Eloquent's get() reads (its scopes applied, then hydrate(), eagerLoadRelations() and, from
+     * Laravel 11, the afterQuery() callbacks), but the alias is taken off each row before it is
+     * hydrated, so it never reaches a model: not its attributes, a retrieved listener, a cast or an
+     * afterQuery() callback (ruling ER-135). Only a model's first row is hydrated. A union is read as
+     * one table (rows()).
      *
      * @param  array<int|string> $rankedIds best first
      * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
@@ -46,15 +50,32 @@ final class RankedCandidates
         $collected = [];
 
         foreach (array_chunk($rankedIds, self::chunkSize(null)) as $chunk) {
-            $read = self::among($base, $key, $chunk)->withGlobalScope(self::KEY_ALIAS, fn (Builder $query) => self::selectKey($query->getQuery(), $key));
-            $found = [];
+            $read = self::among($base, $key, $chunk)->applyScopes();
+            $rows = [];
 
             // A model's first row: a join may repeat it, and MariaDB gives a ROLLUP's summary row the
             // last group's key under the alias, where its own key is NULL. A row without one is skipped.
-            foreach ($read->get() as $model) {
-                if (($id = self::takeKey($model)) !== null) {
-                    $found[$id] ??= $model;
+            foreach (self::selectKey($read->getQuery(), $key)->get() as $row) {
+                $id = $row->{self::KEY_ALIAS};
+                unset($row->{self::KEY_ALIAS});
+
+                if ($id !== null) {
+                    $rows[$id] ??= $row;
                 }
+            }
+
+            $models = $rows === [] ? [] : $read->eagerLoadRelations($read->hydrate(array_values($rows))->all());
+            $found  = $rows === [] ? [] : array_combine(array_keys($rows), $models);
+
+            // The afterQuery() callbacks see the chunk's models, as they see get()'s, and keep the ones they return.
+            if (method_exists($read, 'applyAfterQueryCallbacks')) {
+                $kept = [];
+                foreach ($read->applyAfterQueryCallbacks($read->getModel()->newCollection($models)) as $model) {
+                    if ($model instanceof Model) {
+                        $kept[spl_object_id($model)] = true;
+                    }
+                }
+                $found = array_filter($found, fn (Model $model) => isset($kept[spl_object_id($model)]));
             }
 
             foreach ($chunk as $id) {
@@ -70,8 +91,8 @@ final class RankedCandidates
     /**
      * The key a read selected under KEY_ALIAS, taken out of $model's attributes and original (Model
      * has no public way to drop an original attribute), or $model's own key when the read selected
-     * none (an app's getScoutModelsByIds() that reads without the query() callback). Null when the
-     * row has no key (a ROLLUP's summary row): the caller skips it.
+     * none (see needsKeyAlias(); an app's getScoutModelsByIds() that reads without the query()
+     * callback). Null when the row has no key (a ROLLUP's summary row): the caller skips it.
      */
     public static function takeKey(Model $model): int|string|null
     {
@@ -464,7 +485,7 @@ final class RankedCandidates
 
         $model = $base->getModel();
 
-        if (!self::selectsKey($query, $model->getKeyName())) {
+        if (self::selectsKey($query, $model->getKeyName()) === false) {
             throw new \LogicException(sprintf(
                 "%s: an index search reads a union as one table by its key, and this union's first part selects no key: select the key ('%s') in every part of the union.",
                 $model::class,
@@ -481,20 +502,23 @@ final class RankedCandidates
     }
 
     /**
-     * Whether a union's rows carry $key: the first part's select list names the union's columns, and
-     * it is every column (none, * or table.*), or it holds a column named $key, or one aliased so. A
-     * raw column that is not one name (a call, a list: selectRaw('name, email')) is taken to hold
-     * it, since only the database can tell, and a union lacking it still fails there.
+     * Whether $query's rows carry a column named $key (a union's first part names the union's
+     * columns): true when the select list is every column (none, * or table.*) or holds a column
+     * so named, or aliased so; null when it holds a raw column that is not one name (a call, a list:
+     * selectRaw('name, email')), which only the database can tell; false otherwise.
      */
-    private static function selectsKey(QueryBuilder $query, string $key): bool
+    private static function selectsKey(QueryBuilder $query, string $key): ?bool
     {
+        $unknown = false;
+
         foreach ($query->columns ?? ['*'] as $column) {
             $sql = trim($column instanceof \Illuminate\Contracts\Database\Query\Expression ? (string) $column->getValue($query->getGrammar()) : (string) $column);
 
             if (preg_match('/\s+as\s+(\S+)$/i', $sql, $alias) === 1) {
                 $sql = $alias[1];
             } elseif (preg_match('/[\s,(]/', $sql) === 1) {
-                return true;
+                $unknown = true;
+                continue;
             }
 
             $name = trim(substr($sql, (int) strrpos('.' . $sql, '.')), '"`[]');
@@ -504,7 +528,18 @@ final class RankedCandidates
             }
         }
 
-        return false;
+        return $unknown ? null : false;
+    }
+
+    /**
+     * Whether a read of $model's rows must select the key under KEY_ALIAS to know each row's key:
+     * when a join may shadow it with another table's column of that name, or the select list may
+     * leave it out (ruling D13). Otherwise each model is matched by its own key, and the alias
+     * never reaches it (ruling ER-135; the Scout engine's map()).
+     */
+    public static function needsKeyAlias(QueryBuilder $query, Model $model): bool
+    {
+        return !empty($query->joins) || self::selectsKey($query, $model->getKeyName()) !== true;
     }
 
     /**

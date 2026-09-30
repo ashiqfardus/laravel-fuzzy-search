@@ -417,13 +417,15 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
     /**
      * The models the model's getScoutModelsByIds() reads for $ids (an app's override of it, or of
-     * queryScoutModelsByIds(), as every Scout engine's map() calls it), keyed by their ids. The key
-     * is read under RankedCandidates::KEY_ALIAS beside the select list, through the query() callback
-     * that queryScoutModelsByIds() applies, in a scope applied after the model's own (which may
-     * select()), so a row is matched to its id when a select() leaves the key out (ruling D13), as
-     * RankedCandidates reads it; RankedCandidates::takeKey() then takes the alias out of the model's
-     * attributes and original, so it never reaches them. A union is read as one derived table, and an override that reads
-     * without the callback selects no alias: its models are matched by their own key.
+     * queryScoutModelsByIds(), as every Scout engine's map() calls it), keyed by their ids. Where a
+     * select() may leave the key out or a join may shadow it (RankedCandidates::needsKeyAlias()),
+     * the key is read under RankedCandidates::KEY_ALIAS beside the select list, through the query()
+     * callback that queryScoutModelsByIds() applies, in a scope applied after the model's own (which
+     * may select()), so a row is matched to its id (ruling D13); RankedCandidates::takeKey() takes the
+     * alias out of the model's attributes and original after it is hydrated, so a retrieved listener
+     * sees it there. Every other model is matched by its own key, and never has the alias (ruling
+     * ER-135). A union is read as one derived table, and an override that reads without the callback
+     * selects no alias: its models are matched by their own key.
      *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
@@ -444,7 +446,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
                 $query->setQuery($rows->getQuery())->withoutGlobalScopes();
             }
 
-            $query->withGlobalScope(RankedCandidates::KEY_ALIAS, fn (EloquentBuilder $query) => RankedCandidates::selectKey($query->getQuery(), RankedCandidates::keyColumn($query)));
+            $query->withGlobalScope(RankedCandidates::KEY_ALIAS, fn (EloquentBuilder $query) => RankedCandidates::needsKeyAlias($query->getQuery(), $query->getModel())
+                ? RankedCandidates::selectKey($query->getQuery(), RankedCandidates::keyColumn($query))
+                : null);
         };
 
         $models = [];
