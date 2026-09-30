@@ -203,6 +203,46 @@ class PostgresAnalyzeFailureTest extends TestCase
     }
 
     /**
+     * L5 (round 10). When the connection is lost during the ANALYZE, the rollback to the savepoint
+     * fails too, and Laravel has by then reset the transaction level to 0: the caller's transaction
+     * went with the connection. Swallowed, the caller's closure carried on at level 0, its later
+     * statements autocommitted, and DB::transaction() returned normally over an empty index. The
+     * failure is thrown when the rollback to the savepoint fails; D9 holds while the transaction survives.
+     */
+    public function test_a_connection_lost_during_analyze_inside_the_callers_transaction_is_thrown(): void
+    {
+        $connection = DB::connection();
+        $killed     = false;
+        $connection->beforeExecuting(function (string $query) use ($connection, &$killed) {
+            if (!$killed && stripos($query, 'analyze') === 0 && $connection->transactionLevel() > 0) {
+                $killed = true;
+                $pid    = $connection->getPdo()->query('select pg_backend_pid()')->fetchColumn();
+                $this->locker->statement('select pg_terminate_backend(?)', [$pid]);
+                usleep(300000); // the backend exits before the ANALYZE is sent
+            }
+        });
+
+        $levels = [];
+        try {
+            DB::transaction(function () use (&$levels) {
+                DB::table('products')->insert(['title' => 'Before the rebuild', 'price' => 10]);
+                Artisan::call('fuzzy-search:rebuild', ['model' => User::class]);
+                $levels[] = DB::transactionLevel();
+                DB::table('products')->insert(['title' => 'After the rebuild', 'price' => 10]);
+            });
+            $this->fail('DB::transaction() returned normally after its connection was lost');
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->assertStringContainsStringIgnoringCase('analyze', $e->getSql());
+        }
+
+        $this->assertTrue($killed, 'the ANALYZE ran inside the transaction');
+        $this->assertSame([], $levels, 'the closure went on after the rebuild');
+        $this->assertSame(0, DB::table('products')->whereIn('title', ['Before the rebuild', 'After the rebuild'])->count(), 'a statement autocommitted');
+        $this->assertSame(0, DB::table('fuzzy_index_documents')->count());
+        $this->assertSame([], $this->reported);
+    }
+
+    /**
      * On a deadlock or a serialization failure, Laravel's nested transaction() drops its level
      * without ROLLBACK TO SAVEPOINT (MySQL has rolled the whole transaction back by then), so on
      * PostgreSQL the caller's transaction stayed aborted: its next statement failed with 25P02. The

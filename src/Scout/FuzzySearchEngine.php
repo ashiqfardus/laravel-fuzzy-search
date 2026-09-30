@@ -69,7 +69,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
     public function search(Builder $builder)
     {
-        return $this->results($builder, 0, $builder->limit ?? 15);
+        // A negative take() counts as 0, as on InMemorySearch and FederatedSearch: array_slice()
+        // cut it from the end, serving every match but the last few, past the default of 15.
+        return $this->results($builder, 0, max(0, (int) ($builder->limit ?? 15)));
     }
 
     public function paginate(Builder $builder, $perPage, $page)
@@ -252,9 +254,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     }
 
     /**
-     * The query's index terms. A query below min_search_length has none, so it matches nothing
-     * (a total of 0), as Model::search() does — see SearchBuilder::belowMinSearchLength(). A
-     * longer one is searched on its first query.max_term_length characters.
+     * The query's index terms. A query below min_search_length (a null or empty one too) has none,
+     * so it matches nothing (a total of 0), as Model::search() does — see
+     * SearchBuilder::belowMinSearchLength(). A longer one is searched on its first
+     * query.max_term_length characters.
      *
      * @return string[]
      */
@@ -267,7 +270,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             throw new NotSupportedException('The fuzzy-search Scout engine does not support hybrid (semantic) search.');
         }
 
-        $query = trim(Utf8::clean($builder->query));
+        // Scout's search() takes null, and Laravel's ConvertEmptyStringsToNull middleware turns an
+        // empty ?q= into one: an empty query, which matches nothing (ruling D17).
+        $query = trim(Utf8::clean((string) $builder->query));
 
         if (SearchBuilder::belowMinSearchLength($query)) {
             return [];
@@ -422,8 +427,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * that queryScoutModelsByIds() applies, in a scope applied after the model's own (which may
      * select()), so a row is matched to its id when a select() leaves the key out (ruling D13), as
      * RankedCandidates reads it; RankedCandidates::takeKey() then takes the alias out of the model's
-     * attributes and original, so it never reaches them. A union is read as one derived table, and an override that reads
-     * without the callback selects no alias: its models are matched by their own key.
+     * attributes and original before the search returns them (a `retrieved` listener, which runs
+     * during hydration, still sees it). A union is read as one derived table, and an override that
+     * reads without the callback selects no alias: its models are matched by their own key.
      *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
