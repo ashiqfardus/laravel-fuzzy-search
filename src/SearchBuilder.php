@@ -1786,7 +1786,6 @@ class SearchBuilder
             return ['total' => $total, 'page' => collect()];
         }
 
-        $limit = min($limit, $total - $offset); // take(PHP_INT_MAX) reads what remains
         $this->applyExplicitOrder($query, true);
         $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
 
