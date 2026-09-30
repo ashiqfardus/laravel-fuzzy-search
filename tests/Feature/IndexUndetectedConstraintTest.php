@@ -125,6 +125,39 @@ class IndexUndetectedConstraintTest extends TestCase
     }
 
     /**
+     * L13 (round 10): a union whose parts select no key has none in the derived table the index path
+     * reads it as, and every read failed with the database's unknown-column error, which did not say
+     * what to do. It throws a LogicException that names the fix; a union whose parts select the key
+     * is served, a select() of its own without the key too (ruling D13).
+     */
+    public function test_a_union_that_selects_no_key_is_rejected_naming_the_fix(): void
+    {
+        $union = fn (array $columns) => User::search('doe')->typoTolerance(0)->useInvertedIndex()->select($columns)->where('id', '>', 0)
+            ->query(fn ($query) => $query->union(User::query()->select($columns)->where('name', 'Alice Smith')));
+
+        $reads = [
+            'get'              => fn ($search) => $search->get(),
+            'first'            => fn ($search) => $search->first(),
+            'count'            => fn ($search) => $search->count(),
+            'paginate'         => fn ($search) => $search->paginate(5),
+            'orderBy paginate' => fn ($search) => $search->orderBy('name')->paginate(5),
+        ];
+
+        foreach ($reads as $read => $run) {
+            try {
+                $run($union(['name', 'email']));
+                $this->fail("{$read}: served a union without the key");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString("select the key ('id') in every part of the union", $e->getMessage(), $read);
+            }
+        }
+
+        $this->assertSame(['Jane Doe', 'John Doe'], $union(['id', 'name', 'email'])->orderBy('name')->get()->pluck('name')->all());
+        $this->assertSame(['Jane Doe', 'John Doe'], $union(['users.id', 'name', 'email'])->orderBy('name')->get()->pluck('name')->all());
+        $this->assertSame(['Jane Doe', 'John Doe'], $union(['*'])->orderBy('name')->get()->pluck('name')->all());
+    }
+
+    /**
      * didYouMean() checks its candidates against the base query's keys (ruling ER-127): under a union
      * base that read added a column to the union's first part only, and failed.
      */

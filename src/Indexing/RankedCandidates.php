@@ -447,6 +447,12 @@ final class RankedCandidates
      * Server rejects an ORDER BY in a derived table without TOP or OFFSET (a union with a limit stays
      * unsupported there, as on the LIKE path). $base itself when it has no union, so a second call
      * changes nothing.
+     *
+     * Every read then names the key through that table, so a union whose parts select no key has
+     * none to name, and failed with the database's unknown-column error: it throws a LogicException
+     * that names the fix instead (see selectsKey()).
+     *
+     * @throws \LogicException
      */
     public static function rows(Builder $base): Builder
     {
@@ -456,14 +462,49 @@ final class RankedCandidates
             return $base;
         }
 
+        $model = $base->getModel();
+
+        if (!self::selectsKey($query, $model->getKeyName())) {
+            throw new \LogicException(sprintf(
+                "%s: an index search reads a union as one table by its key, and this union's first part selects no key: select the key ('%s') in every part of the union.",
+                $model::class,
+                $model->getKeyName()
+            ));
+        }
+
         if ($query->unionLimit === null && $query->unionOffset === null) {
             $query->unionOrders            = null;
             $query->bindings['unionOrder'] = [];
         }
 
-        $model = $base->getModel();
-
         return $model->newQueryWithoutScopes()->fromSub($query, $model->getTable())->setEagerLoads($base->getEagerLoads());
+    }
+
+    /**
+     * Whether a union's rows carry $key: the first part's select list names the union's columns, and
+     * it is every column (none, * or table.*), or it holds a column named $key, or one aliased so. A
+     * raw column that is not one name (a call, a list: selectRaw('name, email')) is taken to hold
+     * it, since only the database can tell, and a union lacking it still fails there.
+     */
+    private static function selectsKey(QueryBuilder $query, string $key): bool
+    {
+        foreach ($query->columns ?? ['*'] as $column) {
+            $sql = trim($column instanceof \Illuminate\Contracts\Database\Query\Expression ? (string) $column->getValue($query->getGrammar()) : (string) $column);
+
+            if (preg_match('/\s+as\s+(\S+)$/i', $sql, $alias) === 1) {
+                $sql = $alias[1];
+            } elseif (preg_match('/[\s,(]/', $sql) === 1) {
+                return true;
+            }
+
+            $name = trim(substr($sql, (int) strrpos('.' . $sql, '.')), '"`[]');
+
+            if ($name === '*' || strcasecmp($name, $key) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
