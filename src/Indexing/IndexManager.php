@@ -302,14 +302,16 @@ class IndexManager
      *
      * Best-effort (ruling D9): statistics only make searches faster, and the index they describe is
      * written already, so a failure here, in the check's catalog read as in the ANALYZE (a
-     * lock_timeout while autovacuum holds the table, a lost connection), is report()ed and never
-     * thrown. Thrown from the check at a commit, it reached the caller of a DB::transaction() that
-     * had committed, and Laravel skipped the transaction's later after-commit callbacks; thrown at
-     * the end of a rebuild, it failed a rebuild that had indexed every row. Inside the caller's
-     * transaction (a rebuild run in one, or an --async rebuild's finally() on the sync queue, inside
-     * the batch store's transaction) it runs under a savepoint, rolled back on any failure: on
-     * PostgreSQL a failed statement aborts the whole transaction, so the caller's next statement
-     * failed instead, and a batch's COMMIT rolled back the whole rebuilt index.
+     * lock_timeout while autovacuum holds the table, a lost connection), is report()ed, not thrown
+     * (a lost connection inside a transaction aside, below). Thrown from the check at a commit, it
+     * reached the caller of a DB::transaction() that had committed, and Laravel skipped the
+     * transaction's later after-commit callbacks; thrown at the end of a rebuild, it failed a
+     * rebuild that had indexed every row. Inside the caller's transaction (a rebuild run in one, or
+     * an --async rebuild's finally() on the sync queue, inside the batch store's transaction) it
+     * runs under a savepoint, rolled back on any failure: on PostgreSQL a failed statement aborts
+     * the whole transaction, so the caller's next statement failed instead, and a batch's COMMIT
+     * rolled back the whole rebuilt index. A lost connection there is thrown: the caller's
+     * transaction went with it, and the rollback to the savepoint fails too.
      */
     public function analyzeIndex(bool $whenStale = false): void
     {
@@ -360,7 +362,10 @@ class IndexManager
                     $connection->rollBack($level);
                 }
             } catch (\Throwable) {
-                // a lost connection: the caller's transaction went with it
+                // A lost connection: the caller's transaction went with it, and Laravel has reset
+                // the level to 0. Thrown, as the caller's own next statement would have been:
+                // swallowed, the caller carried on at level 0, autocommitting what followed.
+                throw $e;
             }
 
             report($e);
