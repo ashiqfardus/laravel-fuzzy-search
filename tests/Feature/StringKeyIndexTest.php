@@ -114,6 +114,39 @@ class StringKeyIndexTest extends TestCase
         $this->assertSame(array_slice($all, 1), $this->names($make()->where('name', '!=', 'Zebra 01')->orderBy('name')->get(), false), 'capped ranking: orderBy under a where()');
     }
 
+    /** A search over a union of two parts, 12 string-keyed matches in all, and the most bindings any statement of $read sent. */
+    private function overAUnion(\Closure $read): array
+    {
+        config(['fuzzy-search.bm25.candidate_chunk' => 5, 'fuzzy-search.max_candidates' => 5]);
+        $make = fn () => StringKeyItem::search('zebra')->typoTolerance(0)->useInvertedIndex()->where('name', '<', 'Zebra 07')
+            ->query(fn ($query) => $query->unionAll(StringKeyItem::query()->where('name', '>=', 'Zebra 07')));
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $rows     = $read($make);
+        $bindings = max(array_map(fn (array $query) => count($query['bindings']), DB::getQueryLog()));
+        DB::disableQueryLog();
+
+        return [$rows, $bindings];
+    }
+
+    /**
+     * An ordered read of a string ranking over a union is never a bound list past one chunk on MySQL
+     * or MariaDB (ruling ER-132's lists), since MySQL compares a bound list with the union's derived
+     * table row by row: at 34,000 matches an ordered page took 54 s where the postings subquery
+     * takes 0.5 s. It goes through the subquery there.
+     */
+    public function test_an_ordered_string_ranking_over_a_union_is_not_bound_past_one_chunk_on_mysql(): void
+    {
+        [$rows, $bindings] = $this->overAUnion(fn (\Closure $make) => array_merge(...array_map(fn (int $page) => $make()->orderBy('name')->paginate(4, 'page', $page)->items(), [1, 2, 3])));
+
+        $this->assertSame(array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12)), $this->names($rows, false));
+
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertLessThan(count(self::KEYS), $bindings, 'a chunk of ids at most, beside the two where()s: never the 12 ranked ids');
+        }
+    }
+
     public function test_scout_reads_mixed_string_keys(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

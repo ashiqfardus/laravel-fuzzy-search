@@ -161,9 +161,9 @@ final class RankedCandidates
      * key, as accepted() checks one, so the rows read are bounded by the ranking, however large the
      * table:
      *  - an integer key, on every database but SQL Server: the whole ranking, inlined;
-     *  - a string key on MySQL or MariaDB, or on SQLite: the whole ranking, bound, while the
-     *    statement stays under the database's placeholder limit (65,535; SQLite's 32,766, or 999
-     *    before 3.32);
+     *  - a string key on MySQL or MariaDB, but over a union (see listsWhole()), or on SQLite: the
+     *    whole ranking, bound, while the statement stays under the database's placeholder limit
+     *    (65,535; SQLite's 32,766, or 999 before 3.32);
      *  - any key: a ranking of at most one bm25.candidate_chunk.
      * Otherwise, on the index's own connection, a subquery on the postings restricts it
      * (Bm25Scorer::whereRanked()): it binds no id, and it lets every match through, those rank()
@@ -212,7 +212,8 @@ final class RankedCandidates
     /**
      * Whether matches() lists a ranking of $count ids that holds every match, past one chunk: an
      * integer key but on SQL Server, or a string key whose bound list keeps the statement under the
-     * placeholder limit, with the query's own bindings and the one orderedKeys() may add.
+     * placeholder limit, with the query's own bindings and the one orderedKeys() may add. Not a
+     * string key over a union on MySQL or MariaDB (see readsUnion()).
      */
     private static function listsWhole(Builder $base, bool $int, int $count): bool
     {
@@ -224,7 +225,7 @@ final class RankedCandidates
         }
 
         $limit = match (true) {
-            DbDialect::isMySqlFamily($driver) => 65535,
+            DbDialect::isMySqlFamily($driver) => self::readsUnion($base) ? 0 : 65535,
             $driver === DbDialect::SQLITE     => version_compare((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.32.0', '>=') ? 32766 : 999,
             default                           => 0,
         };
@@ -462,6 +463,22 @@ final class RankedCandidates
         $model = $base->getModel();
 
         return $model->newQueryWithoutScopes()->fromSub($query, $model->getTable())->setEagerLoads($base->getEagerLoads());
+    }
+
+    /**
+     * Whether $base reads a union: its own, or one in a derived FROM (rows()'s wrap, or a fromSub()
+     * of the caller's). MySQL and MariaDB materialize a union with no index on the key, and MySQL
+     * then compares a bound list of string keys with it row by row, so a string ranking is not read
+     * through a long bound list there: at 34,000 rows an ordered page took 54 s (0.5 s through the
+     * postings subquery). A word "union" elsewhere in a derived FROM (a column so named) only
+     * chooses the subquery.
+     */
+    private static function readsUnion(Builder $base): bool
+    {
+        $query = $base->getQuery();
+
+        return !empty($query->unions) || ($query->from instanceof \Illuminate\Contracts\Database\Query\Expression
+            && preg_match('/\bunion\b/i', (string) $query->from->getValue($query->getGrammar())) === 1);
     }
 
     /**
