@@ -3642,7 +3642,9 @@ class SearchBuilder
         // escaped so they match literally). Never swap these: passing $safeTerm to str_starts_with
         // would miss values containing those characters, and passing $rawTerm to LIKE would treat
         // them as wildcards.
-        $rawTerm  = Utf8::lowerAscii($this->searchTerm);
+        // Cut at query.max_term_length, as get() cuts it: the whole term was bound as a LIKE prefix,
+        // and one past 4,000 characters threw on SQL Server, past 50,000 bytes on SQLite.
+        $rawTerm  = Utf8::lowerAscii(FuzzySearch::capTerm($this->searchTerm));
         $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
 
         $results = $this->suggestCandidateQuery($safeTerm)->limit($limit * 3)->get();
