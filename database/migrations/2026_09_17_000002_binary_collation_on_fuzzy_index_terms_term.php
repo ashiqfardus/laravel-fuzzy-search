@@ -11,8 +11,8 @@ return new class extends Migration
         // MySQL/MariaDB default to a utf8mb4_*_ci collation, under which café = cafe and
         // Café = café. The unique key on `term` then collapses variants the tokenizer keeps
         // apart, and indexing a document containing both crashed with "Undefined array key"
-        // (B25). Every other driver already compares the column byte-wise; utf8mb4_bin makes
-        // MySQL/MariaDB agree. All terms are lowercased by the tokenizer, so searches are
+        // (B25). PostgreSQL and SQLite already compare the column byte-wise; utf8mb4_bin makes
+        // MySQL/MariaDB agree, and 2026_09_30_000001 does the same for SQL Server. All terms are lowercased by the tokenizer, so searches are
         // unaffected. The key is a term(191) prefix — a stricter collation cannot violate it.
         if (!DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
             return;
