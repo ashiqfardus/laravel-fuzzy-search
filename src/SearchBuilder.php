@@ -1593,6 +1593,10 @@ class SearchBuilder
             $this->eagerLoadRelationPaths($base, $this->relationPaths());
         }
 
+        // The caller's where(A)->orWhere(B) as one group before the filters (RE-1); the ranking's
+        // own restriction is a global scope, which Eloquent groups itself.
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($base);
+
         foreach ($this->filters as $filter) {
             if ($filter['operator'] === 'IN') {
                 $base->whereIn($filter['column'], $filter['value']);
@@ -1862,6 +1866,9 @@ class SearchBuilder
             : ($this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query);
 
         $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+
+        // The caller's where(A)->orWhere(B) as one group, before the query and the filters (RE-1).
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
         // Ruling ER-95: an unknown field's message, shown to whoever typed the query, names only the
         // fields the model shows. Every column is still matched, hidden ones included (ER-66).
@@ -2473,6 +2480,9 @@ class SearchBuilder
     protected function buildQuery(): void
     {
         $this->capSearchTerm(); // see capSearchTerm(): the LIKE path's one call
+
+        // The caller's where(A)->orWhere(B) as one group, before the search and the filters (RE-1).
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
         // Process search term
         $searchTerm = $this->processSearchTerm($this->searchTerm);
@@ -3745,8 +3755,9 @@ class SearchBuilder
     {
         $driver = $this->query->getConnection()->getDriverName();
 
-        // Clone query to avoid modifying the original
+        // Clone query to avoid modifying the original, the caller's where(A)->orWhere(B) as one group (RE-1)
         $suggestQuery = clone $this->query;
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($suggestQuery);
 
         $targets = $this->suggestTargets();
         $paths   = array_values(array_unique(array_column(array_filter($targets, fn (array $t) => $t['relation'] !== null), 'relation')));

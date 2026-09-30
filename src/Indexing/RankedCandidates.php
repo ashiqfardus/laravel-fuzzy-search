@@ -459,6 +459,28 @@ final class RankedCandidates
     }
 
     /**
+     * The wheres of $query from the $from-th on as one group when one of them is an or (RE-1), as
+     * Eloquent groups a scope's wheres: a search predicate, a filter() or a Scout where() beside
+     * them then holds for all of them, and search($term)->where(A)->orWhere(B) reads
+     * (A or B) and <search>, not A or (B and <search>). Wheres with no or stay as they are, so
+     * their SQL does not change, and the bindings keep their order.
+     */
+    public static function groupOrWheres(Builder|QueryBuilder $query, int $from = 0): void
+    {
+        $query    = $query instanceof Builder ? $query->getQuery() : $query;
+        $slice    = array_slice($query->wheres, $from);
+        $booleans = array_column($slice, 'boolean');
+
+        if (array_filter($booleans, fn (string $boolean) => str_contains($boolean, 'or')) === []) {
+            return;
+        }
+
+        $group         = $query->forNestedWhere();
+        $group->wheres = $slice;
+        $query->wheres = [...array_slice($query->wheres, 0, $from), ['type' => 'Nested', 'query' => $group, 'boolean' => str_replace(' not', '', $booleans[0])]];
+    }
+
+    /**
      * $base, with a union read as one derived table named as the model's table (rulings ER-125,
      * ER-127): every read here restricts the union's rows to ranked ids, adds the key to the select
      * list or orders the rows, and on a union each of those reached only its first part (the other
