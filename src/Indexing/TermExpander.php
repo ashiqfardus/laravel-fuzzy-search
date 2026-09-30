@@ -109,11 +109,12 @@ final class TermExpander
      *
      * Where `term` is byte-ordered (SQLite, and MySQL/MariaDB since the utf8mb4_bin migration)
      * the prefix becomes a half-open range, which a btree index can seek; LIKE 'x%' would be a
-     * full scan there. Everywhere else the column is compared under a UCA collation, where the
-     * successor character ('{' after 'z', ':' after '9') sorts BELOW letters and digits and the
-     * range would silently return nothing — those drivers keep LIKE. On PostgreSQL that costs a
-     * scan unless fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there
-     * if as-you-type latency matters on a large dictionary.
+     * full scan there. PostgreSQL compares the column under a UCA collation, where the successor
+     * character ('{' after 'z', ':' after '9') sorts BELOW letters and digits and the range would
+     * silently return nothing, so it keeps LIKE; so does SQL Server, whose column is byte-ordered
+     * only once 2026_09_30_000001 has run. On PostgreSQL that costs a scan unless
+     * fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there if
+     * as-you-type latency matters on a large dictionary.
      *
      * @param  ?string $modelType   Restrict to terms posted under this model_type (see postedUnder());
      *                              null leaves the dictionary unscoped.

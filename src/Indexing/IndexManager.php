@@ -708,7 +708,7 @@ class IndexManager
             $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
 
             // One posting per (term, column); a term missing from $termIds means a pre-migration
-            // MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
+            // collation collapsed it into a variant: MySQL/MariaDB *_ci (B25), SQL Server's default.
             $postingRows  = [];
             $documentRows = [];
             foreach ($byModel as $id => $byColumn) {
@@ -948,7 +948,8 @@ class IndexManager
 
     /**
      * One posting row per (term, column). Terms missing from $termIds are skipped (B25: an
-     * un-migrated *_ci dictionary collapsed them into a variant).
+     * un-migrated *_ci dictionary, or SQL Server's before 2026_09_30_000001, collapsed them into a
+     * variant).
      */
     private function postingRows(array $byColumn, $termIds, string $modelType, int|string $modelId): array
     {
