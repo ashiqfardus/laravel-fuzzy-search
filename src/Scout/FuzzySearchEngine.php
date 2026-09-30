@@ -69,7 +69,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
     public function search(Builder $builder)
     {
-        return $this->results($builder, 0, $builder->limit ?? 15);
+        // A negative take() counts as 0, as on InMemorySearch and FederatedSearch: array_slice()
+        // cut it from the end, serving every match but the last few, past the default of 15.
+        return $this->results($builder, 0, max(0, (int) ($builder->limit ?? 15)));
     }
 
     public function paginate(Builder $builder, $perPage, $page)

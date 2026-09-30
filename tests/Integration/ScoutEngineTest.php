@@ -708,6 +708,35 @@ class ScoutEngineTest extends TestCase
         }
     }
 
+    /**
+     * L3 (round 10). search() handed a negative take() to array_slice(), which then cut from the end:
+     * take(-3) served every match but the last three, past the 15-row default and in relevance order.
+     * A negative limit counts as 0, as on InMemorySearch and FederatedSearch.
+     */
+    public function test_a_negative_scout_take_serves_no_rows(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        $this->seedOrderableWidgets();
+        $more = [];
+        foreach (['widget delta', 'widget epsilon', 'widget zeta'] as $name) {
+            $more[] = $this->app['db']->table('users')->insertGetId([
+                'name' => $name, 'email' => 'negative_' . uniqid() . '@test.com', 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+        $this->makeEngine()->update(ScoutIndexedUser::whereIn('id', $more)->get());
+        $this->assertCount(6, $this->scoutBuilder()->get(), 'baseline: six matches');
+
+        foreach ([-3, -1] as $take) {
+            $this->assertSame([], $this->resultIds($this->scoutBuilder()->take($take)->get()), "take({$take})->get()");
+            $this->assertSame([], $this->scoutBuilder()->take($take)->keys()->all(), "take({$take})->keys()");
+            $this->assertSame([], $this->resultIds($this->scoutBuilder()->orderBy('name')->take($take)->get()), "take({$take})->orderBy()->get()");
+            $this->assertSame(6, $this->scoutBuilder()->take($take)->raw()['total'], "take({$take}): the total still counts every match");
+        }
+    }
+
     public function test_scout_paginate_serves_an_empty_page_for_a_page_too_large_for_an_offset(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {
