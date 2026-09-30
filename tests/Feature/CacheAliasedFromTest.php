@@ -20,9 +20,9 @@ use PHPUnit\Framework\Attributes\DataProvider;
  *
  * The keyed re-read has worked under an alias since ER-107, so the first two tests pass either way.
  * The rule still decides the last one: a fromSub() whose subquery joins one-to-many holds several
- * rows for a key, a re-read returns all of them, and a hit served the last (omega) where the miss
- * served the first (alpha). simplePaginate()'s look-ahead row (Jane's beta) has another key, so the
- * keys it caches are distinct and the rule alone decides there too.
+ * rows for a key, and a re-read by key serves the key's first row (alpha). The terminals that serve
+ * that row pass either way; the two that serve John's other row (omega) alone, so under a key that
+ * is cached once, fail without the rule: their hit served alpha.
  */
 class CacheAliasedFromTest extends TestCase
 {
@@ -65,18 +65,20 @@ class CacheAliasedFromTest extends TestCase
         $this->assertSame($miss, $hit);
     }
 
-    /** @return array<string, array{0: \Closure}> */
+    /** @return array<string, array{0: \Closure, 1: string}> */
     public static function oneRowTerminals(): array
     {
         return [
-            'take(1)->get()'    => [fn (SearchBuilder $search) => $search->take(1)->get()],
-            'first()'           => [fn (SearchBuilder $search) => collect([$search->first()])],
-            'simplePaginate(1)' => [fn (SearchBuilder $search) => collect($search->simplePaginate(1)->items())],
+            'take(1)->get()'            => [fn (SearchBuilder $search) => $search->take(1)->get(), 'John Doe/alpha'],
+            'first()'                   => [fn (SearchBuilder $search) => collect([$search->first()]), 'John Doe/alpha'],
+            'simplePaginate(1)'         => [fn (SearchBuilder $search) => collect($search->simplePaginate(1)->items()), 'John Doe/alpha'],
+            'skip(2)->take(1)->get()'   => [fn (SearchBuilder $search) => $search->skip(2)->take(1)->get(), 'John Doe/omega'],
+            'simplePaginate(1), page 3' => [fn (SearchBuilder $search) => collect($search->simplePaginate(1, 'page', 3)->items()), 'John Doe/omega'],
         ];
     }
 
     #[DataProvider('oneRowTerminals')]
-    public function test_a_hit_on_a_from_subquery_joining_one_to_many_returns_the_miss_row(\Closure $terminal): void
+    public function test_a_hit_on_a_from_subquery_joining_one_to_many_returns_the_miss_row(\Closure $terminal, string $row): void
     {
         Schema::dropIfExists('cache_notes');
         Schema::create('cache_notes', function ($table) {
@@ -100,7 +102,7 @@ class CacheAliasedFromTest extends TestCase
 
         $miss = $run();
 
-        $this->assertSame(['John Doe/alpha'], $miss);
+        $this->assertSame([$row], $miss);
         $this->assertSame($miss, $run());
     }
 }
