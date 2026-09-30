@@ -506,16 +506,27 @@ final class RankedCandidates
      * columns): true when the select list is every column (none, * or table.*) or holds a column
      * so named, or aliased so; null when it holds a raw column that is not one name (a call, a list:
      * selectRaw('name, email')), which only the database can tell; false otherwise.
+     *
+     * $strict asks whether that column is the model's own key, to hydrate by (needsKeyAlias()): a
+     * column aliased as the key may be another one (email as id), and the key in another letter
+     * case is named so by some databases (MySQL returns ID), so either makes the answer null, and
+     * only every column, or the key's own name in its own case, makes it true.
      */
-    private static function selectsKey(QueryBuilder $query, string $key): ?bool
+    private static function selectsKey(QueryBuilder $query, string $key, bool $strict = false): ?bool
     {
         $unknown = false;
+        $found   = false;
 
         foreach ($query->columns ?? ['*'] as $column) {
             $sql = trim($column instanceof \Illuminate\Contracts\Database\Query\Expression ? (string) $column->getValue($query->getGrammar()) : (string) $column);
 
             if (preg_match('/\s+as\s+(\S+)$/i', $sql, $alias) === 1) {
                 $sql = $alias[1];
+
+                if ($strict) {
+                    $unknown = $unknown || strcasecmp(trim($sql, '"`[]'), $key) === 0;
+                    continue;
+                }
             } elseif (preg_match('/[\s,(]/', $sql) === 1) {
                 $unknown = true;
                 continue;
@@ -523,23 +534,29 @@ final class RankedCandidates
 
             $name = trim(substr($sql, (int) strrpos('.' . $sql, '.')), '"`[]');
 
-            if ($name === '*' || strcasecmp($name, $key) === 0) {
-                return true;
+            if ($name === '*' || ($strict ? $name === $key : strcasecmp($name, $key) === 0)) {
+                if (!$strict) {
+                    return true;
+                }
+                $found = true;
+            } elseif ($strict && strcasecmp($name, $key) === 0) {
+                $unknown = true;
             }
         }
 
-        return $unknown ? null : false;
+        return $found && !$unknown ? true : ($unknown ? null : false);
     }
 
     /**
      * Whether a read of $model's rows must select the key under KEY_ALIAS to know each row's key:
-     * when a join may shadow it with another table's column of that name, or the select list may
-     * leave it out (ruling D13). Otherwise each model is matched by its own key, and the alias
-     * never reaches it (ruling ER-135; the Scout engine's map()).
+     * when a join may shadow it with another table's column of that name, or the select list is not
+     * provably the model's own key (ruling D13; selectsKey()'s strict answer: another column aliased
+     * as the key, or the key in another case, is not, RA-2). Otherwise each model is matched by its
+     * own key, and the alias never reaches it (ruling ER-135; the Scout engine's map()).
      */
     public static function needsKeyAlias(QueryBuilder $query, Model $model): bool
     {
-        return !empty($query->joins) || self::selectsKey($query, $model->getKeyName()) !== true;
+        return !empty($query->joins) || self::selectsKey($query, $model->getKeyName(), true) !== true;
     }
 
     /**

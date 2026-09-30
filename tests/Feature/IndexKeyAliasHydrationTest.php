@@ -131,4 +131,38 @@ class IndexKeyAliasHydrationTest extends TestCase
         $this->assertArrayHasKey('name', $this->seen, 'the retrieved event fired');
         $this->assertArrayNotHasKey(RankedCandidates::KEY_ALIAS, $this->seen, 'a retrieved listener saw the key alias');
     }
+
+    /**
+     * RA-2 (round 10 deep review): the engine skipped the alias when the select list named the key
+     * as a union needs it, which counts a column aliased as the key (`email as id`) and the key in
+     * another letter case (`ID`). Neither is the model's key to hydrate by: every row was dropped.
+     * The alias is skipped only where the select list is the model's own key, exactly.
+     */
+    public function test_a_select_that_names_the_key_otherwise_serves_the_matches(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        config(['scout.driver' => 'fuzzy-search', 'scout.queue' => false]);
+        AliasScoutUser::all()->searchable();
+        app(IndexManager::class)->indexBatch(User::all());
+
+        $selects = ['email as id' => ['name', 'email as id']];
+        // PostgreSQL folds nothing in a quoted name: "ID" is not a column there.
+        if ($this->dbDriver !== 'pgsql') {
+            $selects['ID'] = ['ID', 'name'];
+        }
+
+        foreach ($selects as $label => $columns) {
+            $scout   = fn () => AliasScoutUser::scoutSearch('doe')->query(fn ($query) => $query->select($columns))->orderBy('name');
+            $builder = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()->select($columns)->orderBy('name');
+
+            foreach (['Scout get' => fn () => $scout()->get(), 'Scout paginate' => fn () => collect($scout()->paginate(1, 'page', 2)->items()), 'builder get' => fn () => $builder()->get()] as $read => $run) {
+                $rows = $run();
+                $this->assertSame($read === 'Scout paginate' ? ['John Doe'] : ['Jane Doe', 'John Doe'], $rows->pluck('name')->all(), "{$label}, {$read}");
+                $this->assertTrue($rows->every(fn ($row) => $row->_score > 0), "{$label}, {$read}: scored");
+            }
+        }
+    }
 }
