@@ -307,7 +307,9 @@ final class RankedCandidates
      * list stays — an order may name its alias (withCount()'s posts_count, a selectRaw() column) — and
      * the key is read through an alias of its own. The page is one offset/limit read, however deep.
      *
-     * A join may repeat a model, which is served once, at its first row (ruling ER-108):
+     * A join may repeat a model, which is served once, at its first row (ruling ER-108), and so may a
+     * derived FROM (a fromSub() holding a join, a union whose parts overlap), whose order is never
+     * on the model's own table:
      *  - an order on the model's own columns only reads the model's table, with no join, restricted
      *    to the joined query's keys: one offset/limit read;
      *  - an order on a joined column keeps each model's first row by the order, ROW_NUMBER() over
@@ -322,7 +324,7 @@ final class RankedCandidates
      */
     public static function orderedKeys(QueryBuilder $query, string $qualifiedKey, int $offset, int $limit): array
     {
-        $order = empty($query->joins) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
+        $order = (empty($query->joins) && is_string($query->from)) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
         $key   = $qualifiedKey . ' as ' . self::KEY_ALIAS;
 
         if ($order === 'own') {
