@@ -87,13 +87,19 @@ class KeyCollationIndexTest extends TestCase
 
     public function test_the_index_path_reads_past_one_chunk_under_a_key_collation_of_its_own(): void
     {
-        config(['fuzzy-search.bm25.candidate_chunk' => 20]);
         $make = fn () => CollatedKeyItem::search('widget')->typoTolerance(0)->useInvertedIndex();
 
-        $this->assertSame(['widget 0000', 'widget 0001', 'widget 0002'], $make()->orderBy('name')->take(3)->get()->pluck('name')->all());
-        $this->assertSame(['widget 0015', 'widget 0016'], $make()->orderBy('name')->paginate(15, 'page', 2)->take(2)->pluck('name')->all());
-        $this->assertSame(250, $make()->orderBy('name')->count());
+        // Past one chunk the whole ranking is listed on MySQL, MariaDB and SQLite (ruling ER-132); a
+        // capped one is read through the postings subquery on every database.
+        foreach (['whole ranking' => 50000, 'capped ranking' => 100] as $ranking => $cap) {
+            config(['fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.bm25.max_postings_per_term' => $cap]);
 
+            $this->assertSame(['widget 0000', 'widget 0001', 'widget 0002'], $make()->orderBy('name')->take(3)->get()->pluck('name')->all(), $ranking);
+            $this->assertSame(['widget 0015', 'widget 0016'], $make()->orderBy('name')->paginate(15, 'page', 2)->take(2)->pluck('name')->all(), $ranking);
+            $this->assertSame(250, $make()->orderBy('name')->count(), $ranking);
+        }
+
+        config(['fuzzy-search.bm25.max_postings_per_term' => 50000]);
         $top = $make()->where('shelf', 'top')->paginate(15);
         $this->assertSame(5, $top->total());
         $this->assertEqualsCanonicalizing(['Key0000', 'Key0050', 'Key0100', 'Key0150', 'Key0200'], $top->pluck('code')->all());
@@ -105,10 +111,12 @@ class KeyCollationIndexTest extends TestCase
             $this->markTestSkipped('laravel/scout not installed.');
         }
 
-        config(['scout.driver' => 'fuzzy-search', 'fuzzy-search.bm25.candidate_chunk' => 20]);
-        $page = (new \Laravel\Scout\Builder(new CollatedKeyScoutItem, 'widget'))->orderBy('name')->paginate(3);
+        foreach (['whole ranking' => 50000, 'capped ranking' => 100] as $ranking => $cap) {
+            config(['scout.driver' => 'fuzzy-search', 'fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.bm25.max_postings_per_term' => $cap]);
+            $page = (new \Laravel\Scout\Builder(new CollatedKeyScoutItem, 'widget'))->orderBy('name')->paginate(3);
 
-        $this->assertSame(250, $page->total());
-        $this->assertSame(['widget 0000', 'widget 0001', 'widget 0002'], collect($page->items())->pluck('name')->all());
+            $this->assertSame(250, $page->total(), $ranking);
+            $this->assertSame(['widget 0000', 'widget 0001', 'widget 0002'], collect($page->items())->pluck('name')->all(), $ranking);
+        }
     }
 }

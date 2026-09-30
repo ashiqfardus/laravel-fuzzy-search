@@ -45,18 +45,26 @@ class IndexOrderWalkTest extends TestCase
         app(IndexManager::class)->indexBatch(Post::all());
     }
 
-    /** @return array<string, int> candidate_chunk => the walk it takes: ids in the query, or a paged walk of the table */
+    /**
+     * @return array<string, array<string, int>> the read => its config: the ids within one chunk, the
+     * whole ranking listed past one chunk (ruling ER-132), or a capped ranking, which the postings
+     * subquery restricts
+     */
     private function walks(): array
     {
-        return ['ids' => 200, 'paged' => 1];
+        return [
+            'ids'    => ['fuzzy-search.bm25.candidate_chunk' => 200],
+            'listed' => ['fuzzy-search.bm25.candidate_chunk' => 1],
+            'capped' => ['fuzzy-search.bm25.candidate_chunk' => 1, 'fuzzy-search.bm25.max_postings_per_term' => 1],
+        ];
     }
 
     public function test_order_by_a_with_count_alias_on_the_index_path(): void
     {
         $this->seedSagas();
 
-        foreach ($this->walks() as $walk => $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        foreach ($this->walks() as $walk => $settings) {
+            config($settings);
             $make = fn () => Post::search('saga')->useInvertedIndex()->withCount('comments')->orderBy('comments_count', 'desc');
 
             $this->assertSame(['Saga Two', 'Saga Three', 'Saga One'], $make()->get()->pluck('title')->all(), "{$walk} get");
@@ -73,8 +81,8 @@ class IndexOrderWalkTest extends TestCase
     {
         $this->seedSagas();
 
-        foreach ($this->walks() as $walk => $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        foreach ($this->walks() as $walk => $settings) {
+            config($settings);
             $make = fn () => Post::search('saga')->useInvertedIndex()
                 ->selectRaw('posts.*, posts.id * 10 as id_rank')->orderBy('id_rank', 'desc');
 
@@ -97,8 +105,8 @@ class IndexOrderWalkTest extends TestCase
     {
         $this->seedSagas();
 
-        foreach ($this->walks() as $walk => $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        foreach ($this->walks() as $walk => $settings) {
+            config($settings);
             $make = fn () => Post::search('saga')->useInvertedIndex()
                 ->join('comments', 'comments.post_id', '=', 'posts.id')->select('posts.*')->orderBy('posts.title');
 

@@ -631,25 +631,38 @@ class ScoutEngineTest extends TestCase
         return $statements;
     }
 
-    public function test_scout_order_by_restricts_by_the_ranked_ids_only_within_one_candidate_chunk(): void
+    /**
+     * H1 (round 10, ruling ER-132): past one chunk, a ranking that holds every match is listed whole,
+     * its integer ids inlined, on every database but SQL Server. There, and for a ranking capped at
+     * bm25.max_postings_per_term, the postings subquery restricts the read and lists no id.
+     */
+    public function test_scout_order_by_lists_a_whole_ranking_and_restricts_a_capped_one_by_the_postings(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {
             $this->markTestSkipped('laravel/scout not installed.');
         }
 
-        $this->seedOrderableWidgets();
+        [$top, $bottom, $middle] = $this->seedOrderableWidgets();
 
         // Within one chunk: one ordered statement, restricted to the three ranked ids.
         $within = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1));
         $this->assertCount(1, $within);
         $this->assertSame(3, $within[0][2], 'the ordered query is restricted to the ranked ids');
 
-        // Past one chunk: no statement carries more ids than one chunk — the ids are not listed.
+        // Past one chunk: the whole ranking, but on SQL Server.
         config(['fuzzy-search.bm25.candidate_chunk' => 2]);
         $past = $this->orderedStatements(fn () => $this->scoutBuilder()->orderBy('name')->paginate(2, 'page', 1));
         $this->assertNotEmpty($past);
         foreach ($past as [$sql, , $ids]) {
-            $this->assertLessThanOrEqual(2, $ids, "an id list past one chunk: {$sql}");
+            $this->assertSame($this->dbDriver === 'sqlsrv' ? 0 : 3, $ids, "past one chunk: {$sql}");
+        }
+
+        // A capped ranking: the subquery, and every match past the cap.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 2]);
+        $capped = $this->orderedStatements(fn () => $this->assertSame([$bottom, $middle, $top], $this->resultIds($this->scoutBuilder()->orderBy('name')->get())));
+        $this->assertNotEmpty($capped);
+        foreach ($capped as [$sql, , $ids]) {
+            $this->assertSame(0, $ids, "a capped ranking: {$sql}");
         }
     }
 

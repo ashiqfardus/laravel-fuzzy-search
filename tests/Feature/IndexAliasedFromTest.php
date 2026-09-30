@@ -30,7 +30,8 @@ class IndexAliasedFromTest extends TestCase
     {
         app(IndexManager::class)->indexBatch(User::all());
 
-        // candidate_chunk 200: the ranked ids are listed; 1: the postings subquery restricts the read.
+        // candidate_chunk 200: the ranked ids are listed; 1: past one chunk, the whole ranking is
+        // listed too, but on SQL Server, where the postings subquery restricts the read (ruling ER-132).
         foreach ([200, 1] as $chunk) {
             config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
 
@@ -57,6 +58,22 @@ class IndexAliasedFromTest extends TestCase
                 $this->assertSame(['Jane Doe'], $make()->where('u.email', 'jane@example.com')->get()->pluck('name')->all(), "{$at}: constrained get");
                 $this->assertSame(1, $make()->where('u.email', 'jane@example.com')->count(), "{$at}: constrained count");
             }
+        }
+    }
+
+    /** A ranking capped at bm25.max_postings_per_term: the postings subquery names the key through the alias too. */
+    public function test_an_ordered_read_of_a_capped_ranking_reads_an_aliased_or_subquery_from(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        config(['fuzzy-search.bm25.max_postings_per_term' => 1]);
+
+        $byKey = User::query()->whereIn('name', ['John Doe', 'Jane Doe'])->orderByDesc('id')->pluck('name')->all();
+
+        foreach ($this->sources() as $label => $make) {
+            $this->assertSame(['Jane Doe', 'John Doe'], $make()->orderBy('name')->get()->pluck('name')->all(), "{$label}: orderBy get");
+            $this->assertSame(2, $make()->orderBy('name')->paginate(1)->total(), "{$label}: orderBy total");
+            $this->assertSame([$byKey[1]], $make()->orderBy('u.id', 'desc')->paginate(1, 'page', 2)->pluck('name')->all(), "{$label}: orderBy(u.id) page 2");
+            $this->assertSame(['Jane Doe'], $make()->where('u.email', 'jane@example.com')->orderBy('name')->get()->pluck('name')->all(), "{$label}: constrained orderBy");
         }
     }
 }

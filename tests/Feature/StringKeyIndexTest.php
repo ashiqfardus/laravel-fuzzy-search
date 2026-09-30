@@ -92,7 +92,7 @@ class StringKeyIndexTest extends TestCase
         $all  = array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12));
         $make = fn () => StringKeyItem::search('zebra')->typoTolerance(0)->useInvertedIndex();
 
-        foreach ([200 => 'ids in the query', 5 => 'postings subquery'] as $chunk => $walk) {
+        foreach ([200 => 'ids in the query', 5 => 'past one chunk'] as $chunk => $walk) {
             config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
 
             $this->assertSame($all, $this->names($make()->get()), "{$walk}: get");
@@ -105,6 +105,13 @@ class StringKeyIndexTest extends TestCase
             $make()->cache()->get();
             $this->assertSame($all, $this->names($make()->cache()->get()), "{$walk}: a cache hit");
         }
+
+        // A ranking capped at bm25.max_postings_per_term: the postings subquery restricts the
+        // ordered read on every database (a whole one past one chunk is listed on MySQL, MariaDB
+        // and SQLite, ruling ER-132).
+        config(['fuzzy-search.bm25.max_postings_per_term' => 5]);
+        $this->assertSame($all, $this->names($make()->orderBy('name')->get(), false), 'capped ranking: orderBy');
+        $this->assertSame(array_slice($all, 1), $this->names($make()->where('name', '!=', 'Zebra 01')->orderBy('name')->get(), false), 'capped ranking: orderBy under a where()');
     }
 
     public function test_scout_reads_mixed_string_keys(): void
@@ -117,7 +124,7 @@ class StringKeyIndexTest extends TestCase
         $all  = array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12));
         $make = fn () => new \Laravel\Scout\Builder(new StringKeyScoutItem, 'zebra');
 
-        foreach ([200 => 'ids in the query', 5 => 'postings subquery'] as $chunk => $walk) {
+        foreach ([200 => 'ids in the query', 5 => 'past one chunk'] as $chunk => $walk) {
             config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
 
             $this->assertSame($all, $this->names($make()->take(20)->get()), "{$walk}: get");
@@ -126,5 +133,10 @@ class StringKeyIndexTest extends TestCase
             $this->assertSame(array_slice($all, 1), $this->names($make()->query(fn ($q) => $q->where('name', '!=', 'Zebra 01'))->orderBy('name')->paginate(20), false), "{$walk}: orderBy under a query() where");
             $this->assertSame(['42', '7001'], $make()->query(fn ($q) => $q->where('name', '!=', 'Zebra 03'))->orderBy('name')->take(2)->keys()->all(), "{$walk}: keys() are the model's own");
         }
+
+        // A capped ranking: the postings subquery restricts the ordered read.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 5]);
+        $this->assertSame($all, $this->names($make()->orderBy('name')->take(20)->get(), false), 'capped ranking: orderBy');
+        $this->assertSame(array_slice($all, 1), $this->names($make()->query(fn ($q) => $q->where('name', '!=', 'Zebra 01'))->orderBy('name')->paginate(20), false), 'capped ranking: orderBy under a query() where');
     }
 }

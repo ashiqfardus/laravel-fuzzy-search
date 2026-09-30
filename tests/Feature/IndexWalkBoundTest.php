@@ -151,32 +151,44 @@ class IndexWalkBoundTest extends TestCase
     }
 
     /**
-     * N4: past one candidate chunk, SearchBuilder's ordered query is restricted by the postings
-     * subquery, which binds the model type and the terms and no id, and serves every match the
-     * where() lets through, past max_candidates too (a list of the top ranked ids would stop there).
+     * N4: past one candidate chunk, SearchBuilder's ordered query serves every match the where()
+     * lets through, past max_candidates too (a list of the top max_candidates ranked ids would stop
+     * there). H1 (round 10, ruling ER-132): a ranking that holds every match is listed whole, its
+     * integer ids inlined, on every database but SQL Server; there, and for a ranking capped at
+     * bm25.max_postings_per_term, the postings subquery restricts it, binding the model type and the
+     * terms and no id, and it lets through the matches past the cap.
      */
-    public function test_the_ordered_query_past_one_chunk_is_restricted_by_the_postings_subquery(): void
+    public function test_the_ordered_query_past_one_chunk_serves_every_match(): void
     {
         $this->seedLateMatches();
-        config(['fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.max_candidates' => 50]);
+        $make = fn () => User::search('zebra')->typoTolerance(0)->useInvertedIndex()->where('email', 'like', '%@tenant-b.test')->orderBy('name');
 
-        $make  = fn () => User::search('zebra')->typoTolerance(0)->useInvertedIndex()->where('email', 'like', '%@tenant-b.test')->orderBy('name');
-        $names = [];
+        foreach (['whole ranking' => 50000, 'capped ranking' => 100] as $ranking => $cap) {
+            config(['fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.max_candidates' => 50, 'fuzzy-search.bm25.max_postings_per_term' => $cap]);
+            $names = [];
 
-        DB::flushQueryLog();
-        DB::enableQueryLog();
-        for ($page = 1; $page <= 21; $page++) {
-            $names = [...$names, ...$make()->paginate(15, 'page', $page)->pluck('name')->all()];
-        }
-        // The ordered reads: the page's rows are read by key under the same alias, in no order.
-        $walks = array_values(array_filter(DB::getQueryLog(), fn (array $q) => str_contains($q['query'], 'fuzzy_walk_key') && stripos($q['query'], 'order by') !== false));
-        DB::disableQueryLog();
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            for ($page = 1; $page <= 21; $page++) {
+                $names = [...$names, ...$make()->paginate(15, 'page', $page)->pluck('name')->all()];
+            }
+            // The ordered reads: the page's rows are read by key under the same alias, in no order.
+            $walks = array_values(array_filter(DB::getQueryLog(), fn (array $q) => str_contains($q['query'], 'fuzzy_walk_key') && stripos($q['query'], 'order by') !== false));
+            DB::disableQueryLog();
 
-        $this->assertSame(array_map(fn ($i) => sprintf('Zebra %03d', $i), range(5, 299)), $names);
-        $this->assertNotSame([], $walks);
-        foreach ($walks as $walk) {
-            $this->assertStringContainsString('fuzzy_index_postings', $walk['query']);
-            $this->assertSame(['%@tenant-b.test', User::class, 'zebra'], $walk['bindings']);
+            $this->assertSame(array_map(fn ($i) => sprintf('Zebra %03d', $i), range(5, 299)), $names, $ranking);
+            $this->assertNotSame([], $walks, $ranking);
+
+            $subquery = $ranking === 'capped ranking' || $this->dbDriver === 'sqlsrv';
+            foreach ($walks as $walk) {
+                if ($subquery) {
+                    $this->assertStringContainsString('fuzzy_index_postings', $walk['query'], $ranking);
+                    $this->assertSame(['%@tenant-b.test', User::class, 'zebra'], $walk['bindings'], $ranking);
+                } else {
+                    $this->assertStringNotContainsString('fuzzy_index_postings', $walk['query'], $ranking);
+                    $this->assertSame(['%@tenant-b.test'], $walk['bindings'], $ranking);
+                }
+            }
         }
     }
 
@@ -207,6 +219,7 @@ class IndexWalkBoundTest extends TestCase
      * N3: the postings subquery compares model_id with the key cast to a string. CAST(... AS CHAR)
      * took the connection's collation, so a connection whose collation differs from the index
      * table's failed with 1267 "Illegal mix of collations" on every ordered search past one chunk.
+     * The ranking is capped, so the subquery restricts the read (a whole one is listed by key).
      */
     public function test_the_ordered_walk_runs_when_the_connection_collation_differs_from_the_index_tables(): void
     {
@@ -216,7 +229,7 @@ class IndexWalkBoundTest extends TestCase
 
         $this->seedLateMatches();
         app(IndexManager::class)->indexBatch(WalkScoutUser::query()->where('name', 'like', 'Zebra%')->get());
-        config(['fuzzy-search.bm25.candidate_chunk' => 20, 'scout.driver' => 'fuzzy-search']);
+        config(['fuzzy-search.bm25.candidate_chunk' => 20, 'fuzzy-search.bm25.max_postings_per_term' => 100, 'scout.driver' => 'fuzzy-search']);
 
         $table = DB::selectOne("select collation_name as c from information_schema.columns where table_schema = database() and table_name = 'fuzzy_index_postings' and column_name = 'model_id'")->c;
         DB::statement('SET collation_connection = ' . ($table === 'utf8mb4_general_ci' ? "'utf8mb4_unicode_ci'" : "'utf8mb4_general_ci'"));

@@ -114,13 +114,21 @@ class JoinedOrderedIndexPageTest extends TestCase
     {
         $this->seedSagas(60);
 
-        // candidate_chunk 200: the ranked ids are listed; 5: the postings subquery restricts the read.
-        foreach ([200, 5] as $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        // candidate_chunk 200: the ranked ids are listed; 5: past one chunk, the whole ranking is
+        // listed too, but on SQL Server (ruling ER-132); a ranking capped at max_postings_per_term:
+        // the postings subquery restricts the read.
+        $reads = [
+            'chunk 200'      => ['fuzzy-search.bm25.candidate_chunk' => 200],
+            'chunk 5'        => ['fuzzy-search.bm25.candidate_chunk' => 5],
+            'capped ranking' => ['fuzzy-search.bm25.candidate_chunk' => 5, 'fuzzy-search.bm25.max_postings_per_term' => 5],
+        ];
+
+        foreach ($reads as $read => $settings) {
+            config($settings);
 
             foreach ($this->cases() as $case => [$make, $expected]) {
                 $expected = $expected();
-                $at       = "{$case}, chunk {$chunk}";
+                $at       = "{$case}, {$read}";
                 $served   = [];
 
                 for ($page = 1; $page <= 7; $page++) {

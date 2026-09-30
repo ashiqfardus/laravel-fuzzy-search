@@ -67,11 +67,15 @@ class TablePrefixTest extends TestCase
         $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
     }
 
-    /** Ruling ER-82: past one candidate chunk the ordered walk restricts itself with raw SQL on the postings alias and the key. */
+    /**
+     * Ruling ER-82: the ordered walk of a ranking capped at bm25.max_postings_per_term restricts
+     * itself with raw SQL on the postings alias and the key (a whole ranking is listed by key past
+     * one chunk, ruling ER-132, but on SQL Server).
+     */
     public function test_the_ordered_index_walk_reads_the_prefixed_postings(): void
     {
         $this->index();
-        config(['fuzzy-search.bm25.candidate_chunk' => 1]);
+        config(['fuzzy-search.bm25.candidate_chunk' => 1, 'fuzzy-search.bm25.max_postings_per_term' => 1]);
 
         $this->assertSame(['John Doe', 'Johnny Bravo', 'Jon Snow'], User::search('john')->useInvertedIndex()->orderBy('name')->get()->pluck('name')->all());
         $this->assertSame(['Jon Snow'], User::search('john')->useInvertedIndex()->orderBy('name')->paginate(2, 'page', 2)->pluck('name')->all());
@@ -93,6 +97,12 @@ class TablePrefixTest extends TestCase
                 $this->assertSame(['Jane Doe', 'John Doe'], $make()->orderBy('name')->get()->pluck('name')->all(), "{$label}, chunk {$chunk}: orderBy");
                 $this->assertSame(['Jane Doe'], $make()->where('u.email', 'jane@example.com')->get()->pluck('name')->all(), "{$label}, chunk {$chunk}: constrained");
             }
+        }
+
+        // A capped ranking: the ordered read goes through the prefixed postings under the alias.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 1]);
+        foreach ($sources as $label => $make) {
+            $this->assertSame(['Jane Doe', 'John Doe'], $make()->orderBy('name')->get()->pluck('name')->all(), "{$label}, capped ranking: orderBy");
         }
     }
 

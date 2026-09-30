@@ -72,10 +72,18 @@ class ScoutOrderAliasTest extends TestCase
         parent::tearDown();
     }
 
-    /** @return array<string, int> candidate_chunk => the walk: ids in the query, or past one chunk */
+    /**
+     * @return array<string, array<string, int>> the read => its config: the ids within one chunk, the
+     * whole ranking listed past one chunk (ruling ER-132), or a capped ranking, which the postings
+     * subquery restricts
+     */
     private function walks(): array
     {
-        return ['within one chunk' => 200, 'past one chunk' => 1];
+        return [
+            'within one chunk' => ['fuzzy-search.bm25.candidate_chunk' => 200],
+            'past one chunk'   => ['fuzzy-search.bm25.candidate_chunk' => 1],
+            'capped ranking'   => ['fuzzy-search.bm25.candidate_chunk' => 1, 'fuzzy-search.bm25.max_postings_per_term' => 1],
+        ];
     }
 
     private function titles(iterable $results): array
@@ -99,8 +107,8 @@ class ScoutOrderAliasTest extends TestCase
 
     public function test_order_by_a_with_count_alias_from_the_query_callback(): void
     {
-        foreach ($this->walks() as $walk => $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        foreach ($this->walks() as $walk => $settings) {
+            config($settings);
             $make = fn () => (new \Laravel\Scout\Builder(new ScoutSaga, 'saga'))
                 ->query(fn ($q) => $q->withCount('comments'))->orderBy('comments_count', 'desc');
 
@@ -111,8 +119,8 @@ class ScoutOrderAliasTest extends TestCase
 
     public function test_order_by_a_select_raw_alias_from_the_query_callback(): void
     {
-        foreach ($this->walks() as $walk => $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        foreach ($this->walks() as $walk => $settings) {
+            config($settings);
             $make = fn () => (new \Laravel\Scout\Builder(new ScoutSaga, 'saga'))
                 ->query(fn ($q) => $q->selectRaw('posts.*, case posts.title when ? then 2 when ? then 1 else 0 end as saga_rank', ['Saga Two', 'Saga Three saga']))
                 ->orderBy('saga_rank', 'desc');

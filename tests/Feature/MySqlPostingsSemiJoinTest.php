@@ -80,8 +80,15 @@ class MySqlPostingsSemiJoinTest extends TestCase
 
     public function test_the_postings_subquery_is_never_a_hash_semi_join(): void
     {
-        // A constrained search in rank order checks the ranking by key, not through this subquery (ruling ER-124).
-        $reads = $this->postingsReads(fn () => SemiJoinArticle::search('alpha')->typoTolerance(0)->useInvertedIndex()->orderBy('title')->paginate(10, 'page', 900));
+        $page = fn () => SemiJoinArticle::search('alpha')->typoTolerance(0)->useInvertedIndex()->orderBy('title')->paginate(10, 'page', 900);
+
+        // A constrained search in rank order checks the ranking by key, not through this subquery
+        // (ruling ER-124), and so does an ordered read of a ranking that holds every match (ER-132).
+        $this->assertSame([], $this->postingsReads($page), 'a whole ranking');
+
+        // A ranking capped at bm25.max_postings_per_term is read through it.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 10000]);
+        $reads = $this->postingsReads($page);
 
         $this->assertCount(2, $reads, 'the ordered COUNT and page');
 

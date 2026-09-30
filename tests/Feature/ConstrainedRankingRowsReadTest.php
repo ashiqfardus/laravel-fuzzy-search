@@ -133,4 +133,34 @@ class ConstrainedRankingRowsReadTest extends TestCase
             json_encode(['5 ranked ids' => $rare, '30 ranked ids' => $long])
         );
     }
+
+    /**
+     * H1 (round 10), ruling ER-132: an ordered page and its total, for a ranking past one
+     * candidate_chunk that holds every match, read the postings subquery, and so the model table
+     * whole, on a model with no constraint too (398 ms at 300k rows on MySQL for 250 matches).
+     * They now list the ranking by key, so the rows read are bounded by the ranking.
+     */
+    public function test_an_ordered_page_reads_rows_bounded_by_its_ranking_not_the_table(): void
+    {
+        config(['fuzzy-search.bm25.candidate_chunk' => 5]);
+
+        $scout = fn () => (new \Laravel\Scout\Builder(new RowsReadScoutUser, 'wombat', null, true))->orderBy('name');
+        $index = fn (string $class) => $class::search('wombat')->typoTolerance(0)->useInvertedIndex()->orderBy('name');
+        $reads = [
+            'orderBy paginate'             => fn () => $this->assertSame(30, $index(User::class)->paginate(15)->total()),
+            'orderBy paginate, last page'  => fn () => $this->assertCount(15, $index(User::class)->paginate(15, 'page', 2)->items()),
+            'orderBy count'                => fn () => $this->assertSame(30, $index(User::class)->count()),
+            'SoftDeletes orderBy paginate' => fn () => $this->assertSame(30, $index(SoftDeletedUser::class)->paginate(15)->total()),
+            'Scout orderBy paginate'       => fn () => $this->assertSame(30, $scout()->paginate(15)->total()),
+            'Scout orderBy get'            => fn () => $this->assertCount(30, $scout()->take(50)->get()),
+        ];
+
+        foreach ($reads as $read) {
+            $read(); // warms the once-per-process reads
+        }
+
+        $rows = array_map(fn (\Closure $read) => $this->rowsRead($read), $reads);
+
+        $this->assertSame(array_fill_keys(array_keys($reads), true), array_map(fn (int $read) => $read < 40 * 30, $rows), json_encode($rows));
+    }
 }

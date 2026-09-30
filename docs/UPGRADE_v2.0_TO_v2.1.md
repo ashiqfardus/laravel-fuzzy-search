@@ -211,7 +211,8 @@ analytics, `suggest()` and the tokenizers.
 - **Config keys that were documented but inert now take effect** (`scoring.*`, `highlighting.*`, `performance.max_patterns`, `unicode.normalize`, `similar_text.min_percentage`, `cache.*`, `synonyms`) — see [below](#config-keys-that-now-take-effect).
 - **New config keys:** `indexing.job` (`tries`, `backoff`, `timeout`) bounds retries of
   `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) is the largest ranking an
-  ordered index search lists by id, the chunk the index path hydrates a page's rows and a cache hit
+  ordered index search lists by id on SQL Server or for a string key on PostgreSQL (elsewhere it
+  lists a ranking that holds every match, whatever its length), the chunk the index path hydrates a page's rows and a cache hit
   re-reads rows in, and, on SQL Server or for a string key on PostgreSQL or SQLite, the chunk a
   constrained relevance search checks a ranking of at most `max(bm25.candidate_chunk, max_candidates)`
   ids in (on another connection than the index, where that subquery cannot run, any length of ranking).

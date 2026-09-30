@@ -14,9 +14,10 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
  * Checks a BM25 ranking against a (possibly constrained) Eloquent query without losing
  * rank order, so a selective filter fills its page from lower-ranked matches instead of
  * coming back short, and totals reflect the constraints. The ranking is checked by id (in one read
- * for an integer key, see accepted()); on the index's own connection an ordered read, and on SQL
- * Server a long ranking, is restricted by a subquery on the postings (matches(), accepted());
- * otherwise ids are visited best-first in chunks and only rows the query returns are kept.
+ * for an integer key, see accepted() and matches()); on the index's own connection an ordered read
+ * of a capped ranking, and on SQL Server a long ranking, is restricted by a subquery on the postings
+ * (matches(), accepted()); otherwise ids are visited best-first in chunks and only rows the query
+ * returns are kept.
  *
  * @internal This class is not part of the public API and may change without notice.
  */
@@ -155,13 +156,24 @@ final class RankedCandidates
     }
 
     /**
-     * $base restricted to the matches of $ranked, for a read in an order of the caller's (ruling
-     * ER-82); every row it returns is a match. A ranking of at most one bm25.candidate_chunk that
-     * holds every match is listed by id. Otherwise, on the index's own connection, a subquery on the
-     * postings restricts it (Bm25Scorer::whereRanked()): it binds no id, so no list can pass SQL
-     * Server's 2,100-parameter limit, and it lets every match through, those rank() left out past
-     * bm25.max_postings_per_term too. On another connection, where that subquery cannot run, the
-     * top max_candidates ranked ids (at least one chunk) are listed, and deeper matches are not served.
+     * $base restricted to the matches of $ranked, for a read in an order of the caller's (rulings
+     * ER-82, ER-132); every row it returns is a match. A ranking that holds every match is listed by
+     * key, as accepted() checks one, so the rows read are bounded by the ranking, however large the
+     * table:
+     *  - an integer key, on every database but SQL Server: the whole ranking, inlined;
+     *  - a string key on MySQL or MariaDB, or on SQLite: the whole ranking, bound, while the
+     *    statement stays under the database's placeholder limit (65,535; SQLite's 32,766, or 999
+     *    before 3.32);
+     *  - any key: a ranking of at most one bm25.candidate_chunk.
+     * Otherwise, on the index's own connection, a subquery on the postings restricts it
+     * (Bm25Scorer::whereRanked()): it binds no id, and it lets every match through, those rank()
+     * left out past bm25.max_postings_per_term too, which a capped ranking needs. It compares the
+     * postings with a cast of the key, so it reads every row the query accepts (a SoftDeletes table
+     * whole). SQL Server keeps it for a longer ranking: it compiles every new inlined list slowly,
+     * and at 200k rows a bound list of 2,000 integer ids took 3.4 s where the subquery takes 70 to
+     * 110 ms. So does a string key on PostgreSQL, where it costs what a listed read does. On another
+     * connection, where the subquery cannot run, the top max_candidates ranked ids (at least one
+     * chunk) are listed, and deeper matches are not served.
      *
      * @param array<int|string, float>                $ranked        model_id => score, as rank() returned it
      * @param array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -173,6 +185,7 @@ final class RankedCandidates
         $model = $base->getModel();
         $ids   = array_keys($ranked);
         $chunk = self::chunkSize(null);
+        $int   = in_array($model->getKeyType(), ['int', 'integer'], true);
 
         // rank() reads one row per document and term, best first, up to max_postings_per_term. Its
         // documents times the terms bound the rows it read: under the cap, it read them all, and
@@ -180,16 +193,43 @@ final class RankedCandidates
         $whole = count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
-            return self::whereMatches($base, $terms, $modelType, $columnWeights);
+            if (!$whole || !self::listsWhole($base, $int, count($ids))) {
+                return self::whereMatches($base, $terms, $modelType, $columnWeights);
+            }
+        } else {
+            $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
         }
 
-        $ids = self::keysFor($model, array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000))));
+        $ids = self::keysFor($model, $ids);
         $key = self::keyColumn($base);
 
         // whereKey()'s shape, on the key as the FROM names it: an integer list inlined, not bound.
-        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => in_array($model->getKeyType(), ['int', 'integer'], true)
+        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => $int
             ? $query->whereIntegerInRaw($key, $ids)
             : $query->whereIn($key, $ids));
+    }
+
+    /**
+     * Whether matches() lists a ranking of $count ids that holds every match, past one chunk: an
+     * integer key but on SQL Server, or a string key whose bound list keeps the statement under the
+     * placeholder limit, with the query's own bindings and the one orderedKeys() may add.
+     */
+    private static function listsWhole(Builder $base, bool $int, int $count): bool
+    {
+        $connection = $base->getQuery()->getConnection();
+        $driver     = $connection->getDriverName();
+
+        if ($int) {
+            return $driver !== DbDialect::SQLSRV;
+        }
+
+        $limit = match (true) {
+            DbDialect::isMySqlFamily($driver) => 65535,
+            $driver === DbDialect::SQLITE     => version_compare((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.32.0', '>=') ? 32766 : 999,
+            default                           => 0,
+        };
+
+        return $count + count($base->toBase()->getBindings()) < $limit;
     }
 
     /**
