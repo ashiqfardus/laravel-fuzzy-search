@@ -70,6 +70,11 @@ class IndexSelectWithoutKeyTest extends TestCase
      * A read's row whose key is NULL matches no ranked id, and is skipped: a ROLLUP's summary row
      * failed the key reads (array_flip() of a null) and, on PHP 8.5, used null as an array offset.
      * The ids a read is restricted to keep every other NULL key out (a right join's row, say).
+     *
+     * L15a (round 10): the served rows are the two matches, on every PHP version. Without models()'
+     * null check a summary row is filed under the '' key on PHP 8.4 and earlier, which no ranked id
+     * has, so it is still not served there (an equivalent mutant); the PHP 8.5 CI cells fail on the
+     * deprecation instead.
      */
     public function test_a_row_without_a_key_is_skipped(): void
     {
@@ -82,6 +87,10 @@ class IndexSelectWithoutKeyTest extends TestCase
             ->select('users.id')->selectRaw('max(users.name) as name')->groupByRaw($rollup);
 
         $page = $make()->paginate(1, 'page', 2);
+
+        // The summary row (a NULL key, and on MariaDB the last group's key under the alias) is not served.
+        $this->assertSame(User::whereIn('name', ['John Doe', 'Jane Doe'])->pluck('id')->map(fn ($id) => (int) $id)->sort()->values()->all(),
+            $make()->get()->map(fn ($user) => (int) $user->getKey())->sort()->values()->all());
 
         $this->assertSame([['John Doe', 'Jane Doe'], 2, 2, ['Jane Doe']], [
             $make()->get()->pluck('name')->all(),
