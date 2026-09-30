@@ -161,8 +161,11 @@ class InMemorySearch
                 } else {
                     similar_text($cutNeedle, Utf8::scoringInput($value), $pct);
                     $minPct = (int) config('fuzzy-search.in_memory.min_similarity', 60);
+                    // A near-miss scores under every value that holds the term (30), as
+                    // SearchBuilder scales its own (scoring.fuzzy_match under scoring.contains):
+                    // at its percentage, 60 to 99, "Jon" ranked above "John Doe" for "john".
                     if ($pct >= $minPct) {
-                        $score = max($score, (int) $pct);
+                        $score = max($score, round($pct * 0.29, 2));
                     }
                 }
             }

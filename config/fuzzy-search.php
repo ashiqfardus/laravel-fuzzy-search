@@ -299,7 +299,7 @@ return [
     */
     'in_memory' => [
         'max_items'      => 10_000,
-        'min_similarity' => 60,    // 0–100; similarity threshold for FuzzySearch::on() results
+        'min_similarity' => 60,    // 0–100; the least similar_text() percentage a near-miss needs in FuzzySearch::on()
     ],
 
     /*

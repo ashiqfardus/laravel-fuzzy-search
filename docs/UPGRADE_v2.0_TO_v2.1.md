@@ -204,6 +204,7 @@ analytics, `suggest()` and the tokenizers.
 - **`FuzzySearch::on()` over Eloquent models reads only attributes, casts, accessors and loaded relations.** A dotted `searchIn()` name no longer lazy-loads an unloaded relation for each item; call `load()` on the collection first. A name that is only a method (`reindex`, an app method) is no longer called. See CHANGELOG `### Security`.
 - **`FuzzySearch::on()` leaves items that did not match untouched.** It set `_score` and a temporary `_raw_score_tmp` on every item it scored, so a model in your own collection that did not match kept them and failed to `save()` afterwards. Only a matched item is decorated now. Code that read `_score` from an item the search did not return finds none.
 - **`FuzzySearch::on()` folds case in every script.** It folded ASCII only, so `ÉCOLE` scored `école` as a near-miss and `МОСКВА` did not match `москва`; such matches now score as exact/prefix/contains matches, so in-memory results for non-ASCII text can rank differently. A term is also cut at `query.max_term_length` characters.
+- **`FuzzySearch::on()` ranks a value that holds the term above a near-miss.** A near-miss scored its `similar_text()` percentage (60 to 99), above a prefix match (60) and a contains match (30), so `john` returned `Jon` before `John Doe`. It now scores 0.29 of that percentage, so its `_raw_score` is at most 28.71 and its `_score` falls with it. `in_memory.min_similarity` still reads the percentage.
 
 ### Config and PHP API
 
