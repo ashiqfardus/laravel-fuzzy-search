@@ -57,8 +57,12 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
-        // a trashed model kept while scout.soft_delete is on (ER-72).
-        $this->indexManager->indexBatch($models, scout: true);
+        // a trashed model kept while scout.soft_delete is on (ER-72). One write per class when the
+        // collection mixes them (Scout's import of a single-table-inheritance parent): each model
+        // is indexed under its own class, as delete() removes it (RC-3).
+        foreach ($models->groupBy(fn ($model) => $model::class) as $group) {
+            $this->indexManager->indexBatch($group, scout: true);
+        }
     }
 
     public function delete($models): void

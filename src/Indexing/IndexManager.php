@@ -541,17 +541,22 @@ class IndexManager
      * so Scout's onlyTrashed() and withTrashed() find it. Everything else reads through the
      * model's query: its global scopes, and SoftDeletes, whose trashed rows leave the index.
      *
+     * $modelClass: the class the models are indexed under and re-read through; the first model's
+     * class without it. A rebuild passes the class it was asked for: a parent whose query hydrates
+     * child instances (single-table inheritance) indexed a chunk under its first row's class, and
+     * that class's global scope dropped the chunk's other rows (RC-3).
+     *
      * @param  iterable<Model> $models
      * @return int the number of models indexed
      */
-    public function indexBatch(iterable $models, bool $scout = false): int
+    public function indexBatch(iterable $models, bool $scout = false, ?string $modelClass = null): int
     {
         $modelType = null;
         $keys      = [];
         $unsaved   = [];
 
         foreach ($models as $model) {
-            $modelType ??= get_class($model);
+            $modelType ??= $modelClass ?? get_class($model);
             if ($model->exists) {
                 $keys[(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
             } else {
@@ -708,7 +713,7 @@ class IndexManager
             $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
 
             // One posting per (term, column); a term missing from $termIds means a pre-migration
-            // MySQL/MariaDB *_ci collation collapsed it into a variant (B25).
+            // collation collapsed it into a variant: MySQL/MariaDB *_ci (B25), SQL Server's default.
             $postingRows  = [];
             $documentRows = [];
             foreach ($byModel as $id => $byColumn) {
@@ -948,7 +953,8 @@ class IndexManager
 
     /**
      * One posting row per (term, column). Terms missing from $termIds are skipped (B25: an
-     * un-migrated *_ci dictionary collapsed them into a variant).
+     * un-migrated *_ci dictionary, or SQL Server's before 2026_09_30_000001, collapsed them into a
+     * variant).
      */
     private function postingRows(array $byColumn, $termIds, string $modelType, int|string $modelId): array
     {

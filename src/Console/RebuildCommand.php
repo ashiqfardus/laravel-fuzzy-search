@@ -64,8 +64,8 @@ class RebuildCommand extends Command
         $shadows = app(SearchableObserver::class);
         // chunkById() is keyset-based: rows inserted or deleted while the rebuild runs cannot
         // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
-        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed, $shadows) {
-            $indexed += $indexManager->indexBatch($models);
+        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($modelClass, $indexManager, $bar, &$indexed, $shadows) {
+            $indexed += $indexManager->indexBatch($models, modelClass: $modelClass); // not the chunk's first model's class (RC-3)
             $shadows->backfillShadowColumns($models); // fills *_metaphone for rows saved before it existed
             $bar->advance($models->count());
         }, $keyName);
@@ -109,35 +109,82 @@ class RebuildCommand extends Command
         return false;
     }
 
+    /**
+     * Jobs queued at once. Laravel's database queue inserts them in one statement, six bindings a
+     * job: one batch of every job passed the driver's bound-parameter limit (350 jobs on SQL
+     * Server, whose 2,100 is the lowest) after --fresh had flushed the index, with nothing queued.
+     */
+    private const JOBS_PER_DISPATCH = 300;
+
     private function rebuildAsync(string $modelClass, int $chunkSize, string $queue, int $total): int
     {
         $this->info("Dispatching async rebuild for [{$modelClass}] ({$total} records, chunk: {$chunkSize}, queue: {$queue})...");
 
-        $jobs    = [];
-        $keyName = (new $modelClass)->getKeyName();
-        IndexQuery::for($modelClass)->orderBy($keyName)->pluck($keyName)->chunk($chunkSize)->each(function ($ids) use ($modelClass, &$jobs) {
-            $jobs[] = new RebuildIndexJob($modelClass, $ids->toArray());
-        });
+        $model  = new $modelClass;
+        $batch  = null;
+        $jobs   = [];
+        $queued = 0;
 
-        if (empty($jobs)) {
-            $this->warn('No records to index.');
-            return self::SUCCESS;
-        }
-
+        // The batch goes out with its first slice of jobs, and each later slice is added to it. A
+        // worker may run the jobs queued so far before the next slice is added: the batch then
+        // reports itself finished until add() raises its counts again, and finally() runs once
+        // each time, which only repeats the ANALYZE (best-effort). The batch's id is printed once
+        // every slice is queued, so a caller that watches it sees the whole rebuild.
+        //
         // Once the last job has run, statistics for the rebuilt index (PostgreSQL; see
         // IndexManager::analyzeIndex()). Static: the callback is serialized with the batch. After
         // the commit: on the sync queue the jobs and this callback run inside the batch store's
         // transaction, and a connection lost during the ANALYZE took the rebuilt index with it,
         // while Laravel's batch reported the failure and the command exited 0. A worker runs the
         // callback outside any transaction, where afterCommit() calls it at once.
-        $batch = Bus::batch($jobs)
-            ->onQueue($queue)
-            ->name("fuzzy-search:rebuild:{$modelClass}")
-            ->finally(static fn () => DB::afterCommit(static fn () => app(IndexManager::class)->analyzeIndex()))
-            ->dispatch();
+        $dispatch = function () use (&$batch, &$jobs, &$queued, $modelClass, $queue) {
+            if ($batch === null) {
+                $batch = Bus::batch($jobs)
+                    ->onQueue($queue)
+                    ->name("fuzzy-search:rebuild:{$modelClass}")
+                    ->finally(static fn () => DB::afterCommit(static fn () => app(IndexManager::class)->analyzeIndex()))
+                    ->dispatch();
+            } else {
+                $batch->add($jobs);
+            }
+            $queued += count($jobs);
+            $jobs    = [];
+        };
+
+        try {
+            // The keys a chunk at a time (keyset, as the sync rebuild reads its rows), never all at
+            // once: only the key column, with no eager loads, each key as the model casts it.
+            IndexQuery::for($modelClass)->setEagerLoads([])->select($model->getQualifiedKeyName())->chunkById(
+                $chunkSize,
+                function ($models) use (&$jobs, $modelClass, $dispatch) {
+                    $jobs[] = new RebuildIndexJob($modelClass, $models->modelKeys());
+                    if (count($jobs) === self::JOBS_PER_DISPATCH) {
+                        $dispatch();
+                    }
+                },
+                $model->getQualifiedKeyName(),
+                $model->getKeyName()
+            );
+            if ($jobs !== []) {
+                $dispatch();
+            }
+        } catch (\Throwable $e) {
+            // --fresh flushed the index before the first job was queued (the jobs could otherwise run
+            // before the flush), so say what was queued and how to finish, not only the exception.
+            report($e);
+            $this->error("Dispatching stopped after {$queued} jobs were queued: {$e->getMessage()}");
+            $this->line("The jobs queued index their rows; the rest of [{$modelClass}] was not queued. Once the cause is fixed, run <comment>php artisan fuzzy-search:rebuild \"{$modelClass}\"</comment> again (without --async it indexes every row in this process).");
+
+            return self::FAILURE;
+        }
+
+        if ($batch === null) {
+            $this->warn('No records to index.');
+            return self::SUCCESS;
+        }
 
         $this->info("Batch dispatched: {$batch->id}");
-        $this->line("Jobs: " . count($jobs) . " × {$chunkSize} records");
+        $this->line("Jobs: {$queued} × {$chunkSize} records");
         $this->line("Monitor: php artisan queue:work --queue={$queue}");
 
         return self::SUCCESS;
