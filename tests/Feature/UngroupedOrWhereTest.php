@@ -189,7 +189,15 @@ class UngroupedOrWhereTest extends TestCase
         $expected = $this->truth(OrItem::query()->where('cat', 1)->where(fn ($q) => $q->where('rank', '<', 10)->orWhere('rank', '>', 30)));
         $search   = fn () => OrScoutItem::scoutSearch('garden')->where('cat', 1)->query(fn ($q) => $q->where('rank', '<', 10)->orWhere('rank', '>', 30));
 
+        // The page's models load through the callback too: its or kept the page's ids to one branch,
+        // and every row of the other was hydrated.
+        $hydrated = 0;
+        \Illuminate\Support\Facades\Event::listen('eloquent.retrieved: ' . OrScoutItem::class, function () use (&$hydrated) {
+            $hydrated++;
+        });
+
         $this->assertSame($expected, $search()->take(100)->get()->pluck('name')->sort()->values()->all(), 'get');
+        $this->assertSame(count($expected), $hydrated, 'models hydrated');
         $this->assertSame(count($expected), $search()->paginate(5)->total(), 'total');
         $this->assertSame($expected, $search()->orderBy('rank')->take(100)->get()->pluck('name')->sort()->values()->all(), 'orderBy get');
     }
