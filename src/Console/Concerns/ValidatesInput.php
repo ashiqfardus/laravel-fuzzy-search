@@ -13,7 +13,8 @@ trait ValidatesInput
 {
     /**
      * $class must exist and be an Eloquent model. $require adds: 'indexable', a model the index
-     * can read (getSearchableColumns(): the Searchable trait's, or a Scout model's own); or
+     * can read (getSearchableColumns(): the Searchable trait's, or a Scout model's own; or a
+     * searchableText() hook alone, as IndexManager::indexesModel() accepts, ruling D11); or
      * 'searchable', the Searchable trait itself, whose search() returns the fluent builder.
      */
     protected function validModel(string $class, string $require = ''): bool
@@ -29,7 +30,7 @@ trait ValidatesInput
         }
 
         $ok = match ($require) {
-            'indexable'  => method_exists($class, 'getSearchableColumns'),
+            'indexable'  => method_exists($class, 'getSearchableColumns') || method_exists($class, 'searchableText'),
             'searchable' => in_array(Searchable::class, class_uses_recursive($class), true),
             default      => true,
         };
