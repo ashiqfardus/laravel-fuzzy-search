@@ -168,13 +168,36 @@ class InMemorySearchTest extends TestCase
     }
 
     // -------------------------------------------------------------------------
+    // Round 10, L14: a near-miss scores below every value that contains the term
+    // -------------------------------------------------------------------------
+
+    public function test_a_value_holding_the_term_ranks_above_a_near_miss(): void
+    {
+        $items = [['name' => 'Jon'], ['name' => 'Joan'], ['name' => 'Big John'], ['name' => 'John Doe'], ['name' => 'Johnny'], ['name' => 'John']];
+
+        $rows = FuzzySearch::on($items)->search('john')->searchIn(['name'])->withRelevance()->get();
+
+        // Exact, the two prefixes (in the items' order), the contains, then the near-misses by
+        // similar_text() percentage: Jon 85.71%, Joan 75%. They scored 85 and 75, above the
+        // prefix tier's 60.
+        $this->assertSame(['John', 'John Doe', 'Johnny', 'Big John', 'Jon', 'Joan'], $rows->pluck('name')->all());
+        $this->assertSame([100, 60, 60, 30, 24.86, 21.75], $rows->pluck('_raw_score')->all());
+        $this->assertSame(0.2486, $rows[4]['_score']);
+
+        // in_memory.min_similarity is still read against the percentage.
+        config(['fuzzy-search.in_memory.min_similarity' => 80]);
+        $this->assertSame(['John', 'John Doe', 'Johnny', 'Big John', 'Jon'], FuzzySearch::on($items)->search('john')->searchIn(['name'])->get()->pluck('name')->all());
+    }
+
+    // -------------------------------------------------------------------------
     // similar_text() compares at most 255 characters of each side (as SearchBuilder::similarity())
     // -------------------------------------------------------------------------
 
     public function test_similar_text_compares_only_the_first_255_characters_of_a_value(): void
     {
-        // 127 shared characters: against the first 255 of the value that is a 66% match, against
-        // the whole 20,127-character value it was about 1%, and every such value cost O(term × 20KB).
+        // 127 shared characters: against the first 255 of the value that is a 66.32% match (a
+        // near-miss scores 0.29 of its percentage: 19.23), against the whole 20,127-character value it
+        // was about 1%, and every such value cost O(term × 20KB).
         $term  = 'q' . str_repeat('a', 127);
         $value = str_repeat('a', 127) . str_repeat('z', 20000);
 
@@ -182,18 +205,22 @@ class InMemorySearchTest extends TestCase
         $cut = FuzzySearch::on([['name' => mb_substr($value, 0, 255)]])->search($term)->searchIn(['name'])->get()->first();
 
         $this->assertNotNull($cut);
-        $this->assertSame(66, $cut['_raw_score']);
+        $this->assertSame(19.23, $cut['_raw_score']);
         $this->assertSame($cut['_raw_score'], $row['_raw_score'] ?? null, 'a long value is scored on its first 255 characters');
 
         // Characters, never bytes: 300 two-byte letters compare as 255 letters.
         $score = fn (int $letters) => FuzzySearch::on([['name' => str_repeat('é', $letters)]])
             ->search('b' . str_repeat('é', 127))->searchIn(['name'])->get()->first()['_raw_score'] ?? null;
 
-        $this->assertSame(66, $score(255));
-        $this->assertSame(66, $score(300));
+        // similar_text() counts bytes: 66.41% here, 19.26.
+        $this->assertSame(19.26, $score(255));
+        $this->assertSame(19.26, $score(300));
     }
 
-    /** _raw_score before the cap: values of 255 characters or fewer score exactly as they did. */
+    /**
+     * _raw_score before the cap: values of 255 characters or fewer score on the percentage they
+     * always had (66.67%, 77.44% and 64.91% here; a near-miss scores 0.29 of it).
+     */
     public function test_values_within_255_characters_score_exactly_as_before(): void
     {
         $items = [
@@ -205,9 +232,9 @@ class InMemorySearchTest extends TestCase
         $scores = fn (string $term) => FuzzySearch::on($items)->search($term)->searchIn(['name'])->get()
             ->mapWithKeys(fn ($row) => [mb_substr($row['name'], 0, 12) => $row['_raw_score']])->all();
 
-        $this->assertSame(['Jonathan' => 66], $scores('jonh'));
-        $this->assertSame([str_repeat('a', 12) => 77], $scores('q' . str_repeat('a', 127)));
-        $this->assertSame(['Joh' . str_repeat('n', 9) => 64], $scores('Joh' . str_repeat('n', 120) . 'x'));
+        $this->assertSame(['Jonathan' => 19.33], $scores('jonh'));
+        $this->assertSame([str_repeat('a', 12) => 22.46], $scores('q' . str_repeat('a', 127)));
+        $this->assertSame(['Joh' . str_repeat('n', 9) => 18.82], $scores('Joh' . str_repeat('n', 120) . 'x'));
     }
 
     public function test_300_items_of_20kb_score_in_bounded_time(): void

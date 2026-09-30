@@ -159,6 +159,51 @@ class PostgresAnalyzeFailureTest extends TestCase
 
     public function test_an_async_rebuild_whose_analyze_fails_exits_zero(): void
     {
+        $this->batchOnTheSyncQueue();
+        $this->lock();
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class, '--async' => true])->assertExitCode(0);
+
+        $this->unlock();
+        $this->assertSame(User::count(), DB::table('fuzzy_index_documents')->count());
+        $this->assertLockTimeoutsReported();
+    }
+
+    /**
+     * ER-137 (round 10). On the sync queue an --async rebuild's jobs and its finally() callback run
+     * inside the batch store's transaction, on the index's connection here. The ANALYZE waits for
+     * that transaction's commit: a connection lost during it (Laravel's batch reports whatever a
+     * finally() callback throws) took the transaction, and every row the jobs had indexed, with
+     * it, and the command exited 0 over an empty index.
+     */
+    public function test_an_async_rebuild_on_the_sync_queue_analyzes_after_the_batch_has_committed(): void
+    {
+        $this->batchOnTheSyncQueue();
+
+        $connection = DB::connection();
+        $levels     = [];
+        $connection->beforeExecuting(function (string $query) use ($connection, &$levels) {
+            if (stripos($query, 'analyze') === 0) {
+                // The first ANALYZE only: Laravel reconnects and sends it again outside a transaction.
+                if ($levels === []) {
+                    $pid = $connection->getPdo()->query('select pg_backend_pid()')->fetchColumn();
+                    $this->locker->statement('select pg_terminate_backend(?)', [$pid]);
+                    usleep(300000); // the backend exits before the ANALYZE is sent
+                }
+                $levels[] = $connection->transactionLevel();
+            }
+        });
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class, '--async' => true])->assertExitCode(0);
+
+        $this->assertNotSame([], $levels, 'the rebuild ran its ANALYZE');
+        $this->assertSame([0], array_values(array_unique($levels)), 'the ANALYZE ran inside the batch store\'s transaction');
+        $this->assertSame(User::count(), DB::table('fuzzy_index_documents')->count(), 'the rebuilt index went with the connection');
+    }
+
+    /** --async on the sync queue, its batch stored on the index's own connection. */
+    private function batchOnTheSyncQueue(): void
+    {
         config(['queue.batching.database' => config('database.default'), 'queue.default' => 'sync']);
         Schema::dropIfExists('job_batches');
         Schema::create('job_batches', function (Blueprint $table) {
@@ -173,13 +218,6 @@ class PostgresAnalyzeFailureTest extends TestCase
             $table->integer('created_at');
             $table->integer('finished_at')->nullable();
         });
-        $this->lock();
-
-        $this->artisan('fuzzy-search:rebuild', ['model' => User::class, '--async' => true])->assertExitCode(0);
-
-        $this->unlock();
-        $this->assertSame(User::count(), DB::table('fuzzy_index_documents')->count());
-        $this->assertLockTimeoutsReported();
     }
 
     /**

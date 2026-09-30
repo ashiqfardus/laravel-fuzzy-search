@@ -10,6 +10,7 @@ use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
 use Illuminate\Bus\Batch;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class RebuildCommand extends Command
@@ -124,11 +125,15 @@ class RebuildCommand extends Command
         }
 
         // Once the last job has run, statistics for the rebuilt index (PostgreSQL; see
-        // IndexManager::analyzeIndex()). Static: the callback is serialized with the batch.
+        // IndexManager::analyzeIndex()). Static: the callback is serialized with the batch. After
+        // the commit: on the sync queue the jobs and this callback run inside the batch store's
+        // transaction, and a connection lost during the ANALYZE took the rebuilt index with it,
+        // while Laravel's batch reported the failure and the command exited 0. A worker runs the
+        // callback outside any transaction, where afterCommit() calls it at once.
         $batch = Bus::batch($jobs)
             ->onQueue($queue)
             ->name("fuzzy-search:rebuild:{$modelClass}")
-            ->finally(static fn () => app(IndexManager::class)->analyzeIndex())
+            ->finally(static fn () => DB::afterCommit(static fn () => app(IndexManager::class)->analyzeIndex()))
             ->dispatch();
 
         $this->info("Batch dispatched: {$batch->id}");

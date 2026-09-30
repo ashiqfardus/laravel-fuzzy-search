@@ -3004,9 +3004,12 @@ class SearchBuilder
 
     /**
      * shows() for a searchIn() column, judged on $row alone: a dotted name by its relation path
-     * when the row has the first relation loaded (pathShown()), else by its last part ("teams.name"
-     * is the attribute "name"). The path may be typed in another case ("Author.name"): the relation
-     * is loaded, and hidden, under its declared name (relationPath()).
+     * when its head is a relation of the row, loaded or a method of it, as relationPath() reads a
+     * dotted name (pathShown()), else by its last part ("teams.name" is the attribute "name"). The
+     * path may be typed in another case ("Author.name"): the relation is loaded, and hidden, under
+     * its declared name (relationPath()). A path no loaded row holds the column on (a relation
+     * unset after the search, at its head or deeper, or left empty) is not shown: toArray() has
+     * no such column.
      *
      * @internal FuzzySearchResource re-applies it to a row as it renders
      */
@@ -3014,8 +3017,8 @@ class SearchBuilder
     {
         $head = strstr($column, '.', true);
 
-        if ($head !== false && $row instanceof Model && self::loadedRelationName($row, $head) !== null) {
-            return self::pathShown($row, explode('.', $column));
+        if ($head !== false && $row instanceof Model && (self::loadedRelationName($row, $head) !== null || method_exists($row, $head))) {
+            return self::pathShown($row, explode('.', $column), true);
         }
 
         return self::shows($row, self::lastSegment($column));
@@ -3039,14 +3042,19 @@ class SearchBuilder
 
     /**
      * shows() for each key of a relation path on every related row loaded along it, so a relation
-     * or column hidden at any depth hides the path.
+     * or column hidden at any depth hides the path. With $reached, a path no loaded row holds the
+     * leaf on is hidden too (showsColumn()).
      *
      * @param string[] $keys relation names, then the leaf column
      */
-    private static function pathShown(mixed $item, array $keys): bool
+    private static function pathShown(mixed $item, array $keys, bool $reached = false): bool
     {
         $rows = [$item];
         foreach ($keys as $key) {
+            if ($reached && $rows === []) {
+                return false;
+            }
+
             $next = [];
             foreach ($rows as $row) {
                 $loaded = $row instanceof Model ? self::loadedRelationName($row, $key) : null;

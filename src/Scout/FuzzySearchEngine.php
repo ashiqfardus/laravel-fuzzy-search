@@ -53,6 +53,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     {
         if ($models->isNotEmpty()) {
             self::requirePackageTrait($models->first());
+            $models->each(fn ($model) => self::requirePrimaryScoutKey($model));
         }
 
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
@@ -63,6 +64,12 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     public function delete($models): void
     {
         foreach ($models as $model) {
+            // A queued delete's model, restored with only its Scout key: a custom one leaves it
+            // without the primary key the index row is under.
+            if ($model->getKey() === null) {
+                self::requirePrimaryScoutKey($model);
+            }
+
             $this->indexManager->removeFromIndex($model::class, $model->getKey());
         }
     }
@@ -152,6 +159,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     private function results(Builder $builder, int $offset, int $limit): array
     {
         self::requirePackageTrait($builder->model);
+        self::requirePrimaryScoutKey($builder->model);
 
         $orders = $this->orders($builder);
         $terms  = $this->terms($builder);
@@ -187,6 +195,33 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             throw new \LogicException(sprintf(
                 '%s is on the fuzzy-search Scout driver without the package\'s trait, so it has nothing to index or search. Add `use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;` to the model, beside Scout\'s trait (see the Scout section of the README).',
                 $model::class
+            ));
+        }
+    }
+
+    /**
+     * The index is keyed by the model's primary key, where Scout looks a page's models up, and
+     * restores a queued delete's model, by getScoutKeyName(). A model with a custom Scout key was
+     * indexed, a search then found none of its models, and its queued delete threw a TypeError
+     * (round 10, L10): indexing or searching one throws, naming the fix. A model without its
+     * primary key (the builder's, a restored one) is judged by the key's name alone.
+     *
+     * @throws \LogicException
+     */
+    private static function requirePrimaryScoutKey(\Illuminate\Database\Eloquent\Model $model): void
+    {
+        // Without Scout's trait (a Builder made by hand) a model has no Scout key of its own.
+        if (!method_exists($model, 'getScoutKeyName')) {
+            return;
+        }
+
+        $named = in_array($model->getScoutKeyName(), [$model->getKeyName(), $model->getQualifiedKeyName()], true);
+
+        if (!$named || ($model->getKey() !== null && $model->getScoutKey() != $model->getKey())) {
+            throw new \LogicException(sprintf(
+                '%s has a custom Scout key, which the fuzzy-search Scout driver does not support: it keys the index by the primary key (%s). Remove getScoutKey() and getScoutKeyName() from the model (see the Scout section of docs/integrations.md).',
+                $model::class,
+                $model->getKeyName()
             ));
         }
     }
