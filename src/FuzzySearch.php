@@ -91,7 +91,7 @@ class FuzzySearch
         string $boolean,
         ?int $wholeTermLength
     ): Builder {
-        // $column goes into raw SQL (SQLite leaves a bare column as written), here and in
+        // $column goes into raw SQL, here and in
         // applyFuzzyOrder(): a caller who passes user input as the column gets an exception.
         SearchableColumns::validate([$column], SearchableColumns::INVALID_NAME_BRACKETED);
 

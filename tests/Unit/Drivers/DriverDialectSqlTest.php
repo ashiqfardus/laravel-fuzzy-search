@@ -104,7 +104,7 @@ class DriverDialectSqlTest extends TestCase
             'mariadb' => 'lower(`name`)',
             'pgsql'   => 'lower("name")',
             'sqlsrv'  => 'lower([name])',
-            'sqlite'  => 'lower(name)',
+            'sqlite'  => 'lower("name")',
         ];
 
         $ast = (new ExtendedQueryParser())->parse((new Lexer())->tokenize('=John'));
@@ -124,7 +124,7 @@ class DriverDialectSqlTest extends TestCase
             'mariadb' => 'case when `name` = ?',
             'pgsql'   => 'case when "name" = ?',
             'sqlsrv'  => 'case when [name] = ?',
-            'sqlite'  => 'case when name = ?',
+            'sqlite'  => 'case when "name" = ?',
         ];
 
         $checked = 0;
@@ -158,7 +158,7 @@ class DriverDialectSqlTest extends TestCase
             'mysql'   => 'locate(?, `name`)',
             'mariadb' => 'locate(?, `name`)',
             'pgsql'   => 'position(? in "name")',
-            'sqlite'  => 'instr(name, ?)',
+            'sqlite'  => 'instr("name", ?)',
             'sqlsrv'  => 'charindex(?, [name])',
         ];
 
