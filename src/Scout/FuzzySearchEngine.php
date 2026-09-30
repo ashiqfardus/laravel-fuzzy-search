@@ -427,8 +427,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * that queryScoutModelsByIds() applies, in a scope applied after the model's own (which may
      * select()), so a row is matched to its id when a select() leaves the key out (ruling D13), as
      * RankedCandidates reads it; RankedCandidates::takeKey() then takes the alias out of the model's
-     * attributes and original, so it never reaches them. A union is read as one derived table, and an override that reads
-     * without the callback selects no alias: its models are matched by their own key.
+     * attributes and original before the search returns them (a `retrieved` listener, which runs
+     * during hydration, still sees it). A union is read as one derived table, and an override that
+     * reads without the callback selects no alias: its models are matched by their own key.
      *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
