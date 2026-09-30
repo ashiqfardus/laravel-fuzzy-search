@@ -247,6 +247,7 @@ were parsed into the config array but never read by the package. As of 2.1.0 the
 |---|---|---|---|
 | `scoring.exact_match` / `prefix_match` / `contains` / `fuzzy_match` | Base points per match tier, used by both the SQL `ORDER BY` and the PHP rescorer | Ignored — scoring constants were hard-coded | `100` / `80` / `60` / `50` |
 | `highlighting.enabled` / `tag_open` / `tag_close` | Default highlight tags, and whether every search is highlighted without calling `->highlight()` | Ignored — tags only came from `->highlight()` arguments | `false` / `<em>` / `</em>` |
+| `highlighting.max_matches` | The most occurrences of the term highlighted in one value (`0`: no limit); the rest of the value follows untagged | New key — every occurrence was highlighted | `100` |
 | `performance.max_patterns` | Default cap on generated LIKE patterns | Ignored — `maxPatterns()` only stored the value; no driver read it (Trigram sliced at 10 on its own) | `100` |
 | `unicode.normalize` | NFC-normalise search terms by default | Ignored — normalization was opt-in per query only | `false` |
 | `similar_text.min_percentage` | The least `similar_text()` percentage a `similar_text` match may have, enforced in SQL as a length bound (a match is at most `t·(200 − p) / p` characters for a `t`-character term) | Ignored — `similar_text` matched every value containing the term | `70` |

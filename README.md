@@ -661,7 +661,7 @@ $users = User::search('john')
     ->get();
 ```
 
-Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`.
+Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`. A value is highlighted at up to `highlighting.max_matches` occurrences (100; `0` for no limit), and the rest of it follows untagged, so a long text that repeats the term cannot blow up `_matches` and `_highlighted`.
 
 Every value in `_highlighted` is safe to render as HTML: a matched column is wrapped in the highlight tag (and escaped first), and — since v2.1.0 — a column that did not match is HTML-escaped too, so the whole array can be echoed with `{!! !!}` without an extra `e()` call.
 

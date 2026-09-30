@@ -3213,7 +3213,12 @@ class SearchBuilder
         $open  = $this->highlightTagOpen ?? '<em>';
         $close = $this->highlightTagClose ?? '</em>';
 
-        return $results->map(function ($item) use ($needles, $terms, $open, $close) {
+        // The most occurrences one value is highlighted at (0: no limit). Every occurrence was
+        // recorded, its offsets in _matches and its tags in _highlighted: a long stored text that
+        // repeats the term cost megabytes a row (15 rows of 60 KB: 57 MB, and 8 MB of JSON).
+        $max = max(0, (int) config('fuzzy-search.highlighting.max_matches', 100));
+
+        return $results->map(function ($item) use ($needles, $terms, $open, $close, $max) {
             $matches     = [];
             $highlighted = [];
 
@@ -3230,7 +3235,7 @@ class SearchBuilder
                 foreach ($values as $value) {
                     $found = [];
                     foreach ($needles as $needle) {
-                        $found = array_merge($found, $this->findMatchOffsets($value, $needle));
+                        $found = array_merge($found, $this->findMatchOffsets($value, $needle, $max));
                     }
                     // Merge only where there are several needles (the index and extended paths,
                     // or a LIKE term with a folded variant): a single LIKE needle keeps v2.0's raw,
@@ -3238,6 +3243,10 @@ class SearchBuilder
                     // "banana" stays two <em> pairs instead of collapsing into one).
                     if ($terms !== null || count($needles) > 1) {
                         $found = $this->mergeRanges($found);
+                    }
+                    // Each needle's first $max are its earliest, so these are the value's earliest.
+                    if ($max > 0 && count($found) > $max) {
+                        $found = array_slice($found, 0, $max);
                     }
                     if (!empty($found)) {
                         $chosen  = $value;
@@ -3269,7 +3278,8 @@ class SearchBuilder
     }
 
     /**
-     * Find all case-insensitive, non-overlapping occurrences of $term in $value.
+     * Find the case-insensitive, non-overlapping occurrences of $term in $value, from its start,
+     * at most $max of them (0: all).
      * Returns [start, end] inclusive BYTE offsets into $value — the unit wrapWithTags(),
      * `_matches` and renderHighlighted() all slice with substr().
      *
@@ -3278,17 +3288,32 @@ class SearchBuilder
      * the two cases of a letter need not be the same length (k vs the Kelvin sign). A value or
      * term that is not valid UTF-8 keeps the byte search (ASCII case folding only).
      */
-    private function findMatchOffsets(string $value, string $term): array
+    private function findMatchOffsets(string $value, string $term, int $max = 0): array
     {
         if ($term === '') {
             return [];
         }
 
         // An invalid term cannot even compile under /u (E_WARNING, not false), so check it first;
-        // an invalid value fails at match time and returns false.
-        if (mb_check_encoding($term, 'UTF-8')
-            && preg_match_all('/' . preg_quote($term, '/') . '/iu', $value, $found, PREG_OFFSET_CAPTURE) !== false) {
-            return array_map(fn (array $m) => [$m[1], $m[1] + strlen($m[0]) - 1], $found[0]);
+        // an invalid value fails at match time and returns false. One match at a time, from the
+        // end of the last: preg_match_all() has no limit, and would list every one first.
+        if (mb_check_encoding($term, 'UTF-8')) {
+            $pattern = '/' . preg_quote($term, '/') . '/iu';
+            $indices = [];
+            $offset  = 0;
+
+            while (($matched = preg_match($pattern, $value, $found, PREG_OFFSET_CAPTURE, $offset)) === 1) {
+                $indices[] = [$found[0][1], $found[0][1] + strlen($found[0][0]) - 1];
+                $offset    = $found[0][1] + strlen($found[0][0]);
+
+                if ($max > 0 && count($indices) >= $max) {
+                    break;
+                }
+            }
+
+            if ($matched !== false) {
+                return $indices;
+            }
         }
 
         $indices = [];
@@ -3296,7 +3321,7 @@ class SearchBuilder
         $lower   = strtolower($value);
         $needle  = strtolower($term);
 
-        while (($pos = strpos($lower, $needle, $offset)) !== false) {
+        while (($pos = strpos($lower, $needle, $offset)) !== false && ($max === 0 || count($indices) < $max)) {
             $indices[] = [$pos, $pos + strlen($term) - 1];
             $offset    = $pos + strlen($term);
         }

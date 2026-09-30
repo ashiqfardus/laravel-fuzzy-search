@@ -408,6 +408,10 @@ return [
         'enabled' => false,
         'tag_open' => '<em>',
         'tag_close' => '</em>',
+        // The most occurrences of the term highlighted in one value; the rest of the value follows
+        // untagged. It bounds _matches and _highlighted for a long text that repeats the term.
+        // 0: no limit.
+        'max_matches' => 100,
     ],
 
     /*
