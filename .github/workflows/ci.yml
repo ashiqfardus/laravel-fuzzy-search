@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, v2, "v2.*"]
 
+# The jobs only read the repository: the token is read-only whatever the repository's default is.
+permissions:
+  contents: read
+
 jobs:
   # ── SQLite ────────────────────────────────────────────────────────────────
   # Full PHP × Laravel matrix; no service containers needed
@@ -37,9 +41,6 @@ jobs:
           path: ~/.composer/cache
           key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
-      - name: Allow dev stability for Laravel 13.x
-        if: matrix.laravel == '13.*'
-        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
           # Composer >= 2.9 refuses to resolve framework versions that carry security
@@ -106,9 +107,6 @@ jobs:
           path: ~/.composer/cache
           key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
-      - name: Allow dev stability for Laravel 13.x
-        if: matrix.laravel == '13.*'
-        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
           composer config policy.advisories.block false
@@ -165,9 +163,6 @@ jobs:
           path: ~/.composer/cache
           key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
-      - name: Allow dev stability for Laravel 13.x
-        if: matrix.laravel == '13.*'
-        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
           composer config policy.advisories.block false
@@ -221,9 +216,6 @@ jobs:
           path: ~/.composer/cache
           key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
-      - name: Allow dev stability for Laravel 13.x
-        if: matrix.laravel == '13.*'
-        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
           composer config policy.advisories.block false
@@ -277,9 +269,6 @@ jobs:
           path: ~/.composer/cache
           key: composer-${{ matrix.php }}-${{ matrix.laravel }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ matrix.php }}-${{ matrix.laravel }}-
-      - name: Allow dev stability for Laravel 13.x
-        if: matrix.laravel == '13.*'
-        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install Microsoft ODBC Driver 18 (required by pdo_sqlsrv)
         run: |
           # packages-microsoft-prod.deb registers the apt repo and its signing key in one
@@ -333,9 +322,6 @@ jobs:
           php-version: "8.4"
           extensions: pdo_sqlite, intl
           coverage: none
-      - name: Allow dev stability for Laravel 13.x
-        if: matrix.laravel == '13.*'
-        run: composer config minimum-stability dev && composer config prefer-stable true
       - name: Install deps
         run: |
           composer config policy.advisories.block false
@@ -347,10 +333,19 @@ jobs:
 
   # ── Scout 10 ──────────────────────────────────────────────────────────────
   # composer.json allows laravel/scout ^10.0|^11.0. Scout 10 also runs in the PostgreSQL
-  # PHP 8.4 / Laravel 13 cell and in the lowest-deps job; every other cell resolves 11.x.
+  # PHP 8.4 / Laravel 13 cell and in the lowest-deps job (10.0.0); every other cell resolves 11.x.
+  # The engine reads Scout's version twice: the paginator contract exists from 10.1, and
+  # applyAfterRawSearchCallback from 10.13. ^10.0 resolves past both, and 10.0.0 has neither, so
+  # the 10.12 cell runs the range between them (10.1 to 10.12).
   test-scout10:
-    name: "Scout ^10 / PHP 8.4 / Laravel 12 / SQLite"
+    name: "Scout ${{ matrix.label }} / PHP 8.4 / Laravel 12 / SQLite"
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { scout: "^10.0", label: "^10" }
+          - { scout: "10.12.*", label: "10.12" }
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -362,9 +357,9 @@ jobs:
         run: |
           composer config policy.advisories.block false
           composer require "laravel/framework:12.*" --no-update --no-interaction
-          composer require --dev "laravel/scout:^10.0" --no-update --no-interaction
+          composer require --dev "laravel/scout:${{ matrix.scout }}" --no-update --no-interaction
           composer install --no-interaction --prefer-dist
-      - name: Run tests (SQLite, Scout 10)
+      - name: Run tests (SQLite, Scout ${{ matrix.label }})
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
 
   # ── Lowest dependencies ───────────────────────────────────────────────────
