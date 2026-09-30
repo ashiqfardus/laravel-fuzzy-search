@@ -55,9 +55,35 @@ class SearchAnalytics
         ];
     }
 
+    /**
+     * Inside a caller's transaction the insert runs under a savepoint, rolled back on its own
+     * failure: on PostgreSQL a failed statement aborts the whole transaction, so a failed log
+     * write (analytics on before the migration ran) left the caller's next statement failing with
+     * 25P02 and its transaction rolled back, while the search had returned. Outside one, a plain
+     * insert: a transaction around every log write would cost two round trips a search.
+     */
     public static function record(array $row): void
     {
-        DB::table(static::table())->insert($row);
+        $connection = DB::connection();
+        $level      = $connection->transactionLevel();
+
+        if ($level === 0) {
+            $connection->table(static::table())->insert($row);
+            return;
+        }
+
+        $connection->beginTransaction(); // a savepoint
+
+        try {
+            $connection->table(static::table())->insert($row);
+            $connection->commit();
+        } catch (\Throwable $e) {
+            if ($connection->transactionLevel() > $level) {
+                $connection->rollBack($level);
+            }
+
+            throw $e;
+        }
     }
 
     private static function since(int $days): \Illuminate\Support\Carbon

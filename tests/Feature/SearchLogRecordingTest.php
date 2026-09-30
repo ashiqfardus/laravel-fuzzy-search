@@ -133,6 +133,37 @@ class SearchLogRecordingTest extends TestCase
         $this->assertEqualsCanonicalizing($expected, User::search('john')->get()->pluck('id')->all());
     }
 
+    /**
+     * Deep review RC-4. On PostgreSQL a failed statement aborts the whole transaction it runs in,
+     * so a failed log insert inside the caller's DB::transaction() (analytics on before the
+     * migration ran) left every later statement of that transaction failing with 25P02, and the
+     * transaction rolled back, while the search itself had returned. The insert runs under a
+     * savepoint inside a caller's transaction, so its failure is rolled back on its own.
+     */
+    public function test_a_failed_log_write_inside_the_callers_transaction_leaves_it_usable(): void
+    {
+        Schema::drop('fuzzy_search_logs');
+        $before = User::count();
+
+        $found = null;
+        DB::transaction(function () use (&$found) {
+            $found = User::search('john')->get()->count();
+            User::create(['name' => 'Logged Later', 'email' => 'later@example.com']);
+        });
+
+        $this->assertGreaterThan(0, $found);
+        $this->assertSame($before + 1, User::count(), 'the transaction committed');
+        $this->assertSame(0, DB::transactionLevel());
+
+        // The queued path on the sync queue runs the job inside the same transaction.
+        config(['fuzzy-search.analytics.queue' => 'analytics', 'queue.default' => 'sync']);
+        DB::transaction(function () {
+            User::search('john')->get();
+            User::create(['name' => 'Logged Later Too', 'email' => 'later2@example.com']);
+        });
+        $this->assertSame($before + 2, User::count());
+    }
+
     public function test_oversized_event_values_are_cut_to_their_column_width(): void
     {
         // The event is public API: a third-party dispatcher may pass a longer path than the column holds.

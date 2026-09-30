@@ -39,7 +39,10 @@ class ClearCommand extends Command
 
         $model = $this->modelName($model);
 
-        if (!$this->validModel($model)) {
+        // A model_type the index holds is cleared whether or not its class still exists: the rows
+        // of a renamed or deleted model could otherwise go only with --all, every other model's
+        // index with them. A name that is neither a class nor in the index fails as before.
+        if (!$this->indexHolds($model) && !$this->validModel($model)) {
             return self::FAILURE;
         }
 
@@ -47,5 +50,12 @@ class ClearCommand extends Command
         $this->info("Cleared BM25 index for [{$model}].");
 
         return self::SUCCESS;
+    }
+
+    /** Whether the index holds rows under $modelType, as the meta row or a document. */
+    private function indexHolds(string $modelType): bool
+    {
+        return DB::table('fuzzy_index_meta')->where('model_type', $modelType)->exists()
+            || DB::table('fuzzy_index_documents')->where('model_type', $modelType)->exists();
     }
 }
