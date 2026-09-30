@@ -7,7 +7,6 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -125,12 +124,13 @@ class AsyncRebuildDispatchTest extends TestCase
             }
         });
 
-        $code   = Artisan::call('fuzzy-search:rebuild', ['model' => User::class, '--fresh' => true, '--async' => true]);
-        $output = Artisan::output();
+        // Through the pending command, not Artisan::output(): on Laravel 10.0 Artisan::output() is
+        // empty under the test kernel.
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class, '--fresh' => true, '--async' => true])
+            ->expectsOutputToContain('the queue is gone')
+            ->expectsOutputToContain('fuzzy-search:rebuild')
+            ->assertExitCode(1);
 
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('the queue is gone', $output);
-        $this->assertStringContainsString('fuzzy-search:rebuild', $output);
         $this->assertSame(DB::table('rc2_jobs')->count(), (int) DB::table('rc2_job_batches')->value('total_jobs'));
         $this->assertGreaterThan(0, DB::table('rc2_jobs')->count());
         $this->assertLessThan(self::ROWS, DB::table('rc2_jobs')->count());
