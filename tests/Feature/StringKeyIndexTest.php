@@ -147,6 +147,30 @@ class StringKeyIndexTest extends TestCase
         }
     }
 
+    /**
+     * In rank order a string ranking over a union is checked against the constraints without a
+     * bound list on MySQL or MariaDB too: 10,000 bound ids per read took 1.5 s each at 34,000 rows on
+     * MySQL (5.2 s for a page), where the postings subquery takes 0.3 s. A ranking of at most
+     * max(candidate_chunk, max_candidates) ids is checked a chunk at a time, a longer one through the
+     * subquery, as on PostgreSQL.
+     */
+    public function test_a_string_ranking_over_a_union_is_checked_without_a_long_bound_list_on_mysql(): void
+    {
+        [$rows, $bindings] = $this->overAUnion(fn (\Closure $make) => [
+            'get'      => $make()->take(20)->get(),
+            'paginate' => $make()->paginate(4, 'page', 2),
+            'count'    => $make()->count(),
+        ]);
+
+        $this->assertSame(array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12)), $this->names($rows['get']));
+        $this->assertCount(4, $rows['paginate']->items());
+        $this->assertSame([12, 12], [$rows['paginate']->total(), $rows['count']]);
+
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertLessThan(count(self::KEYS), $bindings, 'a chunk of ids at most, beside the two where()s: never the 12 ranked ids');
+        }
+    }
+
     public function test_scout_reads_mixed_string_keys(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

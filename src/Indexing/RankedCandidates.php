@@ -240,7 +240,8 @@ final class RankedCandidates
      * read are bounded by the ranking, however large the table (rulings D10 and ER-124):
      *  - an integer key, on every database but SQL Server: the whole ranking in one read, its ids
      *    inlined as matches() lists them (about 1 ms per 1,000 ids, no binding limit);
-     *  - a string key on MySQL or MariaDB: 10,000 bound ids per read (they allow 65,535 bindings);
+     *  - a string key on MySQL or MariaDB: 10,000 bound ids per read (they allow 65,535 bindings),
+     *    but over a union (see readsUnion());
      *  - otherwise a ranking of at most max(bm25.candidate_chunk, max_candidates) ids, a chunk at a
      *    time (keys()). A longer one, on the index's own connection, is read in one query through the
      *    postings subquery (Bm25Scorer::whereRanked()), however many rows match, streamed (cursor())
@@ -271,7 +272,7 @@ final class RankedCandidates
             return array_intersect_key($ranked, array_flip(self::keysOf(self::keyRead($read))));
         }
 
-        $bound = !$int && DbDialect::isMySqlFamily($driver);
+        $bound = !$int && DbDialect::isMySqlFamily($driver) && !self::readsUnion($base);
 
         if ($bound || count($ranked) <= max(self::chunkSize(null), (int) config('fuzzy-search.max_candidates', 1000)) || !self::subqueryRuns($base)) {
             return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked), null, $bound ? 10000 : null)));
@@ -470,8 +471,8 @@ final class RankedCandidates
      * of the caller's). MySQL and MariaDB materialize a union with no index on the key, and MySQL
      * then compares a bound list of string keys with it row by row, so a string ranking is not read
      * through a long bound list there: at 34,000 rows an ordered page took 54 s (0.5 s through the
-     * postings subquery). A word "union" elsewhere in a derived FROM (a column so named) only
-     * chooses the subquery.
+     * postings subquery) and a constraint check 5.2 s (0.3 s); MariaDB's check 1.4 s (0.7 s). A word
+     * "union" elsewhere in a derived FROM (a column so named) only chooses the subquery.
      */
     private static function readsUnion(Builder $base): bool
     {
