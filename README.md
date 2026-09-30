@@ -117,6 +117,8 @@ class User extends Model
 $users = User::search('john')->get();
 ```
 
+Without `take()` (or `limit()`), `get()` returns only the first 15 matches: on `Model::search()`, on `FederatedSearch` (its `getGrouped()` too) and on `FuzzySearch::on()`; `Model::search()` and `FederatedSearch` page through the rest with `paginate()`.
+
 **How auto-detection works:** The package automatically detects common column names in this priority order:
 - `name`, `title` (weight: 10)
 - `email`, `username` (weight: 8)
