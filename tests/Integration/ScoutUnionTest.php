@@ -93,4 +93,20 @@ class ScoutUnionTest extends TestCase
             'orderBy paginate' => [[$total, ['John Doe']], 1],
         ], $found);
     }
+
+    /** L13 (round 10): a union that selects no key throws a LogicException that names the fix, not the database's unknown-column error. */
+    public function test_a_union_that_selects_no_key_is_rejected_naming_the_fix(): void
+    {
+        $union = fn () => ScoutUnionUser::scoutSearch('doe')
+            ->query(fn ($query) => $query->select('name', 'email')->union(ScoutUnionUser::query()->select('name', 'email')->where('name', 'Alice Smith')));
+
+        foreach (['get' => fn () => $union()->get(), 'paginate' => fn () => $union()->paginate(5), 'orderBy get' => fn () => $union()->orderBy('name')->get()] as $read => $run) {
+            try {
+                $run();
+                $this->fail("{$read}: served a union without the key");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString("select the key ('id') in every part of the union", $e->getMessage(), $read);
+            }
+        }
+    }
 }

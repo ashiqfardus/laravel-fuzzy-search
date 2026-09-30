@@ -213,8 +213,10 @@ analytics, `suggest()` and the tokenizers.
 - **Config keys that were documented but inert now take effect** (`scoring.*`, `highlighting.*`, `performance.max_patterns`, `unicode.normalize`, `similar_text.min_percentage`, `cache.*`, `synonyms`) — see [below](#config-keys-that-now-take-effect).
 - **New config keys:** `indexing.job` (`tries`, `backoff`, `timeout`) bounds retries of
   `IndexModelJob`/`RebuildIndexJob`; `bm25.candidate_chunk` (default 200) is the largest ranking an
-  ordered index search lists by id, the chunk the index path hydrates a page's rows and a cache hit
-  re-reads rows in, and, on SQL Server or for a string key on PostgreSQL or SQLite, the chunk a
+  ordered index search lists by id on SQL Server or for a string key on PostgreSQL (elsewhere it
+  lists a ranking that holds every match, whatever its length), the chunk the index path hydrates a page's rows and a cache hit
+  re-reads rows in, and, on SQL Server, for a string key on PostgreSQL or SQLite, or for one over a union
+  on MySQL or MariaDB, the chunk a
   constrained relevance search checks a ranking of at most `max(bm25.candidate_chunk, max_candidates)`
   ids in (on another connection than the index, where that subquery cannot run, any length of ranking).
 - **`indexing.table` was removed** — see [Removed config keys](#removed-config-keys).
@@ -419,7 +421,7 @@ through `get()`) now agree.
   narrowed `select()` may leave out the primary key: the package reads it beside your columns under
   an alias of its own, which never reaches the rows it returns.
 - **A `join()` that narrows the rows counts as a constraint, like a `where()`, and so do a `having()`, a `groupBy()`, a union and a `fromSub()`.** On the index path, `count()` and `paginate()->total()` now count only the models these let through (each once, however many rows a join repeats it in), and `suggest()` / `didYouMean()` treat the query as constrained (see below). A union is read as one derived table, so its parts' matches are served in relevance order and under `orderBy()`. In relevance order a model that a one-to-many join repeats is served once, with the joined columns of the first of its rows the database returns; 2.0 served a copy per joined row.
-- **A constrained relevance search checks its ranking by key.** On every database but SQL Server an integer key is checked in one query with the ranked ids inlined, and a string key on MySQL or MariaDB 10,000 bound ids per query; on SQL Server, and for a string key on PostgreSQL or SQLite, `bm25.candidate_chunk` still sizes the check (see [New config keys](#config-and-php-api)). No setting changes; a rare term under SoftDeletes or a tenant scope no longer reads the whole model table.
+- **A constrained relevance search checks its ranking by key.** On every database but SQL Server an integer key is checked in one query with the ranked ids inlined, and a string key on MySQL or MariaDB 10,000 bound ids per query; on SQL Server, for a string key on PostgreSQL or SQLite, and for one over a union on MySQL or MariaDB, `bm25.candidate_chunk` still sizes the check (see [New config keys](#config-and-php-api)). No setting changes; a rare term under SoftDeletes or a tenant scope no longer reads the whole model table.
 - **`didYouMean()` ranks the closest term first,** then the most common, and its reach scales with
   the term's length (1 edit for 2–3 characters, 2 for 4–5, 3 from 6) instead of a fixed 3: a short
   term gets fewer, closer alternatives.

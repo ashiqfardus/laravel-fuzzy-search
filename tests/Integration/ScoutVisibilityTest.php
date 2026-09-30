@@ -97,7 +97,8 @@ class ScoutVisibilityTest extends TestCase
 
         $names = fn ($results) => collect($results instanceof \Illuminate\Contracts\Pagination\Paginator ? $results->items() : $results)->pluck('name')->all();
 
-        // candidate_chunk 200: the ranked ids are listed; 1: the postings subquery restricts the read.
+        // candidate_chunk 200: the ranked ids are listed; 1: past one chunk, the whole ranking is
+        // listed too, but on SQL Server, where the postings subquery restricts the read (ruling ER-132).
         foreach ([200, 1] as $chunk) {
             config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
             $search = fn () => ScoutSoftDeleteUser::scoutSearch('zed')->withTrashed();
@@ -119,6 +120,12 @@ class ScoutVisibilityTest extends TestCase
             $this->assertSame(['Zed Alpha', 'Zed Gamma'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->orderBy('name')->get()), "chunk {$chunk}: live rows");
             $this->assertSame(['Zed Beta'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->onlyTrashed()->orderBy('name')->get()), "chunk {$chunk}: onlyTrashed");
         }
+
+        // A ranking capped at bm25.max_postings_per_term: the postings subquery restricts the ordered read.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 1]);
+        $this->assertSame(['Zed Alpha', 'Zed Beta', 'Zed Gamma'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->withTrashed()->orderBy('name')->get()), 'capped ranking: orderBy get');
+        $this->assertSame(['Zed Alpha', 'Zed Gamma'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->orderBy('name')->get()), 'capped ranking: live rows');
+        $this->assertSame(['Zed Beta'], $names(ScoutSoftDeleteUser::scoutSearch('zed')->onlyTrashed()->orderBy('name')->get()), 'capped ranking: onlyTrashed');
     }
 
     public function test_without_scout_soft_delete_a_trashed_model_leaves_the_index(): void

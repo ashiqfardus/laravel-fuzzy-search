@@ -114,13 +114,21 @@ class JoinedOrderedIndexPageTest extends TestCase
     {
         $this->seedSagas(60);
 
-        // candidate_chunk 200: the ranked ids are listed; 5: the postings subquery restricts the read.
-        foreach ([200, 5] as $chunk) {
-            config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
+        // candidate_chunk 200: the ranked ids are listed; 5: past one chunk, the whole ranking is
+        // listed too, but on SQL Server (ruling ER-132); a ranking capped at max_postings_per_term:
+        // the postings subquery restricts the read.
+        $reads = [
+            'chunk 200'      => ['fuzzy-search.bm25.candidate_chunk' => 200],
+            'chunk 5'        => ['fuzzy-search.bm25.candidate_chunk' => 5],
+            'capped ranking' => ['fuzzy-search.bm25.candidate_chunk' => 5, 'fuzzy-search.bm25.max_postings_per_term' => 5],
+        ];
+
+        foreach ($reads as $read => $settings) {
+            config($settings);
 
             foreach ($this->cases() as $case => [$make, $expected]) {
                 $expected = $expected();
-                $at       = "{$case}, chunk {$chunk}";
+                $at       = "{$case}, {$read}";
                 $served   = [];
 
                 for ($page = 1; $page <= 7; $page++) {
@@ -195,6 +203,47 @@ class JoinedOrderedIndexPageTest extends TestCase
             $deep  = $this->queries(fn () => $this->assertSame(array_slice($expected, 900, 15), $make()->paginate(15, 'page', 61)->pluck('title')->all(), "{$case}: page 61"));
 
             $this->assertSame($first, $deep, "{$case}: page 61 against page 1");
+        }
+    }
+
+    /**
+     * L1 (round 10): a derived FROM has no join of its own, so a fromSub() holding a one-to-many
+     * join, or a union whose parts overlap, was paged by rows: a model two rows held took two places
+     * (page 2 served page 1's post again), and the last posts were never served. It is paged by
+     * models, each at its first row, as under an outer join.
+     */
+    public function test_a_derived_from_that_repeats_a_model_serves_it_once_in_the_order(): void
+    {
+        $this->seedSagas(12);
+
+        $all = DB::table('posts')->orderBy('title')->pluck('title')->all();
+        $posts = fn () => Post::search('saga')->typoTolerance(0)->useInvertedIndex();
+        $cases = [
+            'fromSub() holding a join' => [
+                fn () => $posts()->fromSub(DB::table('posts')->join('comments', 'comments.post_id', '=', 'posts.id')->select('posts.*'), 'posts')->orderBy('title'),
+                $this->byTitle(),
+            ],
+            'an overlapping unionAll()' => [
+                fn () => $posts()->where('title', '<', 'Saga 0006')->query(fn ($query) => $query->unionAll(Post::query()))->orderBy('title'),
+                $all,
+            ],
+        ];
+
+        foreach ($cases as $case => [$make, $expected]) {
+            $this->assertSame($expected, $make()->get()->pluck('title')->all(), "{$case}: get");
+            $this->assertSame(count($expected), $make()->paginate(1)->total(), "{$case}: total");
+
+            $pages  = range(1, count($expected) + 1);
+            $served = array_merge(...array_map(fn (int $page) => $make()->paginate(1, 'page', $page)->pluck('title')->all(), $pages));
+            $this->assertSame($expected, $served, "{$case}: paginate(1)");
+
+            $simple = [];
+            for ($page = 1, $more = true; $more && $page <= count($expected) + 1; $page++) {
+                $paginator = $make()->simplePaginate(1, 'page', $page);
+                $simple    = [...$simple, ...collect($paginator->items())->pluck('title')->all()];
+                $more      = $paginator->hasMorePages();
+            }
+            $this->assertSame($expected, $simple, "{$case}: simplePaginate(1)");
         }
     }
 }

@@ -47,12 +47,20 @@ class SearchBuilder
     protected int $limit = 15;
     protected int $offset = 0;
     /**
-     * Ceiling for FuzzySearchExecuted::resultCount only — never for the query or the returned
-     * rows. simplePaginate() fetches perPage + 1 rows so the paginator can see whether a next
-     * page exists; that look-ahead row is not a result the caller receives, so it must not be
-     * reported as one. null = report whatever was returned.
+     * simplePaginate()'s page size, while it reads: the ceiling for FuzzySearchExecuted::resultCount.
+     * simplePaginate() fetches perPage + 1 rows so the paginator can see whether a next page
+     * exists; that look-ahead row is not a result the caller receives, so it must not be reported
+     * as one. The index path reads the page alone, and the ranking says whether one follows
+     * (executeIndexedSearch()). null = report whatever was returned.
      */
     protected ?int $reportedResultCap = null;
+    /**
+     * simplePaginate()'s answer from the index path, on get()'s last run or cache hit: whether
+     * matches follow the page (ruling ER-133). null where its look-ahead row answers.
+     */
+    private ?bool $morePages = null;
+    /** first() is reading: the index path reads on past a ranked id whose row is gone (ruling ER-133). */
+    private bool $firstReadsOn = false;
     protected array $filters = [];
     protected array $facets = [];
     protected ?string $highlightTagOpen = null;
@@ -1225,8 +1233,9 @@ class SearchBuilder
     /**
      * What get() caches (ruling ER-83): scalars and arrays only, so it unserialises under Laravel
      * 13's cache.serializable_classes = false — each model's key and scores, or a plain query
-     * builder's rows as arrays — plus the columns searched and how the rows are decorated. No row
-     * visibility, highlighting or relation is stored: those belong to the request that reads it.
+     * builder's rows as arrays — plus the columns searched, how the rows are decorated, and whether
+     * matches follow simplePaginate()'s page on the index path ($morePages). No row visibility,
+     * highlighting or relation is stored: those belong to the request that reads it.
      *
      * Models are stored by key only when a re-read by key gives back exactly the cached rows: every
      * row has a key of its own (ruling ER-92), the query has no join and no union (ER-93; toBase(),
@@ -1253,6 +1262,7 @@ class SearchBuilder
             'models'     => $models,
             'columns'    => $this->columnWeights,
             'decoration' => $decoration,
+            'more'       => $this->morePages,
             'rows'       => $results->map(fn ($row) => match ($models) {
                 'key'        => ['key' => $row->getKey(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
                 'attributes' => ['attributes' => $row->getRawOriginal(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
@@ -1273,6 +1283,8 @@ class SearchBuilder
      */
     private function fromCachePayload(array $payload): Collection
     {
+        $this->morePages = $payload['more'] ?? null;
+
         // The columns an extended search detected on the miss (compileExtendedQuery()).
         if ($this->searchableColumns === [] && $payload['columns'] !== []) {
             $this->searchIn($payload['columns']);
@@ -1542,9 +1554,15 @@ class SearchBuilder
             return $this->executeSearch();
         }
 
+        // simplePaginate() reads its page alone, and the ranking says whether matches follow: a
+        // look-ahead row whose id is stale ended the pages early, and a stale id in the page made
+        // the look-ahead row one of its rows, served again on the next page (ruling ER-133).
+        $limit = $this->reportedResultCap ?? $this->limit;
+
         // fallback() decides on whether the search matched a row at all, not on this page's rows.
-        ['ranked' => $ranked, 'total' => $total, 'page' => $sorted] = $this->indexedResults($modelClass, $this->offset, $this->limit);
-        $this->matched = $total > 0;
+        ['ranked' => $ranked, 'total' => $total, 'positions' => $positions, 'page' => $sorted] = $this->indexedResults($modelClass, $this->offset, $limit);
+        $this->matched   = $total > 0;
+        $this->morePages = $this->reportedResultCap === null ? null : $this->offset + $limit < $positions;
 
         if ($this->highlightTagOpen) {
             $sorted = $this->applyHighlighting($sorted, array_keys($this->indexedTermWeights));
@@ -1688,7 +1706,10 @@ class SearchBuilder
     /**
      * True when the base query can hide rows (filters, caller wheres and joins, global scopes), i.e.
      * the BM25 ranking cannot be used as-is. A join, a HAVING, a GROUP BY, a union or a FROM that is
-     * not a table name (fromSub()) can hide rows as surely as a where.
+     * not a table name (fromSub()) can hide rows as surely as a where: a GROUP BY alone where the
+     * database lets it collapse rows (SQLite), and a union by its limit or offset. The index path
+     * reads a union as a fromSub() already (indexedBaseQuery()); suggest() and didYouMean() read the
+     * query as written, union included (IndexUndetectedConstraintTest).
      */
     protected function hasIndexedConstraints(Builder|EloquentBuilder $base): bool
     {
@@ -2163,9 +2184,11 @@ class SearchBuilder
      *  - with orderBy(), every match the base query accepts, in that order (orderedIndexedPage()).
      * Constraints (filters, wheres, scopes) apply before the cut, so a selective filter fills its
      * page from lower-ranked matches instead of coming back short or empty. A page past the total is
-     * empty and reads no row (ruling ER-82).
+     * empty and reads no row (ruling ER-82). positions is how many places the pages are cut from:
+     * the total, less the ids in getSearchScore()'s window whose rows are gone. simplePaginate()
+     * reads from it whether a page follows (ruling ER-133).
      *
-     * @return array{ranked: array<int|string, float>, total: int, page: Collection}
+     * @return array{ranked: array<int|string, float>, total: int, positions: int, page: Collection}
      */
     protected function indexedResults(string $modelClass, int $offset, int $limit): array
     {
@@ -2176,33 +2199,46 @@ class SearchBuilder
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
-            return ['ranked' => [], 'total' => 0, 'page' => collect()];
+            return ['ranked' => [], 'total' => 0, 'positions' => 0, 'page' => collect()];
         }
 
         if ($this->sortBy !== []) {
-            return ['ranked' => $ranked] + $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
+            $ordered = $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
+
+            return ['ranked' => $ranked, 'positions' => $ordered['total']] + $ordered;
         }
 
-        $accepted = $this->hasIndexedConstraints($base)
+        $accepted  = $this->hasIndexedConstraints($base)
             ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, $modelClass, $this->columnWeights)
             : $ranked;
-        $page     = collect();
+        $page      = collect();
+        $positions = count($accepted);
 
         // Only the page's own rows are read, however deep the page, except getSearchScore()'s window,
         // which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
         // cut from that ordering. A page past it reads the window too, for the scale of _score. An id
-        // whose row is gone is skipped, and its page comes back one row short.
+        // whose row is gone is skipped: past the window its page comes back one row short (inside it,
+        // the id holds no place), and first() reads on to the next row that exists (ruling ER-133).
         if ($offset < count($accepted) && $limit > 0) {
-            $keys   = array_keys($accepted);
-            $rerank = $this->bm25Window($modelClass);
-            $window = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, 0, $rerank));
-            $start  = max($offset, $rerank);
-            $models = $window->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
-            $page   = $this->attachBm25Scores($models, $ranked, $window->count(), $rerank > 0 ? null : $accepted[$keys[0]])
+            $limit      = min($limit, count($accepted)); // take(PHP_INT_MAX): $offset + $limit stays an int
+            $keys       = array_keys($accepted);
+            $rerank     = $this->bm25Window($modelClass);
+            $window     = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, 0, $rerank));
+            $start      = max($offset, $rerank);
+            $models     = $window->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
+            $positions -= min($rerank, count($keys)) - $window->count();
+
+            // first() found no row: the keys that follow, a chunk at a time until one has a row, then that row.
+            if ($this->firstReadsOn && $models->count() <= min($offset, $window->count())) {
+                $next   = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keys($base, array_slice($keys, max($rerank, $offset + $limit)), 1);
+                $models = $models->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($next, 0, 1)));
+            }
+
+            $page = $this->attachBm25Scores($models, $ranked, $window->count(), $rerank > 0 ? null : $accepted[$keys[0]])
                 ->slice(min($offset, $window->count()), $limit)->values();
         }
 
-        return ['ranked' => $ranked, 'total' => count($accepted), 'page' => $page];
+        return ['ranked' => $ranked, 'total' => count($accepted), 'positions' => $positions, 'page' => $page];
     }
 
     /**
@@ -2226,6 +2262,7 @@ class SearchBuilder
         $this->offset = $offset;
         // The extra row is a look-ahead, not a result: keep it out of the event's resultCount.
         $this->reportedResultCap = $perPage;
+        $this->morePages         = null;
 
         try {
             $all = $this->get();
@@ -2235,10 +2272,13 @@ class SearchBuilder
             $this->reportedResultCap = null;
         }
 
-        return new \Illuminate\Pagination\Paginator(
+        $paginator = new \Illuminate\Pagination\Paginator(
             $all, $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
+
+        // The index path reads no look-ahead row: the ranking says whether matches follow.
+        return $this->morePages ? $paginator->hasMorePagesWhen() : $paginator;
     }
 
     /**
@@ -2260,17 +2300,20 @@ class SearchBuilder
      * array under an array fetch mode), or null.
      *
      * The limit it sets is restored afterwards (as simplePaginate() does with its look-ahead),
-     * so first() leaves the builder exactly as it found it.
+     * so first() leaves the builder exactly as it found it. On the index path it reads on past a
+     * ranked id whose row is gone (see indexedResults()).
      */
     public function first(): Model|\stdClass|array|null
     {
-        $limit       = $this->limit;
-        $this->limit = 1;
+        $limit              = $this->limit;
+        $this->limit        = 1;
+        $this->firstReadsOn = true;
 
         try {
             return $this->get()->first();
         } finally {
-            $this->limit = $limit;
+            $this->limit        = $limit;
+            $this->firstReadsOn = false;
         }
     }
 
@@ -3446,6 +3489,10 @@ class SearchBuilder
             'filters'                => $this->filters,
             'limit'                  => $this->limit,
             'offset'                 => $this->offset,
+            // The index path reads simplePaginate()'s page alone, and first() reads on past a
+            // ranked id whose row is gone: neither serves what get() serves for the same limit.
+            'page_size'              => $this->reportedResultCap,
+            'first'                  => $this->firstReadsOn,
             'use_search_index'       => $this->useSearchIndex,
             'extended_query'         => $this->extendedQuery,
             'column_weights'         => $this->columnWeights,

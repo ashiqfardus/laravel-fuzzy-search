@@ -104,20 +104,24 @@ class ScoutPaginatorTest extends TestCase
     }
 
     /**
-     * @return array{0: mixed, 1: int} the result, and the most bindings any one of its queries sent. On
-     * MySQL and MariaDB the engine checks a string ranking by key, 10,000 bound ids per read (ruling
-     * ER-124, well under their 65,535), and that key read is left out.
+     * @return array{0: mixed, 1: int} the result, and the most bindings any one of its queries sent,
+     * less the engine's reads of the whole ranking by key, which bind every ranked key, the other
+     * tenant's too, under the database's own limit: on MySQL and MariaDB a string ranking is checked
+     * 10,000 bound ids per read (ruling ER-124, well under their 65,535), and there and on SQLite an
+     * ordered read lists it bound (ER-132; SQLite allows 32,766).
      */
     private function withMaxBindings(\Closure $run): array
     {
+        $ranking = DB::table('fuzzy_index_documents')->where('model_type', ScoutTenantDoc::class)->pluck('model_id')->all();
+        $listed  = in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb', 'sqlite'], true);
+
         DB::flushQueryLog();
         DB::enableQueryLog();
 
         try {
             $result = $run();
-            $mysql  = in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true);
             $max    = (int) collect(DB::getQueryLog())
-                ->reject(fn ($query) => $mysql && preg_match('/^select \S+ as `fuzzy_walk_key` from /', $query['query']) === 1)
+                ->reject(fn ($query) => $listed && array_diff($ranking, $query['bindings']) === [])
                 ->max(fn ($query) => count($query['bindings']));
         } finally {
             DB::disableQueryLog();

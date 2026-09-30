@@ -92,7 +92,7 @@ class StringKeyIndexTest extends TestCase
         $all  = array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12));
         $make = fn () => StringKeyItem::search('zebra')->typoTolerance(0)->useInvertedIndex();
 
-        foreach ([200 => 'ids in the query', 5 => 'postings subquery'] as $chunk => $walk) {
+        foreach ([200 => 'ids in the query', 5 => 'past one chunk'] as $chunk => $walk) {
             config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
 
             $this->assertSame($all, $this->names($make()->get()), "{$walk}: get");
@@ -104,6 +104,70 @@ class StringKeyIndexTest extends TestCase
 
             $make()->cache()->get();
             $this->assertSame($all, $this->names($make()->cache()->get()), "{$walk}: a cache hit");
+        }
+
+        // A ranking capped at bm25.max_postings_per_term: the postings subquery restricts the
+        // ordered read on every database (a whole one past one chunk is listed on MySQL, MariaDB
+        // and SQLite, ruling ER-132).
+        config(['fuzzy-search.bm25.max_postings_per_term' => 5]);
+        $this->assertSame($all, $this->names($make()->orderBy('name')->get(), false), 'capped ranking: orderBy');
+        $this->assertSame(array_slice($all, 1), $this->names($make()->where('name', '!=', 'Zebra 01')->orderBy('name')->get(), false), 'capped ranking: orderBy under a where()');
+    }
+
+    /** A search over a union of two parts, 12 string-keyed matches in all, and the most bindings any statement of $read sent. */
+    private function overAUnion(\Closure $read): array
+    {
+        config(['fuzzy-search.bm25.candidate_chunk' => 5, 'fuzzy-search.max_candidates' => 5]);
+        $make = fn () => StringKeyItem::search('zebra')->typoTolerance(0)->useInvertedIndex()->where('name', '<', 'Zebra 07')
+            ->query(fn ($query) => $query->unionAll(StringKeyItem::query()->where('name', '>=', 'Zebra 07')));
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $rows     = $read($make);
+        $bindings = max(array_map(fn (array $query) => count($query['bindings']), DB::getQueryLog()));
+        DB::disableQueryLog();
+
+        return [$rows, $bindings];
+    }
+
+    /**
+     * An ordered read of a string ranking over a union is never a bound list past one chunk on MySQL
+     * or MariaDB (ruling ER-132's lists), since MySQL compares a bound list with the union's derived
+     * table row by row: at 34,000 matches an ordered page took 54 s where the postings subquery
+     * takes 0.5 s. It goes through the subquery there.
+     */
+    public function test_an_ordered_string_ranking_over_a_union_is_not_bound_past_one_chunk_on_mysql(): void
+    {
+        [$rows, $bindings] = $this->overAUnion(fn (\Closure $make) => array_merge(...array_map(fn (int $page) => $make()->orderBy('name')->paginate(4, 'page', $page)->items(), [1, 2, 3])));
+
+        $this->assertSame(array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12)), $this->names($rows, false));
+
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertLessThan(count(self::KEYS), $bindings, 'a chunk of ids at most, beside the two where()s: never the 12 ranked ids');
+        }
+    }
+
+    /**
+     * In rank order a string ranking over a union is checked against the constraints without a
+     * bound list on MySQL or MariaDB too: 10,000 bound ids per read took 1.5 s each at 34,000 rows on
+     * MySQL (5.2 s for a page), where the postings subquery takes 0.3 s. A ranking of at most
+     * max(candidate_chunk, max_candidates) ids is checked a chunk at a time, a longer one through the
+     * subquery, as on PostgreSQL.
+     */
+    public function test_a_string_ranking_over_a_union_is_checked_without_a_long_bound_list_on_mysql(): void
+    {
+        [$rows, $bindings] = $this->overAUnion(fn (\Closure $make) => [
+            'get'      => $make()->take(20)->get(),
+            'paginate' => $make()->paginate(4, 'page', 2),
+            'count'    => $make()->count(),
+        ]);
+
+        $this->assertSame(array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12)), $this->names($rows['get']));
+        $this->assertCount(4, $rows['paginate']->items());
+        $this->assertSame([12, 12], [$rows['paginate']->total(), $rows['count']]);
+
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertLessThan(count(self::KEYS), $bindings, 'a chunk of ids at most, beside the two where()s: never the 12 ranked ids');
         }
     }
 
@@ -117,7 +181,7 @@ class StringKeyIndexTest extends TestCase
         $all  = array_map(fn ($i) => sprintf('Zebra %02d', $i), range(1, 12));
         $make = fn () => new \Laravel\Scout\Builder(new StringKeyScoutItem, 'zebra');
 
-        foreach ([200 => 'ids in the query', 5 => 'postings subquery'] as $chunk => $walk) {
+        foreach ([200 => 'ids in the query', 5 => 'past one chunk'] as $chunk => $walk) {
             config(['fuzzy-search.bm25.candidate_chunk' => $chunk]);
 
             $this->assertSame($all, $this->names($make()->take(20)->get()), "{$walk}: get");
@@ -126,5 +190,10 @@ class StringKeyIndexTest extends TestCase
             $this->assertSame(array_slice($all, 1), $this->names($make()->query(fn ($q) => $q->where('name', '!=', 'Zebra 01'))->orderBy('name')->paginate(20), false), "{$walk}: orderBy under a query() where");
             $this->assertSame(['42', '7001'], $make()->query(fn ($q) => $q->where('name', '!=', 'Zebra 03'))->orderBy('name')->take(2)->keys()->all(), "{$walk}: keys() are the model's own");
         }
+
+        // A capped ranking: the postings subquery restricts the ordered read.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 5]);
+        $this->assertSame($all, $this->names($make()->orderBy('name')->take(20)->get(), false), 'capped ranking: orderBy');
+        $this->assertSame(array_slice($all, 1), $this->names($make()->query(fn ($q) => $q->where('name', '!=', 'Zebra 01'))->orderBy('name')->paginate(20), false), 'capped ranking: orderBy under a query() where');
     }
 }

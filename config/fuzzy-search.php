@@ -235,11 +235,13 @@ return [
         'max_postings_per_term' => 50000,
         /*
          * candidate_chunk: an ordered index search lists the ranked ids when the ranking
-         * holds every match and has at most this many; above it, a subquery on the
-         * postings restricts the read. On SQL Server, and for a string key on PostgreSQL or
-         * SQLite, a constrained relevance search checks a ranking of at most
-         * max(candidate_chunk, max_candidates) ids by key, this many per query, and reads a
-         * longer one through that subquery. It is also the chunk the index path hydrates a
+         * holds every match. Past this many, on SQL Server, for a string key on PostgreSQL
+         * (or over a union on MySQL or MariaDB), and for a string list past the database's
+         * placeholder limit, a subquery on the postings restricts the read instead, as it
+         * does a ranking capped at max_postings_per_term. On SQL Server, and for such a
+         * string key or one on SQLite, a constrained relevance search checks a ranking of
+         * at most max(candidate_chunk, max_candidates) ids by key, this many per query, and
+         * reads a longer one through that subquery. It is also the chunk the index path hydrates a
          * page's rows in and a cache hit re-reads rows in, and, for such a model on another
          * connection than the index, the chunk its ranking of any length is checked against
          * the constraints in.

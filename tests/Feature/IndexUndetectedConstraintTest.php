@@ -65,6 +65,42 @@ class IndexUndetectedConstraintTest extends TestCase
             ->select('users.*')->selectRaw("case when email = 'jane@example.com' then 1 else 0 end as is_jane")->having('is_jane', '=', 1)));
     }
 
+    /**
+     * L16 (round 10): a GROUP BY alone hides models where the database lets it collapse rows (SQLite,
+     * and MySQL or MariaDB without ONLY_FULL_GROUP_BY): a page serves one row per group, so the total
+     * counts the groups. Taken as unconstrained, the search counted every match.
+     */
+    public function test_a_group_by_that_collapses_rows_counts_as_a_constraint(): void
+    {
+        if ($this->dbDriver !== 'sqlite') {
+            $this->markTestSkipped('PostgreSQL, SQL Server, and MySQL and MariaDB under Laravel\'s strict mode reject a select * grouped by another column than the key; the CI SQLite jobs run this.');
+        }
+
+        // John Doe and Jane Doe share an email: one group.
+        DB::table('users')->where('name', 'Jane Doe')->update(['email' => 'john@example.com']);
+        $grouped = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()->groupBy('email');
+
+        $this->assertSame([1, 1, 1], [$grouped()->paginate(5)->total(), $grouped()->count(), $grouped()->get()->count()]);
+    }
+
+    /**
+     * L16 (round 10): suggest() and didYouMean() read the query as it was written, before the index
+     * path reads a union as one derived table, so the union itself counts: its limit hides rows of a
+     * first part that hides none. Here only Jon Snow is left, and "jane" is not offered.
+     */
+    public function test_did_you_mean_under_a_union_with_a_limit_offers_only_what_it_holds(): void
+    {
+        if ($this->dbDriver === 'sqlsrv') {
+            $this->markTestSkipped('A union with a limit of its own is not supported on SQL Server on the index path (docs/bm25.md); the other CI jobs run this.');
+        }
+
+        $union = fn () => User::search('jnae')->useInvertedIndex()
+            ->query(fn ($query) => $query->union(User::query()->where('name', 'Jane Doe'))->orderBy('name', 'desc')->limit(1));
+
+        $this->assertNotContains('jane', array_column($union()->didYouMean(), 'term'));
+        $this->assertContains('jane', array_column(User::search('jnae')->useInvertedIndex()->didYouMean(), 'term'), 'control');
+    }
+
     /** suggest() and didYouMean() offer only the words a fromSub() scope can see, as they do under the where() it holds. */
     public function test_word_suggestions_under_a_from_subquery_scope(): void
     {
@@ -122,6 +158,39 @@ class IndexUndetectedConstraintTest extends TestCase
         }
 
         $this->assertSame(['rank order' => [['Jane Doe'], 1], 'orderBy()' => [['John Doe'], 1]], $pages);
+    }
+
+    /**
+     * L13 (round 10): a union whose parts select no key has none in the derived table the index path
+     * reads it as, and every read failed with the database's unknown-column error, which did not say
+     * what to do. It throws a LogicException that names the fix; a union whose parts select the key
+     * is served, a select() of its own without the key too (ruling D13).
+     */
+    public function test_a_union_that_selects_no_key_is_rejected_naming_the_fix(): void
+    {
+        $union = fn (array $columns) => User::search('doe')->typoTolerance(0)->useInvertedIndex()->select($columns)->where('id', '>', 0)
+            ->query(fn ($query) => $query->union(User::query()->select($columns)->where('name', 'Alice Smith')));
+
+        $reads = [
+            'get'              => fn ($search) => $search->get(),
+            'first'            => fn ($search) => $search->first(),
+            'count'            => fn ($search) => $search->count(),
+            'paginate'         => fn ($search) => $search->paginate(5),
+            'orderBy paginate' => fn ($search) => $search->orderBy('name')->paginate(5),
+        ];
+
+        foreach ($reads as $read => $run) {
+            try {
+                $run($union(['name', 'email']));
+                $this->fail("{$read}: served a union without the key");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString("select the key ('id') in every part of the union", $e->getMessage(), $read);
+            }
+        }
+
+        $this->assertSame(['Jane Doe', 'John Doe'], $union(['id', 'name', 'email'])->orderBy('name')->get()->pluck('name')->all());
+        $this->assertSame(['Jane Doe', 'John Doe'], $union(['users.id', 'name', 'email'])->orderBy('name')->get()->pluck('name')->all());
+        $this->assertSame(['Jane Doe', 'John Doe'], $union(['*'])->orderBy('name')->get()->pluck('name')->all());
     }
 
     /**

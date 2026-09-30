@@ -113,12 +113,12 @@ class IndexDeepPageCostTest extends TestCase
                     $at = "{$search}, {$terminal}, max_candidates {$maxCandidates}";
                     $page($make, 1); // warms the once-per-process reads, such as MySQL's model_id collation
 
+                    // simplePaginate() reads no row ahead: the ranking says whether a page follows (ruling ER-133).
                     $queries = $this->cost(fn () => $page($make, 1))[0];
-                    $ahead   = $terminal === 'simplePaginate' ? 1 : 0; // simplePaginate() reads one row ahead, except on the last page
                     $pages   = [1, intdiv($last, 2), $last];
 
                     $this->assertSame(
-                        array_map(fn ($p) => [$p, $queries, self::PER_PAGE + ($p === $last ? 0 : $ahead)], $pages),
+                        array_map(fn ($p) => [$p, $queries, self::PER_PAGE], $pages),
                         array_map(fn ($p) => [$p, ...array_slice($this->cost(fn () => $page($make, $p)), 0, 2)], $pages),
                         "{$at}: [page, queries, models hydrated]"
                     );
