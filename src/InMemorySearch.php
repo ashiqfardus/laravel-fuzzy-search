@@ -134,7 +134,18 @@ class InMemorySearch
         // (Utf8::scoringInput()), so a 20KB value costs what a 255-character one does.
         $cutNeedle = Utf8::scoringInput($needle);
 
-        $scored = $this->items->map(function ($item) use ($needle, $cutNeedle) {
+        // The working scores, by the item's position: kept beside the items, never on them. A
+        // non-match is left untouched, so an object the caller's own collection still holds is
+        // never mutated (ruling ER-98), and a match is written to only under withRelevance(): a
+        // temporary property on every matched object was a dynamic one on an object with declared
+        // properties (deprecated since PHP 8.2), and an Error on one that takes none.
+        $scores = [];
+
+        foreach ($this->items as $position => $item) {
+            if (!is_object($item) && !is_array($item)) {
+                continue;
+            }
+
             $score = 0;
             foreach ($this->columns as $col) {
                 // Never data_get() on a model: its relation fallback runs any method named like
@@ -170,44 +181,31 @@ class InMemorySearch
                 }
             }
 
-            // A non-match is returned untouched — no _score, _raw_score or _raw_score_tmp is
-            // ever set on it — so an object item the caller's own collection still holds
-            // elsewhere is never mutated (ruling ER-98).
-            if ($score <= 0) {
-                return $item;
+            if ($score > 0) {
+                $scores[$position] = $score;
             }
+        }
 
-            // Carry raw score in a local key for filtering/sorting regardless of withRelevance
-            if (is_object($item)) {
-                $item->_raw_score_tmp = $score;
-            } elseif (is_array($item)) {
-                $item['_raw_score_tmp'] = $score;
-            }
-            return $item;
-        })
-        ->filter(fn($item) => is_object($item) ? isset($item->_raw_score_tmp) : (is_array($item) && array_key_exists('_raw_score_tmp', $item)))
-        ->sortByDesc(fn($item) => is_object($item) ? $item->_raw_score_tmp : $item['_raw_score_tmp'])
-        ->values();
+        // Best first; equal scores keep the items' order (arsort() is stable).
+        arsort($scores);
 
-        // Normalize _score to [0,1] and clean up temp key
-        $max = $scored->max(fn($i) => is_object($i) ? $i->_raw_score_tmp : $i['_raw_score_tmp']);
-        $scored = $scored->map(function ($item) use ($max) {
-            $raw = is_object($item) ? $item->_raw_score_tmp : $item['_raw_score_tmp'];
-            if (is_object($item)) {
-                unset($item->_raw_score_tmp);
-                if ($this->withRelevance && $max > 0) {
+        // Normalize _score to [0,1]
+        $max    = $scores === [] ? 0 : max($scores);
+        $scored = collect($scores)->map(function ($raw, $position) use ($max) {
+            $item = $this->items[$position];
+
+            if ($this->withRelevance && $max > 0) {
+                if (is_object($item)) {
                     $item->_raw_score = $raw;
                     $item->_score     = round($raw / $max, 6);
-                }
-            } else {
-                unset($item['_raw_score_tmp']);
-                if ($this->withRelevance && $max > 0) {
+                } else {
                     $item['_raw_score'] = $raw;
                     $item['_score']     = round($raw / $max, 6);
                 }
             }
+
             return $item;
-        });
+        })->values();
 
         $results = $scored->slice($this->offset, $this->limit)->values();
 

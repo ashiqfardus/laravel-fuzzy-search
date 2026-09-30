@@ -13,6 +13,23 @@ class InMemoryNonMatchUser extends Model
     protected $guarded = [];
 }
 
+/** An app DTO: declared properties only, so a property written onto it is a dynamic one. */
+class InMemoryContactDto
+{
+    public function __construct(public string $name) {}
+}
+
+/** An object that refuses a property it does not declare, as a `readonly class` does (PHP 8.2+). */
+class InMemoryLockedDto
+{
+    public function __construct(public string $name) {}
+
+    public function __set(string $key, mixed $value): void
+    {
+        throw new \Error("Cannot create dynamic property " . self::class . "::\${$key}");
+    }
+}
+
 /**
  * M6 (ruling ER-98): FuzzySearch::on() must never decorate an item that did not match, and
  * every item — matched or not — must lose its internal _raw_score_tmp. A non-matching
@@ -76,5 +93,32 @@ class InMemorySearchNonMatchTest extends TestCase
 
         $this->assertCount(1, $results);
         $this->assertArrayNotHasKey('_raw_score_tmp', $results->first());
+    }
+
+    /**
+     * Round 10 deep review, RD-1: the working score was written onto every matched object as
+     * `_raw_score_tmp` before withRelevance() was read, a dynamic property on an object with
+     * declared ones: a deprecation from src/ per matched item (PHP 8.2+), and an Error on an object
+     * that takes none, so the search could not run. It is kept beside the items, never on them.
+     */
+    public function test_objects_with_declared_properties_are_searched_without_a_property_written_onto_them(): void
+    {
+        $items = [new InMemoryContactDto('Jane Roe'), new InMemoryContactDto('John Doe'), new InMemoryContactDto('Johnny')];
+
+        $results = (new FuzzySearch(config('fuzzy-search')))->on($items)->search('john')->searchIn(['name'])->withRelevance(false)->get();
+
+        $this->assertSame(['John Doe', 'Johnny'], $results->map(fn ($dto) => $dto->name)->all());
+        foreach ($items as $dto) {
+            $this->assertSame(['name'], array_keys(get_object_vars($dto)));
+        }
+    }
+
+    public function test_an_object_that_takes_no_dynamic_property_is_searched_with_relevance_off(): void
+    {
+        $items = [new InMemoryLockedDto('Big John'), new InMemoryLockedDto('Jane Roe'), new InMemoryLockedDto('John')];
+
+        $results = (new FuzzySearch(config('fuzzy-search')))->on($items)->search('john')->searchIn(['name'])->withRelevance(false)->get();
+
+        $this->assertSame(['John', 'Big John'], $results->map(fn ($dto) => $dto->name)->all(), 'ranked: the exact match first');
     }
 }

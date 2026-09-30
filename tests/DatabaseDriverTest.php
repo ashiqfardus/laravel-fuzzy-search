@@ -43,6 +43,22 @@ class DatabaseDriverTest extends TestCase
         $this->assertStringContainsString('like', strtolower($sql));
     }
 
+    /** Deep review RB-1: on every database, a soundex search for a number finds only the rows that hold it. */
+    public function test_a_soundex_search_for_a_term_without_letters_finds_only_rows_that_hold_it(): void
+    {
+        DB::table('products')->insert([
+            ['title' => 'iPhone 15', 'description' => ''],
+            ['title' => 'Office 365', 'description' => 'Suite'],
+            ['title' => 'Model 99', 'description' => 'Ninety-nine'],
+        ]);
+
+        $titles = fn (string $term) => DB::table('products')->where(fn ($q) => $q->whereFuzzy('title', $term, 'soundex')->orWhereFuzzy('description', $term, 'soundex'))
+            ->orderBy('title')->pluck('title')->all();
+
+        $this->assertSame(['Model 99'], $titles('99'));
+        $this->assertSame([], $titles('---'));
+    }
+
     public function test_soundex_uses_native_function_or_like_fallback_per_driver(): void
     {
         $query = DB::table('users')

@@ -9,7 +9,7 @@ class Utf8Test extends TestCase
 {
     public function test_valid_text_is_returned_byte_identical(): void
     {
-        foreach (['', 'john doe', "a\x00b", 'Größe', 'মোবাইলফোন', '東京', "\u{212A}", "\u{1F600} \u{10FFFF}", "cafe\u{0301}", 'a?b%c_'] as $valid) {
+        foreach (['', 'john doe', 'Größe', 'মোবাইলফোন', '東京', "\u{212A}", "\u{1F600} \u{10FFFF}", "cafe\u{0301}", 'a?b%c_'] as $valid) {
             $this->assertSame($valid, Utf8::clean($valid), bin2hex($valid));
         }
     }
@@ -17,6 +17,7 @@ class Utf8Test extends TestCase
     public function test_invalid_sequences_are_dropped_and_the_valid_bytes_around_them_kept(): void
     {
         $cases = [
+            "a\x00b"               => 'ab',       // a NUL byte: valid UTF-8, but it cuts a LIKE pattern short
             "john\xC3"             => 'john',     // truncated two-byte sequence at the end
             "jo\xC3hn"             => 'john',     // truncated sequence in the middle
             "jo\xE2\x82hn"         => 'john',     // truncated three-byte sequence

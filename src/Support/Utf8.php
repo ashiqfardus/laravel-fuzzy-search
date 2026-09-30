@@ -16,9 +16,13 @@ final class Utf8
      * Applied to every search term where it enters the package: PostgreSQL and SQL Server
      * reject invalid bytes in a bind parameter, so a crafted `?q=john%C3` was an error there.
      * Dropped, not replaced: mb_scrub()'s '?' would be a literal character in a LIKE pattern.
+     * A NUL byte is dropped too: it is valid UTF-8, but SQLite, PostgreSQL and SQL Server cut a
+     * LIKE pattern at it, so `name:\0john` was the pattern `%` and matched every row in scope.
      */
     public static function clean(string $value): string
     {
+        $value = str_replace("\0", '', $value);
+
         if (mb_check_encoding($value, 'UTF-8')) {
             return $value;
         }

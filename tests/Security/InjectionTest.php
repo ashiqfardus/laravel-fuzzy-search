@@ -185,8 +185,7 @@ class InjectionTest extends TestCase
     }
 
     /**
-     * orderByFuzzy() writes its column into raw SQL — on SQLite a bare column goes in exactly as
-     * written — so it takes whereFuzzy()'s column check: an app that passes a request's sort
+     * orderByFuzzy() writes its column into raw SQL, so it takes whereFuzzy()'s column check: an app that passes a request's sort
      * field through must get an exception, never an injected subquery, on every grammar.
      */
     #[DataProvider('injectedOrderColumns')]

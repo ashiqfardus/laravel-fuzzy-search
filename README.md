@@ -131,7 +131,7 @@ If none of these exist, it falls back to the model's `$fillable` columns, then t
 
 ### Manual Column Configuration
 
-You can manually specify which columns to search and their weights:
+You can manually specify which columns to search and their weights. On PostgreSQL and SQL Server each must be a text column (see [Notes](#notes) under the database compatibility table):
 
 ```php
 class User extends Model
@@ -363,7 +363,7 @@ $matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->ge
 
 Without `searchIn()` there is no column to search, so a search matches nothing. An empty (or whitespace-only) term throws `EmptySearchTermException`, as every other search does, unless `allow_empty_search` is on; then it returns the items unsearched. Over Eloquent models, a column is read as an attribute, cast or accessor. A dotted `searchIn()` name follows only relations already loaded, so call `load('author')` before searching `author.name`. Case is folded in every script, the way `Model::search()` scores (`ÉCOLE` finds `école`, `МОСКВА` finds `москва`), a term is cut at `query.max_term_length` characters (default 128), and `similar_text()` compares at most the first 255 characters of a value and of the term.
 
-A result stays a read model. With relevance on (the default), each matched item gets `_score` and `_raw_score`: attributes on an Eloquent model, keys on an array, properties on an object. So `save()` on a matched model fails with an unknown-column error: re-fetch it by key first, or `unset($model->_score, $model->_raw_score)` before saving. `withRelevance(false)` adds neither. An item that did not match is left exactly as it was, with none of these and none of the temporary `_raw_score_tmp` key used while scoring.
+A result stays a read model. With relevance on (the default), each matched item gets `_score` and `_raw_score`: attributes on an Eloquent model, keys on an array, properties on an object. So `save()` on a matched model fails with an unknown-column error: re-fetch it by key first, or `unset($model->_score, $model->_raw_score)` before saving. `withRelevance(false)` adds neither. An item that did not match is left exactly as it was. On an object the two are dynamic properties: a class with declared properties raises PHP's dynamic-property deprecation for them, and a `readonly` class cannot take them, so search such objects with `withRelevance(false)`, which writes nothing onto an item.
 
 ---
 
@@ -661,7 +661,7 @@ $users = User::search('john')
     ->get();
 ```
 
-Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`.
+Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`. A value is highlighted at up to `highlighting.max_matches` occurrences (100; `0` for no limit), and the rest of it follows untagged, so a long text that repeats the term cannot blow up `_matches` and `_highlighted`.
 
 Every value in `_highlighted` is safe to render as HTML: a matched column is wrapped in the highlight tag (and escaped first), and — since v2.1.0 — a column that did not match is HTML-escaped too, so the whole array can be echoed with `{!! !!}` without an extra `e()` call.
 
@@ -1406,6 +1406,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 - **fuzzystrmatch (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`
 - **unaccent (PostgreSQL, for an explicit `accentInsensitive()`):** `CREATE EXTENSION IF NOT EXISTS unaccent;` + `use_native_functions=true`. `unaccent(col) ILIKE unaccent(?)` is then ORed beside the chosen algorithm. It runs only when the search opts in explicitly (`->accentInsensitive()`, `$searchable['accent_insensitive']` or a preset); the global `unicode.accent_insensitive` default never uses it. Without the extension an explicit opt-in fails with `function unaccent(…) does not exist`.
 - **MySQL accent insensitive:** Use `utf8mb4_unicode_ci` or `utf8mb4_0900_ai_ci` collation on the column.
+- **Non-text columns (PostgreSQL, SQL Server):** a column you declare in `$searchable['columns']` or pass to `searchIn()` must be a text column there. An integer, decimal or date column is searched by its digits on MySQL, MariaDB and SQLite, but on PostgreSQL every search that names it throws (`operator does not exist: bigint ~~* unknown`), and on SQL Server every search for a term that is not a number does (`Conversion failed when converting the nvarchar value …`). To search such a column on those two, expose it as text (a generated or computed text column, or a view) and declare that column. Auto-detection never picks a non-text column.
 - **`similar_text` under an accent-insensitive collation:** on MySQL/MariaDB with `utf8mb4_unicode_ci` or `utf8mb4_0900_ai_ci`, `similar_text`'s LIKE also matches accent variants (`Jöhn` for `john`). The `min_percentage` length bound still applies to them: an accent variant has the same length, so the bound approximates PHP's percentage there.
 - **`similar_text.min_percentage`:** a match contains the term, so its `similar_text()` percentage is `200·t / (t + v)` for a `t`-character term and a `v`-character value, counted in characters. PHP's `similar_text()` counts bytes, so for single-byte text the bound is exactly its percentage, and for multibyte text a close approximation. The bound keeps values of at most `t·(200 − p) / p` characters: at the default 70, about 1.86 times the term's length. Under `tokenize()` the whole search term's length sets the bound for every token (whole-value similarity), so `john doe` still finds `John Doe`. On SQL Server a character outside the BMP counts as 2. `0` turns the bound off and restores 2.0's results.
 - **Metaphone shadow column:** Run `php artisan fuzzy-search:add-shadow-column {Model} {column} --type=metaphone`, then `php artisan migrate`, then `php artisan fuzzy-search:rebuild {Model}` to fill it for existing rows (see [Shadow Columns](#shadow-columns)).

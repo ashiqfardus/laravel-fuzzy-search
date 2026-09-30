@@ -225,4 +225,58 @@ class InvalidUtf8TermTest extends TestCase
         $this->assertSame(self::CLEAN, $row['term']);
         $this->assertSame(self::CLEAN, $row['normalized_term']);
     }
+
+    /**
+     * Deep review RB-3. A NUL byte is valid UTF-8, so clean() kept it, and search() only trims it
+     * off a term's ends. Inside an extended or tokenized term it stayed in the LIKE pattern, which
+     * SQLite, PostgreSQL and SQL Server cut at the NUL: `name:\0john` was bound as `%\0john%` and
+     * matched every row in scope. It is dropped with the invalid bytes.
+     */
+    public function test_a_nul_byte_inside_a_term_is_dropped(): void
+    {
+        $ids = fn ($builder) => $builder->get()->pluck('id')->sort()->values()->all();
+
+        $this->assertSame('john', \Ashiqfardus\LaravelFuzzySearch\Support\Utf8::clean("jo\0hn"));
+
+        $cases = [
+            'a field scope'     => ["name:\0john", 'name:john'],
+            'a quoted phrase'   => ["\"\0john\"", '"john"'],
+            'a negated term'    => ["doe !\0jane", 'doe !jane'],
+        ];
+        foreach ($cases as $label => [$dirty, $clean]) {
+            $expected = $ids(User::search('')->extended($clean));
+            $this->assertNotSame([], $expected, $label);
+            $this->assertLessThan(User::count(), count($expected), $label);
+            $this->assertSame($expected, $ids(User::search('')->extended($dirty)), $label);
+            $this->assertSame(count($expected), User::search('')->extended($dirty)->count(), "{$label}: count()");
+        }
+
+        $this->assertSame(
+            $ids(User::search('zzz q')->tokenize()->matchAny()),
+            $ids(User::search("zzz \0q")->tokenize()->matchAny()),
+            'a tokenized term'
+        );
+    }
+
+    /**
+     * Deep review RB-5. get() cuts the term at query.max_term_length; suggest()'s table scan bound
+     * the whole term as a LIKE prefix, and a term past 4,000 characters threw on SQL Server
+     * ("String or binary data would be truncated"), past 50,000 bytes on SQLite.
+     */
+    public function test_suggest_cuts_the_term_like_every_other_search(): void
+    {
+        $max = (int) config('fuzzy-search.query.max_term_length');
+
+        foreach ([5000, 60000] as $length) {
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $this->assertSame([], User::search(str_repeat('a', $length))->suggest(), "{$length} characters");
+            $longest = max(array_map(fn ($q) => max([0, ...array_map(fn ($b) => is_string($b) ? mb_strlen($b) : 0, $q['bindings'])]), DB::getQueryLog()) ?: [0]);
+            DB::disableQueryLog();
+
+            $this->assertLessThanOrEqual($max + 2, $longest, "{$length} characters: the bound pattern");
+        }
+
+        $this->assertSame(['John Doe'], User::search('john d')->searchIn(['name'])->suggest(), 'a short term still completes');
+    }
 }

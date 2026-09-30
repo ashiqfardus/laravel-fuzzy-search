@@ -22,7 +22,8 @@ class DbDialectTest extends TestCase
         $this->assertSame('`name`',  DbDialect::quoteIdentifier('name', 'mariadb'));
         $this->assertSame('"name"',  DbDialect::quoteIdentifier('name', 'pgsql'));
         $this->assertSame('[name]',  DbDialect::quoteIdentifier('name', 'sqlsrv'));
-        $this->assertSame('name',    DbDialect::quoteIdentifier('name', 'sqlite'));
+        $this->assertSame('"name"',  DbDialect::quoteIdentifier('name', 'sqlite'));
+        $this->assertSame('"group"', DbDialect::quoteIdentifier('group', 'sqlite'), 'a keyword');
     }
 
     public function test_quote_identifier_handles_table_qualified_names(): void
