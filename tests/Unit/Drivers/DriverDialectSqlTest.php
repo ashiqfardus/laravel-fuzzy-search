@@ -37,6 +37,31 @@ class DriverDialectSqlTest extends TestCase
         }
     }
 
+    /**
+     * Deep review RB-1. SOUNDEX() encodes a term it finds no letter in as '', which is also the code
+     * of every word without one and of an empty column: "99" matched "iPhone 15", "Office 365" and
+     * every row with an empty searched column. Such a term takes the pattern fallback. MySQL and
+     * MariaDB encode a letter of any script; PostgreSQL's fuzzystrmatch only an ASCII one.
+     */
+    public function test_soundex_sends_a_term_it_cannot_encode_to_the_pattern_fallback(): void
+    {
+        $sql = fn (string $driver, string $term) => strtolower((new SoundexDriver($this->config(['use_native_functions' => true]), $driver))
+            ->apply($this->app['db']->table('users'), 'name', $term)
+            ->toSql());
+
+        foreach (['mysql', 'mariadb', 'pgsql'] as $driver) {
+            foreach (['99', '2024', '$$$', '---', '№'] as $term) {
+                $this->assertStringNotContainsString('soundex(', $sql($driver, $term), "{$driver}: {$term}");
+                $this->assertStringContainsString('like', $sql($driver, $term), "{$driver}: {$term}");
+            }
+            $this->assertStringContainsString('soundex(', $sql($driver, 'john'), $driver);
+            $this->assertStringContainsString('soundex(', $sql($driver, 'r2d2'), $driver);
+        }
+
+        $this->assertStringContainsString('soundex(', $sql('mysql', 'привет'));
+        $this->assertStringNotContainsString('soundex(', $sql('pgsql', 'привет'));
+    }
+
     public function test_soundex_falls_back_to_like_on_sqlite_and_sqlsrv(): void
     {
         foreach (['sqlite', 'sqlsrv'] as $driver) {

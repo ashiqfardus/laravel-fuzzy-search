@@ -15,6 +15,15 @@ class SoundexDriver extends BaseDriver
     {
         $col = $this->quoteColumn($column, $query);
 
+        // SOUNDEX() encodes a term it finds no letter in as '', the code of every word without a
+        // letter and of an empty column too: "99" matched "iPhone 15", "Office 365" and every row
+        // whose searched column was ''. MySQL and MariaDB encode a letter of any script;
+        // PostgreSQL's fuzzystrmatch only an ASCII one. Such a term takes the pattern fallback,
+        // as it does on the databases without SOUNDEX().
+        if (preg_match($this->driver === 'pgsql' ? '/[A-Za-z]/' : '/\pL/u', $value) !== 1) {
+            return $this->applyFallback($query, $column, $value, $boolean);
+        }
+
         // MySQL and PostgreSQL support native SOUNDEX.
         // IMPORTANT: SOUNDEX() on multi-word strings (e.g. "Jake Jackson") ignores spaces
         // and encodes the entire string as one token, causing false positives — e.g.
