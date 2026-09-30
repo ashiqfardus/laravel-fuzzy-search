@@ -252,9 +252,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     }
 
     /**
-     * The query's index terms. A query below min_search_length has none, so it matches nothing
-     * (a total of 0), as Model::search() does — see SearchBuilder::belowMinSearchLength(). A
-     * longer one is searched on its first query.max_term_length characters.
+     * The query's index terms. A query below min_search_length (a null or empty one too) has none,
+     * so it matches nothing (a total of 0), as Model::search() does — see
+     * SearchBuilder::belowMinSearchLength(). A longer one is searched on its first
+     * query.max_term_length characters.
      *
      * @return string[]
      */
@@ -267,7 +268,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             throw new NotSupportedException('The fuzzy-search Scout engine does not support hybrid (semantic) search.');
         }
 
-        $query = trim(Utf8::clean($builder->query));
+        // Scout's search() takes null, and Laravel's ConvertEmptyStringsToNull middleware turns an
+        // empty ?q= into one: an empty query, which matches nothing (ruling D17).
+        $query = trim(Utf8::clean((string) $builder->query));
 
         if (SearchBuilder::belowMinSearchLength($query)) {
             return [];

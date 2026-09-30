@@ -115,7 +115,7 @@ A `query()` callback may `select()` only the columns it needs, without the prima
 
 **Query length.** The engine searches the first `query.max_term_length` characters of the query (default 128), as `Model::search()->useInvertedIndex()` does; longer input is cut, never rejected. A page past the last match is empty, however large its number.
 
-**Result size and empty queries.** Without `take()`, `get()` returns only the first 15 matches, not every match: call `take($n)` for more, or `paginate()`, whose default page size is the model's `getPerPage()` (15). An empty or whitespace-only query matches nothing: no rows and a total of 0, whatever `allow_empty_search` says, and no `EmptySearchTermException`.
+**Result size and empty queries.** Without `take()`, `get()` returns only the first 15 matches, not every match: call `take($n)` for more, or `paginate()`, whose default page size is the model's `getPerPage()` (15). An empty, whitespace-only or null query (`search(null)`, which an empty `?q=` gives under Laravel's `ConvertEmptyStringsToNull` middleware) matches nothing: no rows and a total of 0, whatever `allow_empty_search` says, and no `EmptySearchTermException`.
 
 **Events.** Scout searches never fire `FuzzySearchExecuted`, so they reach neither your listeners nor [persisted analytics](analytics.md).
 

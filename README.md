@@ -815,7 +815,7 @@ A model on this driver needs the package's `Searchable` trait beside Scout's, as
 
 The engine counts and pages through the model's global scopes, and through the constraints you put on Scout's builder with `where()`, `whereIn()` and `whereNotIn()`: a row either hides is neither served nor counted. On Scout 10.1 and later the engine builds `paginate()` and `simplePaginate()` itself, with the total it has already counted. See [Authorization](docs/integrations.md#authorization).
 
-Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty query matches nothing, with or without `allow_empty_search`. Scout searches fire no `FuzzySearchExecuted` event.
+Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty or null query matches nothing, with or without `allow_empty_search`. Scout searches fire no `FuzzySearchExecuted` event.
 
 → Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
 

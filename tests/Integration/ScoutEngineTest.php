@@ -474,7 +474,7 @@ class ScoutEngineTest extends TestCase
         return $ids;
     }
 
-    private function scoutBuilder(string $query = 'widget'): \Laravel\Scout\Builder
+    private function scoutBuilder(?string $query = 'widget'): \Laravel\Scout\Builder
     {
         return new \Laravel\Scout\Builder(new ScoutIndexedUser, $query);
     }
@@ -670,6 +670,41 @@ class ScoutEngineTest extends TestCase
         $this->assertNotEmpty($walk);
         foreach ($walk as [$sql]) {
             $this->assertMatchesRegularExpression('/\blimit 15\b|\btop 15\b|\bfetch next 15 rows\b/i', $sql, "not the page: {$sql}");
+        }
+    }
+
+    /**
+     * M1 (round 10), ruling D17. Scout's search() takes a null query, and Laravel's TrimStrings and
+     * ConvertEmptyStringsToNull middleware turn ?q= and ?q=%20 into null: scoutSearch($request->input('q'))
+     * threw a TypeError (a 500) where the docs promise that an empty query matches nothing.
+     */
+    public function test_a_null_or_empty_scout_query_matches_nothing_on_every_terminal(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+
+        [$top] = $this->seedOrderableWidgets();
+
+        foreach ([null, '', '   '] as $query) {
+            $label = var_export($query, true);
+            $scout = fn () => $this->scoutBuilder($query);
+
+            $this->assertSame([], $this->resultIds($scout()->get()), "{$label}: get()");
+            $this->assertNull($scout()->first(), "{$label}: first()");
+            $this->assertSame([], $scout()->keys()->all(), "{$label}: keys()");
+            $this->assertSame(0, $scout()->raw()['total'], "{$label}: raw()");
+
+            $page = $scout()->paginate(2);
+            $this->assertSame([[], 0], [$this->resultIds($page), $page->total()], "{$label}: paginate()");
+            $simple = $scout()->simplePaginate(2);
+            $this->assertSame([[], false], [$this->resultIds($simple), $simple->hasMorePages()], "{$label}: simplePaginate()");
+
+            // The ordered read, and a constrained search (constrainedQuery() and the ranking's check).
+            $this->assertSame([], $this->resultIds($scout()->orderBy('name')->get()), "{$label}: orderBy()->get()");
+            $this->assertSame(0, $scout()->orderBy('name')->paginate(2)->total(), "{$label}: orderBy()->paginate()");
+            $this->assertSame(0, $scout()->where('id', $top)->paginate(2)->total(), "{$label}: where()->paginate()");
+            $this->assertSame(0, $scout()->query(fn ($q) => $q->where('id', $top))->paginate(2)->total(), "{$label}: query()->paginate()");
         }
     }
 
