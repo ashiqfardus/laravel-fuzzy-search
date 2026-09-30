@@ -1270,7 +1270,7 @@ php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=index
 # Remove a model's index entries (the same as fuzzy-search:clear "App\Models\User"; asks no confirmation)
 php artisan fuzzy-search:flush "App\Models\User"
 
-# Clear BM25 index for a model (asks no confirmation)
+# Clear BM25 index for a model (asks no confirmation); a renamed or deleted model's rows go by its old class name
 php artisan fuzzy-search:clear "App\Models\User"
 
 # Clear BM25 index for all models (asks no confirmation)
