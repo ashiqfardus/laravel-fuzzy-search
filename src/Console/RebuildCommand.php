@@ -64,8 +64,8 @@ class RebuildCommand extends Command
         $shadows = app(SearchableObserver::class);
         // chunkById() is keyset-based: rows inserted or deleted while the rebuild runs cannot
         // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
-        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed, $shadows) {
-            $indexed += $indexManager->indexBatch($models);
+        IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($modelClass, $indexManager, $bar, &$indexed, $shadows) {
+            $indexed += $indexManager->indexBatch($models, modelClass: $modelClass); // not the chunk's first model's class (RC-3)
             $shadows->backfillShadowColumns($models); // fills *_metaphone for rows saved before it existed
             $bar->advance($models->count());
         }, $keyName);

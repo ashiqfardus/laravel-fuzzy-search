@@ -541,17 +541,22 @@ class IndexManager
      * so Scout's onlyTrashed() and withTrashed() find it. Everything else reads through the
      * model's query: its global scopes, and SoftDeletes, whose trashed rows leave the index.
      *
+     * $modelClass: the class the models are indexed under and re-read through; the first model's
+     * class without it. A rebuild passes the class it was asked for: a parent whose query hydrates
+     * child instances (single-table inheritance) indexed a chunk under its first row's class, and
+     * that class's global scope dropped the chunk's other rows (RC-3).
+     *
      * @param  iterable<Model> $models
      * @return int the number of models indexed
      */
-    public function indexBatch(iterable $models, bool $scout = false): int
+    public function indexBatch(iterable $models, bool $scout = false, ?string $modelClass = null): int
     {
         $modelType = null;
         $keys      = [];
         $unsaved   = [];
 
         foreach ($models as $model) {
-            $modelType ??= get_class($model);
+            $modelType ??= $modelClass ?? get_class($model);
             if ($model->exists) {
                 $keys[(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
             } else {

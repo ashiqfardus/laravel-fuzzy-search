@@ -123,7 +123,7 @@ A union in the `query()` callback is the exception: the engine reads it as one t
 
 **Events.** Scout searches never fire `FuzzySearchExecuted`, so they reach neither your listeners nor [persisted analytics](analytics.md).
 
-**Indexing.** `$model->searchable()` and Scout's import go through the engine's `update()`, which writes a collection of models in one transaction and indexes each row as it is stored, read the way Scout's own jobs read it: without global scopes, and keeping a trashed row while `scout.soft_delete` is on. Unsaved changes on an instance are not indexed. An error on one model (a `searchableText()` value that cannot be indexed, or a write that loses all three deadlock attempts) leaves none of that collection indexed.
+**Indexing.** `$model->searchable()` and Scout's import go through the engine's `update()`, which writes a collection of models in one transaction (one per class in a collection that mixes classes, each model under its own class) and indexes each row as it is stored, read the way Scout's own jobs read it: without global scopes, and keeping a trashed row while `scout.soft_delete` is on. Unsaved changes on an instance are not indexed. An error on one model (a `searchableText()` value that cannot be indexed, or a write that loses all three deadlock attempts) leaves none of that collection indexed.
 
 **Caching.** Neither Scout's builder nor this engine caches results. Wrap the Scout call in Laravel's cache, with a key that covers everything that changes the result — the term, the page, the constraints, the tenant:
 
