@@ -97,4 +97,29 @@ class PageParameterTest extends TestCase
 
         $this->assertSame([], $wrong);
     }
+
+    /**
+     * L2 (round 10): take(PHP_INT_MAX), the "no limit" idiom, overflowed $offset + $limit into a float
+     * on the index path, and array_slice() threw a TypeError. It serves what the LIKE path serves.
+     */
+    public function test_skip_and_take_php_int_max_serve_the_rest_on_every_path(): void
+    {
+        foreach (range(1, 8) as $i) {
+            User::create(['name' => sprintf('Zeta %02d', $i), 'email' => "zeta{$i}@example.com"]);
+        }
+        app(IndexManager::class)->indexBatch(User::all());
+
+        $like  = fn () => User::search('zeta')->using('like');
+        $index = fn () => User::search('zeta')->typoTolerance(0)->useInvertedIndex();
+        $all   = $like()->take(50)->get()->pluck('name')->all();
+        $this->assertCount(8, $all);
+
+        foreach (['like' => $like, 'index' => $index] as $shape => $make) {
+            $this->assertEqualsCanonicalizing($all, $make()->take(PHP_INT_MAX)->get()->pluck('name')->all(), "{$shape} take(PHP_INT_MAX)");
+            $this->assertCount(count($all) - 1, $make()->skip(1)->take(PHP_INT_MAX)->get(), "{$shape} skip(1)");
+
+            $ordered = $make()->orderBy('name')->take(50)->get()->pluck('name')->all();
+            $this->assertSame(array_slice($ordered, 2), $make()->orderBy('name')->skip(2)->take(PHP_INT_MAX)->get()->pluck('name')->all(), "{$shape} orderBy skip(2)");
+        }
+    }
 }

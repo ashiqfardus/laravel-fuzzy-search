@@ -1786,6 +1786,7 @@ class SearchBuilder
             return ['total' => $total, 'page' => collect()];
         }
 
+        $limit = min($limit, $total - $offset); // take(PHP_INT_MAX) reads what remains
         $this->applyExplicitOrder($query, true);
         $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
 
@@ -2217,6 +2218,7 @@ class SearchBuilder
         // whose row is gone is skipped: past the window its page comes back one row short (inside it,
         // the id holds no place), and first() reads on to the next row that exists (ruling ER-133).
         if ($offset < count($accepted) && $limit > 0) {
+            $limit      = min($limit, count($accepted)); // take(PHP_INT_MAX): $offset + $limit stays an int
             $keys       = array_keys($accepted);
             $rerank     = $this->bm25Window($modelClass);
             $window     = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, 0, $rerank));
