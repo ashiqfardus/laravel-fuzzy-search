@@ -65,6 +65,42 @@ class IndexUndetectedConstraintTest extends TestCase
             ->select('users.*')->selectRaw("case when email = 'jane@example.com' then 1 else 0 end as is_jane")->having('is_jane', '=', 1)));
     }
 
+    /**
+     * L16 (round 10): a GROUP BY alone hides models where the database lets it collapse rows (SQLite,
+     * and MySQL or MariaDB without ONLY_FULL_GROUP_BY): a page serves one row per group, so the total
+     * counts the groups. Taken as unconstrained, the search counted every match.
+     */
+    public function test_a_group_by_that_collapses_rows_counts_as_a_constraint(): void
+    {
+        if ($this->dbDriver !== 'sqlite') {
+            $this->markTestSkipped('PostgreSQL, SQL Server, and MySQL and MariaDB under Laravel\'s strict mode reject a select * grouped by another column than the key; the CI SQLite jobs run this.');
+        }
+
+        // John Doe and Jane Doe share an email: one group.
+        DB::table('users')->where('name', 'Jane Doe')->update(['email' => 'john@example.com']);
+        $grouped = fn () => User::search('doe')->typoTolerance(0)->useInvertedIndex()->groupBy('email');
+
+        $this->assertSame([1, 1, 1], [$grouped()->paginate(5)->total(), $grouped()->count(), $grouped()->get()->count()]);
+    }
+
+    /**
+     * L16 (round 10): suggest() and didYouMean() read the query as it was written, before the index
+     * path reads a union as one derived table, so the union itself counts: its limit hides rows of a
+     * first part that hides none. Here only Jon Snow is left, and "jane" is not offered.
+     */
+    public function test_did_you_mean_under_a_union_with_a_limit_offers_only_what_it_holds(): void
+    {
+        if ($this->dbDriver === 'sqlsrv') {
+            $this->markTestSkipped('A union with a limit of its own is not supported on SQL Server on the index path (docs/bm25.md); the other CI jobs run this.');
+        }
+
+        $union = fn () => User::search('jnae')->useInvertedIndex()
+            ->query(fn ($query) => $query->union(User::query()->where('name', 'Jane Doe'))->orderBy('name', 'desc')->limit(1));
+
+        $this->assertNotContains('jane', array_column($union()->didYouMean(), 'term'));
+        $this->assertContains('jane', array_column(User::search('jnae')->useInvertedIndex()->didYouMean(), 'term'), 'control');
+    }
+
     /** suggest() and didYouMean() offer only the words a fromSub() scope can see, as they do under the where() it holds. */
     public function test_word_suggestions_under_a_from_subquery_scope(): void
     {

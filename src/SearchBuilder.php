@@ -1706,7 +1706,10 @@ class SearchBuilder
     /**
      * True when the base query can hide rows (filters, caller wheres and joins, global scopes), i.e.
      * the BM25 ranking cannot be used as-is. A join, a HAVING, a GROUP BY, a union or a FROM that is
-     * not a table name (fromSub()) can hide rows as surely as a where.
+     * not a table name (fromSub()) can hide rows as surely as a where: a GROUP BY alone where the
+     * database lets it collapse rows (SQLite), and a union by its limit or offset. The index path
+     * reads a union as a fromSub() already (indexedBaseQuery()); suggest() and didYouMean() read the
+     * query as written, union included (IndexUndetectedConstraintTest).
      */
     protected function hasIndexedConstraints(Builder|EloquentBuilder $base): bool
     {
