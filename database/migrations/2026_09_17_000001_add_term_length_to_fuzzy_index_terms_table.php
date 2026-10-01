@@ -28,11 +28,15 @@ return new class extends Migration
         }
 
         // Backfill dictionaries built before this column existed, so TermExpander can filter by
-        // length immediately; on every run, for the words a failed run left at 0. lengthFunction()
-        // is the character (not byte) length on every driver: CHAR_LENGTH (MySQL/MariaDB), LEN
-        // (SQL Server), LENGTH (others).
-        $length = DbDialect::lengthFunction($driver);
-        DB::statement('UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET term_length = {$length}(term) WHERE term_length = 0");
+        // length immediately; on every run, for the words a failed run left at 0. The character
+        // (not byte) length, as the indexer's mb_strlen(): CHAR_LENGTH (MySQL/MariaDB), LENGTH
+        // (PostgreSQL, SQLite). SQL Server's LEN counts a character outside the BMP (𠮷, 𝓳) as two
+        // under a collation without _SC, the database's default included, so it counts under one:
+        // such a word got a length its typos and didYouMean() never reach.
+        $length = $driver === DbDialect::SQLSRV
+            ? 'LEN(term COLLATE Latin1_General_100_CI_AS_SC)'
+            : DbDialect::lengthFunction($driver) . '(term)';
+        DB::statement('UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET term_length = {$length} WHERE term_length = 0");
     }
 
     public function down(): void

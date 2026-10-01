@@ -90,7 +90,10 @@ final class DbDialect
         return $value;
     }
 
-    /** Character-length function name (not byte length). */
+    /**
+     * Character-length function name (not byte length). SQL Server's LEN counts UTF-16 code units under a
+     * collation without _SC, so a character outside the BMP counts as two there, as NVARCHAR(n) does.
+     */
     public static function lengthFunction(string $driver): string
     {
         if (self::isMySqlFamily($driver)) {

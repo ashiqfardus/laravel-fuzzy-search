@@ -85,6 +85,28 @@ class TermLengthTest extends TestCase
         $this->assertSame(191, (int) DB::table('fuzzy_index_terms')->where('term', mb_substr($cyrillic, 0, 191))->value('term_length'));
     }
 
+    /**
+     * SC-3. The migration's backfill counts characters as the indexer's mb_strlen() does. SQL
+     * Server's LEN() counted a character outside the BMP as two under any collation without _SC
+     * (the database's default included), so an upgraded word holding one fell out of typo
+     * expansion and didYouMean(). Re-run here on the words a 2.0 worker left at 0.
+     */
+    public function test_the_migration_backfill_counts_characters_as_the_indexer_does(): void
+    {
+        foreach (['𐐖𐐲𐑉𐑅𐐯𐐻 Deseret', '𠮷野家 yoshinoya', '𝓳𝓸𝓱𝓷𝓷𝔂 fancy'] as $i => $name) {
+            app(IndexManager::class)->indexModel(User::create(['name' => $name, 'email' => "sc3-{$i}@example.com"]));
+        }
+        $written = fn () => DB::table('fuzzy_index_terms')->pluck('term_length', 'term')->map(fn ($l) => (int) $l)->sortKeys(SORT_STRING)->all();
+        $before  = $written();
+        $this->assertSame(6, $before['𐐾𐐲𐑉𐑅𐐯𐐻']);
+
+        DB::table('fuzzy_index_terms')->update(['term_length' => 0]);
+        (require __DIR__ . '/../../database/migrations/2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table.php')->up();
+
+        $this->assertSame($before, $written());
+        $this->assertContains('𐐾𐐲𐑉𐑅𐐯𐐻', array_column(User::search('𐐖𐐲𐑉𐑅𐐯')->didYouMean(), 'term'));
+    }
+
     public function test_new_config_keys_are_published_with_defaults(): void
     {
         $config = require __DIR__ . '/../../config/fuzzy-search.php';

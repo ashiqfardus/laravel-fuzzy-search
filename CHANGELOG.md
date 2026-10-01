@@ -319,7 +319,7 @@ First release where the full test suite runs against SQLite, MySQL 8, MariaDB 11
 
 | Migration | What it does |
 | --------- | ------------ |
-| `2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table` | Adds `term_length` (unsigned smallint) + index to `fuzzy_index_terms` so `didYouMean()` filters by length without `LENGTH()` SQL. |
+| `2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table` | Adds `term_length` (unsigned smallint) + index to `fuzzy_index_terms` so `didYouMean()` filters by length without `LENGTH()` SQL, and fills it with each word's length in characters, as the indexer counts them (on SQL Server too, where a character outside the BMP, such as `𠮷`, counts once). |
 | `2026_09_17_000002_binary_collation_on_fuzzy_index_terms_term` | MySQL/MariaDB only: rewrites `fuzzy_index_terms.term` to `utf8mb4_bin` so `café` and `cafe` are distinct dictionary terms. |
 | `2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table` | Adds `column_name` (varchar 64, default `''`) to `fuzzy_index_postings` and moves the unique key to `(term_id, model_type, model_id, column_name)` — weighted BM25. Existing rows keep `''` and keep working; rebuild with `--fresh` for weighted ranking. |
 | `2026_09_19_000001_create_fuzzy_search_logs_table` | Creates the table `analytics.table` names (`fuzzy_search_logs` by default: `id`, `term`, `normalized_term`, `model_type`, `algorithm`, `path`, `result_count`, `latency_ms`, `day`, `created_at`; indexed on `normalized_term`, `created_at`, `result_count`, `day`) for the opt-in persisted analytics. `normalized_term` is varchar 191, so its index fits MySQL's key limit. Set `analytics.table` before you migrate. |
