@@ -300,7 +300,7 @@ php artisan migrate
 php artisan fuzzy-search:rebuild "App\Models\User"
 ```
 
-A rebuild writes only the rows whose shadow value is missing or out of date, one UPDATE per 600 rows, and it rebuilds the model's BM25 index too. `--type` accepts `metaphone` only.
+A rebuild writes only the rows whose shadow value is missing or out of date, one UPDATE per 600 rows, and it rebuilds the model's BM25 index too. `--type` accepts `metaphone` only. A code is cut to 191 characters, so a long value (a bio, a description) fits the column the command generates, and the `string()` column earlier releases generated (255, or 191 under `Schema::defaultStringLength(191)`).
 
 After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`.
 
@@ -309,7 +309,7 @@ After this, the `SearchableObserver` keeps `name_metaphone` in sync automaticall
 ```php
 // database/migrations/{timestamp}_add_name_metaphone_to_users_table.php
 Schema::table('users', function (Blueprint $table) {
-    $table->string('name_metaphone')->nullable()->after('name');
+    $table->string('name_metaphone', 191)->nullable()->after('name');
     $table->index('name_metaphone');
 });
 ```

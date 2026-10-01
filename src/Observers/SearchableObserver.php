@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Observers;
 
+use Ashiqfardus\LaravelFuzzySearch\Drivers\MetaphoneDriver;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Model;
@@ -128,7 +129,7 @@ class SearchableObserver
 
             if (static::$columnCache[$cacheKey] && $this->loaded($model, $column)) {
                 $value = SearchableColumns::value($model, $column);
-                $code  = $value !== null ? metaphone((string) $value) : null;
+                $code  = $value !== null ? MetaphoneDriver::code((string) $value) : null;
 
                 if (!array_key_exists($metaphoneCol, $attributes) || $attributes[$metaphoneCol] !== $code) {
                     $updates[$metaphoneCol] = $code;

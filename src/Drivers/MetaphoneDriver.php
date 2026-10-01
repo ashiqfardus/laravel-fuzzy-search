@@ -17,6 +17,26 @@ use Illuminate\Database\Query\Builder;
  */
 class MetaphoneDriver extends BaseDriver
 {
+    /**
+     * The longest code the shadow column holds: the column fuzzy-search:add-shadow-column writes is
+     * string(…, 191), and one written by an earlier release is string() — 255, or 191 under
+     * Schema::defaultStringLength(191).
+     */
+    public const CODE_LENGTH = 191;
+
+    /**
+     * $value's metaphone code, cut to CODE_LENGTH: the one encoding the shadow column is written
+     * with (SearchableObserver) and searched by (apply()). The code is about half the value's
+     * length, so a long value (a bio, a description: past about 400 characters for 191, 550 for
+     * 255) would not fit the column, and its save failed (22001 on MySQL, MariaDB, PostgreSQL and
+     * SQL Server). Cut on both sides, the codes of a long value and of a term for it still compare
+     * equal.
+     */
+    public static function code(string $value): string
+    {
+        return substr(metaphone($value), 0, self::CODE_LENGTH);
+    }
+
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
         $shadowColumn = $column . '_metaphone';
@@ -33,7 +53,7 @@ class MetaphoneDriver extends BaseDriver
             return $query;
         }
 
-        $code = metaphone($value);
+        $code = self::code($value);
         $method = $boolean === 'or' ? 'orWhere' : 'where';
 
         return $query->$method($shadowColumn, $code);
@@ -53,7 +73,7 @@ class MetaphoneDriver extends BaseDriver
 
     public function getRelevanceBindings(string $value): array
     {
-        return [metaphone($value)];
+        return [self::code($value)];
     }
 
     private function assertShadowColumnExists(Builder $query, string $shadowColumn, string $originalColumn): void
