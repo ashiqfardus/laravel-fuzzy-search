@@ -107,6 +107,24 @@ class DriverDialectSqlTest extends TestCase
         }
     }
 
+    /**
+     * SF-6 (ruling ER-150). With use_native_functions, PostgreSQL's levenshtein ran
+     * similarity() > max(0.3, 1 - max_distance / length): a trigram similarity, not an edit
+     * distance, under which no one-edit typo of a short word passes (john/jonh 0.25). It keeps the
+     * pattern set whatever the flag; the flag still governs trigram, soundex and unaccent.
+     */
+    public function test_levenshtein_keeps_the_pattern_set_on_postgres_whatever_the_flag(): void
+    {
+        foreach ([false, true] as $native) {
+            $sql = strtolower((new LevenshteinDriver($this->config(['use_native_functions' => $native]), 'pgsql'))
+                ->apply($this->app['db']->table('users'), 'name', 'jonh')
+                ->toSql());
+
+            $this->assertStringNotContainsString('similarity(', $sql, $native ? 'native' : 'pattern');
+            $this->assertStringContainsString('"name" ilike ?', $sql, $native ? 'native' : 'pattern');
+        }
+    }
+
     public function test_ast_compiler_quotes_identifiers_per_driver(): void
     {
         $expected = [
