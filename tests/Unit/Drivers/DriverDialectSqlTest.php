@@ -60,6 +60,16 @@ class DriverDialectSqlTest extends TestCase
 
         $this->assertStringContainsString('soundex(', $sql('mysql', 'привет'));
         $this->assertStringNotContainsString('soundex(', $sql('pgsql', 'привет'));
+
+        // SA-2: PCRE counts ª, º and µ as letters; MySQL's and MariaDB's SOUNDEX() encode them as
+        // '', so an ordinal ("2º", "1ª") matched every letterless word there. A real letter beside
+        // them still takes SOUNDEX().
+        foreach (['mysql', 'mariadb', 'pgsql'] as $driver) {
+            foreach (['2º', '1ª', 'µ', '3ºµª'] as $term) {
+                $this->assertStringNotContainsString('soundex(', $sql($driver, $term), "{$driver}: {$term}");
+            }
+            $this->assertStringContainsString('soundex(', $sql($driver, 'piso 2º'), $driver);
+        }
     }
 
     public function test_soundex_falls_back_to_like_on_sqlite_and_sqlsrv(): void
