@@ -103,7 +103,7 @@ User::scoutSearch('john')
     ->paginate();
 ```
 
-The engine applies a `query()` callback the same way, but on Scout 10.0 only, `paginate()` with a `query()` callback also has Scout count the matches again: it reads every match's key and binds them all in one `whereIn()`, which fails on SQL Server past 2,100 matches on a string key. Scout 10.1 and later hand `paginate()` and `simplePaginate()` to the engine, which counts once.
+The engine applies a `query()` callback the same way, but on Scout 10.0 only, `paginate()` with a `query()` callback also has Scout count the matches again: it reads every match's key and binds them all in one `whereIn()`, which fails on SQL Server past 2,100 matches on a string key. Scout 10.0 counts through the callback as the engine reads it (an `or` grouped, a union read as one table), but a callback that joins a one-to-many table is counted there once per joined row: filter with `whereHas()` instead. Scout 10.1 and later hand `paginate()` and `simplePaginate()` to the engine, which counts once.
 
 With `scout.soft_delete` enabled, trashed models stay in the index as Scout expects, provided only Scout indexes the model; the engine filters them at query time through Scout's `__soft_deleted` constraint. With `indexing.enabled` on, the package's observer also re-indexes each saved or deleted model through the model's query (SoftDeletes and global scopes applied) and removes the trashed row Scout kept. Leave `indexing.enabled` off for Scout-indexed models, and build their index with `php artisan scout:import` (which keeps trashed rows), not `fuzzy-search:rebuild` (which skips them).
 
