@@ -327,6 +327,8 @@ First release where the full test suite runs against SQLite, MySQL 8, MariaDB 11
 | `2026_09_30_000001_binary_collation_on_fuzzy_index_terms_term_on_sqlsrv` | SQL Server only: moves `fuzzy_index_terms.term` to `Latin1_General_100_BIN2`, dropping and recreating every index on the column, so words the database's collation folds (`straße`/`strasse`, `cœur`/`coeur`) are distinct dictionary terms. Skipped when the column is binary already. Rebuild each indexed model with `--fresh` afterwards. |
 | `2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes` | Adds `(term_length, doc_count)` to `fuzzy_index_terms` in place of the `term_length` index, and drops `postings_term_model_idx`, which `postings_unique_idx` makes redundant. The new index is built from the dictionary (one row per distinct word; 0.4 to 1.7 s per million words); PostgreSQL and SQL Server hold index writes to the dictionary until it is built, MySQL and MariaDB build it online. Dropping the postings index is quick. Rolling back recreates both indexes, and rebuilding `postings_term_model_idx` reads the whole postings table (2 to 4 s per million postings). |
 
+A migration that stops part way (a lock-wait timeout, a killed deploy) is finished by running `php artisan migrate` again. On MySQL and MariaDB, which commit each DDL statement on its own, the `term_length` and `column_name` migrations change their table in one `ALTER TABLE` and skip what an earlier run did, so a failure no longer leaves them half applied (every later `migrate` stopped at `1060 Duplicate column name`) or `fuzzy_index_postings` without a unique key; the `term_length` backfill fills every word still at 0, and the search-log migration adds the indexes its table lacks.
+
 ## [2.0.1] — 2026-09-16
 
 ### Fixed
