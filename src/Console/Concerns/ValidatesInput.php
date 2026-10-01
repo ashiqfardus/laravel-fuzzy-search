@@ -42,9 +42,16 @@ trait ValidatesInput
         return $ok;
     }
 
-    /** A short name ("User") is looked up under App\Models; a qualified one is taken as given. */
+    /**
+     * A short name ("User") is looked up under App\Models; a qualified one is taken as given,
+     * without the leading backslash PHP code writes ("\App\Models\User"): class_exists() accepts
+     * it, but the index is keyed by the class name without it, so rebuild indexed a copy no search
+     * read and clear cleared nothing (SA-4).
+     */
     protected function modelName(string $name): string
     {
+        $name = ltrim($name, '\\');
+
         return class_exists($name) || str_contains($name, '\\') ? $name : 'App\\Models\\' . $name;
     }
 

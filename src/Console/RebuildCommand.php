@@ -27,7 +27,7 @@ class RebuildCommand extends Command
 
     public function handle(IndexManager $indexManager): int
     {
-        $modelClass = $this->argument('model');
+        $modelClass = $this->modelName($this->argument('model'));
 
         if (!$this->validModel($modelClass, 'indexable')) {
             return self::FAILURE;
