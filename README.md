@@ -1338,7 +1338,11 @@ Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a war
 | BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
 | Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
 
-**At scale:** The BM25 path uses an indexed term lookup — query time grows with the number of matching postings, not total row count. A well-maintained 1M-row index should therefore stay close to the 100k figures above. Two `orderBy()` reads are the exceptions, since they read every row the query accepts: one on SQL Server past `bm25.candidate_chunk` matches (200 by default; 70 to 110 ms at 200k rows), and one whose ranking is capped at `bm25.max_postings_per_term` (50,000 matches or more for a one-word query; see [docs/bm25.md](docs/bm25.md#usage)). Typo expansion adds one dictionary query per query term whose cost grows with dictionary size, and since 2.1 it is scoped to the searched model's own terms: roughly 16 ms per term on PostgreSQL and 50 ms on MySQL, measured at ~220k distinct terms across two models (about 1.6–1.8× the unscoped lookup); call `typoTolerance(0)` on latency-critical searches.
+**At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast (see [Sizing the index](#sizing-the-index)). Three reads grow with the data:
+
+- **Common words.** Every posting of a matched word is read, joined and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. On MySQL with a 4 GB buffer pool, one such word (in 7% of 3M rows of about 16 indexed words each) took 2.6 s, three together 50 s once the index no longer fitted in memory, and over 120 s cold at 6M rows; PostgreSQL took 0.7 s and 2.1 s at 3M rows. A selective `where()`, `typoTolerance(0)` and Scout's exact terms are the fast paths.
+- **Typo expansion** reads the dictionary once per word length in the window around each query term (one short index read per length), so it no longer grows with the dictionary: 3 to 26 ms a term at 1M distinct words on MySQL, MariaDB and PostgreSQL. `typoTolerance(0)` skips it.
+- **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (50,000 matches or more for a one-word query) restricts the ordered read through the postings: on MySQL and MariaDB a join of the matched ids on the model's key, one key lookup per match; elsewhere a subquery that reads the rows the query accepts (0.15 to 1.1 s at 1M–3M rows on PostgreSQL). On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default; 70 to 110 ms at 200k rows). See [docs/bm25.md](docs/bm25.md#usage).
 
 ### When to Use BM25 vs LIKE
 
@@ -1380,16 +1384,22 @@ Key tips:
 6. **Use `take()`** to cap result sets
 7. **Eager load relationships** to avoid N+1 queries
 
-### Scaling Recommendations
+### Sizing the index
 
-| Records | Recommended Strategy | Expected Query Time |
-|---------|---------------------|---------------------|
-| < 50K | Default (no optimization) | < 50ms |
-| 50K - 100K | Add DB indexes + cache | < 100ms |
-| 100K - 500K | BM25 index + cache | < 150ms |
-| 500K - 1M | BM25 index + partitioning + cache | < 200ms |
-| 1M - 10M | BM25 + read replicas + tiered cache | < 300ms |
-| > 10M | Consider Meilisearch / Typesense | — |
+Measured on one laptop database at a time, with rows of about 16 indexed words each (a short name, a description, a brand and a unique SKU, so the dictionary grows with the table). Your words, columns and hardware will move these numbers; measure your own tables with `php artisan fuzzy-search:benchmark`.
+
+- **Size:** about 4.8 GB of index per million rows on MySQL and 3.7 GB on PostgreSQL, roughly ten times the table it indexes. The postings table is almost all of it.
+- **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MySQL at 3M rows, four searchers managed 1.1 searches a second with a p95 of 18 s.
+- **Index builds:** one process indexed about 2,800 rows a second at 1M rows on MySQL and 1,100 at 3M. More rebuild processes help (four gave 2.2× one on MySQL, 1.6× on PostgreSQL); `indexing.chunk_size` does not.
+
+| Database (memory for the engine) | Index searches under 1 s | Every search and command finishes | First failure |
+|---|---|---|---|
+| MySQL 9.6 (4 GB buffer pool) | up to about 1M rows | up to 3M rows | 6M rows: a common-word search over 120 s cold |
+| PostgreSQL 16 (4 GB `shared_buffers`) | up to 6M rows (one word 0.3–1.2 s; three common words together 19 s) | up to 12M rows (a common word 28 s) | not reached at 12M |
+
+These were measured on the 2.1 release candidate before its dictionary, ordered-read and `fuzzy-search:status` fixes, which cut the first two reads and remove `status`'s timeout at 3M rows and up on MySQL; the common-word read above is unchanged by them. Past these sizes, or for many concurrent searchers on large tables, a dedicated search engine (Meilisearch, Typesense, OpenSearch through Scout) is the better fit.
+
+The LIKE algorithms scan the table: at 1M rows `simple` took 0.75 s, `fuzzy` 14 s and `levenshtein` 35 s on MySQL. Keep them for tables under the sizes in the [Algorithm Comparison](#algorithm-comparison), or narrow them with a selective `where()` (a tenant's 0.1% of 1M rows: 17 ms).
 
 ---
 
