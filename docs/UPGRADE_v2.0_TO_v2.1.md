@@ -238,6 +238,10 @@ analytics, `suggest()` and the tokenizers.
   on a value containing `&`, `<` or `>` renders the literal text `&amp;`, `&lt;`, `&gt;` instead of the
   characters themselves. Render the array with `{!! !!}`, or use `@fuzzyHighlight($model, 'column')`
   for every column — matched or not — which handles both branches for you.
+- **`@fuzzyHighlight` no longer lazy-loads a relation.** For a column the search did not highlight it
+  reads an attribute, cast or accessor, or a relation already loaded, and never calls a model method
+  named like the column; a relation that is not loaded renders an empty string. Eager-load it
+  (`with('author')`) to show `@fuzzyHighlight($post, 'author.name')` for a search that did not search it.
 
 ## Config keys that now take effect
 

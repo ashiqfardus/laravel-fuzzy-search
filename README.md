@@ -473,6 +473,8 @@ User::search('john')
     ->get();
 ```
 
+The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request.
+
 ### Search Suggestions / Autocomplete
 
 Get autocomplete suggestions based on search term:

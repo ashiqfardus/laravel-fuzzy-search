@@ -3413,19 +3413,21 @@ class SearchBuilder
         }
 
         // displayValueFor() already returns safe HTML (the _highlighted branch is
-        // pre-escaped per P8-R10; the data_get() fallback escapes itself) — wrapping it in
+        // pre-escaped per P8-R10; the column-read fallback escapes itself) — wrapping it in
         // e() again here would double-escape entities like "&lt;" into "&amp;lt;".
         return self::displayValueFor($result, $column);
     }
 
     /**
      * Plain (unhighlighted) display value for a column: `_highlighted` when the search
-     * produced one, otherwise data_get(). Always HTML-safe: the `_highlighted` branch is
-     * pre-escaped by applyHighlighting() (matched values via wrapWithTags(), non-matching
-     * ones via e() — P8-R10), and the data_get() fallback escapes here. A Collection value
-     * is reduced to its first item; anything that isn't a scalar at that point — including a
-     * model instance, or a to-many relation collection data_get() couldn't resolve to one —
-     * renders as an empty string rather than a warning.
+     * produced one, otherwise the column read with SearchableColumns::read(): never
+     * getAttribute()'s relation fallback, which calls a model method named like the column
+     * (ruling ER-148), so a relation shows only once it is loaded. Always HTML-safe: the
+     * `_highlighted` branch is pre-escaped by applyHighlighting() (matched values via
+     * wrapWithTags(), non-matching ones via e() — P8-R10), and the fallback escapes here. A
+     * Collection value is reduced to its first item; anything that isn't a scalar at that point —
+     * including a model instance, or a to-many relation collection the path couldn't resolve to
+     * one — renders as an empty string rather than a warning.
      */
     protected static function displayValueFor($result, string $column): string
     {
@@ -3434,7 +3436,7 @@ class SearchBuilder
             return (string) $highlighted[$column];
         }
 
-        $value = data_get($result, $column);
+        $value = SearchableColumns::read($result, $column);
         if ($value instanceof \Illuminate\Support\Collection) {
             $value = $value->first();
         }
@@ -3974,7 +3976,9 @@ class SearchBuilder
     }
 
     /**
-     * Calculate recency boost score
+     * Calculate recency boost score. The column may come from a request, so it is read without
+     * getAttribute()'s relation fallback, which would call a model method named like it (ruling
+     * ER-148): an attribute, cast or accessor, or a relation already loaded.
      */
     protected function calculateRecencyBoost($item): float
     {
@@ -3982,7 +3986,7 @@ class SearchBuilder
             return 1.0;
         }
 
-        $dateValue = data_get($item, $this->recencyColumn);
+        $dateValue = SearchableColumns::read($item, $this->recencyColumn);
 
         if (empty($dateValue)) {
             return 1.0;
