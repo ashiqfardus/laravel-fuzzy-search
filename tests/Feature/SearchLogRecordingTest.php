@@ -164,6 +164,54 @@ class SearchLogRecordingTest extends TestCase
         $this->assertSame($before + 2, User::count());
     }
 
+    /**
+     * RC-4, the other half: a connection lost during the log insert inside the caller's
+     * transaction took that transaction with it, and Laravel reset the level to 0. RecordSearchLog
+     * throws then, as the caller's own next statement would have; swallowed, the caller's closure
+     * went on at level 0, its later statements autocommitted, and DB::transaction() returned as if
+     * it had committed. The backend is killed just before the insert.
+     */
+    public function test_a_connection_lost_during_the_log_write_inside_the_callers_transaction_is_thrown(): void
+    {
+        if (!in_array($this->dbDriver, ['pgsql', 'mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('PostgreSQL, MySQL and MariaDB: a test can kill the connection from another session there (SQLite has none, SQL Server is not run here); their CI jobs run this.');
+        }
+
+        config(['database.connections.killer' => config('database.connections.' . DB::getDefaultConnection())]);
+        $connection = DB::connection();
+        $killed     = false;
+        $connection->beforeExecuting(function (string $query) use ($connection, &$killed) {
+            if (!$killed && stripos($query, 'insert into') === 0 && str_contains($query, 'fuzzy_search_logs') && $connection->transactionLevel() > 0) {
+                $killed = true;
+                if ($this->dbDriver === 'pgsql') {
+                    DB::connection('killer')->statement('select pg_terminate_backend(?)', [$connection->getPdo()->query('select pg_backend_pid()')->fetchColumn()]);
+                } else {
+                    DB::connection('killer')->statement('kill ' . (int) $connection->getPdo()->query('select connection_id()')->fetchColumn());
+                }
+                usleep(300000); // the backend exits before the insert is sent
+            }
+        });
+
+        $levels = [];
+        try {
+            DB::transaction(function () use (&$levels) {
+                DB::table('products')->insert(['title' => 'Before the search', 'price' => 10]);
+                User::search('john')->get();
+                $levels[] = DB::transactionLevel();
+                DB::table('products')->insert(['title' => 'After the search', 'price' => 10]);
+            });
+            $this->fail('DB::transaction() returned normally after its connection was lost');
+        } catch (\Illuminate\Database\QueryException|\PDOException $e) {
+            $this->assertTrue($killed, 'the log insert ran inside the transaction');
+        } finally {
+            DB::purge('killer');
+        }
+
+        $this->assertSame([], $levels, 'the closure went on after the search');
+        $this->assertSame(0, DB::table('products')->whereIn('title', ['Before the search', 'After the search'])->count(), 'a statement autocommitted');
+        $this->assertSame(0, DB::table('fuzzy_search_logs')->count());
+    }
+
     public function test_oversized_event_values_are_cut_to_their_column_width(): void
     {
         // The event is public API: a third-party dispatcher may pass a longer path than the column holds.
