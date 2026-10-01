@@ -114,14 +114,17 @@ class SearchableObserver
             return [];
         }
 
-        $schema     = $model->getConnection()->getSchemaBuilder();
+        $connection = $model->getConnection();
+        $schema     = $connection->getSchemaBuilder();
         $table      = $model->getTable();
         $attributes = $model->getAttributes();
         $updates    = [];
 
         foreach ($model->getSearchableColumns() as $column) {
             $metaphoneCol = $column . '_metaphone';
-            $cacheKey     = $table . '.' . $metaphoneCol;
+            // Per connection, database and prefix too: another connection's, or another tenant's,
+            // table of this name may not have the column (SD-2).
+            $cacheKey     = SearchableColumns::connectionKey($connection) . '|' . $table . '.' . $metaphoneCol;
 
             if (!array_key_exists($cacheKey, static::$columnCache)) {
                 static::$columnCache[$cacheKey] = $schema->hasColumn($table, $metaphoneCol);

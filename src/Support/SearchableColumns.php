@@ -13,8 +13,9 @@ use Illuminate\Database\Eloquent\Model;
  * are the keys) and `['name', 'email']` (a plain list, names are the values), mixed included —
  * exactly as SearchBuilder::searchIn() does, so every consumer reads the same names.
  *
- * `detect()` memoises auto-detection per model class, connection and table for the life of the
- * process (a tenant model that switches either gets its own entry): it reads the
+ * `detect()` memoises auto-detection per model class, connection (its name, database and table
+ * prefix: connectionKey()) and table for the life of the process (a tenant model that switches
+ * any of them, or whose database a tenancy package swaps, gets its own entry): it reads the
  * table's columns, and it is called on every save (shadow columns), every indexed row and every
  * search. Declared columns never reach it. The cache is as long-lived as
  * SearchableObserver::$columnCache and onTable()'s and typesOn()'s listings — a schema change needs
@@ -45,13 +46,13 @@ final class SearchableColumns
     /** FederatedSearch's, facet()'s and the Scout engine's wording for validate(). */
     public const INVALID_NAME_QUOTED = "Invalid column name: '%s'. Column names must match [a-zA-Z_][a-zA-Z0-9_.]* .";
 
-    /** @var array<string, array<string, int>> "class|connection|table" => column => weight */
+    /** @var array<string, array<string, int>> "class|connectionKey()|table" => column => weight */
     private static array $detected = [];
 
-    /** @var array<string, string[]> "connection|table" => column names */
+    /** @var array<string, string[]> "connectionKey()|table" => column names */
     private static array $listings = [];
 
-    /** @var array<string, array<string, string>> "connection|table" => column => database type */
+    /** @var array<string, array<string, string>> "connectionKey()|table" => column => database type */
     private static array $types = [];
 
     /**
@@ -109,7 +110,7 @@ final class SearchableColumns
     }
 
     /**
-     * @param  string                                      $key    model class, connection and table
+     * @param  string                                      $key    model class, connectionKey() and table
      * @param  Closure(): array{array<string, int>, bool} $detect the columns, and whether the
      *                                                            table's column listing was read
      * @return array<string, int>
@@ -129,15 +130,26 @@ final class SearchableColumns
     }
 
     /**
-     * The table's column names, memoised per connection and table like detect(). They come from
-     * typesOn()'s read where the types are readable, so detection and this listing read the schema
-     * once. A table that cannot be read gives [] and is not cached.
+     * Where a table's schema is read from, for the schema caches here and in SearchableObserver:
+     * the connection's name, database and table prefix, as Bm25Scorer keys the collation it reads.
+     * A tenancy package swaps the database behind one connection name, and two connections can
+     * hold a table of the same name: neither may be answered from the other's schema (SD-2).
+     */
+    public static function connectionKey(Connection $connection): string
+    {
+        return $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+    }
+
+    /**
+     * The table's column names, memoised per connection (connectionKey()) and table like detect().
+     * They come from typesOn()'s read where the types are readable, so detection and this listing
+     * read the schema once. A table that cannot be read gives [] and is not cached.
      *
      * @return string[]
      */
     public static function onTable(Connection $connection, string $table): array
     {
-        $key = $connection->getName() . '|' . $table;
+        $key = self::connectionKey($connection) . '|' . $table;
 
         if (isset(self::$listings[$key])) {
             return self::$listings[$key];
@@ -159,15 +171,15 @@ final class SearchableColumns
 
     /**
      * The table's columns and their database types (Schema::getColumns()'s type_name, lower case),
-     * memoised per connection and table like onTable(). [] when the types cannot be read — Laravel 10
-     * before Schema::getColumns() existed, or a table that cannot be listed — and then not cached:
-     * auto-detection then keeps its untyped behaviour.
+     * memoised per connection (connectionKey()) and table like onTable(). [] when the types cannot
+     * be read — Laravel 10 before Schema::getColumns() existed, or a table that cannot be listed —
+     * and then not cached: auto-detection then keeps its untyped behaviour.
      *
      * @return array<string, string> column => type
      */
     public static function typesOn(Connection $connection, string $table): array
     {
-        $key    = $connection->getName() . '|' . $table;
+        $key    = self::connectionKey($connection) . '|' . $table;
         $schema = $connection->getSchemaBuilder();
 
         if (isset(self::$types[$key]) || !method_exists($schema, 'getColumns')) {

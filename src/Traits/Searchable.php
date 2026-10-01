@@ -277,10 +277,11 @@ trait Searchable
      */
     protected function getAutoDetectedColumns(): array
     {
-        // Keyed by connection and table as well as class: a tenant model that switches either
-        // must not be answered from the first tenant's schema.
+        // Keyed by connection (its name, database and table prefix) and table as well as class: a
+        // tenant model that switches any of them, or whose database a tenancy package swaps behind
+        // one connection name, must not be answered from the first tenant's schema.
         return SearchableColumns::detect(
-            static::class . '|' . $this->getConnectionName() . '|' . $this->getTable(),
+            static::class . '|' . SearchableColumns::connectionKey($this->getConnection()) . '|' . $this->getTable(),
             fn () => $this->detectSearchableColumns()
         );
     }

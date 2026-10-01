@@ -394,8 +394,8 @@ class FederatedSearch
     /**
      * searchIn() columns that actually exist on the model's table, with their weights.
      * Callers pass one column list for many models (e.g. ['name', 'title']); a column a
-     * table lacks would otherwise raise a SQL error. Schema listing is cached per
-     * connection+table (SearchableColumns::onTable()); call resetColumnCache() between tests
+     * table lacks would otherwise raise a SQL error. Schema listing is cached per connection,
+     * database, prefix and table (SearchableColumns::onTable()); call resetColumnCache() between tests
      * to avoid stale listings leaking across databases/schemas.
      */
     protected function weightedColumnsExistingOn(Model $instance): array

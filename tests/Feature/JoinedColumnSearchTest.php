@@ -472,7 +472,7 @@ class JoinedColumnSearchTest extends TestCase
     private function seedColumnListing(\Illuminate\Database\Query\Builder $query, array $columns): void
     {
         $listings = new \ReflectionProperty(SearchableColumns::class, 'listings');
-        $listings->setValue(null, [$query->getConnection()->getName() . '|' . $query->from => $columns] + $listings->getValue());
+        $listings->setValue(null, [SearchableColumns::connectionKey($query->getConnection()) . '|' . $query->from => $columns] + $listings->getValue());
     }
 }
 
