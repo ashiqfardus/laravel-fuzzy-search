@@ -58,6 +58,19 @@ class IndexManager
     }
 
     /**
+     * The model_type $model's rows are indexed and searched under: its searchIndexType() (the
+     * Searchable trait's, which a single-table-inheritance child overrides to name its parent, so
+     * the hierarchy has one index), else its class, as for a Scout model without the trait. A class
+     * name resolves the same way; one that no longer exists is its own type. Every index write,
+     * delete, flush and search names the type through here, so a child's save and a rebuild of its
+     * parent cannot write two indexes (SA-1).
+     */
+    public static function indexType(Model|string $model): string
+    {
+        return method_exists($model, 'searchIndexType') ? $model::searchIndexType() : (is_string($model) ? $model : $model::class);
+    }
+
+    /**
      * Index (or re-index) one model: the row as it is committed now, reloaded after its document
      * row is claimed (see write()). An unsaved instance is indexed as given.
      */
@@ -530,9 +543,9 @@ class IndexManager
     }
 
     /**
-     * Index a collection of models (one class) in a single transaction: RebuildCommand's and
-     * RebuildIndexJob's per-chunk write. Saved models are reloaded inside it, one query for the
-     * chunk (see write()); unsaved instances are indexed as given. New dictionary terms go out
+     * Index a collection of models in a single transaction per index type (see below):
+     * RebuildCommand's and RebuildIndexJob's per-chunk write. Saved models are reloaded inside it,
+     * one query for the chunk (see write()); unsaved instances are indexed as given. New dictionary terms go out
      * in chunked upserts, not one per term (on MySQL/MariaDB one per distinct doc_count
      * increment), and so do the postings and document rows.
      *
@@ -541,30 +554,33 @@ class IndexManager
      * so Scout's onlyTrashed() and withTrashed() find it. Everything else reads through the
      * model's query: its global scopes, and SoftDeletes, whose trashed rows leave the index.
      *
-     * $modelClass: the class the models are indexed under and re-read through; the first model's
-     * class without it. A rebuild passes the class it was asked for: a parent whose query hydrates
-     * child instances (single-table inheritance) indexed a chunk under its first row's class, and
-     * that class's global scope dropped the chunk's other rows (RC-3).
+     * Each model is indexed under its own index type (indexType()), and re-read through that type's
+     * query, one write per type: a single-table-inheritance parent's query hydrates child instances,
+     * so a chunk can mix classes. Under the first model's class, a chunk that began with a child was
+     * indexed under the child, and the child's global scope dropped the chunk's parent rows (RC-3).
      *
      * @param  iterable<Model> $models
      * @return int the number of models indexed
      */
-    public function indexBatch(iterable $models, bool $scout = false, ?string $modelClass = null): int
+    public function indexBatch(iterable $models, bool $scout = false): int
     {
-        $modelType = null;
-        $keys      = [];
-        $unsaved   = [];
+        $byType = []; // index type => ['keys' => key => key, 'unsaved' => key => model]
 
         foreach ($models as $model) {
-            $modelType ??= $modelClass ?? get_class($model);
+            $type = self::indexType($model);
             if ($model->exists) {
-                $keys[(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
+                $byType[$type]['keys'][(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
             } else {
-                $unsaved[(string) $model->getKey()] = $model;
+                $byType[$type]['unsaved'][(string) $model->getKey()] = $model;
             }
         }
 
-        return $modelType === null ? 0 : $this->write($modelType, array_values($keys), $unsaved, $scout);
+        $indexed = 0;
+        foreach ($byType as $type => $group) {
+            $indexed += $this->write($type, array_values($group['keys'] ?? []), $group['unsaved'] ?? [], $scout);
+        }
+
+        return $indexed;
     }
 
     /**

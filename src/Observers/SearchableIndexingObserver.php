@@ -37,7 +37,7 @@ class SearchableIndexingObserver
             return;
         }
 
-        $class = $model::class;
+        $class = IndexManager::indexType($model);
         $key   = $model->getKey();
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
@@ -92,7 +92,7 @@ class SearchableIndexingObserver
 
     protected function reindex(Model $model): void
     {
-        $class = $model::class;
+        $class = IndexManager::indexType($model);
         $key   = $model->getKey();
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
