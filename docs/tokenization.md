@@ -143,7 +143,7 @@ Enable a tokenizer globally, or per model (see **Per-Model Pipelines** below):
 ],
 ```
 
-Either way, rebuild after changing it — existing postings were tokenized the old way:
+Either way, rebuild after changing it, while nothing is indexing (see [Artisan Commands](bm25.md#artisan-commands)) — existing postings were tokenized the old way:
 
 ```bash
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
@@ -176,7 +176,7 @@ class Product extends Model
 
 Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline — it is the only place a locale changes what is indexed (the builder's deprecated `->locale()` never did anything).
 
-The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion and `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. `didYouMean()` is a separate lookup, scoped to the searched model's postings: it queries that model's terms in the dictionary on the raw search term, without running it through any model's tokenizer, stemmer or stop-word list. Rebuild after changing any of these keys, same as the global tokenizer/stemmer:
+The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion and `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. `didYouMean()` is a separate lookup, scoped to the searched model's postings: it queries that model's terms in the dictionary on the raw search term, without running it through any model's tokenizer, stemmer or stop-word list. Rebuild after changing any of these keys, while nothing is indexing (see [Artisan Commands](bm25.md#artisan-commands)), same as the global tokenizer/stemmer:
 
 ```bash
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
@@ -195,7 +195,7 @@ Off by default. Turn it on to fold accents at both index time and query time on 
 
 With `ext-intl` installed, folding decomposes the string (`Normalizer::FORM_D`), strips the combining-diacritical-mark blocks, then recomposes (`FORM_C`) — that handles most accented Latin/Greek/Cyrillic — before a built-in map runs for characters a decomposition doesn't cover (`ß` → `ss`, `ø` → `o`). Without `ext-intl`, only the map runs, which is the same coverage v2.0 had. This is a global setting — it applies to every model's index, there's no per-model override.
 
-Rebuild after flipping it, same as the tokenizer and stemmer:
+Rebuild after flipping it, while nothing is indexing (see [Artisan Commands](bm25.md#artisan-commands)), same as the tokenizer and stemmer:
 
 ```bash
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh

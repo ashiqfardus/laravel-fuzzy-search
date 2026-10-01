@@ -657,6 +657,42 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertSame(1, (int) DB::table('fuzzy_index_terms')->where('term', 'lima')->value('doc_count'));
     }
 
+    /**
+     * SB-1. A flush deletes the model's postings, then its documents, then its meta row. On
+     * PostgreSQL an index write for a new row of the model waited on nothing the flush held: it
+     * committed in between, its document row survived, and its total_docs/total_tokens went into
+     * the meta row the flush deleted next. The model was left with a document and no meta row, so
+     * BM25 found nothing, and a rebuild, finding the row indexed already, never counted it. The
+     * flush now locks fuzzy_index_documents first, so the write waits for the flush's commit, as
+     * it does on MySQL and MariaDB (the DELETE's gap locks) and SQLite (its one writer).
+     */
+    public function test_a_write_during_a_flush_lands_after_it_with_its_meta_totals(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        // Only words the model does not hold yet: a shared word's dictionary row, which the flush's
+        // give-back locks, would make the write wait anyway.
+        $id = DB::table('users')->insertGetId(['name' => 'Quokka Wombat', 'email' => 'numbat@quoll.test', 'created_at' => now(), 'updated_at' => now()]);
+
+        [$childError, $parentError] = $this->race(
+            fn () => app(IndexManager::class)->flush(User::class),
+            fn () => app(IndexManager::class)->syncModel(User::class, $id),
+            '/^\s*delete from\W+fuzzy_index_documents\W/i', // the flush pauses after its documents DELETE
+            1_000_000,
+            300_000,
+            pauseParent: false,
+        );
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $documents = DB::table('fuzzy_index_documents')->where('model_type', User::class);
+        $meta      = DB::table('fuzzy_index_meta')->where('model_type', User::class)->first(['total_docs', 'total_tokens']);
+        $this->assertSame(['documents' => [(string) $id], 'meta' => [1, (int) (clone $documents)->sum('doc_length')]], [
+            'documents' => (clone $documents)->pluck('model_id')->map(fn ($key) => (string) $key)->all(),
+            'meta'      => $meta === null ? null : [(int) $meta->total_docs, (int) $meta->total_tokens],
+        ]);
+        $this->assertSame([$id], User::search('quokka')->useInvertedIndex()->get()->pluck('id')->map(fn ($key) => (int) $key)->all());
+    }
+
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
     public function test_the_indexer_binds_model_ids_as_strings(): void
     {

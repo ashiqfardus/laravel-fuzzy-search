@@ -134,4 +134,28 @@ class TablePrefixTest extends TestCase
         $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_type', User::class)->where('model_id', (string) $john->getKey())->count());
         $this->assertSame(0, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
     }
+
+    /**
+     * SB-1: on PostgreSQL a flush first locks the prefixed fuzzy_index_documents (SHARE ROW
+     * EXCLUSIVE), so an index write waits for it; inside the caller's transaction too, where the
+     * lock lasts until that transaction commits.
+     */
+    public function test_a_flush_locks_the_prefixed_documents_table_on_postgresql(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL only: the other databases hold a write off by the DELETEs\' own locks; the CI PostgreSQL job runs this.');
+        }
+        $this->index();
+        $held = fn () => array_column(DB::select('select mode from pg_locks where pid = pg_backend_pid() and relation = to_regclass(?)', ['pfx_fuzzy_index_documents']), 'mode');
+
+        $inside = [];
+        DB::transaction(function () use ($held, &$inside) {
+            app(IndexManager::class)->flush(User::class);
+            $inside = $held();
+        });
+
+        $this->assertContains('ShareRowExclusiveLock', $inside);
+        $this->assertSame([], $held());
+        $this->assertSame(0, $this->postings());
+    }
 }

@@ -225,6 +225,18 @@ class IndexManager
     public function flush(string $modelClass): void
     {
         DB::transaction(function () use ($modelClass) {
+            // PostgreSQL: hold every index write off for the flush (ruling ER-151, SB-1). A write
+            // for a new row of this model waited on nothing the DELETEs below lock: it committed
+            // between them, so its document row stayed and its meta increment went into the meta
+            // row deleted next, a model with documents and no meta (BM25 found nothing) that no
+            // rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
+            // ones at their claim (claimDocuments()' insert) until the commit; searches only read,
+            // and a second flush waits its turn. MySQL/MariaDB get the same from the DELETE's gap
+            // locks, SQLite from its one writer, SQL Server from its DELETE's locks (tested).
+            if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
+                DB::statement('LOCK TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . ' IN SHARE ROW EXCLUSIVE MODE');
+            }
+
             // Give back this model's share of every term's doc_count first. A term another model
             // still uses survives the orphan sweep below, and it kept counting this model's
             // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
