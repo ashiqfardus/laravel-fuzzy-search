@@ -50,6 +50,25 @@ class ScoutEmailValueUser extends Model
     }
 }
 
+/** The Scout key named as the qualified primary key ("users.id"), Scout 9's default. */
+class ScoutQualifiedKeyUser extends Model
+{
+    use \Laravel\Scout\Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    public function searchableText(): array
+    {
+        return ['name' => $this->name];
+    }
+
+    public function getScoutKeyName(): mixed
+    {
+        return $this->getQualifiedKeyName();
+    }
+}
+
 /**
  * L10 (round 10). The engine keys the index by the primary key, and Scout looks a page's models up,
  * and restores a queued delete's, by getScoutKeyName(): a model with a custom Scout key was indexed,
@@ -112,5 +131,28 @@ class ScoutCustomKeyTest extends TestCase
         // Scout restores a queued delete's model with only the Scout key set.
         config(['scout.queue' => true, 'queue.default' => 'sync']);
         $this->assertRejected(fn () => ScoutEmailKeyUser::query()->orderBy('id')->first()->delete(), 'a queued delete');
+    }
+
+    /**
+     * SA-5. A Scout key named as the qualified primary key is the primary key, and passes L10's
+     * check; but Scout restores a queued delete's model with forceFill(['users.id' => $id]), an
+     * attribute getKey() does not read, so the delete threw a TypeError and the row stayed indexed.
+     */
+    public function test_a_queued_delete_of_a_model_whose_scout_key_is_the_qualified_key_removes_its_row(): void
+    {
+        app(IndexManager::class)->indexBatch(ScoutQualifiedKeyUser::all());
+        $indexed = fn () => DB::table('fuzzy_index_documents')->where('model_type', ScoutQualifiedKeyUser::class)
+            ->pluck('model_id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+        $before  = $indexed();
+        $this->assertCount(7, $before);
+        $this->assertSame(['Jane Doe', 'John Doe'], ScoutQualifiedKeyUser::search('doe')->get()->pluck('name')->sort()->values()->all());
+
+        config(['scout.queue' => true, 'queue.default' => 'sync']);
+        $john = ScoutQualifiedKeyUser::query()->where('email', 'john@example.com')->first();
+        $john->delete();
+
+        $this->assertSame(array_values(array_diff($before, [$john->getKey()])), $indexed(), 'the queued delete removed that row only');
+        $this->assertSame(['Jane Doe'], ScoutQualifiedKeyUser::search('doe')->get()->pluck('name')->all());
+        $this->assertSame(6, (int) DB::table('fuzzy_index_meta')->where('model_type', ScoutQualifiedKeyUser::class)->value('total_docs'));
     }
 }

@@ -68,13 +68,19 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     public function delete($models): void
     {
         foreach ($models as $model) {
-            // A queued delete's model, restored with only its Scout key: a custom one leaves it
-            // without the primary key the index row is under.
-            if ($model->getKey() === null) {
+            // A queued delete's model, restored with only its Scout key (forceFill() under
+            // getScoutKeyName()): a custom one leaves it without the primary key the index row is
+            // under, and the qualified key name (Scout 9's default) holds it in an attribute named
+            // "table.id", which getKey() does not read (SA-5).
+            $key = $model->getKey();
+            if ($key === null) {
                 self::requirePrimaryScoutKey($model);
+                $key = method_exists($model, 'getScoutKeyName') ? $model->getAttributes()[$model->getScoutKeyName()] ?? null : null;
             }
 
-            $this->indexManager->removeFromIndex($model::class, $model->getKey());
+            if ($key !== null) { // a model without a key was never indexed
+                $this->indexManager->removeFromIndex($model::class, $key);
+            }
         }
     }
 
