@@ -533,14 +533,13 @@ class IndexModelJobOverlapTest extends TestCase
         $report  = count($failed) . ' of 40 batches failed, ' . $retried . ' retried: ' . ($failed[0] ?? '');
 
         $this->assertSame([], $failed, $report);
-        // PostgreSQL takes a write's new words in one sorted order (ER-74), and nothing else
-        // deadlocks there, so no batch even retries: three attempts would hide the deadlock.
-        // MySQL/MariaDB keep a statement per doc_count increment, and SQL Server still retries 1
-        // to 5 batches of the flushed shape in most local runs with ER-74 in place; both recover
-        // on retry, and the two-batch race below guards ER-74 without that noise.
-        if ($this->dbDriver === 'pgsql') {
-            $this->assertSame(0, $retried, $report);
-        }
+        // No batch loses all its attempts; a retry is allowed on every database. PostgreSQL takes a
+        // write's new words in one sorted order (ER-74), but a word a third batch commits between
+        // two batches' dictionary reads is "existing" to one, locked in id order before its upsert,
+        // and "new" to the other, upserted in term order: those two can still deadlock, rarely
+        // (one retry in a CI run on PostgreSQL 14, ruling ER-160), and the retry recovers. MySQL/
+        // MariaDB keep a statement per doc_count increment, and SQL Server retries 1 to 5 batches of
+        // the flushed shape in most local runs. The two-batch race below guards ER-74 itself.
         $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
 
         // Every term counts the rows posting it, and meta the documents.
