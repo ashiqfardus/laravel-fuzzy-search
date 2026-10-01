@@ -1748,10 +1748,10 @@ class SearchBuilder
      * window they re-rank. _score is normalised against $anchor, the score of the first row the
      * query accepts (in rank order without a hook: the same on every page, so scores stay comparable
      * across pages), or against the best row among $models when that is higher: the hooks' window,
-     * which a page in rank order is read with, or the page under
-     * orderBy(). Not the first entry of $ranked: a row the query hides, such as another tenant's,
-     * would set the scale and reveal what it contains. A row $ranked lacks, a match past the
-     * ranking's cap that an ordered page serves, scores 0.
+     * which a page in rank order is read with, or the page under orderBy(). Not the first entry of
+     * $ranked: a row the query hides, such as another tenant's, would set the scale and reveal what
+     * it contains. A row $ranked lacks, a match past the ranking's cap that an ordered page serves,
+     * scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
      * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0).
@@ -2243,10 +2243,11 @@ class SearchBuilder
         $more      = false;
 
         // Only the page's own rows are read, however deep the page, except the scoring hooks' window
-        // (bm25Window()), which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
-        // cut from that ordering. A page past it reads the window too, for the scale of _score. An id
-        // whose row is gone is skipped: past the window its page comes back one row short (inside it,
-        // the id holds no place), and first() reads on to the next row that exists (ruling ER-133).
+        // (bm25Window()), which is read whole: it re-ranks the first max_candidates rows, and every
+        // page inside it is cut from that ordering. A page past it reads the window too, for the
+        // scale of _score. An id whose row is gone is skipped: past the window its page comes back
+        // one row short (inside it, the id holds no place), and first() reads on to the next row
+        // that exists (ruling ER-133).
         if ($offset < count($accepted) && $limit > 0) {
             $limit      = min($limit, count($accepted)); // take(PHP_INT_MAX): $offset + $limit stays an int
             $keys       = array_keys($accepted);
