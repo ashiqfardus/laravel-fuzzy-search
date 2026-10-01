@@ -302,7 +302,7 @@ php artisan fuzzy-search:rebuild "App\Models\User"
 
 A rebuild writes only the rows whose shadow value is missing or out of date, one UPDATE per 500 rows, and it rebuilds the model's BM25 index too. `--type` accepts `metaphone` only. A code is cut to 191 characters, so a long value (a bio, a description) fits the column the command generates, and the `string()` column earlier releases generated (255, or 191 under `Schema::defaultStringLength(191)`).
 
-After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`. A shadow is written only while its column still holds the text the code encodes, so a save racing another save of the same row, or a rebuild, never leaves one text's code beside the other text. A column read through an accessor, a cast or a date has no stored text the code comes from, and its shadow is written unguarded.
+After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`. A shadow is written only while its column still holds the text the code encodes, so a save racing another save of the same row, or a rebuild, never leaves one text's code beside the other text. A declared column read through an accessor, a cast or a date has no stored text its code comes from, and its shadow is written unguarded.
 
 **What gets generated:**
 
