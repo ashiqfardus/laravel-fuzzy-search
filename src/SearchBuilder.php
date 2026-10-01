@@ -2527,8 +2527,11 @@ class SearchBuilder
             }
         }
 
-        // Apply sorting: an explicit orderBy() replaces the relevance order
-        if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '') {
+        // Apply sorting: an explicit orderBy() replaces the relevance order. A SELECT DISTINCT may
+        // be ordered only by what it selects, and the relevance CASE never is (PostgreSQL, SQL Server;
+        // MySQL when a searched column is not selected): under distinct() the window is the first
+        // max_candidates distinct rows, and PHP rescoring orders it, as on the extended path (SE-1).
+        if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '' && !self::isDistinct($this->query)) {
             $this->applyRelevanceOrdering();
         }
 
@@ -2566,11 +2569,39 @@ class SearchBuilder
             $names     = ['id', $keyColumn];
         }
 
+        // Not by a key a SELECT DISTINCT does not select: the database rejects it (SE-1).
+        if (!$endOnKey && self::isDistinct($query) && !self::selectsAny($query, [...$names, $keyColumn])) {
+            return;
+        }
+
         // Once (ruling ER-52): SQL Server rejects a column named twice in ORDER BY.
         $orders = ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->orders ?? [];
         if (array_intersect(array_filter(array_column($orders, 'column'), 'is_string'), $names) === []) {
             $query->orderBy($keyColumn, 'asc');
         }
+    }
+
+    /** Whether $query reads SELECT DISTINCT, a global scope's distinct() included. */
+    private static function isDistinct(Builder|EloquentBuilder $query): bool
+    {
+        return (bool) ($query instanceof EloquentBuilder ? $query->toBase() : $query)->distinct;
+    }
+
+    /**
+     * Whether $query's select list holds one of $names, or every column (no select, `*` or
+     * `table.*`). A raw expression is not read: it counts as not holding them.
+     *
+     * @param string[] $names
+     */
+    private static function selectsAny(Builder|EloquentBuilder $query, array $names): bool
+    {
+        foreach (($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? ['*'] as $column) {
+            if (is_string($column) && ($column === '*' || str_ends_with($column, '.*') || in_array($column, $names, true))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
