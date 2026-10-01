@@ -329,7 +329,11 @@ class Bm25Scorer
         // rows — exactly what v2.0 capped, which ordered by raw frequency — so a document is
         // never partially cut across its columns. High-frequency rows are prioritised globally
         // across all matched terms; in a pathological corpus a single dominant term could consume
-        // the cap, but at the default 50k the bound is never reached for normal workloads.
+        // the cap, but at the default 50k the bound is never reached for normal workloads. Rows of
+        // equal weight are cut by model_id, then term_id (SE-3): the weight takes few values, so the
+        // cap usually falls inside a group of equal rows, and which of them the database kept changed
+        // with its plan (a statistics refresh, the ANALYZE after a rebuild): a user paging a capped
+        // search was served pages cut from different rankings.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
         [$wf, $wfBindings] = $this->weightedFrequencySql($columnWeights);
@@ -346,6 +350,8 @@ class Bm25Scorer
             ->select('p.model_id', 'p.term_id', 'd.doc_length as doc_len')
             ->selectRaw("{$wf} as wf", $wfBindings)
             ->orderByDesc('wf')
+            ->orderBy('p.model_id')
+            ->orderBy('p.term_id')
             ->limit($maxPostings)
             ->get();
 

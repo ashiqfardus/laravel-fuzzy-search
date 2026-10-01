@@ -226,8 +226,9 @@ return [
         /*
          * max_postings_per_term: SQL-side top-K cutoff shared by all the matched terms of a
          * query. The cap applies to (document, term) rows — the per-column postings are summed
-         * in SQL first — ordered by weighted frequency DESC, so the highest-signal rows are
-         * always retained and a document is never partially cut across its columns. It bounds
+         * in SQL first — ordered by weighted frequency DESC, then model_id and term (so the cut
+         * is the same on every request), so the highest-signal rows are always retained and a
+         * document is never partially cut across its columns. It bounds
          * memory when a term matches tens of thousands of documents. In relevance order the
          * results and their total()/count() stop at the cap, which applies to the whole model
          * before any where() or scope; orderBy() still serves and counts every match.
