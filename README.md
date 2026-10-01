@@ -266,7 +266,7 @@ The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `
 | `fuzzy` | General purpose | High | Fast |
 | `levenshtein` | Strict typo matching | Configurable | Medium |
 | `soundex` | Phonetic matching (English names) | Phonetic | Fast |
-| `metaphone` | Phonetic matching (more accurate) | Phonetic | Fast |
+| `metaphone` | Phonetic matching (more accurate; ASCII letters only) | Phonetic | Fast |
 | `trigram` | Similarity matching | Medium (a shared three-letter run) | Medium |
 | `similar_text` | Percentage similarity (`similar_text.min_percentage`, default 70) | None (the value must contain the term) | Medium |
 | `simple` / `like` | Exact substring (LIKE) | None | Fastest |
@@ -1398,7 +1398,7 @@ This table shows what each algorithm does at the SQL level on each supported dat
 | **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
 | **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true`, else ILIKE pattern set | LIKE pattern set | LIKE pattern set |
 | **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true`, else pattern fallback | Pattern fallback | Pattern fallback |
-| **metaphone** | Shadow column `{col}_metaphone` + exact `=` match | Shadow column | Shadow column | Shadow column | Shadow column |
+| **metaphone** | Shadow column `{col}_metaphone` + exact `=` match. PHP's `metaphone()` encodes ASCII letters only, so a term without one (`99`, `Иван`, `東京`) is matched as `LIKE '%term%'` on the column itself | Same as MySQL | Same (`ILIKE` for a term without an ASCII letter) | Same as MySQL | Same as MySQL |
 | **similar_text** | `LIKE '%term%'` and `CHAR_LENGTH(col) <= ?` (the `min_percentage` bound); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'` and `CHAR_LENGTH(col) <= ?`; PHP scores | `LIKE` and `LENGTH(col) <= ?` | `LIKE` and `LEN(CAST(col AS NVARCHAR(MAX)) + N'x') - 1 <= ?` |
 
 MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths included).

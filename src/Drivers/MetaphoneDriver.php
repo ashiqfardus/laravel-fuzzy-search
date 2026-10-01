@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Drivers;
 
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Query\Builder;
 
 /**
@@ -21,6 +22,16 @@ class MetaphoneDriver extends BaseDriver
         $shadowColumn = $column . '_metaphone';
 
         $this->assertShadowColumnExists($query, $shadowColumn, $column);
+
+        // metaphone() encodes ASCII letters only: "99", "Иван" and "東京" all encode as '', the
+        // code of every value without an ASCII letter and of an empty one, so the shadow column
+        // would return all of those rows. Such a term is searched as a contains LIKE on the column
+        // itself, as SoundexDriver sends a term it cannot encode to its pattern fallback (RB-1).
+        if (preg_match('/[A-Za-z]/', $value) !== 1) {
+            DbDialect::whereLike($query, $column, '%' . $this->escapeLike($this->normalizeTerm($value)) . '%', $this->driver, $boolean);
+
+            return $query;
+        }
 
         $code = metaphone($value);
         $method = $boolean === 'or' ? 'orWhere' : 'where';
