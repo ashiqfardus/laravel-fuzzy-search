@@ -37,18 +37,10 @@ class SearchableIndexingObserver
             return;
         }
 
-        $class = IndexManager::indexType($model);
-        $key   = $model->getKey();
-        $async = config('fuzzy-search.indexing.async', true);
-        $queue = config('fuzzy-search.indexing.queue', 'default');
-
-        $this->afterCommit($model, function () use ($class, $key, $async, $queue) {
-            if ($async) {
-                IndexModelJob::dispatch($class, $key)->onQueue($queue);
-            } else {
-                app(IndexManager::class)->removeFromIndex($class, $key);
-            }
-        });
+        // What a save runs: the job removes the row only if it is still gone or trashed when it reads
+        // it under its claim. A removal that did not read it, run after a restore had committed and
+        // indexed the row, took the live row out of the index (SB-2).
+        $this->reindex($model);
     }
 
     /**
@@ -105,7 +97,8 @@ class SearchableIndexingObserver
 
             // Run the job in-process rather than indexing $model directly: the job reloads the
             // row from the database, so accessors that read relations see the current related
-            // rows instead of whatever was already loaded on this instance before the change.
+            // rows instead of whatever was already loaded on this instance before the change,
+            // and a deleted row leaves the index only if it is still gone or trashed.
             (new IndexModelJob($class, $key))->handle(app(IndexManager::class));
         });
     }
