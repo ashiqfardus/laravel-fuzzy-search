@@ -320,10 +320,8 @@ class AccentVariantTest extends TestCase
         }
 
         try {
-            // Native levenshtein on PostgreSQL is whole-value similarity() > 1 - distance / length:
-            // "Zoë Müller" scores 0.64 against "Müller", over the 0.5 floor at distance 3 but under
-            // 0.67 at the shipped 2. This test is about unaccent's absence, not that threshold.
-            config(['fuzzy-search.use_native_functions' => true, 'fuzzy-search.levenshtein.max_distance' => 3]);
+            // Levenshtein keeps its pattern set on PostgreSQL whatever the flag (ruling ER-150).
+            config(['fuzzy-search.use_native_functions' => true]);
 
             foreach (['trigram', 'levenshtein', 'soundex'] as $algorithm) {
                 $names = $this->builder()->search('Müller')->searchIn(['name'])->using($algorithm)->get()->pluck('name')->all();

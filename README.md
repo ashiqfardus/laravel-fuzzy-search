@@ -267,7 +267,7 @@ The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `
 | `fuzzy` | General purpose | High | Fast |
 | `levenshtein` | Strict typo matching | Configurable | Medium |
 | `soundex` | Phonetic matching (English names) | Phonetic | Fast |
-| `metaphone` | Phonetic matching (more accurate) | Phonetic | Fast |
+| `metaphone` | Phonetic matching (more accurate; ASCII letters only) | Phonetic | Fast |
 | `trigram` | Similarity matching | Medium (a shared three-letter run) | Medium |
 | `similar_text` | Percentage similarity (`similar_text.min_percentage`, default 70) | None (the value must contain the term) | Medium |
 | `simple` / `like` | Exact substring (LIKE) | None | Fastest |
@@ -301,16 +301,16 @@ php artisan migrate
 php artisan fuzzy-search:rebuild "App\Models\User"
 ```
 
-A rebuild writes only the rows whose shadow value is missing or out of date, one UPDATE per 600 rows, and it rebuilds the model's BM25 index too. `--type` accepts `metaphone` only.
+A rebuild writes only the rows whose shadow value is missing or out of date, one UPDATE per 500 rows, and it rebuilds the model's BM25 index too. `--type` accepts `metaphone` only. A code is cut to 191 characters, so a long value (a bio, a description) fits the column the command generates, and the `string()` column earlier releases generated (255, or 191 under `Schema::defaultStringLength(191)`).
 
-After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`.
+After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`. A shadow is written only while its column still holds the text the code encodes, so a save racing another save of the same row, or a rebuild, never leaves one text's code beside the other text. A declared column read through an accessor, a cast or a date has no stored text its code comes from, and its shadow is written unguarded.
 
 **What gets generated:**
 
 ```php
 // database/migrations/{timestamp}_add_name_metaphone_to_users_table.php
 Schema::table('users', function (Blueprint $table) {
-    $table->string('name_metaphone')->nullable()->after('name');
+    $table->string('name_metaphone', 191)->nullable()->after('name');
     $table->index('name_metaphone');
 });
 ```
@@ -447,7 +447,9 @@ User::search('john')
     ->get();
 ```
 
-A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP — on the LIKE and extended paths it receives the row's column score before `customScore()` and `boostRecent()`, and on `useInvertedIndex()` the BM25 raw score — before normalisation, and results are ranked by what it returns. On the index path it re-ranks the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. Pages past that window keep the BM25 order, and every match is on exactly one page. The trait's own method returns the score unchanged.
+The callback runs once per row on every path, LIKE, extended and `useInvertedIndex()`, before normalisation, and results are ranked by what it returns. It receives the row's column score on the LIKE and extended paths, and its BM25 raw score on the index path.
+
+A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP, with the same score, before `customScore()` and `boostRecent()` and before normalisation, and results are ranked by what it returns. On the index path these three hooks re-rank the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. Pages past that window keep the BM25 order, and every match is on exactly one page. Each page then also reads the window's rows, at most `max_candidates` of them. The trait's own method returns the score unchanged.
 
 ### Recency Boost
 
@@ -473,6 +475,8 @@ User::search('john')
     ->boostRecent()
     ->get();
 ```
+
+The boost multiplies the score after `getSearchScore()` and `customScore()`, on every path; on `useInvertedIndex()` it multiplies the BM25 raw score and re-ranks the first `max_candidates` matches (see [Custom Scoring Hooks](#custom-scoring-hooks)). The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request.
 
 ### Search Suggestions / Autocomplete
 
@@ -1394,10 +1398,10 @@ This table shows what each algorithm does at the SQL level on each supported dat
 |---|---|---|---|---|---|
 | **simple** / **like** | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'` | `ILIKE '%term%'` | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'`; case-insensitivity follows the column's collation |
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
-| **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | `similarity()` via pg_trgm if `use_native_functions=true`, else pattern set | Pattern set | Pattern set |
+| **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | ILIKE pattern set, whatever `use_native_functions` says (pg_trgm's `similarity()` is not an edit distance) | Pattern set | Pattern set |
 | **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true`, else ILIKE pattern set | LIKE pattern set | LIKE pattern set |
 | **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true`, else pattern fallback | Pattern fallback | Pattern fallback |
-| **metaphone** | Shadow column `{col}_metaphone` + exact `=` match | Shadow column | Shadow column | Shadow column | Shadow column |
+| **metaphone** | Shadow column `{col}_metaphone` + exact `=` match. PHP's `metaphone()` encodes ASCII letters only, so a term without one (`99`, `Иван`, `東京`) is matched as `LIKE '%term%'` on the column itself | Same as MySQL | Same (`ILIKE` for a term without an ASCII letter) | Same as MySQL | Same as MySQL |
 | **similar_text** | `LIKE '%term%'` and `CHAR_LENGTH(col) <= ?` (the `min_percentage` bound); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'` and `CHAR_LENGTH(col) <= ?`; PHP scores | `LIKE` and `LENGTH(col) <= ?` | `LIKE` and `LEN(CAST(col AS NVARCHAR(MAX)) + N'x') - 1 <= ?` |
 
 MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths included).
@@ -1414,6 +1418,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 - **Non-text columns (PostgreSQL, SQL Server):** a column you declare in `$searchable['columns']` or pass to `searchIn()` must be a text column there. An integer, decimal or date column is searched by its digits on MySQL, MariaDB and SQLite, but on PostgreSQL every search that names it throws (`operator does not exist: bigint ~~* unknown`), and on SQL Server every search for a term that is not a number does (`Conversion failed when converting the nvarchar value …`). To search such a column on those two, expose it as text (a generated or computed text column, or a view) and declare that column. Auto-detection never picks a non-text column.
 - **`similar_text` under an accent-insensitive collation:** on MySQL/MariaDB with `utf8mb4_unicode_ci` or `utf8mb4_0900_ai_ci`, `similar_text`'s LIKE also matches accent variants (`Jöhn` for `john`). The `min_percentage` length bound still applies to them: an accent variant has the same length, so the bound approximates PHP's percentage there.
 - **`similar_text.min_percentage`:** a match contains the term, so its `similar_text()` percentage is `200·t / (t + v)` for a `t`-character term and a `v`-character value, counted in characters. PHP's `similar_text()` counts bytes, so for single-byte text the bound is exactly its percentage, and for multibyte text a close approximation. The bound keeps values of at most `t·(200 − p) / p` characters: at the default 70, about 1.86 times the term's length. Under `tokenize()` the whole search term's length sets the bound for every token (whole-value similarity), so `john doe` still finds `John Doe`. On SQL Server a character outside the BMP counts as 2. `0` turns the bound off and restores 2.0's results.
+- **`distinct()` on the LIKE and extended paths:** a `SELECT DISTINCT` can be ordered only by what it selects, so under `distinct()` the search adds no relevance `ORDER BY`. The rows PHP rescoring ranks are then the first `max_candidates` distinct matches in database order, not the best ones, and `stableRanking()` orders by the key only when the select includes it (`*`, `table.*` or the key).
 - **Metaphone shadow column:** Run `php artisan fuzzy-search:add-shadow-column {Model} {column} --type=metaphone`, then `php artisan migrate`, then `php artisan fuzzy-search:rebuild {Model}` to fill it for existing rows (see [Shadow Columns](#shadow-columns)).
 
 ### PHP-Side Scoring

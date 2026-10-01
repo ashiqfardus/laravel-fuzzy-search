@@ -35,4 +35,9 @@
             <directory suffix=".php">./src</directory>
         </include>
     </source>
+    <php>
+        <!-- The whole suite on MySQL peaks at about 130 MB, past PHP's default 128M, and the peak
+             grows with every test the run adds. -->
+        <ini name="memory_limit" value="512M"/>
+    </php>
 </phpunit>

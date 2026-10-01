@@ -63,6 +63,7 @@ class AddShadowColumnCommand extends Command
         $shadowColumn = $column . '_' . $type;
         $className    = 'Add' . Str::studly($shadowColumn) . 'To' . Str::studly($table) . 'Table';
         $timestamp    = date('Y_m_d_His');
+        $length       = \Ashiqfardus\LaravelFuzzySearch\Drivers\MetaphoneDriver::CODE_LENGTH;
         $filename     = database_path("migrations/{$timestamp}_add_{$shadowColumn}_to_{$table}_table.php");
 
         $stub = <<<PHP
@@ -77,7 +78,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('{$table}', function (Blueprint \$table) {
-            \$table->string('{$shadowColumn}')->nullable()->after('{$column}');
+            \$table->string('{$shadowColumn}', {$length})->nullable()->after('{$column}');
             \$table->index('{$shadowColumn}');
         });
     }

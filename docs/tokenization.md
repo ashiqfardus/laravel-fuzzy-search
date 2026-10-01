@@ -34,7 +34,7 @@ Built-in lists cover eight locales — `en`, `de`, `fr`, `es`, `it`, `pt`, `nl`,
 ],
 ```
 
-`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's built-in en/de/fr/es lists (longer than the shipped config's: 36 English words against 14) when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list. A term made only of stop words (`search('the')`) matches nothing: no rows and a total of 0, on the LIKE path as on the index. An `extended()`/`searchBoolean()` query drops no stop words, so there it is still searched.
+`ignoreStopWords('xx')` reads `stop_words.{xx}` from config first, and only falls back to the builder's built-in en/de/fr/es lists (longer than the shipped config's: 36 English words against 14) when that key isn't configured — pass an array (`ignoreStopWords([...])`) when you want a list that ignores config entirely. The bare `->ignoreStopWords()` shown above is unaffected by this change — it always uses the built-in English list regardless of config; call `->ignoreStopWords('en')` explicitly to get the configured list. Stop words match in any letter case, non-ASCII letters included: `ignoreStopWords('ru')` drops "Не" from "Не работает", and a list written as `['The']` drops "the". A term made only of stop words (`search('the')`) matches nothing: no rows and a total of 0, on the LIKE path as on the index. An `extended()`/`searchBoolean()` query drops no stop words, so there it is still searched.
 
 ### Synonym Support
 
@@ -103,7 +103,7 @@ With `unicode.accent_insensitive` on (the shipped default), every `Model::search
 
 Folding the term never folds the column. An unaccented `cafe` finds `Café` as a substring match (`simple`/`like`) only where the database folds the column: under an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or on PostgreSQL through the explicit `accentInsensitive()` with unaccent and `use_native_functions`. SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. The typo-tolerant algorithms may still reach `Café` from `cafe` as a one-letter typo.
 
-Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm, and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 2.1.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
+Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm (`metaphone` encodes ASCII letters only, and searches a term without one as a plain contains match), and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 2.1.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
 
 ---
 

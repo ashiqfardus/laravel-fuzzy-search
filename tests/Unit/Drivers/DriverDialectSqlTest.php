@@ -60,6 +60,16 @@ class DriverDialectSqlTest extends TestCase
 
         $this->assertStringContainsString('soundex(', $sql('mysql', 'привет'));
         $this->assertStringNotContainsString('soundex(', $sql('pgsql', 'привет'));
+
+        // SA-2: PCRE counts ª, º and µ as letters; MySQL's and MariaDB's SOUNDEX() encode them as
+        // '', so an ordinal ("2º", "1ª") matched every letterless word there. A real letter beside
+        // them still takes SOUNDEX().
+        foreach (['mysql', 'mariadb', 'pgsql'] as $driver) {
+            foreach (['2º', '1ª', 'µ', '3ºµª'] as $term) {
+                $this->assertStringNotContainsString('soundex(', $sql($driver, $term), "{$driver}: {$term}");
+            }
+            $this->assertStringContainsString('soundex(', $sql($driver, 'piso 2º'), $driver);
+        }
     }
 
     public function test_soundex_falls_back_to_like_on_sqlite_and_sqlsrv(): void
@@ -94,6 +104,24 @@ class DriverDialectSqlTest extends TestCase
                 ->toSql());
 
             $this->assertStringContainsString('levenshtein(`name`, ?) <= ?', $sql, $driver);
+        }
+    }
+
+    /**
+     * SF-6 (ruling ER-150). With use_native_functions, PostgreSQL's levenshtein ran
+     * similarity() > max(0.3, 1 - max_distance / length): a trigram similarity, not an edit
+     * distance, under which no one-edit typo of a short word passes (john/jonh 0.25). It keeps the
+     * pattern set whatever the flag; the flag still governs trigram, soundex and unaccent.
+     */
+    public function test_levenshtein_keeps_the_pattern_set_on_postgres_whatever_the_flag(): void
+    {
+        foreach ([false, true] as $native) {
+            $sql = strtolower((new LevenshteinDriver($this->config(['use_native_functions' => $native]), 'pgsql'))
+                ->apply($this->app['db']->table('users'), 'name', 'jonh')
+                ->toSql());
+
+            $this->assertStringNotContainsString('similarity(', $sql, $native ? 'native' : 'pattern');
+            $this->assertStringContainsString('"name" ilike ?', $sql, $native ? 'native' : 'pattern');
         }
     }
 

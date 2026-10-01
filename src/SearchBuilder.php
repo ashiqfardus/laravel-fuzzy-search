@@ -1744,26 +1744,26 @@ class SearchBuilder
     /**
      * Set _raw_score / _score on the ranked models, keyed by their ids (RankedCandidates::models(),
      * so a model whose select left its key out is scored too), and return them best first. The raw
-     * score is the BM25 score through the model's getSearchScore() override, if it has one (see
-     * searchScore()), which can reorder the window it re-ranks. _score is normalised against $anchor,
-     * the score of the first row the query accepts (in rank order without a hook: the same on every
-     * page, so scores stay comparable across pages), or against the best row among $models when that
-     * is higher: the hook's window, which a page in rank order is read with, or the page under
-     * orderBy(). Not the first entry of $ranked: a row the query hides, such as another tenant's,
-     * would set the scale and reveal what it contains. A row $ranked lacks, a match past the
-     * ranking's cap that an ordered page serves, scores 0.
+     * score is the BM25 score through the scoring hooks (see hookedScore()), which can reorder the
+     * window they re-rank. _score is normalised against $anchor, the score of the first row the
+     * query accepts (in rank order without a hook: the same on every page, so scores stay comparable
+     * across pages), or against the best row among $models when that is higher: the hooks' window,
+     * which a page in rank order is read with, or the page under orderBy(). Not the first entry of
+     * $ranked: a row the query hides, such as another tenant's, would set the scale and reveal what
+     * it contains. A row $ranked lacks, a match past the ranking's cap that an ordered page serves,
+     * scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
-     * past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
+     * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0).
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
     protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX, ?float $anchor = null): Collection
     {
-        $scores = $models->map(fn ($item, $id) => $this->searchScore($item, (float) ($ranked[$id] ?? 0)));
+        $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
         $top    = max($anchor ?? 0.0, (float) ($scores->max() ?? 0));
 
-        // arsort() is stable: rows the hook left tied keep their BM25 rank.
+        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
         return $scores->take($rerank)->sortDesc()->union($scores->slice($rerank))->map(function (float $raw, $i) use ($models, $top) {
             $item             = $models[$i];
             $item->_raw_score = round($raw, 6);
@@ -1800,14 +1800,33 @@ class SearchBuilder
     }
 
     /**
-     * How many of the first ranked rows getSearchScore() re-ranks: max_candidates when the model
-     * overrides it, the window the LIKE path rescores, so every page is cut from one ordering (ruling
-     * ER-88); rows past it keep the BM25 order, as the LIKE path serves its deeper pages in database
-     * order. None without a hook: the scores are the BM25 order already.
+     * How many of the first ranked rows the scoring hooks re-rank: max_candidates when the model
+     * overrides getSearchScore() or the search sets customScore() or boostRecent() (ruling ER-149),
+     * the window the LIKE path rescores, so every page is cut from one ordering (ruling ER-88); rows
+     * past it keep the BM25 order, as the LIKE path serves its deeper pages in database order. None
+     * without a hook: the scores are the BM25 order already.
      */
     private function bm25Window(string $modelClass): int
     {
-        return self::hasSearchScoreHook($modelClass) ? (int) config('fuzzy-search.max_candidates', 1000) : 0;
+        return self::hasSearchScoreHook($modelClass) || $this->customScoreCallback !== null || $this->recencyBoostEnabled
+            ? (int) config('fuzzy-search.max_candidates', 1000)
+            : 0;
+    }
+
+    /**
+     * $score through the scoring hooks, once per row, before normalisation, on every path that
+     * scores in PHP (the LIKE and extended rescoring's column sum, the BM25 raw score): the model's
+     * getSearchScore(), then customScore(), then boostRecent()'s multiplier.
+     */
+    private function hookedScore(mixed $item, float $score): float
+    {
+        $score = $this->searchScore($item, $score);
+
+        if ($this->customScoreCallback) {
+            $score = (float) ($this->customScoreCallback)($item, $score);
+        }
+
+        return $score * $this->calculateRecencyBoost($item);
     }
 
     /**
@@ -1845,6 +1864,9 @@ class SearchBuilder
         if (empty($columns)) {
             throw new \Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException();
         }
+
+        // A union as one table, before the query and the filters go onto it (SE-2).
+        $this->query = self::unionAsTable($this->query);
 
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
         $ast    = $this->withTermVariants((new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens));
@@ -2220,11 +2242,12 @@ class SearchBuilder
         $page      = collect();
         $more      = false;
 
-        // Only the page's own rows are read, however deep the page, except getSearchScore()'s window,
-        // which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
-        // cut from that ordering. A page past it reads the window too, for the scale of _score. An id
-        // whose row is gone is skipped: past the window its page comes back one row short (inside it,
-        // the id holds no place), and first() reads on to the next row that exists (ruling ER-133).
+        // Only the page's own rows are read, however deep the page, except the scoring hooks' window
+        // (bm25Window()), which is read whole: it re-ranks the first max_candidates rows, and every
+        // page inside it is cut from that ordering. A page past it reads the window too, for the
+        // scale of _score. An id whose row is gone is skipped: past the window its page comes back
+        // one row short (inside it, the id holds no place), and first() reads on to the next row
+        // that exists (ruling ER-133).
         if ($offset < count($accepted) && $limit > 0) {
             $limit      = min($limit, count($accepted)); // take(PHP_INT_MAX): $offset + $limit stays an int
             $keys       = array_keys($accepted);
@@ -2481,7 +2504,9 @@ class SearchBuilder
     {
         $this->capSearchTerm(); // see capSearchTerm(): the LIKE path's one call
 
-        // The caller's where(A)->orWhere(B) as one group, before the search and the filters (RE-1).
+        // A union as one table, then the caller's where(A)->orWhere(B) as one group, before the
+        // search and the filters (SE-2, RE-1).
+        $this->query = self::unionAsTable($this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
         // Process search term
@@ -2508,8 +2533,11 @@ class SearchBuilder
             }
         }
 
-        // Apply sorting: an explicit orderBy() replaces the relevance order
-        if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '') {
+        // Apply sorting: an explicit orderBy() replaces the relevance order. A SELECT DISTINCT may
+        // be ordered only by what it selects, and the relevance CASE never is (PostgreSQL, SQL Server;
+        // MySQL when a searched column is not selected): under distinct() the window is the first
+        // max_candidates distinct rows, and PHP rescoring orders it, as on the extended path (SE-1).
+        if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '' && !self::isDistinct($this->query)) {
             $this->applyRelevanceOrdering();
         }
 
@@ -2547,11 +2575,73 @@ class SearchBuilder
             $names     = ['id', $keyColumn];
         }
 
+        // Not by a key a SELECT DISTINCT does not select: the database rejects it (SE-1).
+        if (!$endOnKey && self::isDistinct($query) && !self::selectsAny($query, [...$names, $keyColumn])) {
+            return;
+        }
+
         // Once (ruling ER-52): SQL Server rejects a column named twice in ORDER BY.
         $orders = ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->orders ?? [];
         if (array_intersect(array_filter(array_column($orders, 'column'), 'is_string'), $names) === []) {
             $query->orderBy($keyColumn, 'asc');
         }
+    }
+
+    /**
+     * $query with a union read as one derived table named as its FROM table, as the index path reads
+     * it (RankedCandidates::rows(), rulings ER-125, ER-127), so the search predicate, filter() and the
+     * order hold for every part: on the union they went into its first part's wheres and became the
+     * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
+     * the LIKE path serves rows without one. The model's scopes already apply inside each part, and
+     * the eager loads are carried over. The union's own order is dropped when it has no limit or
+     * offset of its own: it cannot change which rows the union holds, and SQL Server rejects an ORDER
+     * BY in a derived table without TOP or OFFSET. $query itself when it has no union.
+     */
+    private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
+    {
+        $base = $query instanceof EloquentBuilder ? $query->toBase() : $query;
+
+        if (!$base->unions) {
+            return $query;
+        }
+
+        if ($base->unionLimit === null && $base->unionOffset === null) {
+            $base->unionOrders            = null;
+            $base->bindings['unionOrder'] = [];
+        }
+
+        if ($query instanceof EloquentBuilder) {
+            $model = $query->getModel();
+
+            return $model->newQueryWithoutScopes()->fromSub($base, $model->getTable())->setEagerLoads($query->getEagerLoads());
+        }
+
+        $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+
+        return $base->newQuery()->fromSub($base, $from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0])));
+    }
+
+    /** Whether $query reads SELECT DISTINCT, a global scope's distinct() included. */
+    private static function isDistinct(Builder|EloquentBuilder $query): bool
+    {
+        return (bool) ($query instanceof EloquentBuilder ? $query->toBase() : $query)->distinct;
+    }
+
+    /**
+     * Whether $query's select list holds one of $names, or every column (no select, `*` or
+     * `table.*`). A raw expression is not read: it counts as not holding them.
+     *
+     * @param string[] $names
+     */
+    private static function selectsAny(Builder|EloquentBuilder $query, array $names): bool
+    {
+        foreach (($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? ['*'] as $column) {
+            if (is_string($column) && ($column === '*' || str_ends_with($column, '.*') || in_array($column, $names, true))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -2565,13 +2655,13 @@ class SearchBuilder
             $term = normalizer_normalize($term, \Normalizer::FORM_C);
         }
 
-        // Remove stop words
+        // Remove stop words. A PHP lookup, so word and list fold with mb_strtolower(), as the synonym
+        // keys do (ruling ER-100) and the index pipeline does: "Не" and "À" are stop words too.
         if (!empty($this->stopWords)) {
+            $stop  = array_map(fn ($word) => mb_strtolower((string) $word, 'UTF-8'), $this->stopWords);
             $words = preg_split(self::WHITESPACE, $term);
-            $words = array_filter($words, function ($word) {
-                return !in_array(Utf8::lowerAscii($word), $this->stopWords);
-            });
-            $term = implode(' ', $words);
+            $words = array_filter($words, fn (string $word) => !in_array(mb_strtolower($word, 'UTF-8'), $stop, true));
+            $term  = implode(' ', $words);
         }
 
         return trim($term);
@@ -2915,17 +3005,7 @@ class SearchBuilder
                 $score += $colScore;
             }
 
-            // The model's own getSearchScore() adjusts the base score first
-            $score = $this->searchScore($item, $score);
-
-            // Apply custom scoring
-            if ($this->customScoreCallback) {
-                $score = ($this->customScoreCallback)($item, $score);
-            }
-
-            // Apply recency boost
-            $recencyMultiplier = $this->calculateRecencyBoost($item);
-            $score *= $recencyMultiplier;
+            $score = $this->hookedScore($item, $score);
 
             // Set score on item
             if (is_object($item)) {
@@ -3413,19 +3493,21 @@ class SearchBuilder
         }
 
         // displayValueFor() already returns safe HTML (the _highlighted branch is
-        // pre-escaped per P8-R10; the data_get() fallback escapes itself) — wrapping it in
+        // pre-escaped per P8-R10; the column-read fallback escapes itself) — wrapping it in
         // e() again here would double-escape entities like "&lt;" into "&amp;lt;".
         return self::displayValueFor($result, $column);
     }
 
     /**
      * Plain (unhighlighted) display value for a column: `_highlighted` when the search
-     * produced one, otherwise data_get(). Always HTML-safe: the `_highlighted` branch is
-     * pre-escaped by applyHighlighting() (matched values via wrapWithTags(), non-matching
-     * ones via e() — P8-R10), and the data_get() fallback escapes here. A Collection value
-     * is reduced to its first item; anything that isn't a scalar at that point — including a
-     * model instance, or a to-many relation collection data_get() couldn't resolve to one —
-     * renders as an empty string rather than a warning.
+     * produced one, otherwise the column read with SearchableColumns::read(): never
+     * getAttribute()'s relation fallback, which calls a model method named like the column
+     * (ruling ER-148), so a relation shows only once it is loaded. Always HTML-safe: the
+     * `_highlighted` branch is pre-escaped by applyHighlighting() (matched values via
+     * wrapWithTags(), non-matching ones via e() — P8-R10), and the fallback escapes here. A
+     * Collection value is reduced to its first item; anything that isn't a scalar at that point —
+     * including a model instance, or a to-many relation collection the path couldn't resolve to
+     * one — renders as an empty string rather than a warning.
      */
     protected static function displayValueFor($result, string $column): string
     {
@@ -3434,7 +3516,7 @@ class SearchBuilder
             return (string) $highlighted[$column];
         }
 
-        $value = data_get($result, $column);
+        $value = SearchableColumns::read($result, $column);
         if ($value instanceof \Illuminate\Support\Collection) {
             $value = $value->first();
         }
@@ -3782,8 +3864,9 @@ class SearchBuilder
     {
         $driver = $this->query->getConnection()->getDriverName();
 
-        // Clone query to avoid modifying the original, the caller's where(A)->orWhere(B) as one group (RE-1)
-        $suggestQuery = clone $this->query;
+        // Clone query to avoid modifying the original: a union as one table (SE-2), the caller's
+        // where(A)->orWhere(B) as one group (RE-1)
+        $suggestQuery = self::unionAsTable(clone $this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($suggestQuery);
 
         $targets = $this->suggestTargets();
@@ -3974,7 +4057,9 @@ class SearchBuilder
     }
 
     /**
-     * Calculate recency boost score
+     * Calculate recency boost score. The column may come from a request, so it is read without
+     * getAttribute()'s relation fallback, which would call a model method named like it (ruling
+     * ER-148): an attribute, cast or accessor, or a relation already loaded.
      */
     protected function calculateRecencyBoost($item): float
     {
@@ -3982,7 +4067,7 @@ class SearchBuilder
             return 1.0;
         }
 
-        $dateValue = data_get($item, $this->recencyColumn);
+        $dateValue = SearchableColumns::read($item, $this->recencyColumn);
 
         if (empty($dateValue)) {
             return 1.0;

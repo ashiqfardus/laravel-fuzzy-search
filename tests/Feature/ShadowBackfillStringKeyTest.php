@@ -73,11 +73,12 @@ class ShadowBackfillStringKeyTest extends TestCase
             DB::table('shadow_key_items')->orderBy('code')->pluck('name_metaphone', 'code')->all()
         );
 
-        // One UPDATE: case code when ? then ? ... end where code in (?, ?); '12' bound as a string
-        // in the CASE and in the IN list alike (assertNotContains() compares by identity).
+        // One UPDATE: case when code = ? and name = ? then ? ... else name_metaphone end where code
+        // in (?, ?); '12' bound as a string in the CASE and in the IN list alike (assertNotContains()
+        // compares by identity).
         $this->assertCount(1, $this->updates);
         [$bindings] = $this->updates;
-        $this->assertCount(6, $bindings);
+        $this->assertCount(8, $bindings);
         $this->assertSame(2, count(array_keys($bindings, '12', true)));
         $this->assertNotContains(12, $bindings);
     }

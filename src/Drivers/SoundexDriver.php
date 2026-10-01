@@ -17,10 +17,11 @@ class SoundexDriver extends BaseDriver
 
         // SOUNDEX() encodes a term it finds no letter in as '', the code of every word without a
         // letter and of an empty column too: "99" matched "iPhone 15", "Office 365" and every row
-        // whose searched column was ''. MySQL and MariaDB encode a letter of any script;
+        // whose searched column was ''. MySQL and MariaDB encode a letter of any script but ª, º
+        // and µ, which PCRE counts as letters (so "2º" matched every letterless word there);
         // PostgreSQL's fuzzystrmatch only an ASCII one. Such a term takes the pattern fallback,
         // as it does on the databases without SOUNDEX().
-        if (preg_match($this->driver === 'pgsql' ? '/[A-Za-z]/' : '/\pL/u', $value) !== 1) {
+        if (preg_match($this->driver === 'pgsql' ? '/[A-Za-z]/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
             return $this->applyFallback($query, $column, $value, $boolean);
         }
 

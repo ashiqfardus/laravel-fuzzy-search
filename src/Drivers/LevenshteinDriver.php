@@ -27,11 +27,10 @@ class LevenshteinDriver extends BaseDriver
             return $this->applyNativeMySQL($query, $column, $value, $boolean);
         }
 
-        if ($this->driver === 'pgsql' && ($this->config['use_native_functions'] ?? false)) {
-            return $this->applyNativePostgres($query, $column, $value, $boolean);
-        }
-
-        // Fallback to pattern-based matching
+        // Pattern-based matching everywhere else, PostgreSQL included whatever use_native_functions
+        // says (ruling ER-150): pg_trgm's similarity() is not an edit distance, and no one-edit typo
+        // of a short word reached its threshold ("jonh" never found "john"). fuzzystrmatch's own
+        // levenshtein() rejects values over 255 characters.
         return $this->applyPatternBased($query, $column, $value, $boolean);
     }
 
@@ -44,18 +43,6 @@ class LevenshteinDriver extends BaseDriver
         $col = $this->quoteColumn($column, $query);
 
         return $query->$method("LEVENSHTEIN({$col}, ?) <= ?", [$value, $this->maxDistance]);
-    }
-
-    /**
-     * Apply native PostgreSQL using pg_trgm similarity
-     */
-    protected function applyNativePostgres(Builder $query, string $column, string $value, string $boolean): Builder
-    {
-        $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
-        $col = $this->quoteColumn($column, $query);
-        $minSimilarity = 1 - ($this->maxDistance / max(mb_strlen($value, 'UTF-8'), 1));
-
-        return $query->$method("similarity({$col}, ?) > ?", [$value, max(0.3, $minSimilarity)]);
     }
 
     /**

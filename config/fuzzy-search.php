@@ -421,7 +421,8 @@ return [
     |
     | Enable if you have native database extensions installed:
     | - MySQL: LEVENSHTEIN UDF
-    | - PostgreSQL: pg_trgm, fuzzystrmatch extensions
+    | - PostgreSQL: pg_trgm (trigram), fuzzystrmatch (soundex) extensions;
+    |   levenshtein keeps its LIKE patterns there either way
     |
     */
     'use_native_functions' => false,
