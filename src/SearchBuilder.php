@@ -2584,13 +2584,13 @@ class SearchBuilder
             $term = normalizer_normalize($term, \Normalizer::FORM_C);
         }
 
-        // Remove stop words
+        // Remove stop words. A PHP lookup, so word and list fold with mb_strtolower(), as the synonym
+        // keys do (ruling ER-100) and the index pipeline does: "Не" and "À" are stop words too.
         if (!empty($this->stopWords)) {
+            $stop  = array_map(fn ($word) => mb_strtolower((string) $word, 'UTF-8'), $this->stopWords);
             $words = preg_split(self::WHITESPACE, $term);
-            $words = array_filter($words, function ($word) {
-                return !in_array(Utf8::lowerAscii($word), $this->stopWords);
-            });
-            $term = implode(' ', $words);
+            $words = array_filter($words, fn (string $word) => !in_array(mb_strtolower($word, 'UTF-8'), $stop, true));
+            $term  = implode(' ', $words);
         }
 
         return trim($term);
