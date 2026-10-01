@@ -104,18 +104,32 @@ class Bm25Scorer
             ->count('model_id');
     }
 
+    /** The derived table of matched ids whereRanked() joins on MySQL and MariaDB, named apart from a caller's own joins (see RankedCandidates::orderedKeys()). */
+    public const MATCHES = 'fuzzy_matches';
+
     /**
      * Restrict $query, a query on $modelType's table, to the documents that hold $terms, those past
-     * rank()'s max_postings_per_term too, without binding their ids (ruling ER-82): EXISTS one of
+     * rank()'s max_postings_per_term too, without binding their ids (ruling ER-82): those with one of
      * their postings under a column that is not weighted out, matched on $qualifiedKey. The bindings
      * are the model type and the terms, so an ordered index page reads only matches, however many
      * there are. model_id is a string column, so the key is compared as a string (PostgreSQL has no
      * integer = varchar operator); only for a query on the connection the index lives on, the
      * default one.
      *
+     * On MySQL and MariaDB, given the $model whose key $qualifiedKey names, the read is driven from
+     * the postings (S3): an inner join to the distinct model_ids of the matched terms (a covering read
+     * of postings_unique_idx), as the derived table MATCHES, looked up on the key's index (see
+     * keyLookup()), one lookup per match. As an EXISTS per row of the model table, the ordered page
+     * and its COUNT read the table whole on both servers (8.7–11 s at 6M rows on MySQL for a word in
+     * 1% of them; the join takes 0.2 s). The join also compares the two byte-wise, as the subquery
+     * does, so a model_id that matches the key only under the key's collation (aBc for a row ABC) is
+     * no match, and a model is joined once. Without $model, or with a key no index serves, the read
+     * stays the EXISTS below. PostgreSQL and SQL Server keep it too: they read the table whole in
+     * tens of milliseconds at 1M rows (a hash semi-join), where the join measured slower.
+     *
      * On MySQL and MariaDB a string cast takes the connection's collation, and a connection whose
      * collation differs from model_id's failed with 1267 "Illegal mix of collations". The key is
-     * cast into model_id's own character set and collation (see modelIdCollation()), explicitly, so
+     * cast into model_id's own character set and collation (see columnCollation()), explicitly, so
      * the comparison is the column's own whatever the connection says, and the index on model_id is
      * still used. A binary comparison (CAST AS BINARY, COLLATE utf8mb4_bin) is also
      * collation-free, but MySQL then reads every posting of the term for each row. On SQL Server
@@ -125,76 +139,112 @@ class Bm25Scorer
      *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
+     * @param \Illuminate\Database\Eloquent\Model|null $model        the model whose key $qualifiedKey names, to join on (MySQL, MariaDB)
      */
-    public function whereRanked(\Illuminate\Database\Query\Builder $query, string $qualifiedKey, array $terms, string $modelType, array $columnWeights = []): void
+    public function whereRanked(\Illuminate\Database\Query\Builder $query, string $qualifiedKey, array $terms, string $modelType, array $columnWeights = [], ?\Illuminate\Database\Eloquent\Model $model = null): void
     {
-        $terms  = $this->termBindings($this->weights($terms));
-        $driver = $query->getConnection()->getDriverName();
-        $key    = $query->getGrammar()->wrap($qualifiedKey);
-        $key    = match (true) {
+        $terms   = $this->termBindings($this->weights($terms));
+        $driver  = $query->getConnection()->getDriverName();
+        $grammar = $query->getGrammar();
+        $key     = $grammar->wrap($qualifiedKey);
+        $cast    = match (true) {
             DbDialect::isMySqlFamily($driver) => self::castToModelId($query->getConnection(), $key),
             $driver === DbDialect::SQLSRV     => "CAST({$key} AS NVARCHAR(191)) COLLATE DATABASE_DEFAULT",
             $driver === DbDialect::SQLITE     => "CAST({$key} AS TEXT)",
             default                           => "CAST({$key} AS VARCHAR)",
         };
 
+        $postings = fn (\Illuminate\Database\Query\Builder $postings) => $postings
+            ->from('fuzzy_index_postings as fzr')
+            ->where('fzr.model_type', $modelType)
+            ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
+            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_name', $cols));
+
+        $lookup = $model !== null && DbDialect::isMySqlFamily($driver) ? self::keyLookup($query, $model) : null;
+
+        if ($lookup !== null) {
+            $id = $grammar->wrap(self::MATCHES . '.fuzzy_match_id');
+
+            $query->joinSub(
+                $postings($query->newQuery())->select('fzr.model_id as fuzzy_match_id')->distinct(),
+                self::MATCHES,
+                fn ($join) => $join->whereRaw("{$key} = " . sprintf($lookup, $id) . " and {$id} = {$cast}")
+            );
+
+            return;
+        }
+
         // MySQL (a MariaDB server ignores the hint): FirstMatch, one index probe per row. With
         // model_id in utf8mb4_bin, and an index on the order column, MySQL chose a hash semi-join it
         // could not key on the cast key, whose cost grew with the square of the rows: 3.6 s at 100k
-        // matches, where FirstMatch takes 0.16 s. The hint is for those reads, the ordered page and
-        // its COUNT, which on MySQL come here only for a ranking capped at max_postings_per_term or a
-        // string one past the placeholder limit (RankedCandidates::matches() lists a whole ranking
-        // by key, ruling ER-132). On MySQL, RankedCandidates::accepted() never reads through this
-        // subquery (it checks the ranking by key), because for a constrained search's few ranked ids
-        // the hint forced a scan of the table (0.3 s at 200k rows for 5 ids, where a hash join driven
-        // by the postings took 0.04 s), and past 1,000 ids FirstMatch read the table whole all the same.
+        // matches, where FirstMatch takes 0.16 s. On MySQL the subquery is left for the reads the
+        // join above does not take: a union, a string key of a derived table or of a column whose
+        // collation cannot be read. RankedCandidates::accepted() reads through it on MySQL only for a
+        // string key over a union (it checks the ranking by key otherwise), because for a constrained
+        // search's few ranked ids the hint forced a scan of the table (0.3 s at 200k rows for 5 ids,
+        // where a hash join driven by the postings took 0.04 s).
         $select = $driver === DbDialect::MYSQL ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1';
 
-        $query->whereExists(function ($postings) use ($terms, $modelType, $columnWeights, $key, $select) {
-            $postings->selectRaw($select)
-                ->from('fuzzy_index_postings as fzr')
-                ->where('fzr.model_type', $modelType)
-                ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
-                ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_name', $cols))
-                ->whereRaw($postings->getGrammar()->wrap('fzr.model_id') . " = {$key}");
-        });
+        $query->whereExists(fn ($subquery) => $postings($subquery->selectRaw($select))
+            ->whereRaw($subquery->getGrammar()->wrap('fzr.model_id') . " = {$cast}"));
     }
 
-    /** @var array<string, array{string, string}|null> connection => [charset, collation] of fuzzy_index_postings.model_id */
-    private static array $modelIdCollations = [];
+    /**
+     * MySQL/MariaDB: how whereRanked()'s join looks a matched model_id up on $model's key, as a
+     * sprintf() format of it, or null where no index can serve the lookup. An integer key is compared
+     * with the string as a number, and looked up on its index (model_id holds strval() of the key, so
+     * no leading zeros). A string key is looked up with the model_id cast into the key column's own
+     * character set and collation, so that the key's index is used; only on a table the FROM names
+     * (a derived table's column may be of another character set).
+     */
+    private static function keyLookup(\Illuminate\Database\Query\Builder $query, \Illuminate\Database\Eloquent\Model $model): ?string
+    {
+        if (in_array($model->getKeyType(), ['int', 'integer'], true)) {
+            return '%s';
+        }
+
+        $table     = DbDialect::fromTable($query->from)[0] ?? null;
+        $collation = $table === null ? null : self::columnCollation($query->getConnection(), $table, $model->getKeyName());
+
+        return $collation === null ? null : "CAST(%s AS CHAR CHARACTER SET {$collation[0]}) COLLATE {$collation[1]}";
+    }
+
+    /** @var array<string, array{string, string}|null> connection, table and column => [charset, collation] */
+    private static array $collations = [];
 
     /** MySQL/MariaDB: $key cast into model_id's character set and collation, or plain CAST AS CHAR if they cannot be read. */
     private static function castToModelId(\Illuminate\Database\ConnectionInterface $connection, string $key): string
     {
-        $collation = self::modelIdCollation($connection);
+        $collation = self::columnCollation($connection, 'fuzzy_index_postings', 'model_id');
 
         return $collation === null ? "CAST({$key} AS CHAR)" : "CAST({$key} AS CHAR CHARACTER SET {$collation[0]}) COLLATE {$collation[1]}";
     }
 
     /**
-     * fuzzy_index_postings.model_id's character set and collation, read from information_schema
-     * once per connection, database and table prefix for the process. Names that are not plain
+     * MySQL/MariaDB: the character set and collation of $table.$column, read from information_schema
+     * once per connection, database, table prefix, table and column for the process; null for a
+     * column without one (a number, a binary string) or one it cannot find. Names that are not plain
      * identifiers are never written into SQL.
      *
      * @return array{string, string}|null
      */
-    private static function modelIdCollation(\Illuminate\Database\ConnectionInterface $connection): ?array
+    private static function columnCollation(\Illuminate\Database\ConnectionInterface $connection, string $table, string $column): ?array
     {
-        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+        $id = implode('|', [$connection->getName(), $connection->getDatabaseName(), $connection->getTablePrefix(), $table, $column]);
 
-        if (!array_key_exists($id, self::$modelIdCollations)) {
-            $column = $connection->selectOne(
+        if (!array_key_exists($id, self::$collations)) {
+            $row = $connection->selectOne(
                 'select character_set_name as charset, collation_name as collation from information_schema.columns'
                 . ' where table_schema = database() and table_name = ? and column_name = ?',
-                [$connection->getTablePrefix() . 'fuzzy_index_postings', 'model_id']
+                [$connection->getTablePrefix() . $table, $column]
             );
 
-            self::$modelIdCollations[$id] = $column !== null && preg_match('/^\w+$/', (string) $column->charset) && preg_match('/^\w+$/', (string) $column->collation)
-                ? [(string) $column->charset, (string) $column->collation]
+            self::$collations[$id] = $row !== null && preg_match('/^\w+$/', (string) $row->charset) && preg_match('/^\w+$/', (string) $row->collation)
+                ? [(string) $row->charset, (string) $row->collation]
                 : null;
         }
 
-        return self::$modelIdCollations[$id];
+        return self::$collations[$id];
     }
 
     /**
@@ -279,7 +329,11 @@ class Bm25Scorer
         // rows — exactly what v2.0 capped, which ordered by raw frequency — so a document is
         // never partially cut across its columns. High-frequency rows are prioritised globally
         // across all matched terms; in a pathological corpus a single dominant term could consume
-        // the cap, but at the default 50k the bound is never reached for normal workloads.
+        // the cap, but at the default 50k the bound is never reached for normal workloads. Rows of
+        // equal weight are cut by model_id, then term_id (SE-3): the weight takes few values, so the
+        // cap usually falls inside a group of equal rows, and which of them the database kept changed
+        // with its plan (a statistics refresh, the ANALYZE after a rebuild): a user paging a capped
+        // search was served pages cut from different rankings.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
         [$wf, $wfBindings] = $this->weightedFrequencySql($columnWeights);
@@ -296,6 +350,8 @@ class Bm25Scorer
             ->select('p.model_id', 'p.term_id', 'd.doc_length as doc_len')
             ->selectRaw("{$wf} as wf", $wfBindings)
             ->orderByDesc('wf')
+            ->orderBy('p.model_id')
+            ->orderBy('p.term_id')
             ->limit($maxPostings)
             ->get();
 

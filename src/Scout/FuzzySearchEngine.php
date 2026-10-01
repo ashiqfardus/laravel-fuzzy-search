@@ -97,6 +97,18 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         $perPage = max(1, (int) $perPage);
         $page    = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
 
+        // Scout 10.0 (no PaginatesEloquentModelsUsingDatabase) counts paginate()'s and paginateRaw()'s
+        // total itself, after this returns, through this Builder's query() callback and then the
+        // matches' keys (Builder::getTotalCount()): an ungrouped or's first branch and a union's other
+        // parts counted rows outside the matches (SD-1). The callback is replaced, once, by the
+        // engine's reading of it, which the engine's own reads also take. Scout 10.1 and later take
+        // the engine's total, and the callback stays as given. A one-to-many join is still counted
+        // once per joined row there (documented).
+        if (!interface_exists(PaginatesEloquentModelsUsingDatabase::class) && $builder->queryCallback !== null
+            && !$builder->queryCallback instanceof GroupedQueryCallback) {
+            $builder->queryCallback = new GroupedQueryCallback($builder->queryCallback);
+        }
+
         return $this->results($builder, ($page - 1) * $perPage, $perPage);
     }
 

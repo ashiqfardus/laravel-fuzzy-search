@@ -24,10 +24,14 @@ class SemiJoinArticle extends Model
  * MySQL, once model_id is utf8mb4_bin (round 8, M8). With an index on the order column, MySQL ran
  * the postings subquery of an ordered index search as a hash semi-join it could not
  * key on the cast key, and its cost grew with the square of the rows: 0.18 s at 20k matches, 3.6 s
- * at 100k, where one index probe per row (FirstMatch) takes 0.03 s and 0.16 s. The subquery now
- * asks MySQL for FirstMatch. The assertions read the SQL and the plan, never a timing: the plan
+ * at 100k, where one index probe per row (FirstMatch) takes 0.03 s and 0.16 s. The subquery asks
+ * MySQL for FirstMatch. The assertions read the SQL and the plan, never a timing: the plan
  * depends on sampled statistics, and without the hint it came out a hash join only about 2 runs in
  * 3 (L14, round 9), so the hint itself is asserted too.
+ *
+ * Since S3 a capped ranking on the model's own table is read from the postings, joined on the key
+ * (CappedOrderedReadTest): one primary-key lookup per match, no hash join either. The subquery,
+ * and its hint, are left for a union.
  */
 class MySqlPostingsSemiJoinTest extends TestCase
 {
@@ -86,17 +90,37 @@ class MySqlPostingsSemiJoinTest extends TestCase
         // (ruling ER-124), and so does an ordered read of a ranking that holds every match (ER-132).
         $this->assertSame([], $this->postingsReads($page), 'a whole ranking');
 
-        // A ranking capped at bm25.max_postings_per_term is read through it.
+        // A ranking capped at bm25.max_postings_per_term is read from the postings, joined on the key.
         config(['fuzzy-search.bm25.max_postings_per_term' => 10000]);
         $reads = $this->postingsReads($page);
 
         $this->assertCount(2, $reads, 'the ordered COUNT and page');
 
         foreach ($reads as [$sql, $bindings]) {
+            $this->assertStringNotContainsString('SEMIJOIN', $sql);
+
+            $plan = $this->plan($sql, $bindings);
+            $this->assertStringNotContainsStringIgnoringCase('hash join', $plan, "{$sql}\n{$plan}");
+            $this->assertMatchesRegularExpression('/Single-row (covering )?index lookup on semijoin_articles using PRIMARY/', $plan, "{$sql}\n{$plan}");
+        }
+
+        // Over a union it is read through the subquery, FirstMatch.
+        $union = fn () => SemiJoinArticle::search('alpha')->typoTolerance(0)->useInvertedIndex()->where('id', '<=', 10000)
+            ->query(fn ($query) => $query->unionAll(SemiJoinArticle::query()->where('id', '>', 10000)))->orderBy('title')->paginate(10, 'page', 900);
+        $reads = $this->postingsReads($union);
+
+        $this->assertCount(2, $reads, 'the ordered COUNT and page over a union');
+
+        foreach ($reads as [$sql, $bindings]) {
             $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
 
-            $plan = implode("\n", array_map(fn ($row) => (string) current((array) $row), DB::select('EXPLAIN FORMAT=TREE ' . $sql, $bindings)));
+            $plan = $this->plan($sql, $bindings);
             $this->assertStringNotContainsStringIgnoringCase('hash join', $plan, "{$sql}\n{$plan}");
         }
+    }
+
+    private function plan(string $sql, array $bindings): string
+    {
+        return implode("\n", array_map(fn ($row) => (string) current((array) $row), DB::select('EXPLAIN FORMAT=TREE ' . $sql, $bindings)));
     }
 }

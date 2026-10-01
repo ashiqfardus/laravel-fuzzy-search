@@ -198,11 +198,10 @@ class UngroupedOrWhereTest extends TestCase
 
         $this->assertSame($expected, $search()->take(100)->get()->pluck('name')->sort()->values()->all(), 'get');
         $this->assertSame(count($expected), $hydrated, 'models hydrated');
-        // Scout 10.0 counts the total itself, through the callback and an ungrouped or: the
-        // documented limit of the engine's pagination there (Scout 10.1+ takes the engine's total).
-        if (interface_exists(\Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase::class)) {
-            $this->assertSame(count($expected), $search()->paginate(5)->total(), 'total');
-        }
+        // Scout 10.1+ takes the engine's total; Scout 10.0 counts it itself, through the callback,
+        // whose or the engine groups for it there too (SD-1).
+        $this->assertSame(count($expected), $search()->paginate(5)->total(), 'total');
+        $this->assertSame(count($expected), $search()->paginateRaw(5)->total(), 'paginateRaw total');
         $this->assertSame($expected, $search()->orderBy('rank')->take(100)->get()->pluck('name')->sort()->values()->all(), 'orderBy get');
     }
 }
