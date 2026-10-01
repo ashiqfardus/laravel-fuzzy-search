@@ -32,7 +32,6 @@ class SyncIndexFailureTest extends TestCase
 
         $this->app->instance(IndexManager::class, new class(new WhitespaceTokenizer(), new NullStemmer()) extends IndexManager {
             public function syncModel(string $modelClass, int|string $key): void { throw new \RuntimeException('index write failed'); }
-            public function removeFromIndex(string $modelType, int|string $modelId): void { throw new \RuntimeException('index delete failed'); }
         });
 
         $reported = &$this->reported;
@@ -61,7 +60,8 @@ class SyncIndexFailureTest extends TestCase
         });
 
         $this->assertSame(['saved', 'deleted'], $ran);
-        $this->assertSame(['index write failed', 'index delete failed'], array_map(fn ($e) => $e->getMessage(), $this->reported));
+        // A delete syncs the row as a save does, and fails the same way (SB-2).
+        $this->assertSame(['index write failed', 'index write failed'], array_map(fn ($e) => $e->getMessage(), $this->reported));
         $this->assertSame(0, User::where('name', 'John Changed')->count()); // the delete committed too
     }
 

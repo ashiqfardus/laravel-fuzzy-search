@@ -80,6 +80,8 @@ If you plan to use the **BM25 inverted index** (recommended for 10k+ rows), also
 php artisan migrate
 ```
 
+On PostgreSQL and SQLite, install the package once per schema (or database file): the package's index names do not carry the connection's table prefix, and those databases need an index name to be unique across the schema, so a second install with another prefix stops at `relation "postings_unique_idx" already exists`. Give each install its own schema (`search_path`) or database. MySQL, MariaDB and SQL Server name indexes per table and are not affected.
+
 > **Upgrading from v1.x?** There are breaking changes — result rankings and `_score` values may shift.
 > Run the scanner to find affected code, then follow the full guide.
 >
@@ -786,6 +788,7 @@ Post::search('tolkien')->useInvertedIndex()->get();
 - **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
 - BM25 tends to beat LIKE once a table passes roughly 10k+ rows; below that, LIKE is simpler to operate.
+- **Single-table inheritance** — each row is indexed under its own class; return the parent from each child's `searchIndexType()` to index the hierarchy once ([docs/bm25.md](docs/bm25.md#single-table-inheritance)).
 - **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, not thrown from `save()`. Indexing inside an open transaction (Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`) can deadlock, on every database once the transaction holds two or more index writes (on SQL Server with one), and such a deadlock is thrown from `save()`, not retried: set `scout.after_commit` to `true`; see [Production Setup](docs/bm25.md#production-setup). On PostgreSQL the package analyzes the index tables after a rebuild and as they grow, and a failure to analyze is reported, not thrown (a connection lost inside an open transaction is thrown); after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
 
 → Full guide: [docs/bm25.md](docs/bm25.md)
@@ -1410,7 +1413,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 
 - **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. PostgreSQL escapes with a backslash, its LIKE default, and escapes a backslash in the term too. SQLite and SQL Server have no default escape character, and MySQL and MariaDB lose theirs under the `NO_BACKSLASH_ESCAPES` SQL mode, so on all four the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there) and every LIKE a search writes carries `ESCAPE '!'`, which works in every SQL mode, pattern sets included (only the deprecated, unused `getRelevanceExpression()` / `getRelevanceBindings()` driver methods predate this).
 - **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. MySQL `SOUNDEX()` is built-in and always active — no flag needed. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
-- **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager.
+- **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager. With it, `using('levenshtein')` on MySQL and MariaDB compares the whole column value with the term: a row matches only when the value as a whole is within `levenshtein.max_distance` edits of the term, so a word inside a longer value is not found (`john` no longer finds `John Doe`), where the pattern set finds the term, or a near miss of it, anywhere in the value.
 - **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`
 - **fuzzystrmatch (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`
 - **unaccent (PostgreSQL, for an explicit `accentInsensitive()`):** `CREATE EXTENSION IF NOT EXISTS unaccent;` + `use_native_functions=true`. `unaccent(col) ILIKE unaccent(?)` is then ORed beside the chosen algorithm. It runs only when the search opts in explicitly (`->accentInsensitive()`, `$searchable['accent_insensitive']` or a preset); the global `unicode.accent_insensitive` default never uses it. Without the extension an explicit opt-in fails with `function unaccent(…) does not exist`.

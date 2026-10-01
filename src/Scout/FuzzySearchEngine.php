@@ -57,24 +57,29 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
-        // a trashed model kept while scout.soft_delete is on (ER-72). One write per class when the
-        // collection mixes them (Scout's import of a single-table-inheritance parent): each model
-        // is indexed under its own class, as delete() removes it (RC-3).
-        foreach ($models->groupBy(fn ($model) => $model::class) as $group) {
-            $this->indexManager->indexBatch($group, scout: true);
-        }
+        // a trashed model kept while scout.soft_delete is on (ER-72). One write per index type when
+        // the collection mixes them (Scout's import of a single-table-inheritance parent): each
+        // model is indexed under its index type, as delete() removes it and a rebuild writes it
+        // (RC-3, SA-1).
+        $this->indexManager->indexBatch($models, scout: true);
     }
 
     public function delete($models): void
     {
         foreach ($models as $model) {
-            // A queued delete's model, restored with only its Scout key: a custom one leaves it
-            // without the primary key the index row is under.
-            if ($model->getKey() === null) {
+            // A queued delete's model, restored with only its Scout key (forceFill() under
+            // getScoutKeyName()): a custom one leaves it without the primary key the index row is
+            // under, and the qualified key name (Scout 9's default) holds it in an attribute named
+            // "table.id", which getKey() does not read (SA-5).
+            $key = $model->getKey();
+            if ($key === null) {
                 self::requirePrimaryScoutKey($model);
+                $key = method_exists($model, 'getScoutKeyName') ? $model->getAttributes()[$model->getScoutKeyName()] ?? null : null;
             }
 
-            $this->indexManager->removeFromIndex($model::class, $model->getKey());
+            if ($key !== null) { // a model without a key was never indexed
+                $this->indexManager->removeFromIndex(IndexManager::indexType($model), $key);
+            }
         }
     }
 
@@ -167,13 +172,13 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
         $orders = $this->orders($builder);
         $terms  = $this->terms($builder);
-        $ranked = $this->scorer->rank($terms, $builder->model::class, $this->columnWeights($builder));
+        $ranked = $this->scorer->rank($terms, IndexManager::indexType($builder->model), $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
 
         if ($ranked !== [] && $orders !== []) {
             ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $terms, $offset, $limit);
         } else {
-            $accepted = $query === null || $ranked === [] ? $ranked : RankedCandidates::accepted($query, $ranked, $terms, $builder->model::class, $this->columnWeights($builder));
+            $accepted = $query === null || $ranked === [] ? $ranked : RankedCandidates::accepted($query, $ranked, $terms, IndexManager::indexType($builder->model), $this->columnWeights($builder));
             $total    = count($accepted);
             $keys     = array_slice(array_keys($accepted), $offset, $limit);
         }
@@ -270,7 +275,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         // reads that state as withTrashed() too; newQuery()'s SoftDeletes scope dropped the trashed
         // matches that total() counted.
         $query ??= in_array(SoftDeletes::class, class_uses_recursive($model), true) ? $model->newQuery()->withTrashed() : $model->newQuery();
-        $query   = RankedCandidates::matches($query, $ranked, $terms, $model::class, $this->columnWeights($builder));
+        $query   = RankedCandidates::matches($query, $ranked, $terms, IndexManager::indexType($model), $this->columnWeights($builder));
         $total   = RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
@@ -525,7 +530,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
     public function flush($model): void
     {
-        $this->indexManager->flush($model::class);
+        $this->indexManager->flush(IndexManager::indexType($model));
     }
 
     public function createIndex($name, array $options = []): void

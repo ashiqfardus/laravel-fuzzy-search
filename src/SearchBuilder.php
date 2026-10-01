@@ -756,7 +756,7 @@ class SearchBuilder
         $expansions = array_diff_key($this->indexedTermWeights, $own);
 
         $visible = $expansions === [] ? [] : app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)
-            ->visible(array_map('strval', array_keys($expansions)), (string) $this->resolveIndexModelClass());
+            ->visible(array_map('strval', array_keys($expansions)), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType((string) $this->resolveIndexModelClass()));
 
         return array_intersect_key($this->indexedTermWeights, $own + array_flip($visible));
     }
@@ -1662,7 +1662,7 @@ class SearchBuilder
                 (int) ($fuzzy['max_expansions'] ?? 5),
                 (int) ($fuzzy['candidate_pool'] ?? 500),
                 (bool) ($fuzzy['damping'] ?? true),
-                $modelClass,
+                \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass),
             );
         }
 
@@ -1677,7 +1677,7 @@ class SearchBuilder
                 $prefixed = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix(
                     (string) end($lastTerms),
                     (int) config('fuzzy-search.bm25.prefix.max_expansions', 10),
-                    $modelClass,
+                    \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass),
                     visibleOnly: false, // matching keeps hidden columns (ER-66); suggest() leaves them out
                 );
 
@@ -1786,7 +1786,7 @@ class SearchBuilder
      */
     private function orderedIndexedPage(string $modelClass, EloquentBuilder $base, array $ranked, int $offset, int $limit): array
     {
-        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, $modelClass, $this->columnWeights);
+        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights);
         $total = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
@@ -2223,7 +2223,7 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), $modelClass, $this->columnWeights); // model_id => score, best first
+        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
@@ -2237,7 +2237,7 @@ class SearchBuilder
         }
 
         $accepted  = $this->hasIndexedConstraints($base)
-            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, $modelClass, $this->columnWeights)
+            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights)
             : $ranked;
         $page      = collect();
         $more      = false;
@@ -3836,11 +3836,11 @@ class SearchBuilder
         }
 
         try {
-            $indexed = \Illuminate\Support\Facades\DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->exists();
+            $indexed = \Illuminate\Support\Facades\DB::table('fuzzy_index_meta')->where('model_type', \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass))->exists();
             if (!$indexed) {
                 return null;
             }
-            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, $modelClass);
+            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass));
         } catch (\Illuminate\Database\QueryException $e) {
             // Same rule as didYouMean(): a missing dictionary means "not migrated" and hands the
             // query back to the table scan; anything else is a real database error and must
@@ -3970,7 +3970,7 @@ class SearchBuilder
         // path costs one query instead of two. A missing table (migrations not run) means
         // "nothing to suggest"; anything else is a real SQL error and must surface.
         try {
-            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, $modelClass);
+            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass));
         } catch (\Illuminate\Database\QueryException $e) {
             if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
                 throw $e; // a real database error — surface it
@@ -4038,7 +4038,7 @@ class SearchBuilder
             $ids = DB::table('fuzzy_index_postings as p')
                 ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
                 ->where('t.term', $alternative['term'])
-                ->where('p.model_type', $modelClass)
+                ->where('p.model_type', \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass))
                 ->distinct() // one posting per column: a row holding the term twice took two slots
                 ->limit($maxIds)
                 ->pluck('p.model_id')

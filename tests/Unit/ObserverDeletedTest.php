@@ -72,6 +72,10 @@ class ObserverDeletedTest extends TestCase
         $this->assertGreaterThan(0, $postingsBefore,
             'Postings must exist before the observer deleted() call.');
 
+        // Eloquent fires deleted() once the row is gone, and the observer syncs the index with the
+        // row as committed (SB-2): delete it, without its events, before calling deleted() by hand.
+        $this->app['db']->table('users')->where('id', $model->id)->delete();
+
         // Act: call the observer's deleted() branch directly (sync mode)
         $observer = new SearchableIndexingObserver();
         $observer->deleted($model);

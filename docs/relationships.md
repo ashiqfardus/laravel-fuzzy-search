@@ -39,13 +39,13 @@ class Post extends Model
     use Searchable;
 
     protected array $searchable = [
-        'columns'    => ['title' => 10, 'author.name' => 5],
+        'columns'    => ['title' => 10, 'author.name' => 5, 'tags.name' => 2],
         'reindex_on' => ['author_id'],
     ];
 
     public function searchableText(): array
     {
-        return ['title' => $this->title, 'author' => $this->author?->name, 'tags' => $this->tags->pluck('name')->implode(' ')];
+        return ['title' => $this->title, 'author.name' => $this->author?->name, 'tags.name' => $this->tags->pluck('name')->implode(' ')];
     }
 
     public function searchIndexQuery(Builder $query): Builder
@@ -62,6 +62,8 @@ class Author extends Model
     }
 }
 ```
+
+The hook's keys are the declared column names (`author.name`, not `author`): the index weighs a key by the searchable column of that name, and any other key weighs 1.
 
 Changing a parent row (renaming an author) does **not** reindex its children automatically — that is what the `saved` hook above is for.
 

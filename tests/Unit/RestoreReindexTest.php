@@ -64,6 +64,32 @@ class RestoreReindexTest extends TestCase
         $this->assertSame(1, $this->indexedHits(SoftDeletedUser::class, 'zelda'), 'the restored row was not re-indexed');
     }
 
+    /**
+     * SB-2. With indexing.async off, a soft delete's index removal ran after the delete committed
+     * without reading the row: a restore that committed and indexed it in between (here, in an
+     * after-commit callback the app registered first in the delete's transaction, which runs before
+     * the package's) was then removed from the index while live. The removal now syncs the row as
+     * IndexModelJob does: it leaves the index only if it is still gone or trashed.
+     */
+    public function test_a_soft_delete_removal_landing_after_a_restore_leaves_the_live_row_indexed(): void
+    {
+        $id = SoftDeletedUser::create(['name' => 'Kiwi Restore', 'email' => 'kiwi@example.com'])->getKey();
+        $this->assertSame(1, $this->indexedDocuments(SoftDeletedUser::class, $id), 'precondition: indexed on create');
+
+        DB::transaction(function () use ($id) {
+            DB::afterCommit(fn () => SoftDeletedUser::withTrashed()->find($id)->restore());
+            SoftDeletedUser::find($id)->delete();
+        });
+
+        $this->assertFalse(SoftDeletedUser::find($id)->trashed(), 'precondition: the restore committed last');
+        $this->assertSame(1, $this->indexedDocuments(SoftDeletedUser::class, $id), 'the live row was removed from the index');
+        $this->assertSame(1, $this->indexedHits(SoftDeletedUser::class, 'kiwi'));
+
+        // Without the restore, the removal still removes.
+        SoftDeletedUser::find($id)->delete();
+        $this->assertSame(0, $this->indexedDocuments(SoftDeletedUser::class, $id));
+    }
+
     public function test_a_custom_deleted_at_column_is_honoured(): void
     {
         $id = ArchivableNote::create(['body' => 'quarterly zeppelin report'])->getKey();

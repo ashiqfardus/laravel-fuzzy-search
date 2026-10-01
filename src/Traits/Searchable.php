@@ -126,6 +126,20 @@ trait Searchable
     }
 
     /**
+     * The model_type this model's rows are indexed and searched under: its own class. Under
+     * single-table inheritance, where the parent's query hydrates child instances, override it on
+     * each child to return the parent class: the hierarchy then has one index, which every save,
+     * delete, rebuild and search of any class in it reads and writes, and a child's search reads
+     * it through its own global scope. Static, so the commands and the search resolve it from the
+     * class. Changing it needs `fuzzy-search:rebuild --fresh` of the type. See
+     * IndexManager::indexType(), which every index read and write goes through (SA-1).
+     */
+    public static function searchIndexType(): string
+    {
+        return static::class;
+    }
+
+    /**
      * Reindex every row of this model whose $foreignKey equals $id — for the related
      * side of a relation-backed searchable field (renaming an Author must reindex its
      * Posts; Eloquent does not do that for you). Queued per row when indexing.async is on,
