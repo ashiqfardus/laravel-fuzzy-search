@@ -119,6 +119,13 @@ class MigrationRerunTest extends TestCase
     public function test_migrate_runs_again_after_a_failure_after_the_first_statement(string $migration, string $table, string $after): void
     {
         $table = $table === 'fuzzy_search_logs' ? SearchAnalytics::table() : $table;
+
+        // The reference is an uninterrupted run from the same starting point, not the fresh
+        // install: on Laravel 10 with doctrine/dbal, SQLite's down() of the column_name migration
+        // rebuilds the table through Doctrine, which adds an index of its own on term_id
+        // (IDX_…), and a migrate after it keeps that index whether or not it was interrupted.
+        $this->rollBackTo($migration);
+        $this->migrate();
         $clean = $this->schema($table);
 
         $this->rollBackTo($migration);
