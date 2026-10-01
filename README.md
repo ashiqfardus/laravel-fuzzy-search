@@ -93,7 +93,8 @@ php artisan migrate
 
 > **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
 > per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`, while nothing is
-> indexing: see [Artisan Commands](docs/bm25.md#artisan-commands)) to pick up weighted BM25 ranking. Read the guide's behaviour-changes list first: some calls now return
+> indexing: see [Artisan Commands](docs/bm25.md#artisan-commands)) to pick up weighted BM25
+> ranking. Read the guide's behaviour-changes list first: some calls now return
 > other rows, throw, or cache where 2.0 did not.
 >
 > → [Upgrade v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md)
