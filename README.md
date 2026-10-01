@@ -1279,7 +1279,9 @@ php artisan fuzzy-search:clear "App\Models\User"
 php artisan fuzzy-search:clear --all
 
 # Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
+# (past 1,000,000 indexed tokens that check, which reads every posting, runs only with --legacy)
 php artisan fuzzy-search:status
+php artisan fuzzy-search:status --legacy
 ```
 
 `--async` dispatches a Laravel job batch, which needs the `job_batches` table: create it once with `php artisan make:queue-batches-table` (Laravel 10: `php artisan queue:batches-table`) and `php artisan migrate`. Without it, the command stops before touching the index.
