@@ -235,6 +235,21 @@ class SuggestionConstraintsTest extends TestCase
         $this->assertSame(['jonah'], $meta['suggestions']);
     }
 
+    public function test_did_you_mean_reads_a_candidates_ids_in_a_fixed_order(): void
+    {
+        // Which max_candidates ids a check reads decides whether a candidate is kept; unordered,
+        // the database's plan chose them, and a statistics refresh could change the answer.
+        $reads = array_values(array_filter(
+            $this->checksOf(fn () => TenantNote::search('jonaz')->where('tenant_id', 3)->didYouMean(3)),
+            fn (string $sql) => str_contains($sql, 'fuzzy_index_postings')
+        ));
+
+        $this->assertNotSame([], $reads);
+        foreach ($reads as $sql) {
+            $this->assertMatchesRegularExpression('/order by\s+\W?p\W?\.\W?model_id\W?/i', $sql);
+        }
+    }
+
     public function test_did_you_mean_caps_distinct_rows_not_postings(): void
     {
         // Tenant 2's row holds "jonah" in two columns, so two of the term's postings; tenant 1's

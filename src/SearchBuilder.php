@@ -4016,8 +4016,8 @@ class SearchBuilder
     /**
      * The ranked alternatives the constrained base query can see: a candidate stays when at
      * least one row it is posted for passes the query. Each check reads up to max_candidates of
-     * the candidate's distinct model_ids (which ones is up to the database's plan) from the
-     * postings and runs them through RankedCandidates::keys() — the chunked primary-key
+     * the candidate's distinct model_ids (the first in model_id order, so the answer is the same
+     * on every request) from the postings and runs them through RankedCandidates::keys() — the chunked primary-key
      * whereIn the BM25 constrained path uses — so no LIKE scan runs
      * (the JSON resource calls this on every empty page, which a caller can produce at will).
      * The ids travel as bound values, never as a subquery against the model's table: model_id
@@ -4040,6 +4040,7 @@ class SearchBuilder
                 ->where('t.term', $alternative['term'])
                 ->where('p.model_type', \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass))
                 ->distinct() // one posting per column: a row holding the term twice took two slots
+                ->orderBy('p.model_id') // which ids fill the cap: the plan chose them, and could change its choice
                 ->limit($maxIds)
                 ->pluck('p.model_id')
                 ->all();
