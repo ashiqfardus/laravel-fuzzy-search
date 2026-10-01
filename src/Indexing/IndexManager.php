@@ -225,6 +225,18 @@ class IndexManager
     public function flush(string $modelClass): void
     {
         DB::transaction(function () use ($modelClass) {
+            // PostgreSQL: hold every index write off for the flush (ruling ER-151, SB-1). A write
+            // for a new row of this model waited on nothing the DELETEs below lock: it committed
+            // between them, so its document row stayed and its meta increment went into the meta
+            // row deleted next, a model with documents and no meta (BM25 found nothing) that no
+            // rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
+            // ones at their claim (claimDocuments()' insert) until the commit; searches only read,
+            // and a second flush waits its turn. MySQL/MariaDB get the same from the DELETE's gap
+            // locks, SQLite from its one writer, SQL Server from its DELETE's locks (tested).
+            if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
+                DB::statement('LOCK TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . ' IN SHARE ROW EXCLUSIVE MODE');
+            }
+
             // Give back this model's share of every term's doc_count first. A term another model
             // still uses survives the orphan sweep below, and it kept counting this model's
             // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
@@ -885,7 +897,9 @@ class IndexManager
      * same order (ER-71). The UPDATE alone would lock them in scan order, which on PostgreSQL is
      * the rows' physical order and moves with every update. A delta of 0 still locks its row: a
      * posting inserted later checks its term row (MySQL's foreign-key S lock), and must find it
-     * locked already rather than wait for it behind another write.
+     * locked already rather than wait for it behind another write. It is not updated, though: a
+     * re-index nets 0 for every word a row keeps, and `doc_count + 0` still wrote a new row
+     * version on PostgreSQL (S7).
      * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
      *
      * @param  array<int, int> $deltas
@@ -900,7 +914,7 @@ class IndexManager
         foreach (array_chunk($deltas, 1000, true) as $chunk) {
             $found = DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('id')->all();
             $gone  = [...$gone, ...array_values(array_diff(array_keys($chunk), $found))];
-            $chunk = array_intersect_key($chunk, array_flip($found));
+            $chunk = array_filter(array_intersect_key($chunk, array_flip($found))); // locked above; a 0 is not updated
             if ($chunk === []) {
                 continue;
             }

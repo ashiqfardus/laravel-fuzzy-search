@@ -294,6 +294,51 @@ class IndexManagerTest extends TestCase
         );
     }
 
+    /**
+     * S7: re-indexing a row gives back its old words and raises its new ones; a word it keeps
+     * nets 0. Such a word got `doc_count + 0` all the same, a dead row version on PostgreSQL for
+     * every word of every unchanged row a rebuild passes. Only words whose count changes are
+     * updated now, and the locking read still takes every word the write touches, in id order
+     * (ER-71), so a posting's foreign-key check later waits on nothing.
+     */
+    public function test_reindexing_updates_only_the_words_whose_count_changes(): void
+    {
+        $manager = $this->makeIndexManager();
+        $model   = $this->makeModel(['name' => 'alpha beta gamma']);
+        $manager->indexModel($model);
+        $ids = fn (array $terms) => DB::table('fuzzy_index_terms')->whereIn('term', $terms)->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        $statements = function (\Closure $write): array {
+            $queries = [];
+            DB::listen(function ($query) use (&$queries) {
+                $queries[] = $query;
+            });
+            $write();
+            DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+
+            return [
+                // The UPDATEs adjustDocCounts() sends, and the locking read before them, by the term
+                // ids it binds (FOR UPDATE, a table hint on SQL Server, nothing on SQLite).
+                array_values(array_filter($queries, fn ($q) => preg_match('/^\s*update\b.*fuzzy_index_terms\W+set doc_count = case/i', $q->sql))),
+                array_values(array_filter($queries, fn ($q) => preg_match('/^\s*select\b.*fuzzy_index_terms\b.*\bwhere\W+id\W+in\b/i', $q->sql))),
+            ];
+        };
+
+        // Unchanged: no dictionary UPDATE at all, every word still locked.
+        [$updates, $locks] = $statements(fn () => $manager->indexModel($model));
+        $this->assertSame([], array_map(fn ($q) => $q->sql, $updates));
+        $this->assertSame($ids(['alpha', 'beta', 'gamma']), array_map('intval', $locks[0]->bindings ?? []));
+        $this->assertSame(['alpha' => 1, 'beta' => 1, 'gamma' => 1], DB::table('fuzzy_index_terms')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->sortKeys()->all());
+
+        // gamma leaves, delta comes: one UPDATE, for gamma alone (delta is a new word, inserted).
+        $model->update(['name' => 'alpha beta delta']);
+        [$updates, $locks] = $statements(fn () => $manager->indexModel($model));
+        $this->assertCount(1, $updates);
+        $this->assertStringContainsString('WHERE id IN (' . $ids(['gamma'])[0] . ')', $updates[0]->sql);
+        $this->assertSame($ids(['alpha', 'beta', 'gamma']), array_map('intval', $locks[0]->bindings ?? []));
+        $this->assertSame(['alpha' => 1, 'beta' => 1, 'delta' => 1, 'gamma' => 0], DB::table('fuzzy_index_terms')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->sortKeys()->all());
+    }
+
     public function test_index_model_writes_one_posting_per_term_and_column(): void
     {
         $user = User::create(['name' => 'John Doe', 'email' => 'john@example.com']);

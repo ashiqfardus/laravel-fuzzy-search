@@ -92,8 +92,9 @@ php artisan migrate
 > → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md)
 
 > **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
-> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`) to pick up
-> weighted BM25 ranking. Read the guide's behaviour-changes list first: some calls now return
+> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`, while nothing is
+> indexing: see [Artisan Commands](docs/bm25.md#artisan-commands)) to pick up weighted BM25
+> ranking. Read the guide's behaviour-changes list first: some calls now return
 > other rows, throw, or cache where 2.0 did not.
 >
 > → [Upgrade v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md)
@@ -496,7 +497,7 @@ Product::search('wireless mo')->suggest(5);
 
 `searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use the table scan when the column matters, on a builder whose only column is that one: `User::searchOn(User::query(), $term, ['name'])->suggestFrom('table')->suggest(5)`. `searchIn()` adds to the model's columns, so `User::search($term)->searchIn(['name'])` still scans every column `$searchable` declares (or auto-detection found).
 
-**Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 2.1 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
+**Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Neither does a relation column the related model hides, or one under a relation the model hides, also where `searchableText()` indexes it under its dotted name (declare that name in `$searchable['columns']`, as `'author.email'`, so the check knows it). Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 2.1 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
 
 **Un-indexed models keep the table scan** — the v2.0 behaviour, proposing column values as stored:
 
@@ -1279,7 +1280,9 @@ php artisan fuzzy-search:clear "App\Models\User"
 php artisan fuzzy-search:clear --all
 
 # Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
+# (past 1,000,000 indexed tokens that check, which reads every posting, runs only with --legacy)
 php artisan fuzzy-search:status
+php artisan fuzzy-search:status --legacy
 ```
 
 `--async` dispatches a Laravel job batch, which needs the `job_batches` table: create it once with `php artisan make:queue-batches-table` (Laravel 10: `php artisan queue:batches-table`) and `php artisan migrate`. Without it, the command stops before touching the index.

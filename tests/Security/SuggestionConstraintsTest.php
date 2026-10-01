@@ -85,6 +85,17 @@ class SuggestionConstraintsTest extends TestCase
         return array_column(DB::getQueryLog(), 'query');
     }
 
+    /**
+     * The queries $run made besides didYouMean()'s dictionary reads: one per word length within
+     * reach (TermExpander::candidates(), S1), and on MySQL its read of the meta totals.
+     *
+     * @return string[]
+     */
+    private function checksOf(Closure $run): array
+    {
+        return array_values(array_filter($this->queriesOf($run), fn (string $sql) => !str_contains($sql, 'term_length') && !str_contains($sql, 'fuzzy_index_meta')));
+    }
+
     /** @return string[] */
     private function terms(array $didYouMean): array
     {
@@ -141,11 +152,11 @@ class SuggestionConstraintsTest extends TestCase
         $this->assertNotContains('John', $suggestions, 'auto fell back to the table scan for the SoftDeletes scope');
 
         $alternatives = [];
-        $queries = $this->queriesOf(function () use (&$alternatives) {
+        $queries = $this->checksOf(function () use (&$alternatives) {
             $alternatives = SoftDeletedUser::search('jonh')->didYouMean(3);
         });
         $this->assertNotEmpty($alternatives);
-        $this->assertCount(1, $queries, 'didYouMean() verified candidates although only the SoftDeletes scope applies: ' . json_encode($queries));
+        $this->assertCount(0, $queries, 'didYouMean() verified candidates although only the SoftDeletes scope applies: ' . json_encode($queries));
     }
 
     public function test_a_soft_deletes_model_with_a_where_takes_the_constrained_paths(): void
@@ -155,10 +166,10 @@ class SuggestionConstraintsTest extends TestCase
         $this->assertContains('John', SoftDeletedUser::search('jo')->where('email', 'john@example.com')->suggest(10));
 
         $alternatives = [];
-        $queries = $this->queriesOf(function () use (&$alternatives) {
+        $queries = $this->checksOf(function () use (&$alternatives) {
             $alternatives = SoftDeletedUser::search('jonh')->where('email', 'jon@example.com')->didYouMean(5);
         });
-        $this->assertGreaterThan(1, count($queries), 'the where() was not verified');
+        $this->assertGreaterThan(0, count($queries), 'the where() was not verified');
         $this->assertSame(['jon'], $this->terms($alternatives), 'only Jon Snow is in scope');
     }
 
@@ -182,13 +193,13 @@ class SuggestionConstraintsTest extends TestCase
 
     public function test_did_you_mean_verification_is_bounded(): void
     {
-        $unconstrained = $this->queriesOf(fn () => TenantNote::search('jonaz')->didYouMean(3));
-        $this->assertCount(1, $unconstrained, 'an unconstrained query made extra queries');
+        $unconstrained = $this->checksOf(fn () => TenantNote::search('jonaz')->didYouMean(3));
+        $this->assertCount(0, $unconstrained, 'an unconstrained query made extra queries');
 
         // A tenant that sees none of the candidates: every one is checked, and each check is one
         // postings read plus one chunked primary-key lookup (the ids fit one chunk here).
-        $constrained = $this->queriesOf(fn () => TenantNote::search('jonaz')->where('tenant_id', 3)->didYouMean(3));
-        $this->assertCount(1 + 2 * 2, $constrained, json_encode($constrained));
+        $constrained = $this->checksOf(fn () => TenantNote::search('jonaz')->where('tenant_id', 3)->didYouMean(3));
+        $this->assertCount(2 * 2, $constrained, json_encode($constrained));
         foreach ($constrained as $sql) {
             $this->assertStringNotContainsStringIgnoringCase('like', $sql, 'verification must not scan the table');
         }
@@ -205,13 +216,13 @@ class SuggestionConstraintsTest extends TestCase
         $this->index(TenantNote::all());
 
         $alternatives = [];
-        $queries = $this->queriesOf(function () use (&$alternatives) {
+        $queries = $this->checksOf(function () use (&$alternatives) {
             $alternatives = TenantNote::search('jonaz')->where('tenant_id', 1)->didYouMean(1);
         });
 
-        // 1 dictionary read + 10 candidates × (postings read + primary-key check). The budget
-        // runs out before "jonah" is reached: fewer results, never another tenant's term.
-        $this->assertCount(1 + 10 * 2, $queries);
+        // 10 candidates × (postings read + primary-key check). The budget runs out before
+        // "jonah" is reached: fewer results, never another tenant's term.
+        $this->assertCount(10 * 2, $queries);
         $this->assertSame([], $alternatives);
     }
 
