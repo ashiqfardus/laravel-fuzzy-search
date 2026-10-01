@@ -67,15 +67,34 @@ final class RankedCandidates
             $models = $rows === [] ? [] : $read->eagerLoadRelations($read->hydrate(array_values($rows))->all());
             $found  = $rows === [] ? [] : array_combine(array_keys($rows), $models);
 
-            // The afterQuery() callbacks see the chunk's models, as they see get()'s, and keep the ones they return.
+            // The afterQuery() callbacks see the chunk's models, as they see get()'s, and what they
+            // return is served, as get() serves it: a model they were given under its id, and another
+            // instance (withoutRelations() and replicate() return copies, SA-6) under its own key,
+            // where a given model's own key is the id it was read under (not a join's id, nor a
+            // select() without the key). Any other model is dropped: it cannot be placed in the ranking.
             if (method_exists($read, 'applyAfterQueryCallbacks')) {
-                $kept = [];
-                foreach ($read->applyAfterQueryCallbacks($read->getModel()->newCollection($models)) as $model) {
-                    if ($model instanceof Model) {
-                        $kept[spl_object_id($model)] = true;
+                $given = array_flip(array_map('spl_object_id', $found));
+                $byKey = [];
+                foreach ($found as $id => $model) {
+                    if ($model->getKey() !== null && (string) $model->getKey() === (string) $id) {
+                        $byKey[(string) $id] = $id;
                     }
                 }
-                $found = array_filter($found, fn (Model $model) => isset($kept[spl_object_id($model)]));
+
+                $kept = [];
+                foreach ($read->applyAfterQueryCallbacks($read->getModel()->newCollection($models)) as $model) {
+                    if (!$model instanceof Model) {
+                        continue;
+                    }
+
+                    $own = $model->getKey();
+                    $id  = $given[spl_object_id($model)] ?? ($own === null ? null : $byKey[(string) $own] ?? null);
+
+                    if ($id !== null) {
+                        $kept[$id] ??= $model;
+                    }
+                }
+                $found = $kept;
             }
 
             foreach ($chunk as $id) {
