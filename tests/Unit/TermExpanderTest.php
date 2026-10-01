@@ -38,6 +38,51 @@ class TermExpanderTest extends TestCase
         $this->assertSame(50, $candidates[0]['doc_count']);
     }
 
+    /**
+     * S1: candidates() reads each length of the window on its own and merges them. The result is
+     * the window's $pool most common words, then those within $maxDistance, as when one read
+     * sorted the whole window: a pool smaller than one length's words, and both edges of the
+     * window (len - d, len + d), with and without a model scope.
+     */
+    public function test_candidates_are_the_most_common_of_the_whole_length_window(): void
+    {
+        DB::table('fuzzy_index_terms')->delete();
+        foreach ([
+            'kit' => 500, 'kittenish' => 400,                    // lengths 3 and 9: outside the window of "kitten" ± 2
+            'zzzzzz' => 1000, 'yyyyyy' => 900, 'sitten' => 80,   // length 6: six words, more than a pool of 5
+            'bitten' => 75, 'mitten' => 30, 'kitted' => 20,
+            'kittens' => 70, 'kitt' => 60, 'kittened' => 50,     // lengths 7, 4 (len - d) and 8 (len + d)
+        ] as $term => $docCount) {
+            $this->seedTerm($term, $docCount);
+        }
+        $terms = fn (array $candidates) => array_column($candidates, 'doc_count', 'term');
+
+        // The 5 most common of the window are zzzzzz, yyyyyy, sitten, bitten and kittens; the first two are too far.
+        $this->assertSame(['sitten' => 80, 'bitten' => 75, 'kittens' => 70], $terms((new TermExpander)->candidates('kitten', 2, 5)));
+        // 7 reach both edges; mitten and kitted are left out by the pool, kit and kittenish by the window.
+        $this->assertSame(['sitten' => 80, 'bitten' => 75, 'kittens' => 70, 'kitt' => 60, 'kittened' => 50], $terms((new TermExpander)->candidates('kitten', 2, 7)));
+        $this->assertSame(
+            ['sitten' => 80, 'bitten' => 75, 'kittens' => 70, 'kitt' => 60, 'kittened' => 50, 'mitten' => 30, 'kitted' => 20],
+            $terms((new TermExpander)->candidates('kitten', 2, 500)),
+        );
+        $this->assertSame([1, 1, 1, 2, 2, 1, 1], array_column((new TermExpander)->candidates('kitten', 2, 500), 'distance'));
+
+        // Scoped: sitten is not posted under the model, so the pool reaches one word further (kitt).
+        foreach (['zzzzzz', 'yyyyyy', 'bitten', 'kittens', 'kitt', 'kittened', 'mitten', 'kitted'] as $i => $term) {
+            DB::table('fuzzy_index_postings')->insert([
+                'term_id' => DB::table('fuzzy_index_terms')->where('term', $term)->value('id'),
+                'model_type' => 'App\\Models\\Pet', 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name',
+            ]);
+        }
+        $this->assertSame(['bitten' => 75, 'kittens' => 70, 'kitt' => 60], $terms((new TermExpander)->candidates('kitten', 2, 5, 'App\\Models\\Pet')));
+
+        // The expansion still takes the closest first, then the most common.
+        $this->assertSame(
+            ['kitten', 'sitten', 'bitten', 'kittens'],
+            array_keys((new TermExpander)->expand(['kitten'], 2, 4, 3, 7, true)),
+        );
+    }
+
     public function test_candidates_exclude_the_term_itself_and_far_terms(): void
     {
         $terms = array_column((new TermExpander)->candidates('john', 1, 500), 'term');

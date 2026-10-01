@@ -34,16 +34,27 @@ final class TermExpander
         $term   = Pipeline::capTerm($term); // didYouMean() passes the raw search term
         $length = mb_strlen($term);
 
-        $rows = $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly)
-            ->select('term', 'doc_count')
-            ->where('term', '!=', $term)
-            ->whereBetween('term_length', [max(1, $length - $maxDistance), $length + $maxDistance])
-            ->orderByDesc('doc_count')
-            ->limit($pool)
-            ->get();
+        // The $pool most common words of the length window, read one length at a time through
+        // (term_length, doc_count): each read stops after $pool rows in index order, and the
+        // window's top $pool are among the lengths' own. One read of the whole window sorted every
+        // word in it, a cost that grew with the dictionary (S1). Separate reads, not a UNION of
+        // limited parts, which SQLite and SQL Server do not accept. Ties keep the database's order.
+        $probe = $this->probes($modelType, $pool);
+        $rows  = [];
+        for ($l = max(1, $length - $maxDistance); $l <= $length + $maxDistance; $l++) {
+            $rows = [...$rows, ...$this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly, $probe)
+                ->select('term', 'doc_count')
+                ->where('term_length', $l)
+                ->where('term', '!=', $term)
+                ->orderByDesc('doc_count')
+                ->limit($pool)
+                ->get()
+                ->all()];
+        }
+        usort($rows, fn ($a, $b) => (int) $b->doc_count <=> (int) $a->doc_count); // stable: ties stay in read order
 
         $out = [];
-        foreach ($rows as $row) {
+        foreach (array_slice($rows, 0, $pool) as $row) {
             $candidate = (string) $row->term;
             $distance  = self::distance($term, $candidate);
             if ($distance <= $maxDistance) {
@@ -150,7 +161,7 @@ final class TermExpander
                   ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
         }
 
-        $terms = $this->postedUnder($query, $modelType, $visibleOnly)->orderByDesc('doc_count')->limit($max)->pluck('term');
+        $terms = $this->postedUnder($query, $modelType, $visibleOnly, $this->probes($modelType, $max))->orderByDesc('doc_count')->limit($max)->pluck('term');
 
         $weights = [];
         foreach ($terms as $term) {
@@ -174,7 +185,7 @@ final class TermExpander
             return [];
         }
 
-        return $this->postedUnder(DB::table('fuzzy_index_terms')->whereIn('term', array_map('strval', $terms)), $modelType, true)
+        return $this->postedUnder(DB::table('fuzzy_index_terms')->whereIn('term', array_map('strval', $terms)), $modelType, true, $this->probes($modelType, count($terms)))
             ->pluck('term')
             ->map(fn ($term) => (string) $term)
             ->all();
@@ -182,15 +193,16 @@ final class TermExpander
 
     /**
      * Restrict a fuzzy_index_terms query to terms posted under $modelType: a whereExists
-     * semi-join against fuzzy_index_postings, which postings_term_model_idx (term_id,
-     * model_type) covers. The dictionary is shared by every indexed model, so an unscoped
-     * lookup offers other models' terms. Null leaves the query unscoped.
+     * semi-join against fuzzy_index_postings, which postings_unique_idx (term_id, model_type,
+     * model_id, column_name) covers. The dictionary is shared by every indexed model, so an
+     * unscoped lookup offers other models' terms. Null leaves the query unscoped. $probe: see
+     * probes().
      */
-    private function postedUnder(Builder $query, ?string $modelType, bool $visibleOnly): Builder
+    private function postedUnder(Builder $query, ?string $modelType, bool $visibleOnly, bool $probe = false): Builder
     {
         if ($modelType !== null) {
-            $query->whereExists(function ($q) use ($modelType, $visibleOnly) {
-                $q->selectRaw('1')
+            $query->whereExists(function ($q) use ($modelType, $visibleOnly, $probe) {
+                $q->selectRaw($probe ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1')
                   ->from('fuzzy_index_postings as sp')
                   ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
                   ->where('sp.model_type', $modelType);
@@ -202,6 +214,36 @@ final class TermExpander
         }
 
         return $query;
+    }
+
+    /**
+     * MySQL: whether postedUnder() makes the database probe the postings once per dictionary word,
+     * in the read's order, until $rows words of the model turn up (FirstMatch), rather than first
+     * read every posting of the model. MySQL chose the full read for a model holding most of the
+     * index, once per length of candidates(): 10–14 s a term at 1M words, where probing took
+     * 20–70 ms (S1). For a small model the full read is the cheap one, and MySQL picks it: probing
+     * walked the whole length for its few words (3 s at 1M words, where reading them took 6 ms).
+     * Probing reads about $rows × (the index's postings / the model's) words, the full read the
+     * model's postings, and the meta totals stand in for postings (total_tokens counts a model's
+     * word occurrences): probe when the model's total_tokens squared passes $rows times the index's.
+     * MariaDB and PostgreSQL planned both cases well unhinted (SQL Server was not measured at this
+     * size); MariaDB ignores the hint, which reaches it on Laravel 10, whose MariaDB connection is a
+     * mysql one.
+     *
+     * ponytail: a cost model on the meta totals that assumes a model's words spread evenly over the
+     * dictionary, so a model whose words are all rare can still probe long; replace it if MySQL
+     * learns to cost a semi-join under a LIMIT.
+     */
+    private function probes(?string $modelType, int $rows): bool
+    {
+        if ($modelType === null || DB::connection()->getDriverName() !== \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL) {
+            return false;
+        }
+
+        $tokens = DB::table('fuzzy_index_meta')->pluck('total_tokens', 'model_type');
+        $own    = (float) ($tokens[$modelType] ?? 0);
+
+        return $own * $own > $rows * (float) $tokens->sum();
     }
 
     /**
