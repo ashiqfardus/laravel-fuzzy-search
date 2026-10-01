@@ -40,6 +40,7 @@ class RecencyColumnReadTest extends TestCase
     {
         parent::setUp();
         RecencyProbeUser::$calls = 0;
+        app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->indexBatch(RecencyProbeUser::all());
     }
 
     public function test_a_recency_column_that_names_a_model_method_runs_nothing(): void
@@ -52,6 +53,10 @@ class RecencyColumnReadTest extends TestCase
             'paginate'       => fn () => count($make()->paginate(5)->items()),
             'simplePaginate' => fn () => count($make()->simplePaginate(5)->items()),
             'extended'       => fn () => RecencyProbeUser::search('')->extended('john')->boostRecent(1.5, 'purgeEverything')->get()->count(),
+            // The index path applies boostRecent() too (ruling ER-149).
+            'index get'      => fn () => $make()->useInvertedIndex()->get()->count(),
+            'index first'    => fn () => $make()->useInvertedIndex()->first() === null ? 0 : 1,
+            'index paginate' => fn () => count($make()->useInvertedIndex()->paginate(5)->items()),
         ];
 
         foreach ($runs as $label => $run) {

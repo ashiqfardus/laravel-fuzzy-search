@@ -1744,26 +1744,26 @@ class SearchBuilder
     /**
      * Set _raw_score / _score on the ranked models, keyed by their ids (RankedCandidates::models(),
      * so a model whose select left its key out is scored too), and return them best first. The raw
-     * score is the BM25 score through the model's getSearchScore() override, if it has one (see
-     * searchScore()), which can reorder the window it re-ranks. _score is normalised against $anchor,
-     * the score of the first row the query accepts (in rank order without a hook: the same on every
-     * page, so scores stay comparable across pages), or against the best row among $models when that
-     * is higher: the hook's window, which a page in rank order is read with, or the page under
+     * score is the BM25 score through the scoring hooks (see hookedScore()), which can reorder the
+     * window they re-rank. _score is normalised against $anchor, the score of the first row the
+     * query accepts (in rank order without a hook: the same on every page, so scores stay comparable
+     * across pages), or against the best row among $models when that is higher: the hooks' window,
+     * which a page in rank order is read with, or the page under
      * orderBy(). Not the first entry of $ranked: a row the query hides, such as another tenant's,
      * would set the scale and reveal what it contains. A row $ranked lacks, a match past the
      * ranking's cap that an ordered page serves, scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
-     * past the hook's window (see bm25Window()), and the explicit order for orderBy() (0).
+     * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0).
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
     protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX, ?float $anchor = null): Collection
     {
-        $scores = $models->map(fn ($item, $id) => $this->searchScore($item, (float) ($ranked[$id] ?? 0)));
+        $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
         $top    = max($anchor ?? 0.0, (float) ($scores->max() ?? 0));
 
-        // arsort() is stable: rows the hook left tied keep their BM25 rank.
+        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
         return $scores->take($rerank)->sortDesc()->union($scores->slice($rerank))->map(function (float $raw, $i) use ($models, $top) {
             $item             = $models[$i];
             $item->_raw_score = round($raw, 6);
@@ -1800,14 +1800,33 @@ class SearchBuilder
     }
 
     /**
-     * How many of the first ranked rows getSearchScore() re-ranks: max_candidates when the model
-     * overrides it, the window the LIKE path rescores, so every page is cut from one ordering (ruling
-     * ER-88); rows past it keep the BM25 order, as the LIKE path serves its deeper pages in database
-     * order. None without a hook: the scores are the BM25 order already.
+     * How many of the first ranked rows the scoring hooks re-rank: max_candidates when the model
+     * overrides getSearchScore() or the search sets customScore() or boostRecent() (ruling ER-149),
+     * the window the LIKE path rescores, so every page is cut from one ordering (ruling ER-88); rows
+     * past it keep the BM25 order, as the LIKE path serves its deeper pages in database order. None
+     * without a hook: the scores are the BM25 order already.
      */
     private function bm25Window(string $modelClass): int
     {
-        return self::hasSearchScoreHook($modelClass) ? (int) config('fuzzy-search.max_candidates', 1000) : 0;
+        return self::hasSearchScoreHook($modelClass) || $this->customScoreCallback !== null || $this->recencyBoostEnabled
+            ? (int) config('fuzzy-search.max_candidates', 1000)
+            : 0;
+    }
+
+    /**
+     * $score through the scoring hooks, once per row, before normalisation, on every path that
+     * scores in PHP (the LIKE and extended rescoring's column sum, the BM25 raw score): the model's
+     * getSearchScore(), then customScore(), then boostRecent()'s multiplier.
+     */
+    private function hookedScore(mixed $item, float $score): float
+    {
+        $score = $this->searchScore($item, $score);
+
+        if ($this->customScoreCallback) {
+            $score = (float) ($this->customScoreCallback)($item, $score);
+        }
+
+        return $score * $this->calculateRecencyBoost($item);
     }
 
     /**
@@ -2220,8 +2239,8 @@ class SearchBuilder
         $page      = collect();
         $more      = false;
 
-        // Only the page's own rows are read, however deep the page, except getSearchScore()'s window,
-        // which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
+        // Only the page's own rows are read, however deep the page, except the scoring hooks' window
+        // (bm25Window()), which is read whole: it re-ranks the first max_candidates rows, and every page inside it is
         // cut from that ordering. A page past it reads the window too, for the scale of _score. An id
         // whose row is gone is skipped: past the window its page comes back one row short (inside it,
         // the id holds no place), and first() reads on to the next row that exists (ruling ER-133).
@@ -2915,17 +2934,7 @@ class SearchBuilder
                 $score += $colScore;
             }
 
-            // The model's own getSearchScore() adjusts the base score first
-            $score = $this->searchScore($item, $score);
-
-            // Apply custom scoring
-            if ($this->customScoreCallback) {
-                $score = ($this->customScoreCallback)($item, $score);
-            }
-
-            // Apply recency boost
-            $recencyMultiplier = $this->calculateRecencyBoost($item);
-            $score *= $recencyMultiplier;
+            $score = $this->hookedScore($item, $score);
 
             // Set score on item
             if (is_object($item)) {

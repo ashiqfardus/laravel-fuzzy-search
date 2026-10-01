@@ -446,7 +446,9 @@ User::search('john')
     ->get();
 ```
 
-A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP — on the LIKE and extended paths it receives the row's column score before `customScore()` and `boostRecent()`, and on `useInvertedIndex()` the BM25 raw score — before normalisation, and results are ranked by what it returns. On the index path it re-ranks the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. Pages past that window keep the BM25 order, and every match is on exactly one page. The trait's own method returns the score unchanged.
+The callback runs once per row on every path, LIKE, extended and `useInvertedIndex()`, before normalisation, and results are ranked by what it returns. It receives the row's column score on the LIKE and extended paths, and its BM25 raw score on the index path.
+
+A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP, with the same score, before `customScore()` and `boostRecent()` and before normalisation, and results are ranked by what it returns. On the index path these three hooks re-rank the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. Pages past that window keep the BM25 order, and every match is on exactly one page. Each page then also reads the window's rows, at most `max_candidates` of them. The trait's own method returns the score unchanged.
 
 ### Recency Boost
 
@@ -473,7 +475,7 @@ User::search('john')
     ->get();
 ```
 
-The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request.
+The boost multiplies the score after `getSearchScore()` and `customScore()`, on every path; on `useInvertedIndex()` it multiplies the BM25 raw score and re-ranks the first `max_candidates` matches (see [Custom Scoring Hooks](#custom-scoring-hooks)). The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request.
 
 ### Search Suggestions / Autocomplete
 
