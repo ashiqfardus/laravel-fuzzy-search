@@ -155,8 +155,9 @@ class IndexWalkBoundTest extends TestCase
      * lets through, past max_candidates too (a list of the top max_candidates ranked ids would stop
      * there). H1 (round 10, ruling ER-132): a ranking that holds every match is listed whole, its
      * integer ids inlined, on every database but SQL Server; there, and for a ranking capped at
-     * bm25.max_postings_per_term, the postings subquery restricts it, binding the model type and the
-     * terms and no id, and it lets through the matches past the cap.
+     * bm25.max_postings_per_term, the postings restrict it, binding the model type and the terms and
+     * no id, and they let through the matches past the cap (S3: on MySQL and MariaDB a join of the
+     * matched ids, whose bindings come before the where()'s).
      */
     public function test_the_ordered_query_past_one_chunk_serves_every_match(): void
     {
@@ -183,7 +184,9 @@ class IndexWalkBoundTest extends TestCase
             foreach ($walks as $walk) {
                 if ($subquery) {
                     $this->assertStringContainsString('fuzzy_index_postings', $walk['query'], $ranking);
-                    $this->assertSame(['%@tenant-b.test', User::class, 'zebra'], $walk['bindings'], $ranking);
+                    $this->assertSame($subquery && in_array($this->dbDriver, ['mysql', 'mariadb'], true) && $ranking === 'capped ranking'
+                        ? [User::class, 'zebra', '%@tenant-b.test']
+                        : ['%@tenant-b.test', User::class, 'zebra'], $walk['bindings'], $ranking);
                 } else {
                     $this->assertStringNotContainsString('fuzzy_index_postings', $walk['query'], $ranking);
                     $this->assertSame(['%@tenant-b.test'], $walk['bindings'], $ranking);

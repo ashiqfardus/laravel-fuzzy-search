@@ -15,9 +15,9 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
  * rank order, so a selective filter fills its page from lower-ranked matches instead of
  * coming back short, and totals reflect the constraints. The ranking is checked by id (in one read
  * for an integer key, see accepted() and matches()); on the index's own connection an ordered read
- * of a capped ranking, and on SQL Server a long ranking, is restricted by a subquery on the postings
- * (matches(), accepted()); otherwise ids are visited best-first in chunks and only rows the query
- * returns are kept.
+ * of a capped ranking, and on SQL Server a long ranking, is restricted through the postings
+ * (matches(), accepted(); Bm25Scorer::whereRanked()); otherwise ids are visited best-first in chunks
+ * and only rows the query returns are kept.
  *
  * @internal This class is not part of the public API and may change without notice.
  */
@@ -186,15 +186,17 @@ final class RankedCandidates
      *    whole ranking, bound, while the statement stays under the database's placeholder limit
      *    (65,535; SQLite's 32,766, or 999 before 3.32);
      *  - any key: a ranking of at most one bm25.candidate_chunk.
-     * Otherwise, on the index's own connection, a subquery on the postings restricts it
-     * (Bm25Scorer::whereRanked()): it binds no id, and it lets every match through, those rank()
-     * left out past bm25.max_postings_per_term too, which a capped ranking needs. It compares the
-     * postings with a cast of the key, so it reads every row the query accepts (a SoftDeletes table
-     * whole). SQL Server keeps it for a longer ranking: it compiles every new inlined list slowly,
-     * and at 200k rows a bound list of 2,000 integer ids took 3.4 s where the subquery takes 70 to
-     * 110 ms. So does a string key on PostgreSQL, where it costs what a listed read does. On another
-     * connection, where the subquery cannot run, the top max_candidates ranked ids (at least one
-     * chunk) are listed, and deeper matches are not served.
+     * Otherwise, on the index's own connection, the postings restrict it (Bm25Scorer::whereRanked()):
+     * they bind no id, and let every match through, those rank() left out past
+     * bm25.max_postings_per_term too, which a capped ranking needs. On MySQL and MariaDB the matched
+     * ids are joined on the key, one key lookup per match, but over a union or for a string key of a
+     * derived FROM (whereMatches()); the subquery used elsewhere compares the postings with a cast of
+     * the key, so it reads every row the query accepts (a SoftDeletes table whole). SQL Server keeps
+     * it for a longer ranking: it compiles every new inlined list slowly, and at 200k rows a bound
+     * list of 2,000 integer ids took 3.4 s where the subquery takes 70 to 110 ms. So does a string
+     * key on PostgreSQL, where it costs what a listed read does. On another connection, where the
+     * postings cannot be read, the top max_candidates ranked ids (at least one chunk) are listed,
+     * and deeper matches are not served.
      *
      * @param array<int|string, float>                $ranked        model_id => score, as rank() returned it
      * @param array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -347,7 +349,7 @@ final class RankedCandidates
      */
     public static function orderedKeys(QueryBuilder $query, string $qualifiedKey, int $offset, int $limit): array
     {
-        $order = (empty($query->joins) && is_string($query->from)) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
+        $order = (!self::joinsTables($query) && is_string($query->from)) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
         $key   = $qualifiedKey . ' as ' . self::KEY_ALIAS;
 
         if ($order === 'own') {
@@ -449,13 +451,38 @@ final class RankedCandidates
         return $all ? 'own' : 'joined';
     }
 
-    /** $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a global scope. */
+    /**
+     * $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a
+     * global scope: on MySQL and MariaDB joined to the matched ids of the postings on the model's key,
+     * but over a union, which they materialize without an index on the key (the join measured slower
+     * there on MariaDB: 4.8 s for 3.7 s at 1M rows).
+     */
     private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights): Builder
     {
-        $key = self::keyColumn($base);
+        $key   = self::keyColumn($base);
+        $model = self::readsUnion($base) ? null : $base->getModel();
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
-            ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights));
+            ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model));
+    }
+
+    /**
+     * Whether $query joins a table of the caller's: a join but the matched ids Bm25Scorer::whereRanked()
+     * joins (Bm25Scorer::MATCHES), which holds one row per model, so that a read without a join of
+     * its own keeps its shape.
+     */
+    private static function joinsTables(QueryBuilder $query): bool
+    {
+        $grammar = $query->getGrammar();
+        $matches = ') as ' . $grammar->wrapTable(Bm25Scorer::MATCHES);
+
+        foreach ($query->joins ?? [] as $join) {
+            if (!($join->table instanceof \Illuminate\Contracts\Database\Query\Expression) || !str_ends_with((string) $join->table->getValue($grammar), $matches)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
