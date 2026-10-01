@@ -253,6 +253,11 @@ final class TermExpander
      * the LIKE path does. A word that is also in a visible column is still offered. Postings written
      * before 2.1 carry no column name (''), so they are left out too, but only when the model
      * hides one of its searchable columns; rebuilding the index brings those words back.
+     *
+     * A relation column (author.email, indexed through searchableText()) is posted under its dotted
+     * name, which the model never lists: it is judged by pathShown() instead, so a column the
+     * related model hides, or a relation the model hides, gives no word either (SF-5), and one
+     * they show is offered, a non-empty $visible on the model notwithstanding.
      */
     private function visibleColumnsOnly(Builder $postings, string $modelType): void
     {
@@ -260,21 +265,97 @@ final class TermExpander
             return;
         }
 
-        $model    = new $modelType();
-        $hidden   = $model->getHidden();
-        $visible  = $model->getVisible();
-        $isHidden = fn (string $column) => in_array($column, $hidden, true) || ($visible !== [] && !in_array($column, $visible, true));
-        $legacyOk = !method_exists($model, 'getSearchableColumns')
-            || array_filter($model->getSearchableColumns(), $isHidden) === [];
+        $model   = new $modelType();
+        $hidden  = $model->getHidden();
+        $visible = $model->getVisible();
+        $columns = method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : [];
+
+        $paths = []; // dotted column, as the indexer cuts its name => shown
+        foreach ($columns as $column) {
+            if (str_contains((string) $column, '.')) {
+                $paths[mb_substr((string) $column, 0, 64)] = self::pathShown($model, (string) $column);
+            }
+        }
+        $shownPaths  = array_map('strval', array_keys(array_filter($paths)));
+        $hiddenPaths = array_map('strval', array_keys(array_diff_key($paths, array_filter($paths))));
+
+        $isHidden = fn (string $column) => str_contains($column, '.')
+            ? !$paths[mb_substr($column, 0, 64)]
+            : !self::shows($model, $column);
+        $legacyOk = array_filter(array_map('strval', $columns), $isHidden) === [];
 
         if ($visible !== []) {
-            $postings->whereIn('sp.column_name', $legacyOk ? [...$visible, ''] : $visible);
+            $postings->whereIn('sp.column_name', [...$visible, ...$shownPaths, ...($legacyOk ? [''] : [])]);
         }
 
-        $excluded = $legacyOk ? $hidden : [...$hidden, ''];
+        $excluded = [...$hidden, ...$hiddenPaths, ...($legacyOk ? [] : [''])];
         if ($excluded !== []) {
             $postings->whereNotIn('sp.column_name', $excluded);
         }
+    }
+
+    /**
+     * Whether the model's toArray() shows the dotted searchable column $column, judged on the
+     * classes as SearchBuilder::suggestTargets() judges a relation target for the table scan: each
+     * relation on the model that holds it, under the name its method declares, then the leaf on
+     * the related model. That walk is private to the builder and runs on its resolved targets, and
+     * the dictionary has no builder, so it is written again here. A head that is no method of the
+     * model makes a two-part name a table-qualified column, judged by its last part, as
+     * SearchBuilder::resolveColumnTarget() reads it. A segment is called only when it may be a
+     * relation by SearchBuilder::isReachableRelation()'s rule for a declared path (ruling ER-50):
+     * public, not static, no required parameter, and declared by neither Laravel nor this package;
+     * anything else, or a call that returns no Relation, hides the column.
+     */
+    private static function pathShown(Model $model, string $column): bool
+    {
+        $segments = explode('.', $column);
+        $leaf     = array_pop($segments);
+
+        if (!method_exists($model, $segments[0])) {
+            return count($segments) === 1 && self::shows($model, $leaf);
+        }
+
+        $current = $model;
+        foreach ($segments as $segment) {
+            $relation = method_exists($current, $segment) ? self::relation($current, $segment) : null;
+            if ($relation === null || !self::shows($current, $relation[0])) {
+                return false;
+            }
+            $current = $relation[1];
+        }
+
+        return self::shows($current, $leaf);
+    }
+
+    /** @return array{string, Model}|null the relation's declared name and its related model */
+    private static function relation(Model $model, string $segment): ?array
+    {
+        $method = new \ReflectionMethod($model, $segment);
+        if (!$method->isPublic() || $method->isStatic() || $method->getNumberOfRequiredParameters() > 0) {
+            return null;
+        }
+
+        // A trait's method reports the class that uses it as its declaring class, so the owners
+        // are every parent and every trait, each asked whether it has the method.
+        foreach ([...class_parents($model), ...class_uses_recursive($model)] as $owner) {
+            if (method_exists($owner, $segment)
+                && (str_starts_with($owner, 'Illuminate\\')
+                    || str_starts_with((string) (new \ReflectionClass($owner))->getFileName(), dirname(__DIR__) . DIRECTORY_SEPARATOR))) {
+                return null;
+            }
+        }
+
+        $relation = $model->{$segment}();
+
+        return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation ? [$method->getName(), $relation->getRelated()] : null;
+    }
+
+    /** Eloquent's own rule for toArray() (getArrayableItems()): not in getHidden(), and in a non-empty getVisible(). */
+    private static function shows(Model $model, string $key): bool
+    {
+        $visible = $model->getVisible();
+
+        return !in_array($key, $model->getHidden(), true) && ($visible === [] || in_array($key, $visible, true));
     }
 
     /**
