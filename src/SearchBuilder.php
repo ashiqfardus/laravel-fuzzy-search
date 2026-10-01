@@ -1865,6 +1865,9 @@ class SearchBuilder
             throw new \Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException();
         }
 
+        // A union as one table, before the query and the filters go onto it (SE-2).
+        $this->query = self::unionAsTable($this->query);
+
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
         $ast    = $this->withTermVariants((new \Ashiqfardus\LaravelFuzzySearch\Query\ExtendedQueryParser())->parse($tokens));
 
@@ -2500,7 +2503,9 @@ class SearchBuilder
     {
         $this->capSearchTerm(); // see capSearchTerm(): the LIKE path's one call
 
-        // The caller's where(A)->orWhere(B) as one group, before the search and the filters (RE-1).
+        // A union as one table, then the caller's where(A)->orWhere(B) as one group, before the
+        // search and the filters (SE-2, RE-1).
+        $this->query = self::unionAsTable($this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
         // Process search term
@@ -2579,6 +2584,40 @@ class SearchBuilder
         if (array_intersect(array_filter(array_column($orders, 'column'), 'is_string'), $names) === []) {
             $query->orderBy($keyColumn, 'asc');
         }
+    }
+
+    /**
+     * $query with a union read as one derived table named as its FROM table, as the index path reads
+     * it (RankedCandidates::rows(), rulings ER-125, ER-127), so the search predicate, filter() and the
+     * order hold for every part: on the union they went into its first part's wheres and became the
+     * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
+     * the LIKE path serves rows without one. The model's scopes already apply inside each part, and
+     * the eager loads are carried over. The union's own order is dropped when it has no limit or
+     * offset of its own: it cannot change which rows the union holds, and SQL Server rejects an ORDER
+     * BY in a derived table without TOP or OFFSET. $query itself when it has no union.
+     */
+    private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
+    {
+        $base = $query instanceof EloquentBuilder ? $query->toBase() : $query;
+
+        if (!$base->unions) {
+            return $query;
+        }
+
+        if ($base->unionLimit === null && $base->unionOffset === null) {
+            $base->unionOrders            = null;
+            $base->bindings['unionOrder'] = [];
+        }
+
+        if ($query instanceof EloquentBuilder) {
+            $model = $query->getModel();
+
+            return $model->newQueryWithoutScopes()->fromSub($base, $model->getTable())->setEagerLoads($query->getEagerLoads());
+        }
+
+        $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+
+        return $base->newQuery()->fromSub($base, $from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0])));
     }
 
     /** Whether $query reads SELECT DISTINCT, a global scope's distinct() included. */
@@ -3824,8 +3863,9 @@ class SearchBuilder
     {
         $driver = $this->query->getConnection()->getDriverName();
 
-        // Clone query to avoid modifying the original, the caller's where(A)->orWhere(B) as one group (RE-1)
-        $suggestQuery = clone $this->query;
+        // Clone query to avoid modifying the original: a union as one table (SE-2), the caller's
+        // where(A)->orWhere(B) as one group (RE-1)
+        $suggestQuery = self::unionAsTable(clone $this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($suggestQuery);
 
         $targets = $this->suggestTargets();
