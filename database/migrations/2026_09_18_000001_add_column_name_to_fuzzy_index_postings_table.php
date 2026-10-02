@@ -22,10 +22,12 @@ return new class extends Migration
         // Only what is left to do: a run that failed part way left its first steps (MySQL, MariaDB
         // and SQLite run a migration outside a transaction and record it only once up() returns),
         // and the next `migrate` stopped at the column it had added. A failed key swap left the
-        // table without a unique key; it is added back.
-        $add  = !Schema::hasColumn('fuzzy_index_postings', 'column_name');
-        $key  = $this->uniqueKeyColumns();
-        $swap = !in_array('column_name', $key, true);
+        // table without a unique key; it is added back. `migrate --pretend` runs no select: it prints
+        // what an upgrade runs, on the 2.0.1 table (no column, the three-column key).
+        $pretending = DB::connection()->pretending();
+        $add        = $pretending || !Schema::hasColumn('fuzzy_index_postings', 'column_name');
+        $key        = $pretending ? ['term_id', 'model_type', 'model_id'] : $this->uniqueKeyColumns();
+        $swap       = !in_array('column_name', $key, true);
 
         // The column on its own: InnoDB adds it instantly, while one ALTER that also swapped the key
         // rebuilt the whole postings table (about 6× the time).
@@ -49,7 +51,9 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (!Schema::hasColumn('fuzzy_index_postings', 'column_name')) {
+        // `migrate:rollback --pretend` runs no select: the table as up() left it.
+        $pretending = DB::connection()->pretending();
+        if (!$pretending && !Schema::hasColumn('fuzzy_index_postings', 'column_name')) {
             return;
         }
 
@@ -58,7 +62,8 @@ return new class extends Migration
         DB::table('fuzzy_index_postings')->where('column_name', '!=', '')->delete();
 
         // Only a key that still has column_name: a rollback that stopped after the swap is run again.
-        if (in_array('column_name', $this->uniqueKeyColumns(), true)) {
+        $key = $pretending ? ['term_id', 'model_type', 'model_id', 'column_name'] : $this->uniqueKeyColumns();
+        if (in_array('column_name', $key, true)) {
             if (DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
                 // One ALTER. Rolled back on its own (migrate:rollback --path), with
                 // 2026_10_01_000001's drop of postings_term_model_idx still in place, the key is the

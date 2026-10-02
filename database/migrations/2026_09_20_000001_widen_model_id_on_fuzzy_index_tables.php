@@ -44,8 +44,11 @@ return new class extends Migration
             return;
         }
 
-        // A table already gone (a test that dropped it) has nothing to narrow.
-        $tables = array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
+        // A table already gone (a test that dropped it) has nothing to narrow. `migrate:rollback
+        // --pretend` runs no select: both tables are there, as up() left them.
+        $tables = DB::connection()->pretending()
+            ? self::TABLES
+            : array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
 
         // Keys longer than 36 characters do not fit the old column, and on MySQL/MariaDB keys that
         // differ only by case or accents (any two keys the table's collation compares equal) are
@@ -132,8 +135,9 @@ return new class extends Migration
 
         if ($driver === DbDialect::SQLSRV && $postings) {
             // The key 2026_09_18_000001 left: without column_name when its column is gone (a test
-            // that recreated the table), as that migration's own down() allows.
-            $unique = Schema::hasColumn('fuzzy_index_postings', 'column_name')
+            // that recreated the table), as that migration's own down() allows; under --pretend, which
+            // runs no select, with it.
+            $unique = DB::connection()->pretending() || Schema::hasColumn('fuzzy_index_postings', 'column_name')
                 ? ['term_id', 'model_type', 'model_id', 'column_name']
                 : ['term_id', 'model_type', 'model_id'];
             Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($unique) {

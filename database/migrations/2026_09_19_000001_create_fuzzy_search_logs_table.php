@@ -23,8 +23,10 @@ return new class extends Migration
 
         // A run that failed after the CREATE left the table (MySQL, MariaDB and SQLite run a
         // migration outside a transaction and record it only once up() returns), and the next
-        // `migrate` stopped at it: then only the indexes it lacks are added.
-        if (!Schema::hasTable($name)) {
+        // `migrate` stopped at it: then only the indexes it lacks are added. `migrate --pretend`
+        // runs no select: it prints what a first run does.
+        $pretending = DB::connection()->pretending();
+        if ($pretending || !Schema::hasTable($name)) {
             Schema::create($name, function (Blueprint $table) {
                 $table->id();
                 $table->string('term', 255);                 // '' when analytics.hash_terms is on
@@ -42,7 +44,7 @@ return new class extends Migration
             });
         }
 
-        $existing = $this->indexes($name);
+        $existing = $pretending ? [] : $this->indexes($name);
         Schema::table($name, function (Blueprint $table) use ($existing) {
             foreach (self::INDEXES as $index => $column) {
                 if (!in_array($index, $existing, true)) {

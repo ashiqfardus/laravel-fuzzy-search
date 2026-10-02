@@ -28,16 +28,26 @@ return new class extends Migration
             return;
         }
 
-        $table     = $connection->getTablePrefix() . 'fuzzy_index_terms';
-        // Each row cast to an object, whatever the app's fetch mode (an array one applies to `migrate` too).
-        $column    = $connection->selectOne("select collation_name as c from sys.columns where object_id = object_id(?) and name = 'term'", [$table]);
-        $collation = $column === null ? null : ((object) $column)->c;
-        if ($collation === null || str_contains(strtoupper($collation), '_BIN')) {
-            return; // no dictionary here, or it compares byte-wise already
-        }
-
-        $indexes = $this->indexesOnTerm($table);
+        $table   = $connection->getTablePrefix() . 'fuzzy_index_terms';
         $wrapped = DbDialect::quoteIdentifier($table, DbDialect::SQLSRV);
+
+        if ($connection->pretending()) {
+            // `migrate --pretend` runs no select: it prints what an upgrade from 2.0.1 runs, on the
+            // database's collation, with the unique key the create migration made (named as
+            // Laravel's Blueprint names it).
+            $quote   = fn (string $name) => DbDialect::quoteIdentifier($name, DbDialect::SQLSRV);
+            $unique  = $quote(str_replace(['-', '.'], '_', strtolower(($connection->getConfig('prefix_indexes') ? $connection->getTablePrefix() : '') . 'fuzzy_index_terms_term_unique')));
+            $indexes = [['name' => $unique, 'constraint' => false, 'create' => "CREATE UNIQUE NONCLUSTERED INDEX {$unique} ON {$wrapped} ({$quote('term')})"]];
+        } else {
+            // Each row cast to an object, whatever the app's fetch mode (an array one applies to `migrate` too).
+            $column    = $connection->selectOne("select collation_name as c from sys.columns where object_id = object_id(?) and name = 'term'", [$table]);
+            $collation = $column === null ? null : ((object) $column)->c;
+            if ($collation === null || str_contains(strtoupper($collation), '_BIN')) {
+                return; // no dictionary here, or it compares byte-wise already
+            }
+
+            $indexes = $this->indexesOnTerm($table);
+        }
 
         foreach ($indexes as $index) {
             $connection->statement($index['constraint']

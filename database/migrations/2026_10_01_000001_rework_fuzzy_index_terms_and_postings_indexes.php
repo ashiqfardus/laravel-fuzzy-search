@@ -45,8 +45,12 @@ return new class extends Migration
 
     public function up(): void
     {
+        // `migrate --pretend` runs no select: it prints what an upgrade runs, on the indexes the
+        // earlier migrations leave.
+        $pretending = DB::connection()->pretending();
+
         // The new index first, so the dictionary is never without a length index.
-        $terms = $this->indexes('fuzzy_index_terms');
+        $terms = $pretending ? [self::LENGTH] : $this->indexes('fuzzy_index_terms');
         if (!in_array(self::LENGTH_COUNT_ID, $terms, true)) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], self::LENGTH_COUNT_ID));
         }
@@ -56,20 +60,22 @@ return new class extends Migration
             }
         }
 
-        if (in_array(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
+        if (in_array(self::TERM_MODEL, $pretending ? [self::TERM_MODEL] : $this->indexes('fuzzy_index_postings'), true)) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropIndex(self::TERM_MODEL));
         }
     }
 
     public function down(): void
     {
-        // A table or a column a test removed (as 2026_09_17_000001's down() allows) has no index to restore.
-        if (Schema::hasTable('fuzzy_index_postings') && !in_array(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
+        // A table or a column a test removed (as 2026_09_17_000001's down() allows) has no index to
+        // restore. `migrate:rollback --pretend` runs no select: the indexes as up() left them.
+        $pretending = DB::connection()->pretending();
+        if ($pretending || (Schema::hasTable('fuzzy_index_postings') && !in_array(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'), true))) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['term_id', 'model_type'], self::TERM_MODEL));
         }
 
-        $terms = $this->indexes('fuzzy_index_terms');
-        if (!in_array(self::LENGTH, $terms, true) && Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
+        $terms = $pretending ? [self::LENGTH_COUNT_ID] : $this->indexes('fuzzy_index_terms');
+        if (!in_array(self::LENGTH, $terms, true) && ($pretending || Schema::hasColumn('fuzzy_index_terms', 'term_length'))) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::LENGTH));
         }
         foreach ([self::LENGTH_COUNT_ID, self::LENGTH_COUNT] as $index) {

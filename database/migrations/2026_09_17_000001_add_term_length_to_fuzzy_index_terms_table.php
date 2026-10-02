@@ -13,16 +13,18 @@ return new class extends Migration
     public function up(): void
     {
         $driver = DB::connection()->getDriverName();
+        // `migrate --pretend` runs no select: it prints what an upgrade runs, on a 2.0.1 dictionary.
+        $pretending = DB::connection()->pretending();
 
         // A run that failed after a step left it: on MySQL, MariaDB and SQLite the migrator runs a
         // migration outside a transaction, so each statement stays, and it records the migration
         // only once up() returns. Neither the column nor its index is added twice. Two statements
         // on purpose: InnoDB adds the column instantly and builds the index in place, while one
         // ALTER doing both rebuilt the whole dictionary.
-        if (!Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
+        if ($pretending || !Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->unsignedSmallInteger('term_length')->default(0));
         }
-        if (!in_array(self::INDEX, $this->indexes(), true)) {
+        if ($pretending || !in_array(self::INDEX, $this->indexes(), true)) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::INDEX));
         }
 
@@ -42,8 +44,9 @@ return new class extends Migration
     {
         // hasColumn (not just hasTable): a test that recreates fuzzy_index_terms from the
         // pre-term_length migration leaves the table present but without this column/index,
-        // and hasColumn() is false for a missing table too, so one check covers both cases.
-        if (!Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
+        // and hasColumn() is false for a missing table too, so one check covers both cases. Under
+        // `migrate:rollback --pretend`, which runs no select, the column is there, as up() left it.
+        if (!DB::connection()->pretending() && !Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
             return; // the create-table migration's down() already removed it (or a test did)
         }
 
