@@ -209,17 +209,25 @@ final class RankedCandidates
      * How many models $query returns: models, not rows — a one-to-many join repeats a model once per
      * joined row, so an ungrouped query counts its distinct keys (COUNT(DISTINCT key) on every
      * driver). A grouped query is counted as a subquery, where the key is out of scope and its groups
-     * are the rows. ORDER BY / LIMIT on the query are dropped for the count (PostgreSQL rejects an
-     * ORDER BY on a bare aggregate).
+     * are the rows; with a join and no select list Laravel selects its FROM's every column there, as
+     * "users as u".* under an alias, which failed, and failed under a fromSub() (R11-L3): it selects
+     * those of the table the key is named through. ORDER BY / LIMIT on the query are dropped for the
+     * count (PostgreSQL rejects an ORDER BY on a bare aggregate).
      */
     public static function countModels(Builder $query): int
     {
         $key   = self::keyColumn($query);
         $query = (clone $query)->toBase();
 
-        return (int) ($query->groups || $query->havings
-            ? $query->getCountForPagination()
-            : $query->distinct()->getCountForPagination([$key]));
+        if ($query->groups || $query->havings) {
+            if (!empty($query->joins) && str_contains($key, '.')) {
+                $query->columns ??= [substr($key, 0, strrpos($key, '.')) . '.*'];
+            }
+
+            return (int) $query->getCountForPagination();
+        }
+
+        return (int) $query->distinct()->getCountForPagination([$key]);
     }
 
     /**
