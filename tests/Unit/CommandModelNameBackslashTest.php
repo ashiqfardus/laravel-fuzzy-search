@@ -7,9 +7,36 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+
+/** Indexed through its searchableText() hook alone, without the package's trait. */
+class BackslashHookUser extends Model
+{
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    public function searchableText(): array
+    {
+        return ['name' => $this->name];
+    }
+}
+
+/** A Scout model with its own getSearchableColumns(), without the package's trait. */
+class BackslashScoutUser extends Model
+{
+    use \Laravel\Scout\Searchable;
+
+    protected $table   = 'users';
+    protected $guarded = [];
+
+    public function getSearchableColumns(): array
+    {
+        return ['name'];
+    }
+}
 
 /**
  * SA-4. A model named as PHP code names it, with a leading backslash ("\App\Models\User"), passes
@@ -90,6 +117,42 @@ class CommandModelNameBackslashTest extends TestCase
             $this->assertSame([], $this->documents(), $command);
             $this->assertSame(0, DB::table('fuzzy_index_meta')->count(), $command);
             $this->assertSame(0, DB::table('fuzzy_index_terms')->count(), $command);
+        }
+    }
+
+    public static function modelsWithoutTheTrait(): array
+    {
+        return ['searchableText() only' => [BackslashHookUser::class], 'Scout only' => [BackslashScoutUser::class]];
+    }
+
+    /**
+     * R11-L13. For a model with the package's trait, IndexManager::indexType() returns the hook's
+     * static::class, which has no leading backslash, so the commands' own ltrim went untested. A model
+     * without the trait has no hook: the name as typed is its type, and without the ltrim --fresh and
+     * clear flushed the backslashed name, leaving the real index as it was.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('modelsWithoutTheTrait')]
+    public function test_a_model_without_the_package_trait_named_with_a_leading_backslash(string $class): void
+    {
+        foreach ([[], ['--async' => true]] as $options) {
+            app(IndexManager::class)->indexBatch($class::all());
+            $live = $class::count();
+            DB::table('users')->where('id', $class::max('id'))->delete(); // behind the index's back
+
+            $this->artisan('fuzzy-search:rebuild', ['model' => '\\' . $class, '--fresh' => true] + $options)->assertExitCode(0);
+
+            $this->assertSame([$class => $live - 1], $this->documents(), json_encode($options) . ': --fresh flushed the index the rows are under');
+        }
+
+        foreach (['fuzzy-search:clear', 'fuzzy-search:flush'] as $command) {
+            app(IndexManager::class)->indexBatch($class::all());
+
+            $this->artisan($command, ['model' => '\\' . $class])
+                ->expectsOutputToContain('Cleared BM25 index for [' . $class . ']')
+                ->assertExitCode(0);
+
+            $this->assertSame([], $this->documents(), $command);
+            $this->assertSame(0, DB::table('fuzzy_index_meta')->count(), $command);
         }
     }
 }
