@@ -296,10 +296,10 @@ class IndexManager
     /** @var array<string, Pipeline|false> model class → resolved override pipeline, or false = "uses the default" */
     private static array $pipelines = [];
 
-    /** @var array<string, true> connection|database|prefix|search_path => its postings table's statistics describe it (PostgreSQL) */
+    /** @var array<string, true> SearchableColumns::connectionKey()|search_path => its postings table's statistics describe it (PostgreSQL) */
     private static array $analyzed = [];
 
-    /** @var array<string, true> connection|database|prefix => a check waits for the transaction's commit */
+    /** @var array<string, true> SearchableColumns::connectionKey() => a check waits for the transaction's commit */
     private static array $pendingChecks = [];
 
     /** Forget the per-process caches: the pipelines, and which PostgreSQL index tables have statistics. */
@@ -421,7 +421,7 @@ class IndexManager
         if ($connection->transactionLevel() > 0) {
             // Each write registers a callback (a rollback drops the ones it held); the first to run
             // at the commit checks, and the others find nothing pending.
-            $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+            $id = SearchableColumns::connectionKey($connection);
             self::$pendingChecks[$id] = true;
             $connection->afterCommit(function () use ($connection, $id) {
                 if ($connection->transactionLevel() === 0 && isset(self::$pendingChecks[$id])) {
@@ -449,8 +449,9 @@ class IndexManager
      */
     private function statisticsStale(\Illuminate\Database\Connection $connection): bool
     {
-        $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix()
-            . '|' . $connection->scalar("select current_setting('search_path')");
+        // Where the connection points (connectionKey(): host, port, the configured search_path) and the
+        // search_path in effect now, which a runtime SET can change.
+        $id = SearchableColumns::connectionKey($connection) . '|' . $connection->scalar("select current_setting('search_path')");
 
         if (isset(self::$analyzed[$id])) {
             return false;

@@ -281,11 +281,96 @@ class SchemaCacheKeyTest extends TestCase
             $this->assertSame(['title'], (new CacheKeySchemaZeroNote)->getSearchableColumns());
             $this->assertSame(['id', 'title'], SearchableColumns::onTable(DB::connection('cache_key_schema'), 'cache_key_zero_notes'));
             $this->assertSame(['alpha two'], CacheKeySchemaZeroNote::search('alpha')->get()->pluck('title')->all());
+
+            // The statistics check's memory: tenant A's tables described, tenant B's still read.
+            $manager  = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+            $analyzed = new \ReflectionProperty($manager, 'analyzed');
+            $analyzed->setAccessible(true);
+            $stale    = new \ReflectionMethod($manager, 'statisticsStale');
+            $stale->setAccessible(true);
+            $useSchema('cache_key_ta');
+            $a = DB::connection('cache_key_schema');
+            $analyzed->setValue(null, [SearchableColumns::connectionKey($a) . '|' . $a->scalar("select current_setting('search_path')") => true]);
+            $this->assertFalse($stale->invoke($manager, $a), 'tenant A remembered');
+            $useSchema('cache_key_tb');
+            $this->assertTrue($stale->invoke($manager, DB::connection('cache_key_schema')), 'tenant B answered from tenant A');
         } finally {
+            \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
             DB::purge('cache_key_schema');
             foreach (['cache_key_ta', 'cache_key_tb'] as $schema) {
                 DB::statement("drop schema if exists {$schema} cascade");
             }
+        }
+    }
+
+    /**
+     * TC-2's addendum. Three more per-process caches built "name|database|prefix" by hand: the
+     * collation Bm25Scorer reads for its string-key lookups, and the PostgreSQL statistics check's
+     * memory and its pending after-commit check. They take connectionKey() too. The collation's
+     * entry for one server must not answer a connection re-pointed at another: a hit returns the
+     * remembered collation without a query, a miss reads information_schema (here a refused port).
+     */
+    public function test_the_collation_cache_follows_connection_key(): void
+    {
+        $collations = new \ReflectionProperty(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class, 'collations');
+        $collations->setAccessible(true);
+        $saved  = $collations->getValue();
+        $lookup = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class, 'columnCollation');
+        $lookup->setAccessible(true);
+        $point  = function (int $port): \Illuminate\Database\Connection {
+            config(['database.connections.cache_key_shape' => ['driver' => 'mysql', 'host' => '127.0.0.1', 'port' => $port, 'database' => 'tenant', 'username' => 'u', 'password' => '', 'prefix' => '']]);
+            DB::purge('cache_key_shape');
+
+            return DB::connection('cache_key_shape'); // the PDO opens only on a query
+        };
+
+        try {
+            $first = $point(1);
+            $collations->setValue(null, [SearchableColumns::connectionKey($first) . '|items|code' => ['utf8mb4', 'utf8mb4_bin']]);
+            $this->assertSame(['utf8mb4', 'utf8mb4_bin'], $lookup->invoke(null, $first, 'items', 'code'), 'a hit reads nothing');
+
+            $other = $point(2);
+            try {
+                $lookup->invoke(null, $other, 'items', 'code');
+                $this->fail('the other server was answered from the first one\'s collation');
+            } catch (\Illuminate\Database\QueryException|\PDOException) {
+                $this->addToAssertionCount(1); // a miss: it read information_schema on port 2
+            }
+        } finally {
+            $collations->setValue(null, $saved);
+            DB::purge('cache_key_shape');
+        }
+    }
+
+    public function test_the_postgresql_statistics_checks_follow_connection_key(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL only (CI runs it): the package analyzes its index tables there.');
+        }
+
+        $manager  = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
+        $analyzed = new \ReflectionProperty($manager, 'analyzed');
+        $analyzed->setAccessible(true);
+        $stale    = new \ReflectionMethod($manager, 'statisticsStale');
+        $stale->setAccessible(true);
+        $pending  = new \ReflectionProperty($manager, 'pendingChecks');
+        $pending->setAccessible(true);
+        $connection = DB::connection();
+        $searchPath = $connection->scalar("select current_setting('search_path')");
+
+        try {
+            // The postings table is empty here, so a miss reads pg_class and finds it stale.
+            $analyzed->setValue(null, [SearchableColumns::connectionKey($connection) . '|' . $searchPath => true]);
+            $this->assertFalse($stale->invoke($manager, $connection), 'remembered under connectionKey()');
+            $analyzed->setValue(null, [$connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix() . '|' . $searchPath => true]);
+            $this->assertTrue($stale->invoke($manager, $connection), 'not under the old name|database|prefix key');
+
+            $connection->beginTransaction();
+            (new \ReflectionMethod($manager, 'analyzeUnanalyzedIndex'))->invoke($manager);
+            $this->assertSame([SearchableColumns::connectionKey($connection)], array_keys($pending->getValue()));
+            $connection->rollBack();
+        } finally {
+            \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
         }
     }
 }
