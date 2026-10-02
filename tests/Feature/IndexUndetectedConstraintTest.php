@@ -209,9 +209,10 @@ class IndexUndetectedConstraintTest extends TestCase
     }
 
     /**
-     * A union's own orderBy() orders nothing once the union is one derived table, and SQL Server
-     * rejects an ORDER BY in a derived table without TOP or OFFSET, so it is dropped when the union
-     * has no limit or offset of its own.
+     * A union's own orderBy(), with no limit or offset of its own, orders the derived table's read,
+     * as an orderBy() on a query without a union does (R11-L2): SQL Server rejects an ORDER BY in a
+     * derived table without TOP or OFFSET. Rank order serves the ranking, and orderBy() orders by
+     * the query's order first, then its own (on SQL Server not by the same column twice).
      */
     public function test_a_union_with_an_order_of_its_own_in_either_order(): void
     {
@@ -219,7 +220,7 @@ class IndexUndetectedConstraintTest extends TestCase
             ->query(fn ($query) => $query->where('email', 'jane@example.com')->union(User::query()->where('name', 'John Doe'))->orderBy('name', 'desc'));
 
         $found = [];
-        foreach (['rank order' => $union, 'orderBy()' => fn () => $union()->orderBy('name')] as $order => $make) {
+        foreach (['rank order' => $union, 'orderBy()' => fn () => $union()->orderBy('email')] as $order => $make) {
             try {
                 $found[$order] = [$make()->get()->pluck('name')->all(), $make()->count(), $make()->paginate(1, 'page', 2)->pluck('name')->all()];
             } catch (\Illuminate\Database\QueryException $e) {
@@ -227,9 +228,10 @@ class IndexUndetectedConstraintTest extends TestCase
             }
         }
 
+        // Without the union's order, orderBy('email') served Jane (jane@) first.
         $this->assertSame([
             'rank order' => [['John Doe', 'Jane Doe'], 2, ['Jane Doe']],
-            'orderBy()'  => [['Jane Doe', 'John Doe'], 2, ['John Doe']],
+            'orderBy()'  => [['John Doe', 'Jane Doe'], 2, ['Jane Doe']],
         ], $found);
     }
 }

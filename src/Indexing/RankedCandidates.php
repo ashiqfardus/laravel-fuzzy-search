@@ -555,14 +555,10 @@ final class RankedCandidates
 
     /**
      * $base, with a union read as one derived table named as the model's table (rulings ER-125,
-     * ER-127): every read here restricts the union's rows to ranked ids, adds the key to the select
-     * list or orders the rows, and on a union each of those reached only its first part (the other
-     * parts were read whole, or their select lists no longer matched). The model's scopes already
-     * apply inside that part, and the eager loads are carried over. The union's own order is dropped
-     * when it has no limit or offset of its own: it cannot change which rows the union holds, and SQL
-     * Server rejects an ORDER BY in a derived table without TOP or OFFSET (a union with a limit stays
-     * unsupported there, as on the LIKE path). $base itself when it has no union, so a second call
-     * changes nothing.
+     * ER-127; unionAsTable()): every read here restricts the union's rows to ranked ids, adds the key
+     * to the select list or orders the rows, and on a union each of those reached only its first part
+     * (the other parts were read whole, or their select lists no longer matched). $base itself when
+     * it has no union, so a second call changes nothing.
      *
      * Every read then names the key through that table, so a union whose parts select no key has
      * none to name, and failed with the database's unknown-column error: it throws a LogicException
@@ -588,12 +584,51 @@ final class RankedCandidates
             ));
         }
 
-        if ($query->unionLimit === null && $query->unionOffset === null) {
-            $query->unionOrders            = null;
-            $query->bindings['unionOrder'] = [];
+        return self::unionAsTable($base, $model->getTable());
+    }
+
+    /**
+     * $query, a query with a union, as one derived table named $as, read as the query was (SE-2, the
+     * index path's rows() and the LIKE and extended paths' SearchBuilder::unionAsTable()):
+     *  - an Eloquent query's scopes already apply inside each part, and its eager loads are carried
+     *    over;
+     *  - its afterQuery() callbacks (Laravel 11+), the Eloquent query's and its query builder's, run
+     *    on what the outer read returns: a derived table's own never run;
+     *  - the union's own order, when it has no limit or offset of its own, orders the outer read, as
+     *    an orderBy() on a query without a union does, its bindings with it: it cannot change which
+     *    rows the union holds, and SQL Server rejects an ORDER BY in a derived table without TOP or
+     *    OFFSET (a union with a limit stays unsupported there).
+     */
+    public static function unionAsTable(Builder|QueryBuilder $query, string $as): Builder|QueryBuilder
+    {
+        $union  = clone ($query instanceof Builder ? $query->toBase() : $query); // toBase() is the query itself without scopes
+        $orders = null;
+
+        if ($union->unionLimit === null && $union->unionOffset === null) {
+            [$orders, $bindings]           = [$union->unionOrders, $union->bindings['unionOrder']];
+            $union->unionOrders            = null;
+            $union->bindings['unionOrder'] = [];
         }
 
-        return $model->newQueryWithoutScopes()->fromSub($query, $model->getTable())->setEagerLoads($base->getEagerLoads());
+        $table = $query instanceof Builder
+            ? $query->getModel()->newQueryWithoutScopes()->fromSub($union, $as)->setEagerLoads($query->getEagerLoads())
+            : $union->newQuery()->fromSub($union, $as);
+        $outer = $table instanceof Builder ? $table->getQuery() : $table;
+
+        if ($orders) {
+            $outer->orders            = $orders;
+            $outer->bindings['order'] = $bindings;
+        }
+
+        if (method_exists($outer, 'afterQuery')) {
+            $outer->afterQuery(fn ($result) => $union->applyAfterQueryCallbacks($result));
+        }
+
+        if ($query instanceof Builder && method_exists($query, 'afterQuery')) {
+            $table->afterQuery(fn ($result) => $query->applyAfterQueryCallbacks($result));
+        }
+
+        return $table;
     }
 
     /**

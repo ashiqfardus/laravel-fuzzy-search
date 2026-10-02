@@ -2592,10 +2592,8 @@ class SearchBuilder
      * it (RankedCandidates::rows(), rulings ER-125, ER-127), so the search predicate, filter() and the
      * order hold for every part: on the union they went into its first part's wheres and became the
      * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
-     * the LIKE path serves rows without one. The model's scopes already apply inside each part, and
-     * the eager loads are carried over. The union's own order is dropped when it has no limit or
-     * offset of its own: it cannot change which rows the union holds, and SQL Server rejects an ORDER
-     * BY in a derived table without TOP or OFFSET. $query itself when it has no union.
+     * the LIKE path serves rows without one. Read as the query was, its callbacks and its own order
+     * included (RankedCandidates::unionAsTable()). $query itself when it has no union.
      */
     private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
     {
@@ -2605,20 +2603,11 @@ class SearchBuilder
             return $query;
         }
 
-        if ($base->unionLimit === null && $base->unionOffset === null) {
-            $base->unionOrders            = null;
-            $base->bindings['unionOrder'] = [];
-        }
-
-        if ($query instanceof EloquentBuilder) {
-            $model = $query->getModel();
-
-            return $model->newQueryWithoutScopes()->fromSub($base, $model->getTable())->setEagerLoads($query->getEagerLoads());
-        }
-
         $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
 
-        return $base->newQuery()->fromSub($base, $from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0])));
+        return \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::unionAsTable($query, $query instanceof EloquentBuilder
+            ? $query->getModel()->getTable()
+            : ($from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0]))));
     }
 
     /** Whether $query reads SELECT DISTINCT, a global scope's distinct() included. */
