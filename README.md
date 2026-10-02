@@ -1329,7 +1329,7 @@ php artisan fuzzy-search:explain User --term="john"
 
 ### Indicative Latency (100k-row MySQL 8.0 table)
 
-Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a warm cache — a guide to how the paths compare, not a guaranteed result. The [demo project](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) seeds a comparable dataset, 100k rows per model, with `php artisan db:seed --class="Database\Seeders\LargeDatasetSeeder"` (its `demo:seed` seeds ~150 sample rows, and `--huge` 1M users). Measure your own tables with `php artisan fuzzy-search:benchmark`.
+Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a warm cache — a guide to how the paths compare, not a guaranteed result. The [demo project](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) seeds a comparable dataset, 100k rows per model, with `php artisan db:seed --class="Database\Seeders\LargeDatasetSeeder"` (its `demo:seed` seeds ~150 sample rows, and `--huge` 1M users). `php artisan fuzzy-search:benchmark` times the LIKE algorithms on your own tables; time an index search in your app, through `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()`.
 
 | Search path | Median latency | Notes |
 |---|---|---|
@@ -1340,7 +1340,7 @@ Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a war
 
 **At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast (see [Sizing the index](#sizing-the-index)). Three reads grow with the data:
 
-- **Common words.** Every posting of a matched word is read, joined and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. On MySQL with a 4 GB buffer pool, one such word (in 7% of 3M rows of about 16 indexed words each) took 2.6 s, three together 50 s once the index no longer fitted in memory, and over 120 s cold at 6M rows; PostgreSQL took 0.7 s and 2.1 s at 3M rows. A selective `where()`, `typoTolerance(0)` and Scout's exact terms are the fast paths.
+- **Common words.** Every posting of a matched word is read, joined and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. On MySQL with a 4 GB buffer pool, one such word (in 7% of 3M rows of about 16 indexed words each) took 2.6 s, three together 50 s once the index no longer fitted in memory, and over 120 s cold at 6M rows; PostgreSQL took 0.7 s and 2.1 s at 3M rows. A `where()` does not shorten that read: the word's postings are read for the whole model before the `where()` and the cap apply. `typoTolerance(0)` and Scout's exact terms skip only the typo expansion. For a selective filter over a common word, the LIKE path with an index on the filtered column is the fast path (17 ms at 1M rows on MySQL, for a filter holding 0.1% of them).
 - **Typo expansion** reads the dictionary once per word length in the window around each query term (one short index read per length), so it no longer grows with the dictionary: 3 to 26 ms a term at 1M distinct words on MySQL, MariaDB and PostgreSQL. `typoTolerance(0)` skips it.
 - **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (50,000 matches or more for a one-word query) restricts the ordered read through the postings: on MySQL and MariaDB a join of the matched ids on the model's key, one key lookup per match; elsewhere a subquery that reads the rows the query accepts (0.15 to 1.1 s at 1M–3M rows on PostgreSQL). On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default; 70 to 110 ms at 200k rows). See [docs/bm25.md](docs/bm25.md#usage).
 
@@ -1386,7 +1386,7 @@ Key tips:
 
 ### Sizing the index
 
-Measured on one laptop database at a time, with rows of about 16 indexed words each (a short name, a description, a brand and a unique SKU, so the dictionary grows with the table). Your words, columns and hardware will move these numbers; measure your own tables with `php artisan fuzzy-search:benchmark`.
+Measured on one laptop database at a time, with rows of about 16 indexed words each (a short name, a description, a brand and a unique SKU, so the dictionary grows with the table). Your words, columns and hardware will move these numbers: time your own index searches, a common word and a rare one, through `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()` (`fuzzy-search:benchmark` times only the LIKE algorithms).
 
 - **Size:** about 4.8 GB of index per million rows on MySQL and 3.7 GB on PostgreSQL, roughly ten times the table it indexes. The postings table is almost all of it.
 - **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MySQL at 3M rows, four searchers managed 1.1 searches a second with a p95 of 18 s.
@@ -1461,7 +1461,7 @@ composer test-coverage
 composer benchmark
 ```
 
-To time searches on your own app's tables, use `php artisan fuzzy-search:benchmark "App\Models\User" --term="john"` (see [CLI Tools](#cli-tools)).
+To time the LIKE algorithms on your own app's tables, use `php artisan fuzzy-search:benchmark "App\Models\User" --term="john"` (see [CLI Tools](#cli-tools)); time an index search through `lastExecution()->latencyMs`.
 
 ---
 
