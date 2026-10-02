@@ -50,6 +50,12 @@ class CappedReadCode extends Model
     protected array $searchable = ['columns' => ['name' => 1]];
 }
 
+/** CappedReadCode on a table of its own: Bm25Scorer caches a key column's collation per table for the process (R11-L10). */
+class CappedReadCiCode extends CappedReadCode
+{
+    protected $table = 'capped_read_ci_codes';
+}
+
 /**
  * S3 (scale ladder). An orderBy() index search whose ranking is capped at
  * bm25.max_postings_per_term is restricted to the matches through the postings, since rank() left
@@ -82,6 +88,7 @@ class CappedOrderedReadTest extends TestCase
     {
         Schema::dropIfExists('capped_read_items');
         Schema::dropIfExists('capped_read_codes');
+        Schema::dropIfExists('capped_read_ci_codes');
 
         parent::tearDown();
     }
@@ -210,7 +217,9 @@ class CappedOrderedReadTest extends TestCase
      * MySQL and MariaDB: a case-insensitive key column, whose key aBc the postings also hold as ABC
      * (a row deleted without its model events, then created again under another case). The read
      * looks the key up under the key's own collation, which matches both, and keeps the byte-wise
-     * comparison the postings subquery made, so the row is one match, served once.
+     * comparison the postings subquery made, so the row is one match, served once. The table is its
+     * own, and "zebra" a few of its rows, so the read is the join (R11-L10: under the byte-wise
+     * collation the test before it cached for capped_read_codes, it passed without that comparison).
      */
     public function test_a_capped_ordered_read_serves_a_row_once_when_the_postings_hold_its_key_in_two_cases(): void
     {
@@ -218,25 +227,31 @@ class CappedOrderedReadTest extends TestCase
             $this->markTestSkipped('A case-insensitive key column is MySQL\'s and MariaDB\'s default; the CI MySQL and MariaDB jobs run this.');
         }
 
-        $this->createCodes('utf8mb4_unicode_ci');
-        CappedReadCode::insert(['code' => 'ABC', 'name' => 'zebra old']);
-        app(IndexManager::class)->indexBatch(CappedReadCode::all());
-        DB::table('capped_read_codes')->delete();
+        $this->createCodes('utf8mb4_unicode_ci', 'capped_read_ci_codes');
+        CappedReadCiCode::insert(['code' => 'ABC', 'name' => 'zebra old']);
+        app(IndexManager::class)->indexBatch(CappedReadCiCode::all());
+        DB::table('capped_read_ci_codes')->delete();
 
         $rows = [['code' => 'aBc', 'name' => 'zebra apple']];
         foreach (range(1, 6) as $i) {
             $rows[] = ['code' => sprintf('k%02d', $i), 'name' => sprintf('zebra cherry %02d', $i)];
         }
-        CappedReadCode::insert($rows);
-        app(IndexManager::class)->indexBatch(CappedReadCode::all());
+        CappedReadCiCode::insert($rows);
+        CappedReadCiCode::insert(array_map(fn ($i) => ['code' => sprintf('y%03d', $i), 'name' => 'yak'], range(1, 200)));
+        app(IndexManager::class)->indexBatch(CappedReadCiCode::all());
 
         config(['fuzzy-search.bm25.max_postings_per_term' => 3]);
-        $make = fn () => CappedReadCode::search('zebra')->typoTolerance(0)->useInvertedIndex()->orderBy('name');
+        $make  = fn () => CappedReadCiCode::search('zebra')->typoTolerance(0)->useInvertedIndex()->orderBy('name');
+        $joins = 0;
+        DB::listen(function ($query) use (&$joins) {
+            $joins += (int) str_contains($query->sql, \Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::MATCHES);
+        });
 
         $this->assertSame(array_column($rows, 'name'), $make()->take(100)->get()->pluck('name')->all());
         $this->assertSame(7, $make()->paginate(3)->total());
         $this->assertSame(['zebra apple', 'zebra cherry 01', 'zebra cherry 02'], $make()->paginate(3)->pluck('name')->all());
         $this->assertSame(['zebra cherry 03', 'zebra cherry 04', 'zebra cherry 05'], $make()->paginate(3, 'page', 2)->pluck('name')->all());
+        $this->assertGreaterThan(0, $joins, 'the ordered read joins the matched ids');
     }
 
     /**
@@ -374,10 +389,10 @@ class CappedOrderedReadTest extends TestCase
         return $counters() - $before;
     }
 
-    private function createCodes(string $collation): void
+    private function createCodes(string $collation, string $name = 'capped_read_codes'): void
     {
-        Schema::dropIfExists('capped_read_codes');
-        Schema::create('capped_read_codes', function (Blueprint $table) use ($collation) {
+        Schema::dropIfExists($name);
+        Schema::create($name, function (Blueprint $table) use ($collation) {
             $table->string('code', 40)->collation($collation)->primary();
             $table->string('name');
         });
