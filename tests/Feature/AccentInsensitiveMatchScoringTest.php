@@ -129,4 +129,22 @@ class AccentInsensitiveMatchScoringTest extends TestCase
         $this->assertSame('<em>Café</em> Olé', $rows['Café Olé'][2]);
         $this->assertSame(1.0, (float) $rows['Café Olé'][1]);
     }
+
+    /** The folded search maps each match back to whole characters of the value (MySQL/MariaDB path, called directly). */
+    public function test_folded_offsets_cover_whole_characters(): void
+    {
+        $offsets = fn (string $value, string $term) => (new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder::class, 'foldedMatchOffsets'))
+            ->invoke(AccentScoredPerson::search('x'), $value, $term, 0);
+        $slices = fn (string $value, string $term) => array_map(fn (array $r) => substr($value, $r[0], $r[1] - $r[0] + 1), $offsets($value, $term));
+
+        $this->assertSame(['Müller'], $slices('Jöhn Müller', 'muller'));
+        $this->assertSame(['Straße'], $slices('Straße', 'strasse'));
+        $this->assertSame(["Cafe\u{0301}"], $slices("Cafe\u{0301} Noir", 'cafe'));
+        $this->assertSame(['ß', 'ß'], $slices('aßbß', 'ss'));
+        // Two matches meeting inside one ß ("sss" twice in "ssssss") become one range, not two that overlap.
+        $this->assertSame([[0, 5]], $offsets('ßßß', 'sss'));
+        // ASCII and an accented term on an accented value keep findMatchOffsets()'s raw ranges.
+        $this->assertSame([[1, 2], [3, 4]], $offsets('banana', 'an'));
+        $this->assertSame(['José'], $slices('José Ramírez', 'josé'));
+    }
 }

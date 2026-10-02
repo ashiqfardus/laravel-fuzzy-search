@@ -3542,8 +3542,9 @@ class SearchBuilder
      * findMatchOffsets() on the accent-folded value and term (TF-8): each character of $value is
      * folded on its own (Accents::fold()), and a match in the folded text is mapped back to the bytes
      * of the characters it covers in $value, so "muller" marks "Müller" and "strasse" marks "Straße".
-     * A combining mark, which folds to nothing, stays inside the range of the letter it follows. A
-     * value with no byte past ASCII, or one that is not valid UTF-8, is searched as it is.
+     * A combining mark, which folds to nothing, stays inside the range of the letter it follows; two
+     * matches that meet inside one letter folded to two (ß) become one range. A value with no byte
+     * past ASCII, or one that is not valid UTF-8, is searched as it is.
      */
     private function foldedMatchOffsets(string $value, string $term, int $max = 0): array
     {
@@ -3570,7 +3571,17 @@ class SearchBuilder
             $offset += strlen($char);
         }
 
-        return array_map(fn (array $range) => [$starts[$range[0]], $ends[$range[1]]], $this->findMatchOffsets($folded, $needle, $max));
+        $ranges = [];
+        foreach ($this->findMatchOffsets($folded, $needle, $max) as [$start, $end]) {
+            $last = count($ranges) - 1;
+            if ($last >= 0 && $starts[$start] <= $ranges[$last][1]) {
+                $ranges[$last][1] = max($ranges[$last][1], $ends[$end]);
+            } else {
+                $ranges[] = [$starts[$start], $ends[$end]];
+            }
+        }
+
+        return $ranges;
     }
 
     /**
