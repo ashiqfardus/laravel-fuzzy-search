@@ -2,6 +2,8 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
+use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
+use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
@@ -107,5 +109,53 @@ class DistinctRelevanceOrderTest extends TestCase
         // The window is ranked in PHP: the best match still leads.
         $this->assertSame(25, DistinctItem::search('alpha')->distinct()->count());
         $this->assertSame(1.0, (float) DistinctItem::search('alpha')->distinct()->get()->first()->_score);
+    }
+
+    /**
+     * R11-M3. A page past max_candidates is one OFFSET read. With no ORDER BY, SQL Server's grammar
+     * orders it by (SELECT 0), which a SELECT DISTINCT rejects (145), so every deep page threw there;
+     * elsewhere the window and the deep pages were read in no fixed order, so pages could overlap.
+     * An unordered distinct search is now read by the key, or by its selected columns: every page
+     * reads, and the pages partition the matches.
+     */
+    public function test_distinct_pages_past_max_candidates_partition_the_matches(): void
+    {
+        config(['fuzzy-search.max_candidates' => 5]);
+
+        $shapes = [
+            'default'          => fn () => DistinctItem::search('alpha')->distinct(),
+            'no relevance'     => fn () => DistinctItem::search('alpha')->withRelevance(false)->distinct(),
+            'select(name,body)' => fn () => DistinctItem::search('alpha')->distinct()->select('name', 'body'),
+            'select(name)'     => fn () => DistinctItem::search('alpha')->distinct()->select('name'),
+            'select(id,name)'  => fn () => DistinctItem::search('alpha')->distinct()->select('id', 'name'),
+            'stable'           => fn () => DistinctItem::search('alpha')->stableRanking()->distinct(),
+            'stable select'    => fn () => DistinctItem::search('alpha')->stableRanking()->distinct()->select('name', 'body'),
+            'extended'         => fn () => DistinctItem::search('')->extended('alpha')->distinct(),
+            'join'             => fn () => DistinctItem::search('alpha')
+                ->leftJoin('distinct_notes', 'distinct_notes.item_id', '=', 'distinct_items.id')->distinct()->select('distinct_items.*'),
+            'query builder'    => fn () => (new SearchBuilder(DB::table('distinct_items'), app(FuzzySearch::class)))
+                ->search('alpha')->searchIn(['name' => 10, 'body' => 5])->distinct(),
+        ];
+
+        foreach ($shapes as $label => $make) {
+            $names = [];
+            for ($page = 1; $page <= 5; $page++) {
+                $paginator = $make()->paginate(5, 'page', $page);
+                $this->assertCount(5, $paginator->items(), "{$label} page {$page}");
+                $names = [...$names, ...array_map(fn ($row) => $row->name, $paginator->items())];
+            }
+            sort($names);
+            $this->assertSame($this->matching, $names, "{$label} pages");
+
+            // In one order, whatever plan the database picks (SQLite and MySQL happen to read in key order).
+            $this->assertStringContainsString('order by', strtolower($make()->toSql()), "{$label} toSql");
+        }
+
+        // A select of another table's columns only names no key or plain column: it stays
+        // unordered, and still reads (pages past the window need an orderBy() on SQL Server).
+        $notes = DistinctItem::search('alpha')
+            ->join('distinct_notes', 'distinct_notes.item_id', '=', 'distinct_items.id')->distinct()->select('distinct_notes.*');
+        $this->assertStringNotContainsString('order by', strtolower($notes->toSql()));
+        $this->assertCount(5, $notes->paginate(5)->items());
     }
 }

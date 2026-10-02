@@ -52,6 +52,11 @@ analytics, `suggest()` and the tokenizers.
   near-miss and highlighted nothing. Such results now rank as exact/prefix/contains matches and
   are highlighted, so the order of non-ASCII results can change. ASCII-only text scores and
   highlights exactly as before; `_matches` indices are still byte offsets.
+- **Rows MySQL/MariaDB match accent-insensitively now rank and highlight as matches.** Under an
+  accent-insensitive connection collation (Laravel's `utf8mb4_unicode_ci`), `jose` returned
+  `José Ramírez` as a near miss with no tag; it now ranks as the prefix match it is and is
+  highlighted, so the order of such results can change. The same holds on PostgreSQL with
+  `accentInsensitive()` and unaccent.
 - **`min_search_length` now applies to every search, not only `get()`.** A plain term shorter
   than `min_search_length` characters (default 2) now matches nothing on `paginate()` (an empty
   page, total 0), `count()` (0), `getFacets()`, `FuzzySearch::on()`, the Scout engine and

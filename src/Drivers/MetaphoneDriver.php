@@ -43,17 +43,18 @@ class MetaphoneDriver extends BaseDriver
 
         $this->assertShadowColumnExists($query, $shadowColumn, $column);
 
-        // metaphone() encodes ASCII letters only: "99", "Иван" and "東京" all encode as '', the
-        // code of every value without an ASCII letter and of an empty one, so the shadow column
-        // would return all of those rows. Such a term is searched as a contains LIKE on the column
-        // itself, as SoundexDriver sends a term it cannot encode to its pattern fallback (RB-1).
-        if (preg_match('/[A-Za-z]/', $value) !== 1) {
+        // metaphone() encodes ASCII letters only, and drops H, W and Y before no vowel: "99",
+        // "Иван", "東京", "H2O", "Hy" and "W2" all encode as '', the code of every value without
+        // an encodable letter and of an empty one, so the shadow column would return all of those
+        // rows. A term whose code is empty is searched as a contains LIKE on the column itself, as
+        // SoundexDriver sends a term it cannot encode to its pattern fallback (RB-1).
+        $code = self::code($value);
+        if ($code === '') {
             DbDialect::whereLike($query, $column, '%' . $this->escapeLike($this->normalizeTerm($value)) . '%', $this->driver, $boolean);
 
             return $query;
         }
 
-        $code = self::code($value);
         $method = $boolean === 'or' ? 'orWhere' : 'where';
 
         return $query->$method($shadowColumn, $code);

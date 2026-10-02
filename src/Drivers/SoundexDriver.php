@@ -20,8 +20,11 @@ class SoundexDriver extends BaseDriver
         // whose searched column was ''. MySQL and MariaDB encode a letter of any script but ª, º
         // and µ, which PCRE counts as letters (so "2º" matched every letterless word there);
         // PostgreSQL's fuzzystrmatch only an ASCII one. Such a term takes the pattern fallback,
-        // as it does on the databases without SOUNDEX().
-        if (preg_match($this->driver === 'pgsql' ? '/[A-Za-z]/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
+        // as it does on the databases without SOUNDEX(). On PostgreSQL so does a term whose first
+        // letter is not ASCII: fuzzystrmatch skips a leading byte its C library does not call a
+        // letter, so under glibc "Émile" encoded from its "m" (M400, the code of "Mila"), and on
+        // macOS it kept the byte and returned a code that is not UTF-8.
+        if (preg_match($this->driver === 'pgsql' ? '/^\P{L}*[A-Za-z]/u' : '/(?![ªºµ])\pL/u', $value) !== 1) {
             return $this->applyFallback($query, $column, $value, $boolean);
         }
 

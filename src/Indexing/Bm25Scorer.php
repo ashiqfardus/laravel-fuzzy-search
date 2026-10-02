@@ -263,7 +263,7 @@ class Bm25Scorer
      */
     private static function columnCollation(\Illuminate\Database\ConnectionInterface $connection, string $table, string $column): ?array
     {
-        $id = implode('|', [$connection->getName(), $connection->getDatabaseName(), $connection->getTablePrefix(), $table, $column]);
+        $id = \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::connectionKey($connection) . "|{$table}|{$column}";
 
         if (!array_key_exists($id, self::$collations)) {
             $row = $connection->selectOne(

@@ -13,9 +13,9 @@ use Illuminate\Database\Eloquent\Model;
  * are the keys) and `['name', 'email']` (a plain list, names are the values), mixed included —
  * exactly as SearchBuilder::searchIn() does, so every consumer reads the same names.
  *
- * `detect()` memoises auto-detection per model class, connection (its name, database and table
- * prefix: connectionKey()) and table for the life of the process (a tenant model that switches
- * any of them, or whose database a tenancy package swaps, gets its own entry): it reads the
+ * `detect()` memoises auto-detection per model class, connection (where it points:
+ * connectionKey()) and table for the life of the process (a tenant model that switches any of
+ * them, or whose database, server or schema a tenancy package swaps, gets its own entry): it reads the
  * table's columns, and it is called on every save (shadow columns), every indexed row and every
  * search. Declared columns never reach it. The cache is as long-lived as
  * SearchableObserver::$columnCache and onTable()'s and typesOn()'s listings — a schema change needs
@@ -131,13 +131,22 @@ final class SearchableColumns
 
     /**
      * Where a table's schema is read from, for the schema caches here and in SearchableObserver:
-     * the connection's name, database and table prefix, as Bm25Scorer keys the collation it reads.
-     * A tenancy package swaps the database behind one connection name, and two connections can
-     * hold a table of the same name: neither may be answered from the other's schema (SD-2).
+     * the connection's name, database and table prefix, as Bm25Scorer keys the collation it reads,
+     * and its host and port, and on PostgreSQL its configured search_path (TC-2), as the result
+     * cache's key holds them. A tenancy package swaps the database behind one connection name,
+     * points it at another server whose database has the same name, or (PostgreSQL schema mode)
+     * sets its search_path and purges it; and two connections can hold a table of the same name:
+     * none may be answered from another's schema (SD-2). Read from the config, with no query, as
+     * it runs on every save: a search_path changed with a SET at runtime is not seen.
      */
     public static function connectionKey(Connection $connection): string
     {
-        return $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix();
+        $config = fn (string $key) => implode(',', (array) $connection->getConfig($key));
+
+        return implode('|', [
+            $connection->getName(), $connection->getDatabaseName(), $connection->getTablePrefix(), $config('host'), $config('port'),
+            $connection->getDriverName() === DbDialect::PGSQL ? $config('search_path') . '|' . $config('schema') : '',
+        ]);
     }
 
     /**

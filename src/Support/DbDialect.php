@@ -161,6 +161,24 @@ final class DbDialect
     }
 
     /**
+     * "$column = ?" for a column already written as SQL, true only when the column holds exactly
+     * the bound text, accents and letter case included, whatever its collation: MySQL's and
+     * MariaDB's default collations, and a SQL Server _AI one, hold 'muñoz' = 'munoz'. The column is
+     * read as Unicode first (utf8mb4, NVARCHAR), so a latin1 or varchar column compares its
+     * characters, not its encoding's bytes; trailing spaces still compare equal (utf8mb4_bin pads,
+     * and so does SQL Server's =). PostgreSQL's deterministic collations and SQLite's compare
+     * exactly already.
+     */
+    public static function sameText(string $column, string $driver): string
+    {
+        return match (true) {
+            self::isMySqlFamily($driver) => "CAST({$column} AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_bin = ?",
+            $driver === self::SQLSRV     => "CAST({$column} AS NVARCHAR(MAX)) COLLATE Latin1_General_100_BIN2 = ?",
+            default                      => "{$column} = ?",
+        };
+    }
+
+    /**
      * $column as whereLike() writes it, for any other SQL that must name the same column: quoted
      * with the table prefix on PostgreSQL, through the query's grammar (as where() writes it)
      * everywhere else.

@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Observers;
 
 use Ashiqfardus\LaravelFuzzySearch\Drivers\MetaphoneDriver;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates;
+use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Model;
 
@@ -40,17 +41,20 @@ class SearchableObserver
         $updates = $this->shadowValues($model);
 
         // Direct DB updates, to avoid re-triggering the observer: one per shadow column, each only
-        // while its source column still holds the text the code encodes (SB-3). This save's own
-        // UPDATE has committed already (a plain save() is not in a transaction), so another save of
-        // the row can land in between; its code is then the right one, and this write must not
-        // replace it.
+        // while its source column still holds the text the code encodes (SB-3), compared exactly
+        // (TB-2: under an accent-insensitive collation an accent-only edit has another code). This
+        // save's own UPDATE has committed already (a plain save() is not in a transaction), so
+        // another save of the row can land in between; its code is then the right one, and this
+        // write must not replace it.
         foreach ($updates as $shadow => $code) {
             $column = substr($shadow, 0, -strlen(self::SUFFIX));
             $query  = $model->getConnection()->table($model->getTable())->where($model->getKeyName(), $model->getKey());
 
             if ($this->guarded($model, $column)) {
                 $text = $model->getAttributes()[$column];
-                $text === null ? $query->whereNull($column) : $query->where($column, (string) $text);
+                $text === null
+                    ? $query->whereNull($column)
+                    : $query->whereRaw(DbDialect::sameText($query->getGrammar()->wrap($column), $model->getConnection()->getDriverName()), [(string) $text]);
             }
 
             $query->update([$shadow => $code]);
@@ -69,7 +73,8 @@ class SearchableObserver
      * rows saved before a column existed, or changed without model events. One UPDATE ... CASE
      * per shadow column and 500 rows (at most 2,000 bindings, under SQL Server's 2,100), none for
      * a row whose shadow value is already right, and no model events. Each row's code is written
-     * only while its source column still holds the text the code encodes (SB-3): the rebuild
+     * only while its source column still holds exactly the text the code encodes (SB-3, TB-2: see
+     * DbDialect::sameText()): the rebuild
      * indexes a chunk before it backfills the rows it read, and a save in between has written the
      * right code already. The values are keyed by model key, and PHP turns an all-digit key ('12')
      * into an int: a string key is bound as a string (RankedCandidates::keysFor()), or SQL Server
@@ -101,6 +106,7 @@ class SearchableObserver
         foreach ($byColumn as $shadow => $rows) {
             $target = $grammar->wrap($shadow);
             $source = $grammar->wrap(substr($shadow, 0, -strlen(self::SUFFIX)));
+            $same   = DbDialect::sameText($source, $connection->getDriverName());
 
             foreach (array_chunk($rows, 500, true) as $chunk) {
                 $ids      = RankedCandidates::keysFor($first, array_keys($chunk));
@@ -114,7 +120,7 @@ class SearchableObserver
                         $cases[] = "when {$key} = ? and {$source} is null then ?";
                         array_push($bindings, $ids[$i], $row[0]);
                     } else {
-                        $cases[] = "when {$key} = ? and {$source} = ? then ?";
+                        $cases[] = "when {$key} = ? and {$same} then ?";
                         array_push($bindings, $ids[$i], (string) $row[1], $row[0]);
                     }
                 }
@@ -151,8 +157,8 @@ class SearchableObserver
 
         foreach ($model->getSearchableColumns() as $column) {
             $metaphoneCol = $column . self::SUFFIX;
-            // Per connection, database and prefix too: another connection's, or another tenant's,
-            // table of this name may not have the column (SD-2).
+            // Per connection, as connectionKey() locates it: another connection's, or another
+            // tenant's (database, server or schema), table of this name may not have the column (SD-2, TC-2).
             $cacheKey     = SearchableColumns::connectionKey($connection) . '|' . $table . '.' . $metaphoneCol;
 
             if (!array_key_exists($cacheKey, static::$columnCache)) {
