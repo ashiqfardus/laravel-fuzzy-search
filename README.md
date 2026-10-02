@@ -387,6 +387,8 @@ User::search('john')
     ->get();
 ```
 
+A weight of `0` takes a column out of the search on every path (LIKE, `extended()` and `useInvertedIndex()`): a row that holds the term only there is not matched or counted, `suggest()`'s table scan offers no word from it, and an `extended()` field scope on it (`email:john`) is an unknown field. Weights are integers, so a fraction below 1 is `0`. A search whose every column weighs `0` matches nothing. Dictionary completions are model-wide and still offer its words; hide the column (`$hidden`) to keep them out.
+
 ### Relevance Scoring
 
 ```php
@@ -501,7 +503,7 @@ Product::search('wireless mo')->suggest(5);
 // Returns: ['wireless monitor', 'wireless mouse', 'wireless modem', ...]
 ```
 
-`searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use the table scan when the column matters, on a builder whose only column is that one: `User::searchOn(User::query(), $term, ['name'])->suggestFrom('table')->suggest(5)`. `searchIn()` adds to the model's columns, so `User::search($term)->searchIn(['name'])` still scans every column `$searchable` declares (or auto-detection found).
+`searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use the table scan when the column matters, on a builder whose only column is that one: `User::searchOn(User::query(), $term, ['name'])->suggestFrom('table')->suggest(5)`. `searchIn()` adds to the model's columns, so `User::search($term)->searchIn(['name'])` still scans every column `$searchable` declares (or auto-detection found); weigh one `0` to leave it out (`searchIn(['email' => 0])`).
 
 **Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Neither does a relation column the related model hides, or one under a relation the model hides, also where `searchableText()` indexes it under its dotted name (declare that name in `$searchable['columns']`, as `'author.email'`, so the check knows it). A `morphTo` path's column (`commentable.title`) gives the dictionary no word at all: the class it reaches is each row's own. A `belongsToMany` pivot column (`'tags.note'` with `withPivot('note')`) gives words only where the related model shows its `pivot` and the pivot model shows the column, as `toArray()` serialises it. Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 2.1 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
 

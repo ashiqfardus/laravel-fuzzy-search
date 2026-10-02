@@ -146,6 +146,7 @@ Upgrading from 2.0.x: read the [upgrade guide](https://github.com/ashiqfardus/la
 - Under `distinct()`, a LIKE search adds no relevance `ORDER BY`, and `stableRanking()` orders by the key only when the select holds it: PHP rescoring ranks the first `max_candidates` rows the database returns. Add `orderBy()`, or drop `distinct()`, to rank every match.
 - `@fuzzyHighlight`'s fallback for a column the search did not highlight reads an attribute, cast, accessor or loaded relation, never a model method, and renders an empty string for a relation that is not loaded instead of lazy-loading it.
 - **`highlight()` highlights at most `highlighting.max_matches` occurrences in a value (100; `0` for no limit).** Every occurrence was recorded in `_matches` and tagged in `_highlighted` (present in 2.0), so a long stored text repeating the term cost megabytes a row: 15 rows of 60 KB took 57 MB and 8 MB of JSON. The rest of the value follows untagged.
+- **A column weighted `0` is out of the search on every path.** `searchIn(['email' => 0])` left `email` out of the index search, but the LIKE and `extended()` searches still matched and counted a row that held the term only there (present in 2.0 on those paths). It is now matched on none of them, nor by `getFacets()`, `suggest()`'s table scan or a `FederatedSearch` model, and an `extended()` field scope on it (`email:john`) is an unknown field. A search whose every column weighs `0` matches nothing, as the index search already did.
 
 ### Deprecated
 

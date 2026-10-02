@@ -384,6 +384,19 @@ class SearchBuilder
         return array_filter($this->resolveColumnTargets(), fn ($t) => $t['relation'] !== null);
     }
 
+    /**
+     * The targets a search matches: every searchIn() column but one weighted 0 or less, which the
+     * index search leaves out too (Bm25Scorer::excludedColumns()). A weight of 0 takes a column out of
+     * the search on every path, its matching and counting, suggest()'s table scan and an extended()
+     * field scope included, not only out of _score (TE-8).
+     *
+     * @return array<string, array{relation: ?string, column: string}> keyed by the searchIn() column
+     */
+    protected function searchedTargets(): array
+    {
+        return array_filter($this->resolveColumnTargets(), fn (string $column) => ($this->columnWeights[$column] ?? 1) > 0, ARRAY_FILTER_USE_KEY);
+    }
+
     /** @return string[] unique relation paths, for eager loading */
     protected function relationPaths(): array
     {
@@ -1899,11 +1912,16 @@ class SearchBuilder
 
         $dbDriver = $this->query->getConnection()->getDriverName();
 
-        // Group the resolved targets: direct columns as before; relation columns by path.
-        $direct    = array_values($this->directTargets());
+        // Group the searched targets (a column weighted 0 is none, TE-8): direct columns as before;
+        // relation columns by path.
+        $direct    = [];
         $relations = [];
-        foreach ($this->relationTargets() as $target) {
-            $relations[$target['relation']][] = $target['column'];
+        foreach ($this->searchedTargets() as $target) {
+            if ($target['relation'] === null) {
+                $direct[] = $target['column'];
+            } else {
+                $relations[$target['relation']][] = $target['column'];
+            }
         }
 
         // whereHas() needs the Eloquent builder; Query Builder sources never have relations (Task 1).
@@ -1923,8 +1941,11 @@ class SearchBuilder
             $this->suggestTargets()
         ));
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
-            ->compile($ast, $compileTarget, $direct, $relations);
+        // Every column weighted 0: nothing is searched, so nothing matches, as on the index (TE-8).
+        $direct === [] && $relations === []
+            ? $this->query->whereRaw('0 = 1')
+            : (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
+                ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
             $this->eagerLoadRelationPaths($this->query, $this->relationPaths());
@@ -2537,9 +2558,10 @@ class SearchBuilder
         $searchTerm = $this->processSearchTerm($this->searchTerm);
 
         if ($searchTerm !== '') {
-            // No column: match nothing, never every row (a fallback() retry after the index path
-            // reaches here without matchesNothing(); '0 = 1' is Laravel's own whereIn([]) form).
-            $this->searchableColumns === [] ? $this->query->whereRaw('0 = 1') : $this->applySearchConditions($searchTerm);
+            // No column, or every one weighted 0 (searchedTargets()): match nothing, never every row
+            // (a fallback() retry after the index path reaches here without matchesNothing(); '0 = 1'
+            // is Laravel's own whereIn([]) form).
+            $this->searchedTargets() === [] ? $this->query->whereRaw('0 = 1') : $this->applySearchConditions($searchTerm);
         }
 
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
@@ -2877,18 +2899,18 @@ class SearchBuilder
         $allTerms = array_unique($allTerms);
 
         // The SQL names a direct column qualified under a join; the targets themselves (scoring,
-        // highlighting) keep the logical name.
+        // highlighting) keep the logical name. A column weighted 0 is not searched (TE-8).
         $own     = $this->qualifiedColumnMap($this->query);
         $targets = array_map(
             fn (array $t) => $t['relation'] === null ? ['relation' => null, 'column' => ($own[$t['column']] ?? '') . $t['column']] : $t,
-            $this->resolveColumnTargets()
+            $this->searchedTargets()
         );
 
         // whereHas() needs an Eloquent group, but an Eloquent where(Closure) group carries the
         // model's table, not the FROM and its alias, which a driver may read (metaphone's shadow
         // column check). Direct columns alone group on the base query, as compileExtendedQuery()
         // does; the SQL is the same.
-        $group = $this->query instanceof EloquentBuilder && $this->relationTargets() === []
+        $group = $this->query instanceof EloquentBuilder && array_filter(array_column($targets, 'relation')) === []
             ? $this->query->getQuery()
             : $this->query;
 
@@ -4084,8 +4106,9 @@ class SearchBuilder
 
     /**
      * The searchIn() targets suggest()'s table scan matches and reads, and extended()'s unknown-field
-     * message names: those the model does not hide by its class-level $hidden/$visible (for a
-     * relation column, each segment on the model that holds it, then the leaf on the related model).
+     * message names: those searched (searchedTargets(): a column weighted 0 is not) that the model
+     * does not hide by its class-level $hidden/$visible (for a relation column, each segment on the
+     * model that holds it, then the leaf on the related model).
      * For suggest(): a row that matches only through a hidden column can yield no suggestion
      * (ER-51), so matching it would only use up the rows the scan fetches (NF-1). Only the WHERE
      * narrows (ruling ER-67): the SELECT stays as it is, so an accessor that reads a hidden
@@ -4095,7 +4118,7 @@ class SearchBuilder
      */
     private function suggestTargets(): array
     {
-        $targets = $this->resolveColumnTargets();
+        $targets = $this->searchedTargets();
 
         if (!$this->query instanceof EloquentBuilder) {
             return $targets;
