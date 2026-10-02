@@ -22,6 +22,17 @@ class TypoPoolTieWord extends Model
     protected array $searchable = ['columns' => ['word' => 1]];
 }
 
+class TypoPoolTieOther extends Model
+{
+    use Searchable;
+
+    protected $table   = 'typo_pool_tie_others';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['word' => 1]];
+}
+
 /**
  * R11-M5 / TE-1 (round 12). The typo expansion, didYouMean() and the prefix expansion read the most
  * common dictionary words of the model: `order by doc_count desc limit pool`, one read per length,
@@ -38,16 +49,19 @@ class TypoPoolTieTest extends TestCase
     {
         parent::setUp();
 
-        Schema::dropIfExists('typo_pool_tie_words');
-        Schema::create('typo_pool_tie_words', function (Blueprint $table) {
-            $table->id();
-            $table->string('word');
-        });
+        foreach (['typo_pool_tie_words', 'typo_pool_tie_others'] as $name) {
+            Schema::dropIfExists($name);
+            Schema::create($name, function (Blueprint $table) {
+                $table->id();
+                $table->string('word');
+            });
+        }
     }
 
     protected function tearDown(): void
     {
         Schema::dropIfExists('typo_pool_tie_words');
+        Schema::dropIfExists('typo_pool_tie_others');
 
         parent::tearDown();
     }
@@ -183,5 +197,39 @@ class TypoPoolTieTest extends TestCase
             'suggest'   => ['kitsch', 'kitten'],
             'asYouType' => ['kitsch', 'kitten'],
         ], $byPlan), $byPlan);
+    }
+
+    /**
+     * TE-3. On PostgreSQL the prefix read is a LIKE whose ties came back in heap order, and a word
+     * whose count goes up and back down (another model's row holding it is indexed, then removed)
+     * moves to another place in the heap: with the dictionary the same (ids, words and counts),
+     * asYouType() served other rows and suggest() offered other words. 25 words share the prefix
+     * at doc_count 1, among 300 others; the newest ones are taken, before and after.
+     */
+    public function test_the_prefix_expansion_is_the_same_after_another_models_row_came_and_went(): void
+    {
+        $words = array_map(fn (string $c) => "zorb{$c}", array_values(array_diff(range('a', 'z'), ['x'])));
+        for ($i = 0; $i < 300; $i++) {
+            $words[] = 'f' . substr(md5((string) $i), 0, 6);
+        }
+        mt_srand(7);
+        shuffle($words);
+        TypoPoolTieWord::insert(array_map(fn (string $word) => ['word' => $word], array_slice($words, 0, 200)));
+        TypoPoolTieWord::insert(array_map(fn (string $word) => ['word' => $word], array_slice($words, 200)));
+        TypoPoolTieWord::query()->orderBy('id')->get()->chunk(100)->each(fn ($chunk) => app(IndexManager::class)->indexBatch($chunk));
+
+        $newest = DB::table('fuzzy_index_terms')->where('term', 'like', 'zorb%')->orderByDesc('id')->pluck('term')->all();
+        $read   = fn () => [
+            'asYouType' => TypoPoolTieWord::search('zorb')->useInvertedIndex()->typoTolerance(0)->asYouType()->take(100)->get()->pluck('word')->sort()->values()->all(),
+            'suggest'   => TypoPoolTieWord::search('zorb')->suggestFrom('index')->suggest(5),
+        ];
+        $expected = ['asYouType' => collect(array_slice($newest, 0, 10))->sort()->values()->all(), 'suggest' => array_slice($newest, 0, 5)];
+
+        $before = $read();
+        $other  = TypoPoolTieOther::create(['word' => 'zorba zorbc zorbe zorbg zorbi zorbk zorbm']);
+        app(IndexManager::class)->indexModel($other);
+        app(IndexManager::class)->removeFromIndex(TypoPoolTieOther::class, $other->getKey());
+
+        $this->assertSame(['before' => $expected, 'after' => $expected], ['before' => $before, 'after' => $read()]);
     }
 }
