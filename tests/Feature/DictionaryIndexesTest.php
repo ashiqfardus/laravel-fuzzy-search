@@ -6,6 +6,8 @@ use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -150,6 +152,62 @@ class DictionaryIndexesTest extends TestCase
         $earlier();
         $migration->down();
         $this->assertRolledBack();
+    }
+
+    /**
+     * R11-L4. PostgreSQL and SQL Server run a migration in one transaction, so the lock the index
+     * build takes on fuzzy_index_terms (SHARE on PostgreSQL, S on SQL Server: both block writes)
+     * lasted until the migration committed, after its drops. An index write that read the
+     * dictionary during the build then waited for it, and on PostgreSQL its read lock and the
+     * drop's ACCESS EXCLUSIVE deadlocked: `migrate` failed. Each step now commits on its own, so a
+     * write is not held once the index is built. A second connection updates a word right after
+     * the build, with a lock timeout.
+     */
+    public function test_an_index_write_after_the_build_is_not_held_until_the_migration_ends(): void
+    {
+        if ($this->dbDriver === 'sqlite') {
+            $this->markTestSkipped('SQLite: an in-memory database has one connection, and SQLite runs a migration outside a transaction; the CI server jobs run this.');
+        }
+
+        app(IndexManager::class)->indexBatch(User::all());
+        $id   = (int) DB::table('fuzzy_index_terms')->min('id');
+        $path = realpath(self::MIGRATION);
+        $this->artisan('migrate:rollback', ['--path' => $path, '--realpath' => true])->assertExitCode(0);
+
+        $default = DB::getDefaultConnection();
+        config(['database.connections.zz_dictionary_writer' => config("database.connections.{$default}")]);
+        $writer = DB::connection('zz_dictionary_writer');
+        match ($this->dbDriver) {
+            'pgsql'  => $writer->statement("set lock_timeout = '1s'"),
+            'sqlsrv' => $writer->statement('set lock_timeout 1000'),
+            default  => $writer->statement('set session lock_wait_timeout = 1, innodb_lock_wait_timeout = 1'),
+        };
+
+        $held = null;
+        DB::listen(function (QueryExecuted $query) use (&$held, $writer, $id, $default) {
+            if ($held !== null || $query->connectionName !== $default
+                || !str_contains($query->sql, self::LENGTH_COUNT_ID) || !preg_match('/\b(create|add) index\b/i', $query->sql)) {
+                return;
+            }
+            $writer->beginTransaction();
+            try {
+                $writer->update('update ' . $writer->getQueryGrammar()->wrapTable('fuzzy_index_terms') . ' set doc_count = doc_count where id = ?', [$id]);
+                $held = 'not held';
+            } catch (QueryException $e) {
+                $held = $e->getMessage();
+            } finally {
+                $writer->rollBack();
+            }
+        });
+        try {
+            $this->artisan('migrate', ['--path' => $path, '--realpath' => true])->assertExitCode(0);
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+            DB::purge('zz_dictionary_writer');
+        }
+
+        $this->assertSame('not held', $held);
+        $this->assertMigrated();
     }
 
     /** MySQL/MariaDB: postings.term_id keeps its foreign key, served by postings_unique_idx. */

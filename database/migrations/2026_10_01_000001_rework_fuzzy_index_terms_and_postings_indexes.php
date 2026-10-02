@@ -28,9 +28,16 @@ use Illuminate\Support\Facades\Schema;
  *
  * Each step looks for its index first, so a run that stopped part way (MySQL commits each ALTER on
  * its own) and a second run do only what is left. down() puts both indexes back.
+ *
+ * Outside a transaction, so each step commits on its own on PostgreSQL and SQL Server too. In one
+ * transaction the lock the build takes on fuzzy_index_terms, which blocks writes, lasted until the
+ * drops had run too, and on PostgreSQL an index write that had read the dictionary meanwhile
+ * deadlocked with the drop: `migrate` failed.
  */
 return new class extends Migration
 {
+    public $withinTransaction = false;
+
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
