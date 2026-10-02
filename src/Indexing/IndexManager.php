@@ -831,7 +831,14 @@ class IndexManager
         $rows        = [];
 
         foreach (array_chunk($keys, 1000) as $chunk) {
-            $query = IndexQuery::for($modelType);
+            // From the write connection, as are the relations searchIndexQuery() eager loads (TA-4):
+            // under a read/write split this read went to the replica outside a transaction on the
+            // model's connection (a queue worker; in-process without `sticky`), and a replica behind
+            // the commit gave a deleted row back, or the old text, which this write then indexed.
+            $query = IndexQuery::for($modelType)->useWritePdo();
+            $query->setEagerLoads(array_map(fn (\Closure $constraints) => function ($relation) use ($constraints) {
+                $constraints($relation->useWritePdo());
+            }, $query->getEagerLoads()));
             if ($scout) {
                 $query->withoutGlobalScopes();
             }
