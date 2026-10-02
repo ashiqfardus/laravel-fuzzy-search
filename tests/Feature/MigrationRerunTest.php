@@ -253,6 +253,42 @@ class MigrationRerunTest extends TestCase
         $this->assertSame($fresh, $this->schema('fuzzy_index_postings'));
     }
 
+    /**
+     * R11-L9 / TD-1. On Laravel 10 with doctrine/dbal (Filament 3 requires it), SQLite's
+     * dropColumn() went through Doctrine, which rebuilds the table. Rolling back the term_length
+     * migration ran DROP TABLE fuzzy_index_terms with foreign keys on, which cascaded to every
+     * posting, the '' ones the rollback keeps included; the rebuilt postings table of a column_name
+     * rollback carried an index of Doctrine's own on term_id (IDX_…). Both down()s drop the column
+     * natively now, with foreign keys off. A rollback of either keeps the rows it does not mean to
+     * delete, and the 2.0.1 indexes only.
+     */
+    public function test_rolling_back_either_column_migration_keeps_the_legacy_postings_and_the_old_indexes(): void
+    {
+        $indexes = fn (string $table) => array_values(array_filter(array_keys($this->schema($table)['indexes']), fn (string $name) => !preg_match('/primary|pkey/i', $name)));
+        $legacy  = fn () => DB::table('fuzzy_index_postings')->orderBy('model_id')->get(['model_type', 'model_id'])->map(fn ($row) => [$row->model_type, (string) $row->model_id])->all();
+
+        foreach (['2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table', '2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table'] as $migration) {
+            DB::table('fuzzy_index_postings')->delete();
+            DB::table('fuzzy_index_terms')->delete();
+            app(IndexManager::class)->indexBatch(User::all());
+            $terms = DB::table('fuzzy_index_terms')->count();
+            $term  = (int) DB::table('fuzzy_index_terms')->min('id');
+            DB::table('fuzzy_index_postings')->insert([
+                ['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => ''],
+                ['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '2', 'frequency' => 1, 'column_name' => ''],
+            ]);
+
+            $this->rollBackTo($migration);
+
+            $this->assertSame([['App\\Models\\Legacy', '1'], ['App\\Models\\Legacy', '2']], $legacy(), $migration);
+            $this->assertSame($terms, DB::table('fuzzy_index_terms')->count(), $migration);
+            $this->assertSame(['postings_model_idx', 'postings_term_model_idx', 'postings_unique_idx'], $indexes('fuzzy_index_postings'), $migration);
+            $this->assertSame([], preg_grep('/^idx_/i', $indexes('fuzzy_index_terms')), $migration);
+
+            $this->migrate();
+        }
+    }
+
     /** A term_length column an earlier run added: migrate fills the words it left at 0. */
     public function test_the_term_length_migration_backfills_the_words_an_earlier_run_left_at_zero(): void
     {

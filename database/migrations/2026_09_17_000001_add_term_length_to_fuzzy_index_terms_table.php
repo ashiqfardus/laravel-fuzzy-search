@@ -49,7 +49,20 @@ return new class extends Migration
 
         // Two statements on purpose: SQLite refuses to drop a column an index still references.
         Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::INDEX));
-        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length'));
+
+        if (DB::connection()->getDriverName() !== DbDialect::SQLITE) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length'));
+
+            return;
+        }
+
+        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
+        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, and its
+        // DROP TABLE fuzzy_index_terms, with foreign keys on, deleted every posting (ON DELETE
+        // CASCADE). Below 3.35 dropColumn() rebuilds the table, so foreign keys are off for both.
+        Schema::withoutForeignKeyConstraints(fn () => version_compare((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.35.0', '>=')
+            ? DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_terms') . ' DROP COLUMN term_length')
+            : Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length')));
     }
 
     /**

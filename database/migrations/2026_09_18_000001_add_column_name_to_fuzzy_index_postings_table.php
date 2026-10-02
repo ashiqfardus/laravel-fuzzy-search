@@ -73,17 +73,21 @@ return new class extends Migration
                 });
             }
         }
-        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
-        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, which added
-        // an index of its own on the term_id foreign key that a later migrate kept.
-        if (DB::connection()->getDriverName() === DbDialect::SQLITE
-            && version_compare((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.35.0', '>=')) {
-            DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings') . ' DROP COLUMN column_name');
+
+        if (DB::connection()->getDriverName() !== DbDialect::SQLITE) {
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name'));
 
             return;
         }
 
-        Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name'));
+        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
+        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, which added
+        // an index of its own on the term_id foreign key that a later migrate kept. Foreign keys
+        // are off around it, as in the term_length migration's down(): below 3.35 dropColumn()
+        // rebuilds the table.
+        Schema::withoutForeignKeyConstraints(fn () => version_compare((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.35.0', '>=')
+            ? DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings') . ' DROP COLUMN column_name')
+            : Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name')));
     }
 
     /**
