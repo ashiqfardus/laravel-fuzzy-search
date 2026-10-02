@@ -621,7 +621,8 @@ final class RankedCandidates
      * ER-127; unionAsTable()): every read here restricts the union's rows to ranked ids, adds the key
      * to the select list or orders the rows, and on a union each of those reached only its first part
      * (the other parts were read whole, or their select lists no longer matched). $base itself when
-     * it has no union, so a second call changes nothing.
+     * it has no union, so a second call changes nothing. A schema-qualified table (billing.invoices)
+     * names it by its last segment: no database takes a qualified alias (TE-7).
      *
      * Every read then names the key through that table, so a union whose parts select no key has
      * none to name, and failed with the database's unknown-column error: it throws a LogicException
@@ -647,7 +648,7 @@ final class RankedCandidates
             ));
         }
 
-        return self::unionAsTable($base, $model->getTable());
+        return self::unionAsTable($base, \Illuminate\Support\Str::afterLast($model->getTable(), '.'));
     }
 
     /**

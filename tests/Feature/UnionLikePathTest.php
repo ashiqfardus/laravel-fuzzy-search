@@ -22,6 +22,23 @@ class UnionItem extends Model
     protected array $searchable = ['columns' => ['name' => 10, 'body' => 5]];
 }
 
+/** UnionItem's table, named with its schema (TE-7): main. on SQLite, public. on PostgreSQL, dbo. on SQL Server, the database on MySQL and MariaDB. */
+class UnionQualifiedItem extends Model
+{
+    use Searchable, SoftDeletes;
+
+    public static string $qualified = 'main.union_items';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['name' => 10, 'body' => 5]];
+
+    public function getTable(): string
+    {
+        return static::$qualified;
+    }
+}
+
 class UnionCodeItem extends Model
 {
     use Searchable;
@@ -73,8 +90,16 @@ class UnionLikePathTest extends TestCase
         // A trashed match in the second part: its own SoftDeletes scope keeps it out.
         DB::table('union_items')->where('name', 'alpha item 2')->update(['deleted_at' => now()]);
 
+        UnionQualifiedItem::$qualified = match ($this->dbDriver) {
+            'sqlite' => 'main.union_items',
+            'pgsql'  => 'public.union_items',
+            'sqlsrv' => 'dbo.union_items',
+            default  => DB::connection()->getDatabaseName() . '.union_items',
+        };
+
         app(IndexManager::class)->indexBatch(UnionItem::all());
         app(IndexManager::class)->indexBatch(UnionCodeItem::all());
+        app(IndexManager::class)->indexBatch(UnionQualifiedItem::all());
     }
 
     protected function tearDown(): void
@@ -91,6 +116,8 @@ class UnionLikePathTest extends TestCase
             'union'        => [UnionItem::class, fn ($q) => $q->where('cat', 1)->union(UnionItem::query()->where('cat', 2))],
             'unionAll'     => [UnionItem::class, fn ($q) => $q->where('cat', 1)->unionAll(UnionItem::query()->where('cat', 2))],
             'string key'   => [UnionCodeItem::class, fn ($q) => $q->where('cat', 1)->union(UnionCodeItem::query()->where('cat', 2))],
+            // TE-7: the union was read as a derived table named "main"."union_items", which no database accepts.
+            'schema-qualified table' => [UnionQualifiedItem::class, fn ($q) => $q->where('cat', 1)->union(UnionQualifiedItem::query()->where('cat', 2))],
         ];
     }
 
@@ -117,6 +144,7 @@ class UnionLikePathTest extends TestCase
                 'filter'      => fn () => $model::search('alpha')->filter('cat', '>', 0)->query($union),
                 'extended'    => fn () => $model::search('')->extended('alpha')->query($union),
                 'index'       => fn () => $model::search('alpha')->useInvertedIndex()->query($union),
+                'indexOrdered' => fn () => $model::search('alpha')->useInvertedIndex()->orderBy('name')->query($union),
             ];
 
             foreach ($paths as $path => $make) {

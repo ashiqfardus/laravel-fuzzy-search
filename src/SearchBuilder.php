@@ -2645,7 +2645,9 @@ class SearchBuilder
      * order hold for every part: on the union they went into its first part's wheres and became the
      * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
      * the LIKE path serves rows without one. Read as the query was, its callbacks and its own order
-     * included (RankedCandidates::unionAsTable()). $query itself when it has no union.
+     * included (RankedCandidates::unionAsTable()). $query itself when it has no union. A
+     * schema-qualified table (billing.invoices) names it by its last segment: no database takes a
+     * qualified alias (TE-7).
      */
     private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
     {
@@ -2658,7 +2660,7 @@ class SearchBuilder
         $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
 
         return \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::unionAsTable($query, $query instanceof EloquentBuilder
-            ? $query->getModel()->getTable()
+            ? self::lastSegment($query->getModel()->getTable())
             : ($from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0]))));
     }
 

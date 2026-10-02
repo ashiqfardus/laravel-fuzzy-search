@@ -513,10 +513,11 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
             // A union is read as one derived table (RankedCandidates::rows()), so the ids Scout then
             // restricts the query to restrict every part of it, not only its first. Its scopes apply
-            // inside that table already.
+            // inside that table already. Scout names the key there as the FROM does (TE-7).
             if (($rows = RankedCandidates::rows($query)) !== $query) {
                 $query->setQuery($rows->getQuery())->withoutGlobalScopes();
             }
+            GroupedQueryCallback::restrictByKeyColumn($query);
 
             $query->withGlobalScope(RankedCandidates::KEY_ALIAS, fn (EloquentBuilder $query) => RankedCandidates::needsKeyAlias($query->getQuery(), $query->getModel())
                 ? RankedCandidates::selectKey($query->getQuery(), RankedCandidates::keyColumn($query))
