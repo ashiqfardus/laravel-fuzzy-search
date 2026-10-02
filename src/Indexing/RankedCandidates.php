@@ -242,10 +242,10 @@ final class RankedCandidates
      *  - any key: a ranking of at most one bm25.candidate_chunk.
      * Otherwise, on the index's own connection, the postings restrict it (Bm25Scorer::whereRanked()):
      * they bind no id, and let every match through, those rank() left out past
-     * bm25.max_postings_per_term too, which a capped ranking needs. On MySQL and MariaDB the matched
-     * ids are joined on the key, one key lookup per match, but over a union or for a string key of a
-     * derived FROM (whereMatches()); the subquery used elsewhere compares the postings with a cast of
-     * the key, so it reads every row the query accepts (a SoftDeletes table whole). SQL Server keeps
+     * bm25.max_postings_per_term too, which a capped ranking needs. On MySQL and MariaDB, for a read
+     * with no constraint and a sparse word, the matched ids are joined on the key, one key lookup per
+     * match (whereMatches()); the subquery used elsewhere compares the postings with a cast of the
+     * key, so it reads every row the query accepts (a SoftDeletes table whole). SQL Server keeps
      * it for a longer ranking: it compiles every new inlined list slowly, and at 200k rows a bound
      * list of 2,000 integer ids took 3.4 s where the subquery takes 70 to 110 ms. So does a string
      * key on PostgreSQL, where it costs what a listed read does. On another connection, where the
@@ -264,14 +264,16 @@ final class RankedCandidates
         $chunk = self::chunkSize(null);
         $int   = in_array($model->getKeyType(), ['int', 'integer'], true);
 
-        // rank() reads one row per document and term, best first, up to max_postings_per_term. Its
-        // documents times the terms bound the rows it read: under the cap, it read them all, and
-        // the ranking holds every match.
-        $whole = count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+        // rank() reads one row per document and term, best first, up to max_postings_per_term: the
+        // ranking holds every match unless its read reached the cap (TF-9: its documents times the
+        // terms, typo and prefix expansions and synonyms included, reached it from a sixth of the cap
+        // for a word with five neighbours). That bound stands in for a ranking rank() did not just make.
+        $read  = app(Bm25Scorer::class)->lastRead($terms, $modelType, $columnWeights);
+        $whole = $read === null ? count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
             if (!$whole || !self::listsWhole($base, $int, count($ids))) {
-                return self::whereMatches($base, $terms, $modelType, $columnWeights);
+                return self::whereMatches($base, $terms, $modelType, $columnWeights, $read !== null && $read['share'] <= self::JOIN_SHARE);
             }
         } else {
             $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
@@ -506,18 +508,52 @@ final class RankedCandidates
     }
 
     /**
-     * $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a
-     * global scope: on MySQL and MariaDB joined to the matched ids of the postings on the model's key,
-     * but over a union, which they materialize without an index on the key (the join measured slower
-     * there on MariaDB: 4.8 s for 3.7 s at 1M rows).
+     * The largest share of the model's documents (fuzzy_index_meta.total_docs) the words' postings
+     * may reach (Bm25Scorer::lastRead()) for an ordered read with no constraint to be joined to them
+     * (whereMatches(); R11-M4, ruling ER-162). Measured on the COUNT and a page of 20 by an indexed
+     * column, at 200k and 1M rows:
+     *  - MySQL 9.6: the join read a word in 5 to 10% of the rows 6 to 14 times faster than the
+     *    subquery (0.5 s for 3.0 s at 1M rows), and kept a lead to about 60% while it read the
+     *    word's postings through postings_unique_idx. But once a word holds about an eighth of the
+     *    model's postings, MySQL reads them through postings_model_idx, every posting of the model,
+     *    and the join lost 2 to 10 times (30.7 s for 3.2 s at 1M rows, a word in 25% of rows of
+     *    about one posting each). A tenth of the rows keeps an index of one posting a row below that.
+     *  - MariaDB 11.4, at 1M rows: 3.4 to 5.9 times faster to 10%, even between 12 and 20%, and 1.8
+     *    to 18 times slower from 25% (it materializes the matched ids before it looks them up).
      */
-    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights): Builder
+    private const JOIN_SHARE = 0.1;
+
+    /**
+     * $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a
+     * global scope: on MySQL and MariaDB joined to the matched ids of the postings on the model's key
+     * only for a $sparse word, its postings at most JOIN_SHARE of the model's documents, and a read
+     * with no constraint (ruling ER-162). The join reads every matched posting, and the servers
+     * materialize it for the COUNT and again for the page (R11-M4). Under a selective where() the
+     * subquery reads only the rows the where accepts: 2 ms for a tenant of 100 rows at 200k rows,
+     * where the join took 3.3 s for a word in every row; and for a dense word it reads the table
+     * once (0.7 s, where the join took 4.3 s on MySQL). A union, which the servers materialize
+     * without an index on the key, read slower through the join too (4.8 s for 3.7 s at 1M rows on
+     * MariaDB).
+     */
+    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights, bool $sparse = false): Builder
     {
         $key   = self::keyColumn($base);
-        $model = self::readsUnion($base) ? null : $base->getModel();
+        $model = $sparse && self::unconstrained($base) ? $base->getModel() : null;
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
             ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model));
+    }
+
+    /**
+     * Whether $base reads its model's table with no constraint: no where, join, group, having or
+     * union, the caller's or a global scope's, but the SoftDeletes scope's (it hides few rows), and a
+     * FROM that names a table (an alias of it too).
+     */
+    private static function unconstrained(Builder $base): bool
+    {
+        $query = (clone $base)->withoutGlobalScope(\Illuminate\Database\Eloquent\SoftDeletingScope::class)->toBase();
+
+        return empty($query->wheres) && empty($query->joins) && empty($query->groups) && empty($query->havings) && empty($query->unions) && is_string($query->from);
     }
 
     /**

@@ -123,9 +123,11 @@ class Bm25Scorer
      * and its COUNT read the table whole on both servers (8.7–11 s at 6M rows on MySQL for a word in
      * 1% of them; the join takes 0.2 s). The join also compares the two byte-wise, as the subquery
      * does, so a model_id that matches the key only under the key's collation (aBc for a row ABC) is
-     * no match, and a model is joined once. Without $model, or with a key no index serves, the read
-     * stays the EXISTS below. PostgreSQL and SQL Server keep it too: they read the table whole in
-     * tens of milliseconds at 1M rows (a hash semi-join), where the join measured slower.
+     * no match, and a model is joined once. But it reads every matched posting, however few rows the
+     * query accepts, so RankedCandidates::whereMatches() gives $model only for a read with no
+     * constraint and a sparse word (ruling ER-162). Without $model, or with a key no index serves,
+     * the read stays the EXISTS below. PostgreSQL and SQL Server keep it too: they read the table
+     * whole in tens of milliseconds at 1M rows (a hash semi-join), where the join measured slower.
      *
      * On MySQL and MariaDB a string cast takes the connection's collation, and a connection whose
      * collation differs from model_id's failed with 1267 "Illegal mix of collations". The key is
@@ -187,6 +189,37 @@ class Bm25Scorer
 
         $query->whereExists(fn ($subquery) => $postings($subquery->selectRaw($select))
             ->whereRaw($subquery->getGrammar()->wrap('fzr.model_id') . " = {$cast}"));
+    }
+
+    /** @var array{string, float, bool}|null rank()'s last read: its key (readKey()), share and cut, see lastRead() */
+    private ?array $read = null;
+
+    /**
+     * What rank()'s last ranking read, when it ranked $terms for $modelType with $columnWeights, for
+     * RankedCandidates::matches() to choose the ordered read right after it; null for any other
+     * ranking:
+     *  - share: the terms' document frequencies summed over the model's total_docs (a document that
+     *    holds two of the terms counts twice);
+     *  - cut: whether its read reached bm25.max_postings_per_term, so that the ranking may lack
+     *    matches (TF-9).
+     *
+     * @param  array<int, string>|array<string, float> $terms
+     * @return array{share: float, cut: bool}|null
+     */
+    public function lastRead(array $terms, string $modelType, array $columnWeights = []): ?array
+    {
+        return $this->read !== null && $this->read[0] === self::readKey($this->weights($terms), $modelType, $columnWeights)
+            ? ['share' => $this->read[1], 'cut' => $this->read[2]]
+            : null;
+    }
+
+    /** @param array<string, float> $weights */
+    private static function readKey(array $weights, string $modelType, array $columnWeights): string
+    {
+        ksort($weights, SORT_STRING);
+        ksort($columnWeights, SORT_STRING);
+
+        return serialize([$modelType, $weights, $columnWeights]);
     }
 
     /**
@@ -278,7 +311,8 @@ class Bm25Scorer
      */
     public function rank(array $terms, string $modelType, array $columnWeights = []): array
     {
-        $weights = $this->weights($terms);
+        $this->read = null;
+        $weights    = $this->weights($terms);
         if ($weights === []) {
             return [];
         }
@@ -322,6 +356,7 @@ class Bm25Scorer
                 ->all();
         }
 
+
         // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
         // One row per (document, term), weighted in SQL, ordered by that weighted frequency DESC
         // and capped at max_postings_per_term so that a high-frequency term (e.g. "john" with 50k
@@ -354,6 +389,8 @@ class Bm25Scorer
             ->orderBy('p.term_id')
             ->limit($maxPostings)
             ->get();
+
+        $this->read = [self::readKey($weights, $modelType, $columnWeights), array_sum(array_map('intval', $df)) / $N, $postings->count() >= $maxPostings];
 
         $scores = [];
         foreach ($postings as $row) {
