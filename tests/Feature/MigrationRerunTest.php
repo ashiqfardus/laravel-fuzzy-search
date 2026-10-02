@@ -291,6 +291,30 @@ class MigrationRerunTest extends TestCase
         }
     }
 
+    /**
+     * TC-5. 2026_10_01_000001 replaces the term_length index with (term_length, doc_count, id).
+     * Rolled back on its own (migrate:rollback --path) after it, the term_length migration's down()
+     * failed at its first statement on every database ("index does not exist"), and dropping the
+     * column under the new index would fail on SQLite and SQL Server, cut the index to (doc_count,
+     * id) on MySQL and MariaDB, or drop it on PostgreSQL, while 2026_10_01 stayed recorded. down()
+     * now refuses, naming the migration to roll back first, and changes nothing.
+     */
+    public function test_the_term_length_migration_rolled_back_on_its_own_names_the_migration_to_roll_back_first(): void
+    {
+        $migration = '2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table';
+        $before    = $this->schema('fuzzy_index_terms');
+
+        try {
+            $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true, '--step' => 50])->run();
+            $this->fail('the rollback ran');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first', $e->getMessage());
+        }
+
+        $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists());
+        $this->assertSame($before, $this->schema('fuzzy_index_terms'));
+    }
+
     /** A term_length column an earlier run added: migrate fills the words it left at 0. */
     public function test_the_term_length_migration_backfills_the_words_an_earlier_run_left_at_zero(): void
     {

@@ -10,6 +10,9 @@ return new class extends Migration
 {
     private const INDEX = 'fuzzy_index_terms_term_length_index';
 
+    /** 2026_10_01_000001's indexes on term_length: the current one, and an earlier 2.1 build's. */
+    private const LATER = ['fuzzy_index_terms_term_length_doc_count_id_index', 'fuzzy_index_terms_term_length_doc_count_index'];
+
     public function up(): void
     {
         $driver = DB::connection()->getDriverName();
@@ -48,6 +51,14 @@ return new class extends Migration
         // `migrate:rollback --pretend`, which runs no select, the column is there, as up() left it.
         if (!DB::connection()->pretending() && !Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
             return; // the create-table migration's down() already removed it (or a test did)
+        }
+
+        // Rolled back on its own (migrate:rollback --path) under 2026_10_01_000001, which replaced
+        // this migration's index with its own on (term_length, doc_count, id): dropping the column
+        // under that index fails on SQLite and SQL Server, cuts the index short on MySQL and
+        // MariaDB, and drops it on PostgreSQL, with 2026_10_01_000001 still recorded. Refuse first.
+        if (!DB::connection()->pretending() && array_intersect(self::LATER, $this->indexes()) !== []) {
+            throw new \RuntimeException('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first: its index on term_length is still there.');
         }
 
         // Two statements on purpose: SQLite refuses to drop a column an index still references.
