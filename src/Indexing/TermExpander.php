@@ -322,6 +322,8 @@ final class TermExpander
      * relation by SearchBuilder::isReachableRelation()'s rule for a declared path (ruling ER-50):
      * public, not static, no required parameter, and declared by neither Laravel nor this package;
      * anything else, a call that returns no Relation, or a morphTo (see relation()), hides the column.
+     * A belongsToMany pivot column (withPivot()) is no attribute of the related model: toArray() puts
+     * it under the related model's pivot accessor, on the pivot model, and it is judged there (TF-10).
      */
     private static function pathShown(Model $model, string $column): bool
     {
@@ -341,10 +343,15 @@ final class TermExpander
             $current = $relation[1];
         }
 
+        $last = $relation[2];
+        if ($last instanceof \Illuminate\Database\Eloquent\Relations\BelongsToMany && in_array($leaf, $last->getPivotColumns(), true)) {
+            return self::shows($current, $last->getPivotAccessor()) && self::shows($last->newPivot(), $leaf);
+        }
+
         return self::shows($current, $leaf);
     }
 
-    /** @return array{string, Model}|null the relation's declared name and its related model */
+    /** @return array{string, Model, \Illuminate\Database\Eloquent\Relations\Relation}|null the relation's declared name, its related model and the relation */
     private static function relation(Model $model, string $segment): ?array
     {
         $method = new \ReflectionMethod($model, $segment);
@@ -368,7 +375,7 @@ final class TermExpander
         // fresh instance Laravel relates it to the model itself), and docs/relationships.md calls
         // morphTo paths unsupported: its column is withheld (TF-1).
         return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation && !$relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
-            ? [$method->getName(), $relation->getRelated()]
+            ? [$method->getName(), $relation->getRelated(), $relation]
             : null;
     }
 
