@@ -100,7 +100,7 @@ class CappedOrderedReadTest extends TestCase
      */
     private function seedItems(int $rows, int $every, string ...$modelClasses): void
     {
-        foreach (array_chunk(range(0, $rows - 1), 1000) as $chunk) {
+        foreach (array_chunk(range(0, $rows - 1), 500) as $chunk) { // 4 bindings a row: under SQL Server's 2,100
             DB::table('capped_read_items')->insert(array_map(fn ($i) => [
                 'title'    => $i % $every === 0 ? sprintf('beta %05d item', $i) : 'alpha item',
                 'model_id' => $i % 3,
@@ -110,7 +110,7 @@ class CappedOrderedReadTest extends TestCase
         }
 
         foreach ($modelClasses ?: [CappedReadItem::class] as $modelClass) {
-            $modelClass::query()->chunkById(1000, fn ($items) => app(IndexManager::class)->indexBatch($items));
+            $modelClass::query()->chunkById(500, fn ($items) => app(IndexManager::class)->indexBatch($items));
         }
     }
 
