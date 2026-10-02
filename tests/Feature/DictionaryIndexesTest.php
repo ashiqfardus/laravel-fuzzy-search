@@ -179,7 +179,8 @@ class DictionaryIndexesTest extends TestCase
         $writer = DB::connection('zz_dictionary_writer');
         match ($this->dbDriver) {
             'pgsql'  => $writer->statement("set lock_timeout = '1s'"),
-            'sqlsrv' => $writer->statement('set lock_timeout 1000'),
+            // Unprepared: a SET run through sp_executesql would end with that call, and the write would wait forever.
+            'sqlsrv' => $writer->unprepared('set lock_timeout 1000'),
             default  => $writer->statement('set session lock_wait_timeout = 1, innodb_lock_wait_timeout = 1'),
         };
 
