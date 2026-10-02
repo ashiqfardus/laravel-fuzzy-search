@@ -177,7 +177,7 @@ class Bm25Scorer
         }
 
         // MySQL (a MariaDB server ignores the hint): FirstMatch, one index probe per row. With
-        // model_id in utf8mb4_bin, and an index on the order column, MySQL chose a hash semi-join it
+        // model_id in a binary collation, and an index on the order column, MySQL chose a hash semi-join it
         // could not key on the cast key, whose cost grew with the square of the rows: 3.6 s at 100k
         // matches, where FirstMatch takes 0.16 s. On MySQL the subquery is left for the reads the
         // join above does not take: a union, a string key of a derived table or of a column whose
