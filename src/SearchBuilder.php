@@ -2557,7 +2557,8 @@ class SearchBuilder
             $query->orderBy($sort['column'], $sort['direction']);
         }
 
-        if (!$this->stableRankingEnabled && !$endOnKey) {
+        $distinct = !$endOnKey && self::isDistinct($query);
+        if (!$this->stableRankingEnabled && !$endOnKey && !$distinct) {
             return;
         }
 
@@ -2575,13 +2576,40 @@ class SearchBuilder
             $names     = ['id', $keyColumn];
         }
 
+        $base     = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
+        $orders   = $base->orders ?? [];
+        $keyShown = self::selectsAny($query, [...$names, $keyColumn]);
+
+        // A SELECT DISTINCT left unordered (no orderBy(), and no relevance order: see buildQuery())
+        // is read by what it selects (R11-M3): the key when the select holds it, else every plain
+        // column it selects. A distinct row is unique over its selected columns, so either is a total
+        // order: paginate()'s window and its pages past max_candidates (one OFFSET read each) are read
+        // in that one order and partition the matches. Unordered, SQL Server's grammar ordered the
+        // OFFSET by (SELECT 0), which a SELECT DISTINCT rejects (145), and elsewhere the pages could
+        // overlap. A select of raw expressions or aliases only stays unordered. A query builder's key
+        // is "id", when its table has one.
+        if ($distinct && $orders === []) {
+            $byKey = $keyShown && ($query instanceof EloquentBuilder
+                || ($from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from)) !== null
+                && in_array('id', SearchableColumns::onTable($base->getConnection(), $from[0]), true));
+
+            foreach ($byKey ? [$keyColumn] : self::plainColumns($query) as $column) {
+                $query->orderBy($column, 'asc');
+            }
+
+            return;
+        }
+
+        if (!$this->stableRankingEnabled && !$endOnKey) {
+            return;
+        }
+
         // Not by a key a SELECT DISTINCT does not select: the database rejects it (SE-1).
-        if (!$endOnKey && self::isDistinct($query) && !self::selectsAny($query, [...$names, $keyColumn])) {
+        if ($distinct && !$keyShown) {
             return;
         }
 
         // Once (ruling ER-52): SQL Server rejects a column named twice in ORDER BY.
-        $orders = ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->orders ?? [];
         if (array_intersect(array_filter(array_column($orders, 'column'), 'is_string'), $names) === []) {
             $query->orderBy($keyColumn, 'asc');
         }
@@ -2628,20 +2656,38 @@ class SearchBuilder
     }
 
     /**
-     * Whether $query's select list holds one of $names, or every column (no select, `*` or
-     * `table.*`). A raw expression is not read: it counts as not holding them.
+     * Whether $query's select list holds one of $names, or every column (no select, `*`, or
+     * `table.*` for the table a qualified name of $names names, any table when none is qualified:
+     * a join's `notes.*` holds no `items.id`). A raw expression is not read: it counts as not
+     * holding them.
      *
      * @param string[] $names
      */
     private static function selectsAny(Builder|EloquentBuilder $query, array $names): bool
     {
+        $tables = array_map(fn (string $name) => substr($name, 0, (int) strrpos($name, '.')), array_filter($names, fn (string $name) => str_contains($name, '.')));
+
         foreach (($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? ['*'] as $column) {
-            if (is_string($column) && ($column === '*' || str_ends_with($column, '.*') || in_array($column, $names, true))) {
+            if (is_string($column) && ($column === '*' || in_array($column, $names, true)
+                || str_ends_with($column, '.*') && ($tables === [] || in_array(substr($column, 0, -2), $tables, true)))) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * The columns $query selects as written, each once: no `*`, `table.*`, alias or raw expression.
+     *
+     * @return string[]
+     */
+    private static function plainColumns(Builder|EloquentBuilder $query): array
+    {
+        return array_values(array_unique(array_filter(
+            ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? [],
+            fn ($column) => is_string($column) && !str_ends_with($column, '*') && preg_match('/\s+as\s+/i', $column) !== 1
+        )));
     }
 
     /**
