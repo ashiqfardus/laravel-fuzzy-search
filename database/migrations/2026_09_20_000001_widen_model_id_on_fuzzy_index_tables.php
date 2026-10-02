@@ -16,11 +16,15 @@ use Illuminate\Support\Facades\Schema;
  * COMPACT row format; on SQL Server (nvarchar, 2 bytes) it is 8 + 382 + 382 + 128 = 900 bytes
  * of a nonclustered index's 1,700, and the documents primary key 764 of a clustered one's 900.
  *
- * On MySQL/MariaDB model_id also takes utf8mb4_bin, as term has since 2026_09_17_000002: under
+ * On MySQL/MariaDB model_id also compares byte-wise, as term has since 2026_09_17_000002: under
  * the connection's case- and accent-insensitive collation, keys that differ only by case or
  * accents (sqids, hashids, base62: aBc and AbC) were one key, so the second overwrote the first's
- * document. PostgreSQL and SQLite compare it byte-wise already; SQL Server keeps its default
- * collation, a documented limit.
+ * document. The collation is a NO PAD one, utf8mb4_0900_bin on MySQL (8.0.17+) and
+ * utf8mb4_nopad_bin on MariaDB: utf8mb4_bin, which an earlier 2.1 build used and an older MySQL
+ * still gets, ignores trailing spaces, so 'SKU1' and 'SKU1 ' (two rows under a NO PAD key column,
+ * such as MySQL 8's default utf8mb4_0900_ai_ci) were one document. A second run moves an earlier
+ * build's utf8mb4_bin over. PostgreSQL and SQLite compare it byte-wise already; SQL Server keeps
+ * its default collation, a documented limit.
  *
  * Raw ALTERs, not ->change(): Laravel 10 needs doctrine/dbal for that. SQLite does not enforce a
  * varchar length, so there is nothing to change there. SQL Server refuses to alter a column a
@@ -99,6 +103,18 @@ return new class extends Migration
         ));
     }
 
+    /** MySQL/MariaDB: the byte-wise collation that keeps trailing spaces (utf8mb4_bin, before MySQL 8.0.17). */
+    private static function noPadBinary(): string
+    {
+        $version = (string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION);
+
+        return match (true) {
+            stripos($version, 'mariadb') !== false              => 'utf8mb4_nopad_bin',
+            version_compare($version, '8.0.17', '>=')           => 'utf8mb4_0900_bin',
+            default                                             => 'utf8mb4_bin',
+        };
+    }
+
     /** @param list<string> $tables */
     private function resize(int $length, array $tables): void
     {
@@ -118,9 +134,11 @@ return new class extends Migration
             Schema::table('fuzzy_index_documents', fn (Blueprint $table) => $table->dropPrimary(['model_type', 'model_id']));
         }
 
-        // MySQL/MariaDB: up() compares model_id byte-wise; down() leaves out the character set and
-        // collation, so the column takes the table's default back, as v2.0.1 created it.
-        $binary = $length > 36 ? ' CHARACTER SET utf8mb4 COLLATE utf8mb4_bin' : '';
+        // MySQL/MariaDB: up() compares model_id byte-wise, trailing spaces included; down() leaves out
+        // the character set and collation, so the column takes the table's default back, as v2.0.1
+        // created it. The server's version is read from the connection, not queried, so it holds
+        // under `migrate --pretend` too.
+        $binary = $length > 36 && DbDialect::isMySqlFamily($driver) ? ' CHARACTER SET utf8mb4 COLLATE ' . self::noPadBinary() : '';
 
         foreach ($tables as $table) {
             $table = DbDialect::rawIdentifier($table);
