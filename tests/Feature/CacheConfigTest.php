@@ -196,7 +196,19 @@ class CacheConfigTest extends TestCase
 
         $folded = $search(true)->cache()->get()->pluck('_raw_score', 'name')->all();
         $this->assertSame(['Muller' => 100.0], $folded);
-        $this->assertNotSame($folded, $search(false)->cache()->get()->pluck('_raw_score', 'name')->all(), 'folding off was served the folded entry');
+
+        // Folding off is a miss: it runs the search's LIKE read (a hit only re-reads the cached keys).
+        // Its scores differ only where the database compares accents: on MySQL/MariaDB's
+        // accent-insensitive collation "Muller" is the match either way, and scores as one (TF-8).
+        $reads = 0;
+        DB::listen(function ($query) use (&$reads) {
+            $reads += (int) (stripos($query->sql, 'like ') !== false); // LIKE, or ILIKE on PostgreSQL
+        });
+        $unfolded = $search(false)->cache()->get()->pluck('_raw_score', 'name')->all();
+        $this->assertGreaterThan(0, $reads, 'folding off was served the folded entry');
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertNotSame($folded, $unfolded, 'folding off was served the folded entry');
+        }
     }
 
     /** Ruling ER-70: the whole fuzzy-search config is in the key, so a query-time setting change is a new entry. */
