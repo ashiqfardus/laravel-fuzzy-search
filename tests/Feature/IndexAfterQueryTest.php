@@ -27,8 +27,9 @@ class AfterQueryItem extends Model
  * that a callback returned. A callback that returns other instances, legal in get(), which serves
  * what the callback returns (->map->withoutRelations(), which clones, or replicate()), emptied
  * get(), the ordered page and a cache hit, and paginate() reported a total over an empty page. A
- * returned model is now kept under its own key, when that is one of the page's; a returned model
- * without one is dropped, as before.
+ * returned model is now kept under its own key, when that is one of the page's, or under the key of
+ * the row whose attributes it has (TA-3: a copy under a join that shadows the key); a returned
+ * model with neither (a bare replicate()) is dropped, as before.
  */
 class IndexAfterQueryTest extends TestCase
 {
@@ -122,5 +123,89 @@ class IndexAfterQueryTest extends TestCase
         $this->assertSame(['alpha two', 'alpha three', 'alpha one'], $served->pluck('title')->all(), 'the order the search chose, not the callback\'s');
         $this->assertSame([2, 3, 1], $served->pluck('id')->map(fn ($id) => (int) $id)->all());
         $this->assertSame(['alpha two' => 1, 'alpha three' => 2, 'alpha one' => 3], $served->mapWithKeys(fn ($model) => [$model->title => (int) $model->rank])->all(), 'each row its own attributes');
+    }
+
+    /**
+     * TA-6. A callback that maps the models to arrays or other objects (->map->only(), toArray(), a
+     * DTO) left the index path nothing it could place in the ranking: every page was empty under a
+     * total of 3, silently. It now throws, naming the fix: the index path places each row by its
+     * key, so the mapping belongs after get().
+     */
+    public function test_an_after_query_callback_that_maps_the_models_to_other_items_throws_on_every_index_terminal(): void
+    {
+        config(['cache.default' => 'array']);
+
+        $callbacks = [
+            'map->only()'    => fn ($models) => $models->map->only(['id', 'title']),
+            'map->toArray()' => fn ($models) => $models->map->toArray(),
+            'map to objects' => fn ($models) => $models->map(fn ($model) => (object) ['id' => $model->id, 'title' => $model->title]),
+            'one of them'    => fn ($models) => $models->map(fn ($model, $i) => $i === 0 ? $model->toArray() : $model),
+        ];
+
+        foreach ($callbacks as $label => $callback) {
+            $search = fn () => AfterQueryItem::searchOn(AfterQueryItem::query()->afterQuery($callback), 'alpha')->typoTolerance(0)->useInvertedIndex();
+
+            foreach ([
+                'get'              => fn () => $search()->get(),
+                'first'            => fn () => $search()->first(),
+                'paginate'         => fn () => $search()->paginate(5),
+                'simplePaginate'   => fn () => $search()->simplePaginate(5),
+                'the ordered page' => fn () => $search()->orderBy('rank')->paginate(5),
+                'a cached search'  => fn () => $search()->cache(60)->get(),
+            ] as $terminal => $read) {
+                try {
+                    $read();
+                    $this->fail("{$label}, {$terminal}: no exception");
+                } catch (\LogicException $e) {
+                    $this->assertStringContainsString('afterQuery()', $e->getMessage(), "{$label}, {$terminal}");
+                    $this->assertStringContainsString(AfterQueryItem::class, $e->getMessage(), "{$label}, {$terminal}");
+                }
+            }
+
+            $this->assertSame(3, $search()->count(), "{$label}: count() serves no row, and counts the matches");
+        }
+    }
+
+    /**
+     * TA-3. Under a join whose table has an id of its own, selecting every column, a model's key is
+     * the joined row's id, so a copy the callback returns (->map->withoutRelations(), a clone) has
+     * no key the page was read under: it was dropped, and get() served [] while paginate() counted
+     * the matches. A copy whose attributes are a given model's is that model's.
+     */
+    public function test_a_copy_under_a_join_that_shadows_the_key_is_served_on_every_index_terminal(): void
+    {
+        Schema::dropIfExists('after_query_tags');
+        Schema::create('after_query_tags', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('item_id');
+            $table->string('tag');
+        });
+        // The joined tags' ids, 5 to 7, are no matched item's id: the first four tag no item.
+        DB::table('after_query_tags')->insert([['item_id' => 99, 'tag' => 'w'], ['item_id' => 99, 'tag' => 'x'], ['item_id' => 99, 'tag' => 'y'], ['item_id' => 99, 'tag' => 'z']]);
+        DB::table('after_query_tags')->insert([['item_id' => 3, 'tag' => 'p'], ['item_id' => 1, 'tag' => 'q'], ['item_id' => 2, 'tag' => 'r']]);
+
+        try {
+            foreach (['withoutRelations()' => fn ($models) => $models->map->withoutRelations(), 'clones' => fn ($models) => $models->map(fn ($model) => clone $model)] as $label => $callback) {
+                $search = fn () => AfterQueryItem::searchOn(AfterQueryItem::query()->join('after_query_tags', 'after_query_tags.item_id', '=', 'after_query_items.id')->afterQuery($callback), 'alpha')
+                    ->typoTolerance(0)->useInvertedIndex();
+                $titles = ['alpha two', 'alpha three', 'alpha one'];
+                $sorted = $titles;
+                sort($sorted);
+
+                $this->assertSame($sorted, $search()->get()->pluck('title')->sort()->values()->all(), "{$label}: get");
+                $this->assertSame(['r', 'p', 'q'], $search()->orderBy('rank')->get()->pluck('tag')->all(), "{$label}: each row its own joined columns");
+                $this->assertSame($titles, $search()->orderBy('rank')->get()->pluck('title')->all(), "{$label}: the ordered page");
+                $this->assertSame('alpha two', $search()->orderBy('rank')->first()?->title, "{$label}: first");
+                $this->assertSame($titles, $search()->orderBy('rank')->simplePaginate(5)->pluck('title')->all(), "{$label}: simplePaginate");
+                $this->assertSame($titles, collect($search()->orderBy('rank')->paginate(5)->items())->pluck('title')->all(), "{$label}: the ordered paginate");
+
+                $page = $search()->paginate(5);
+                $this->assertSame($sorted, collect($page->items())->pluck('title')->sort()->values()->all(), "{$label}: paginate's page");
+                $this->assertSame(3, $page->total(), "{$label}: paginate's total");
+                $this->assertSame(3, $search()->count(), "{$label}: count");
+            }
+        } finally {
+            Schema::dropIfExists('after_query_tags');
+        }
     }
 }

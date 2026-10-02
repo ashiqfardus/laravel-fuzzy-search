@@ -70,8 +70,13 @@ final class RankedCandidates
             // The afterQuery() callbacks see the chunk's models, as they see get()'s, and what they
             // return is served, as get() serves it: a model they were given under its id, and another
             // instance (withoutRelations() and replicate() return copies, SA-6) under its own key,
-            // where a given model's own key is the id it was read under (not a join's id, nor a
-            // select() without the key). Any other model is dropped: it cannot be placed in the ranking.
+            // where a given model's own key is the id it was read under, else under the id of a given
+            // model whose attributes it has (a copy under a join's id or a select() without the key,
+            // TA-3). Any other model is dropped: it cannot be placed in the ranking (a replicate(),
+            // which has no key, unless the callback gives it one). An item that is no model (an
+            // array, a DTO) throws: it emptied every page, silently (TA-6). Ruling ER-167 preferred
+            // running the callbacks once on the ranked, scored page, which SearchBuilder assembles
+            // (the page, its scores, the cache's re-read, highlighting), not this read.
             if (method_exists($read, 'applyAfterQueryCallbacks')) {
                 $given = array_flip(array_map('spl_object_id', $found));
                 $byKey = [];
@@ -84,11 +89,15 @@ final class RankedCandidates
                 $kept = [];
                 foreach ($read->applyAfterQueryCallbacks($read->getModel()->newCollection($models)) as $model) {
                     if (!$model instanceof Model) {
-                        continue;
+                        throw new \LogicException(sprintf(
+                            '%s: an index search places each row its afterQuery() callbacks return in the ranking by its key, and one returned %s: return the models, and map them after get().',
+                            $read->getModel()::class,
+                            get_debug_type($model)
+                        ));
                     }
 
                     $own = $model->getKey();
-                    $id  = $given[spl_object_id($model)] ?? ($own === null ? null : $byKey[(string) $own] ?? null);
+                    $id  = $given[spl_object_id($model)] ?? ($own === null ? null : $byKey[(string) $own] ?? null) ?? self::copied($model, $found, $kept);
 
                     if ($id !== null) {
                         $kept[$id] ??= $model;
@@ -105,6 +114,24 @@ final class RankedCandidates
         }
 
         return $base->getModel()->newCollection($collected);
+    }
+
+    /**
+     * The id of the first model of $given, not yet $kept, whose attributes $copy has, all of them and
+     * no other (a clone, withoutRelations()), or null.
+     *
+     * @param array<int|string, Model> $given id => the model read under it
+     * @param array<int|string, Model> $kept  id => the model served under it
+     */
+    private static function copied(Model $copy, array $given, array $kept): int|string|null
+    {
+        foreach ($given as $id => $model) {
+            if (!isset($kept[$id]) && $model->getAttributes() === $copy->getAttributes()) {
+                return $id;
+            }
+        }
+
+        return null;
     }
 
     /**
