@@ -9,12 +9,16 @@ use Illuminate\Support\Facades\Schema;
 /**
  * Two index changes for large indexes.
  *
- * fuzzy_index_terms reads by (term_length, doc_count), in place of the term_length index of
+ * fuzzy_index_terms reads by (term_length, doc_count, id), in place of the term_length index of
  * 2026_09_17_000001. The typo expansion and didYouMean() (TermExpander::candidates()) take the most
- * common words of each length within reach of a search term. Through term_length alone the database
- * read every word of that length window and sorted them all, on every search term; the window grows
- * with the dictionary (1.3 s a term at 6M rows on MySQL). Through the pair it reads each length's
- * most common words in index order. Nothing else filters on term_length.
+ * common words of each length within reach of a search term, equal counts by id. Through term_length
+ * alone the database read every word of that length window and sorted them all, on every search
+ * term; the window grows with the dictionary (1.3 s a term at 6M rows on MySQL). Through this index
+ * it reads each length's most common words in index order. The id is in the key for PostgreSQL:
+ * InnoDB, SQL Server and SQLite carry the row id in every index already, but PostgreSQL would sort
+ * the whole tie group at the cut, usually most words of a length. An earlier 2.1 build of this
+ * migration made the index without the id (fuzzy_index_terms_term_length_doc_count_index); it is
+ * replaced. Nothing else filters on term_length.
  *
  * postings_term_model_idx (term_id, model_type) goes: postings_unique_idx (term_id, model_type,
  * model_id, column_name) starts with the same columns, so it serves every read the smaller one did,
@@ -27,19 +31,22 @@ use Illuminate\Support\Facades\Schema;
  */
 return new class extends Migration
 {
-    private const LENGTH_COUNT = 'fuzzy_index_terms_term_length_doc_count_index';
-    private const LENGTH       = 'fuzzy_index_terms_term_length_index';
-    private const TERM_MODEL   = 'postings_term_model_idx';
+    private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
+    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
+    private const LENGTH          = 'fuzzy_index_terms_term_length_index';
+    private const TERM_MODEL      = 'postings_term_model_idx';
 
     public function up(): void
     {
-        // The pair first, so the dictionary is never without a length index.
+        // The new index first, so the dictionary is never without a length index.
         $terms = $this->indexes('fuzzy_index_terms');
-        if (!in_array(self::LENGTH_COUNT, $terms, true)) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count'], self::LENGTH_COUNT));
+        if (!in_array(self::LENGTH_COUNT_ID, $terms, true)) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], self::LENGTH_COUNT_ID));
         }
-        if (in_array(self::LENGTH, $terms, true)) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::LENGTH));
+        foreach ([self::LENGTH, self::LENGTH_COUNT] as $index) {
+            if (in_array($index, $terms, true)) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($index));
+            }
         }
 
         if (in_array(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
@@ -58,8 +65,10 @@ return new class extends Migration
         if (!in_array(self::LENGTH, $terms, true) && Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::LENGTH));
         }
-        if (in_array(self::LENGTH_COUNT, $terms, true)) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::LENGTH_COUNT));
+        foreach ([self::LENGTH_COUNT_ID, self::LENGTH_COUNT] as $index) {
+            if (in_array($index, $terms, true)) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($index));
+            }
         }
     }
 

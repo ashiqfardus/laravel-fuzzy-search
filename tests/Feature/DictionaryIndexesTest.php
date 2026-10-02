@@ -14,16 +14,18 @@ require_once __DIR__ . '/../TestModels.php';
 /**
  * 2026_10_01_000001. S1: the typo expansion read every dictionary word of a length window and
  * sorted them by doc_count, through an index on term_length alone (1.3 s a search term at 6M rows).
- * It now reads one length at a time through (term_length, doc_count), which replaces the
- * term_length index. S5: postings_term_model_idx (term_id, model_type) repeats the leading columns
- * of postings_unique_idx, which covers the same reads; it is dropped.
+ * It now reads one length at a time through (term_length, doc_count, id), which replaces the
+ * term_length index; the id serves the tiebreak (R11-M5) from the index on PostgreSQL too. S5:
+ * postings_term_model_idx (term_id, model_type) repeats the leading columns of postings_unique_idx,
+ * which covers the same reads; it is dropped.
  */
 class DictionaryIndexesTest extends TestCase
 {
     private const MIGRATION    = __DIR__ . '/../../database/migrations/2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes.php';
-    private const LENGTH_COUNT = 'fuzzy_index_terms_term_length_doc_count_index';
-    private const LENGTH       = 'fuzzy_index_terms_term_length_index';
-    private const TERM_MODEL   = 'postings_term_model_idx';
+    private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
+    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
+    private const LENGTH          = 'fuzzy_index_terms_term_length_index';
+    private const TERM_MODEL      = 'postings_term_model_idx';
 
     /** @return list<string> the names of the indexes on $table, which the connection prefixes */
     private function indexes(string $table): array
@@ -42,10 +44,37 @@ class DictionaryIndexesTest extends TestCase
         return $names;
     }
 
+    /** @return list<string> the key columns of $index on $table, in key order */
+    private function indexColumns(string $table, string $index): array
+    {
+        $name = DB::connection()->getTablePrefix() . $table;
+        $rows = match ($this->dbDriver) {
+            'sqlite' => DB::select('select name from pragma_index_info(?) order by seqno', [$index]),
+            'pgsql'  => DB::select(
+                'select a.attname as name from pg_index i join pg_class c on c.oid = i.indexrelid'
+                . ' cross join lateral unnest(i.indkey) with ordinality as k(attnum, n)'
+                . ' join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum'
+                . ' where i.indrelid = to_regclass(quote_ident(?)) and c.relname = ? order by k.n',
+                [$name, $index]
+            ),
+            'sqlsrv' => DB::select(
+                'select c.name from sys.indexes i join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id'
+                . ' join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id'
+                . ' where i.object_id = object_id(?) and i.name = ? and ic.is_included_column = 0 order by ic.key_ordinal',
+                [$name, $index]
+            ),
+            default  => DB::select('select column_name as name from information_schema.statistics where table_schema = database() and table_name = ? and index_name = ? order by seq_in_index', [$name, $index]),
+        };
+
+        return array_map(fn ($row) => strtolower((string) $row->name), $rows);
+    }
+
     private function assertMigrated(): void
     {
-        $this->assertContains(self::LENGTH_COUNT, $this->indexes('fuzzy_index_terms'));
+        $this->assertContains(self::LENGTH_COUNT_ID, $this->indexes('fuzzy_index_terms'));
+        $this->assertSame(['term_length', 'doc_count', 'id'], $this->indexColumns('fuzzy_index_terms', self::LENGTH_COUNT_ID));
         $this->assertNotContains(self::LENGTH, $this->indexes('fuzzy_index_terms'));
+        $this->assertNotContains(self::LENGTH_COUNT, $this->indexes('fuzzy_index_terms'));
         $this->assertNotContains(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'));
         $this->assertContains('postings_unique_idx', $this->indexes('fuzzy_index_postings'));
         $this->assertContains('postings_model_idx', $this->indexes('fuzzy_index_postings'));
@@ -53,6 +82,7 @@ class DictionaryIndexesTest extends TestCase
 
     private function assertRolledBack(): void
     {
+        $this->assertNotContains(self::LENGTH_COUNT_ID, $this->indexes('fuzzy_index_terms'));
         $this->assertNotContains(self::LENGTH_COUNT, $this->indexes('fuzzy_index_terms'));
         $this->assertContains(self::LENGTH, $this->indexes('fuzzy_index_terms'));
         $this->assertContains(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'));
@@ -96,6 +126,30 @@ class DictionaryIndexesTest extends TestCase
         $this->assertSame($before, $count());
         $this->assertSame(['John Doe'], User::search('jonh doe')->useInvertedIndex()->get()->pluck('name')->take(1)->all());
         $this->assertContains('john', array_column(User::search('jonh')->didYouMean(5), 'term'));
+    }
+
+    /**
+     * ER-161: an install that ran an earlier 2.1 build of this migration has (term_length,
+     * doc_count) without the id. up() puts the three-column index in its place, and down() from that
+     * state gives back the indexes before the migration.
+     */
+    public function test_an_install_with_the_earlier_two_column_index_gets_the_three_column_one(): void
+    {
+        $migration = require self::MIGRATION;
+        $earlier   = function () use ($migration) {
+            $migration->down();
+            Schema::table('fuzzy_index_terms', fn ($table) => $table->index(['term_length', 'doc_count'], self::LENGTH_COUNT));
+            Schema::table('fuzzy_index_terms', fn ($table) => $table->dropIndex(self::LENGTH));
+            Schema::table('fuzzy_index_postings', fn ($table) => $table->dropIndex(self::TERM_MODEL));
+        };
+
+        $earlier();
+        $migration->up();
+        $this->assertMigrated();
+
+        $earlier();
+        $migration->down();
+        $this->assertRolledBack();
     }
 
     /** MySQL/MariaDB: postings.term_id keeps its foreign key, served by postings_unique_idx. */
@@ -208,7 +262,7 @@ class DictionaryIndexesTest extends TestCase
             if ($plan === null) {
                 continue;
             }
-            $this->assertStringContainsString(self::LENGTH_COUNT, $plan);
+            $this->assertStringContainsString(self::LENGTH_COUNT_ID, $plan);
             $this->assertDoesNotMatchRegularExpression('/temp b-tree for order by|filesort|\bsort\b/i', $plan, $plan);
         }
     }

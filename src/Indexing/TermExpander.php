@@ -35,23 +35,27 @@ final class TermExpander
         $length = mb_strlen($term);
 
         // The $pool most common words of the length window, read one length at a time through
-        // (term_length, doc_count): each read stops after $pool rows in index order, and the
+        // (term_length, doc_count, id): each read stops after $pool rows in index order, and the
         // window's top $pool are among the lengths' own. One read of the whole window sorted every
         // word in it, a cost that grew with the dictionary (S1). Separate reads, not a UNION of
-        // limited parts, which SQLite and SQL Server do not accept. Ties keep the database's order.
+        // limited parts, which SQLite and SQL Server do not accept. Equal counts are cut by id, the
+        // newest word first, in each read and in the merge: most words share a small count, so the
+        // cut usually falls inside a tie, and without the id the plan's order (which a statistics
+        // refresh changes) or the merge's length order picked the words a typo search finds.
         $probe = $this->probes($modelType, $pool);
         $rows  = [];
         for ($l = max(1, $length - $maxDistance); $l <= $length + $maxDistance; $l++) {
             $rows = [...$rows, ...$this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly, $probe)
-                ->select('term', 'doc_count')
+                ->select('id', 'term', 'doc_count')
                 ->where('term_length', $l)
                 ->where('term', '!=', $term)
                 ->orderByDesc('doc_count')
+                ->orderByDesc('id')
                 ->limit($pool)
                 ->get()
                 ->all()];
         }
-        usort($rows, fn ($a, $b) => (int) $b->doc_count <=> (int) $a->doc_count); // stable: ties stay in read order
+        usort($rows, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
 
         $out = [];
         foreach (array_slice($rows, 0, $pool) as $row) {
@@ -161,7 +165,8 @@ final class TermExpander
                   ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
         }
 
-        $terms = $this->postedUnder($query, $modelType, $visibleOnly, $this->probes($modelType, $max))->orderByDesc('doc_count')->limit($max)->pluck('term');
+        // Equal counts by id, the newest word first, as candidates() cuts them.
+        $terms = $this->postedUnder($query, $modelType, $visibleOnly, $this->probes($modelType, $max))->orderByDesc('doc_count')->orderByDesc('id')->limit($max)->pluck('term');
 
         $weights = [];
         foreach ($terms as $term) {
