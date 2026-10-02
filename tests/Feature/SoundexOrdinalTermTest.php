@@ -59,4 +59,32 @@ class SoundexOrdinalTermTest extends TestCase
             $this->assertSame(1, OrdinalItem::search($term)->using('soundex')->paginate(10)->total(), "{$term} paginate");
         }
     }
+
+    /**
+     * PostgreSQL's fuzzystrmatch soundex() skips a leading byte its C library does not call a letter:
+     * under glibc (Linux, CI) every byte past ASCII, so "Émile" encoded from its "m" (M400, the code
+     * of "Mila") and "Øle" as L000 ("Lee"); on macOS it kept the byte and returned an invalid code,
+     * and the search threw. A term whose first letter is not ASCII takes the pattern fallback there.
+     */
+    public function test_postgresql_sends_a_term_whose_first_letter_is_not_ascii_to_the_fallback(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL only (CI runs it): fuzzystrmatch\'s soundex() is the native function there.');
+        }
+        try {
+            DB::statement('CREATE EXTENSION IF NOT EXISTS fuzzystrmatch');
+        } catch (\Throwable $e) {
+            $this->markTestSkipped('The fuzzystrmatch extension cannot be created here: ' . $e->getMessage());
+        }
+        config(['fuzzy-search.use_native_functions' => true]);
+        DB::table('ordinal_items')->insert([['title' => 'Mila Kunis'], ['title' => 'Émile Zola'], ['title' => 'Lee Marvin'], ['title' => 'Øle Gunnar']]);
+
+        foreach (['Émile' => ['Émile Zola'], 'Øle' => ['Øle Gunnar']] as $term => $expected) {
+            $this->assertSame($expected, OrdinalItem::search($term)->using('soundex')->get()->pluck('title')->all(), "{$term} get");
+            $this->assertSame($expected, DB::table('ordinal_items')->whereFuzzy('title', $term, 'soundex')->pluck('title')->all(), "{$term} macro");
+        }
+
+        // A term whose first letter is ASCII still takes soundex(): "Mila" finds "Mila Kunis" by sound.
+        $this->assertContains('Mila Kunis', OrdinalItem::search('Myla')->using('soundex')->get()->pluck('title')->all());
+    }
 }
