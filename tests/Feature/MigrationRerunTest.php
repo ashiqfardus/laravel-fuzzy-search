@@ -34,6 +34,8 @@ class MigrationRerunTest extends TestCase
             'term_length' => ['2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table', 'fuzzy_index_terms', '/^\s*alter table\b.*term_length/i'],
             'column_name' => ['2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table', 'fuzzy_index_postings', '/^\s*alter table\b.*column_name/i'],
             'search_logs' => ['2026_09_19_000001_create_fuzzy_search_logs_table', 'fuzzy_search_logs', '/^\s*create table\b.*fuzzy_search_logs/i'],
+            // R11-L11: after two of its four indexes, so the next run adds only the other two.
+            'search_logs, after its second index' => ['2026_09_19_000001_create_fuzzy_search_logs_table', 'fuzzy_search_logs', '/\bsearch_logs_created_idx\b/i'],
         ];
     }
 
