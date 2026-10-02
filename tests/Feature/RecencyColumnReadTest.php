@@ -7,6 +7,7 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class RecencyProbeUser extends Model
 {
@@ -24,6 +25,20 @@ class RecencyProbeUser extends Model
     {
         static::$calls++;
     }
+}
+
+/** Columns whose cast reads as an array and as an object without __toString(). */
+class RecencyCastItem extends Model
+{
+    use Searchable;
+
+    protected $table   = 'recency_cast_items';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected $casts = ['options' => 'array', 'meta' => 'object'];
+
+    protected array $searchable = ['columns' => ['name' => 10]];
 }
 
 /**
@@ -87,5 +102,47 @@ class RecencyColumnReadTest extends TestCase
         $this->assertSame('', SearchBuilder::renderHighlighted($user, 'purgeEverything'));
         $this->assertSame(0, RecencyProbeUser::$calls);
         $this->assertSame('John Doe', SearchBuilder::renderHighlighted($user, 'name'));
+    }
+
+    /**
+     * TF-2. A recency column that reads as an array (a JSON or array cast) or as an object without
+     * __toString() reached `new DateTime()`, whose TypeError is no \Exception: the search threw on
+     * every path (`?recent_by=options` was a 500) where a column that is no date gives no boost.
+     */
+    public function test_a_recency_column_that_reads_as_an_array_or_an_object_gives_no_boost(): void
+    {
+        Schema::dropIfExists('recency_cast_items');
+        Schema::create('recency_cast_items', function ($table) {
+            $table->id();
+            $table->string('name');
+            $table->text('options')->nullable();
+            $table->text('meta')->nullable();
+        });
+        foreach (['zed alpha', 'zed beta'] as $name) {
+            RecencyCastItem::create(['name' => $name, 'options' => ['a' => 1], 'meta' => (object) ['b' => 2]]);
+        }
+        app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->indexBatch(RecencyCastItem::all());
+
+        try {
+            foreach (['options', 'meta'] as $column) {
+                $make = fn (bool $boost) => $boost ? RecencyCastItem::search('zed')->boostRecent(5.0, $column) : RecencyCastItem::search('zed');
+                $runs = [
+                    'get'            => fn (bool $b) => $make($b)->get()->all(),
+                    'first'          => fn (bool $b) => [$make($b)->first()],
+                    'paginate'       => fn (bool $b) => $make($b)->paginate(5)->items(),
+                    'simplePaginate' => fn (bool $b) => $make($b)->simplePaginate(5)->items(),
+                    'extended'       => fn (bool $b) => ($b ? RecencyCastItem::search('')->extended('zed')->boostRecent(5.0, $column) : RecencyCastItem::search('')->extended('zed'))->get()->all(),
+                    'index get'      => fn (bool $b) => $make($b)->useInvertedIndex()->get()->all(),
+                    'index paginate' => fn (bool $b) => $make($b)->useInvertedIndex()->paginate(5)->items(),
+                ];
+
+                foreach ($runs as $label => $run) {
+                    $scores = fn (array $rows) => array_map(fn ($row) => [$row->name, $row->_score], $rows);
+                    $this->assertSame($scores($run(false)), $scores($run(true)), "{$column} {$label}");
+                }
+            }
+        } finally {
+            Schema::dropIfExists('recency_cast_items');
+        }
     }
 }

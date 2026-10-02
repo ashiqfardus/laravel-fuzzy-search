@@ -478,7 +478,7 @@ User::search('john')
     ->get();
 ```
 
-The boost multiplies the score after `getSearchScore()` and `customScore()`, on every path; on `useInvertedIndex()` it multiplies the BM25 raw score and re-ranks the first `max_candidates` matches (see [Custom Scoring Hooks](#custom-scoring-hooks)). The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request.
+The boost multiplies the score after `getSearchScore()` and `customScore()`, on every path; on `useInvertedIndex()` it multiplies the BM25 raw score and re-ranks the first `max_candidates` matches (see [Custom Scoring Hooks](#custom-scoring-hooks)). The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request. A value that is no date (a string that does not parse, an array or JSON cast, an object without `__toString()`) gives no boost.
 
 ### Search Suggestions / Autocomplete
 

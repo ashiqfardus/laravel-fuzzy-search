@@ -4116,7 +4116,9 @@ class SearchBuilder
 
         $dateValue = SearchableColumns::read($item, $this->recencyColumn);
 
-        if (empty($dateValue)) {
+        // Only what DateTime can parse: an array (a JSON or array cast) or an object without
+        // __toString() throws a TypeError there, which the catch below does not take (TF-2).
+        if (empty($dateValue) || !($dateValue instanceof \DateTimeInterface || is_string($dateValue) || is_int($dateValue) || $dateValue instanceof \Stringable)) {
             return 1.0;
         }
 
