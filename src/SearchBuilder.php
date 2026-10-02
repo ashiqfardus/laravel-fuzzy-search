@@ -2744,6 +2744,34 @@ class SearchBuilder
     }
 
     /**
+     * Whether the SQL this search runs compares accents away, so a row it returns for "cafe" may
+     * hold "Café" (TF-8, ruling ER-166): on MySQL and MariaDB under an accent-insensitive connection
+     * collation (Laravel's utf8mb4_unicode_ci, MySQL 8's and MariaDB's defaults: any but a _bin, _cs
+     * or _as_ one), and on PostgreSQL where an explicit accentInsensitive() ORs unaccent() in
+     * (use_native_functions). PHP scoring and highlighting then compare the accent-folded value as
+     * well, so such a row ranks and is tagged as the match the database found. Elsewhere they compare
+     * as typed, and the database stays the judge: SQLite, PostgreSQL without that opt-in, and SQL
+     * Server (whose accent-sensitive default is assumed; an _AI database collation is not read). The
+     * index path matches through its own dictionary and is left as it is.
+     */
+    private function sqlFoldsAccents(): bool
+    {
+        if ($this->useSearchIndex && $this->extendedQuery === null) {
+            return false;
+        }
+
+        $connection = $this->query->getConnection();
+        $driver     = $connection->getDriverName();
+
+        if (\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver)) {
+            return preg_match('/_(bin|cs)$|_as_/i', (string) $connection->getConfig('collation')) !== 1;
+        }
+
+        return $driver === \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::PGSQL
+            && $this->accentInsensitiveEnabled && (bool) config('fuzzy-search.use_native_functions', false);
+    }
+
+    /**
      * A token's alternatives on the LIKE path: each of its variants and that variant's synonyms.
      *
      * @return string[]
@@ -2996,12 +3024,17 @@ class SearchBuilder
      */
     protected function calculateRelevanceScores(Collection $results, ?array $terms = null): Collection
     {
-        $groups = [];
-        $folds  = $this->foldsAccents();
+        $groups      = [];
+        $folds       = $this->foldsAccents();
+        $foldsValues = $this->sqlFoldsAccents();
         foreach ($terms ?? $this->termVariants($this->searchTerm) as $term) {
-            $term = mb_strtolower($term, 'UTF-8');
-            $key  = $folds ? trim($this->removeAccents($term)) : $term;
+            $term   = mb_strtolower($term, 'UTF-8');
+            $folded = trim($this->removeAccents($term));
+            $key    = $folds ? $folded : $term;
             $groups[$key === '' ? $term : $key][] = $term;
+            if ($foldsValues && $folded !== '' && $folded !== $term) {
+                $groups[$key === '' ? $term : $key][] = $folded; // compared with the folded values (TF-8)
+            }
         }
         $groups = array_values($groups);
 
@@ -3017,7 +3050,7 @@ class SearchBuilder
             $fuzzy[$i] = $i === 0 || $spent <= Utf8::SCORING_MAX_CHARS;
         }
 
-        $results = $results->map(function ($item) use ($groups, $fuzzy) {
+        $results = $results->map(function ($item) use ($groups, $fuzzy, $foldsValues) {
             $score = 0;
             $columnScores = [];
 
@@ -3033,8 +3066,14 @@ class SearchBuilder
                     $values = [''];
                 }
 
-                // Each value lowered and cut once, not once per term.
-                $values = array_map(fn (string $value) => [$lower = mb_strtolower($value, 'UTF-8'), Utf8::scoringInput($lower)], $values);
+                // Each value lowered and cut once, not once per term; where the SQL compared accents
+                // away (sqlFoldsAccents()), its folded form too, so "José" scores as "jose" does.
+                $values = array_merge(...array_map(function (string $value) use ($foldsValues): array {
+                    $lower = mb_strtolower($value, 'UTF-8');
+                    $forms = $foldsValues ? array_unique([$lower, Accents::fold($lower)]) : [$lower];
+
+                    return array_map(fn (string $form) => [$form, Utf8::scoringInput($form)], $forms);
+                }, $values));
 
                 // A to-many relation contributes its best related row, never an average.
                 foreach ($groups as $i => $group) {
@@ -3386,7 +3425,10 @@ class SearchBuilder
         // repeats the term cost megabytes a row (15 rows of 60 KB: 57 MB, and 8 MB of JSON).
         $max = max(0, (int) config('fuzzy-search.highlighting.max_matches', 100));
 
-        return $results->map(function ($item) use ($needles, $terms, $open, $close, $max) {
+        // Where the SQL compared accents away, the folded term is found in the folded value (TF-8).
+        $find = $this->sqlFoldsAccents() ? $this->foldedMatchOffsets(...) : $this->findMatchOffsets(...);
+
+        return $results->map(function ($item) use ($needles, $terms, $open, $close, $max, $find) {
             $matches     = [];
             $highlighted = [];
 
@@ -3403,7 +3445,7 @@ class SearchBuilder
                 foreach ($values as $value) {
                     $found = [];
                     foreach ($needles as $needle) {
-                        $found = array_merge($found, $this->findMatchOffsets($value, $needle, $max));
+                        $found = array_merge($found, $find($value, $needle, $max));
                     }
                     // Merge only where there are several needles (the index and extended paths,
                     // or a LIKE term with a folded variant): a single LIKE needle keeps v2.0's raw,
@@ -3494,6 +3536,41 @@ class SearchBuilder
             $offset    = $pos + strlen($term);
         }
         return $indices;
+    }
+
+    /**
+     * findMatchOffsets() on the accent-folded value and term (TF-8): each character of $value is
+     * folded on its own (Accents::fold()), and a match in the folded text is mapped back to the bytes
+     * of the characters it covers in $value, so "muller" marks "Müller" and "strasse" marks "Straße".
+     * A combining mark, which folds to nothing, stays inside the range of the letter it follows. A
+     * value with no byte past ASCII, or one that is not valid UTF-8, is searched as it is.
+     */
+    private function foldedMatchOffsets(string $value, string $term, int $max = 0): array
+    {
+        $needle = Accents::fold($term);
+        if (preg_match('/[\x80-\xFF]/', $value) !== 1 || !mb_check_encoding($value, 'UTF-8')) {
+            return $this->findMatchOffsets($value, $needle, $max);
+        }
+
+        $folded = '';
+        $starts = []; // per byte of $folded: the first and last byte of the character it came from
+        $ends   = [];
+        $offset = 0;
+        foreach (mb_str_split($value, 1, 'UTF-8') as $char) {
+            $form = isset($char[1]) ? Accents::fold($char) : $char;
+            $last = $offset + strlen($char) - 1;
+            if ($form === '' && $ends !== []) {
+                $ends[count($ends) - 1] = $last;
+            }
+            for ($i = strlen($form); $i > 0; $i--) {
+                $starts[] = $offset;
+                $ends[]   = $last;
+            }
+            $folded .= $form;
+            $offset += strlen($char);
+        }
+
+        return array_map(fn (array $range) => [$starts[$range[0]], $ends[$range[1]]], $this->findMatchOffsets($folded, $needle, $max));
     }
 
     /**
