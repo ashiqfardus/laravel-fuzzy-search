@@ -16,11 +16,15 @@ use Illuminate\Support\Facades\Schema;
  * COMPACT row format; on SQL Server (nvarchar, 2 bytes) it is 8 + 382 + 382 + 128 = 900 bytes
  * of a nonclustered index's 1,700, and the documents primary key 764 of a clustered one's 900.
  *
- * On MySQL/MariaDB model_id also takes utf8mb4_bin, as term has since 2026_09_17_000002: under
+ * On MySQL/MariaDB model_id also compares byte-wise, as term has since 2026_09_17_000002: under
  * the connection's case- and accent-insensitive collation, keys that differ only by case or
  * accents (sqids, hashids, base62: aBc and AbC) were one key, so the second overwrote the first's
- * document. PostgreSQL and SQLite compare it byte-wise already; SQL Server keeps its default
- * collation, a documented limit.
+ * document. The collation is a NO PAD one, utf8mb4_0900_bin on MySQL (8.0.17+) and
+ * utf8mb4_nopad_bin on MariaDB: utf8mb4_bin, which an earlier 2.1 build used and an older MySQL
+ * still gets, ignores trailing spaces, so 'SKU1' and 'SKU1 ' (two rows under a NO PAD key column,
+ * such as MySQL 8's default utf8mb4_0900_ai_ci) were one document. A second run moves an earlier
+ * build's utf8mb4_bin over. PostgreSQL and SQLite compare it byte-wise already; SQL Server keeps
+ * its default collation, a documented limit.
  *
  * Raw ALTERs, not ->change(): Laravel 10 needs doctrine/dbal for that. SQLite does not enforce a
  * varchar length, so there is nothing to change there. SQL Server refuses to alter a column a
@@ -44,8 +48,11 @@ return new class extends Migration
             return;
         }
 
-        // A table already gone (a test that dropped it) has nothing to narrow.
-        $tables = array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
+        // A table already gone (a test that dropped it) has nothing to narrow. `migrate:rollback
+        // --pretend` runs no select: both tables are there, as up() left them.
+        $tables = DB::connection()->pretending()
+            ? self::TABLES
+            : array_values(array_filter(self::TABLES, fn (string $table) => Schema::hasTable($table)));
 
         // Keys longer than 36 characters do not fit the old column, and on MySQL/MariaDB keys that
         // differ only by case or accents (any two keys the table's collation compares equal) are
@@ -58,6 +65,7 @@ return new class extends Migration
             $documents = DB::table('fuzzy_index_documents')->whereRaw($tooLong)->get(['model_type', 'model_id'])
                 ->concat(DbDialect::isMySqlFamily($driver) ? $this->collidingKeys() : []);
             foreach ($documents as $document) {
+                $document = (object) $document; // whatever the app's fetch mode
                 app(IndexManager::class)->removeFromIndex($document->model_type, $document->model_id);
             }
         }
@@ -81,6 +89,7 @@ return new class extends Migration
             . ' where table_schema = database() and table_name = ? and column_name = ?',
             [DB::connection()->getTablePrefix() . 'fuzzy_index_documents', 'model_type']
         );
+        $column = $column === null ? null : (object) $column; // whatever the app's fetch mode
         if ($column === null || !preg_match('/^\w+$/', (string) $column->charset) || !preg_match('/^\w+$/', (string) $column->collation)) {
             return [];
         }
@@ -88,10 +97,22 @@ return new class extends Migration
         $table  = DbDialect::rawIdentifier('fuzzy_index_documents');
         $folded = fn (string $key) => "CAST({$key} AS CHAR CHARACTER SET {$column->charset}) COLLATE {$column->collation}";
 
-        return DB::select(
+        return array_map(fn ($row) => (object) $row, DB::select(
             "select d.model_type, d.model_id from {$table} d join (select model_type, {$folded('model_id')} as folded from {$table}"
             . " group by model_type, folded having count(*) > 1) g on g.model_type = d.model_type and g.folded = {$folded('d.model_id')}"
-        );
+        ));
+    }
+
+    /** MySQL/MariaDB: the byte-wise collation that keeps trailing spaces (utf8mb4_bin, before MySQL 8.0.17). */
+    private static function noPadBinary(): string
+    {
+        $version = (string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION);
+
+        return match (true) {
+            stripos($version, 'mariadb') !== false              => 'utf8mb4_nopad_bin',
+            version_compare($version, '8.0.17', '>=')           => 'utf8mb4_0900_bin',
+            default                                             => 'utf8mb4_bin',
+        };
     }
 
     /** @param list<string> $tables */
@@ -113,9 +134,11 @@ return new class extends Migration
             Schema::table('fuzzy_index_documents', fn (Blueprint $table) => $table->dropPrimary(['model_type', 'model_id']));
         }
 
-        // MySQL/MariaDB: up() compares model_id byte-wise; down() leaves out the character set and
-        // collation, so the column takes the table's default back, as v2.0.1 created it.
-        $binary = $length > 36 ? ' CHARACTER SET utf8mb4 COLLATE utf8mb4_bin' : '';
+        // MySQL/MariaDB: up() compares model_id byte-wise, trailing spaces included; down() leaves out
+        // the character set and collation, so the column takes the table's default back, as v2.0.1
+        // created it. The server's version is read from the connection, not queried, so it holds
+        // under `migrate --pretend` too.
+        $binary = $length > 36 && DbDialect::isMySqlFamily($driver) ? ' CHARACTER SET utf8mb4 COLLATE ' . self::noPadBinary() : '';
 
         foreach ($tables as $table) {
             $table = DbDialect::rawIdentifier($table);
@@ -130,8 +153,9 @@ return new class extends Migration
 
         if ($driver === DbDialect::SQLSRV && $postings) {
             // The key 2026_09_18_000001 left: without column_name when its column is gone (a test
-            // that recreated the table), as that migration's own down() allows.
-            $unique = Schema::hasColumn('fuzzy_index_postings', 'column_name')
+            // that recreated the table), as that migration's own down() allows; under --pretend, which
+            // runs no select, with it.
+            $unique = DB::connection()->pretending() || Schema::hasColumn('fuzzy_index_postings', 'column_name')
                 ? ['term_id', 'model_type', 'model_id', 'column_name']
                 : ['term_id', 'model_type', 'model_id'];
             Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($unique) {

@@ -8,23 +8,27 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    private const INDEX = 'fuzzy_index_terms_term_length_index';
+
+    /** 2026_10_01_000001's indexes on term_length: the current one, and an earlier 2.1 build's. */
+    private const LATER = ['fuzzy_index_terms_term_length_doc_count_id_index', 'fuzzy_index_terms_term_length_doc_count_index'];
+
     public function up(): void
     {
         $driver = DB::connection()->getDriverName();
+        // `migrate --pretend` runs no select: it prints what an upgrade runs, on a 2.0.1 dictionary.
+        $pretending = DB::connection()->pretending();
 
-        // A run that failed after this step left the column: on MySQL, MariaDB and SQLite the
-        // migrator runs a migration outside a transaction, so each statement stays, and it records
-        // the migration only once up() returns. The column is not added twice.
-        if (!Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
-            if (DbDialect::isMySqlFamily($driver)) {
-                // One ALTER, which InnoDB applies whole: the column and its index, or neither.
-                DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_terms')
-                    . ' ADD COLUMN term_length SMALLINT UNSIGNED NOT NULL DEFAULT 0, ADD INDEX fuzzy_index_terms_term_length_index (term_length)');
-            } else {
-                Schema::table('fuzzy_index_terms', function (Blueprint $table) {
-                    $table->unsignedSmallInteger('term_length')->default(0)->index('fuzzy_index_terms_term_length_index');
-                });
-            }
+        // A run that failed after a step left it: on MySQL, MariaDB and SQLite the migrator runs a
+        // migration outside a transaction, so each statement stays, and it records the migration
+        // only once up() returns. Neither the column nor its index is added twice. Two statements
+        // on purpose: InnoDB adds the column instantly and builds the index in place, while one
+        // ALTER doing both rebuilt the whole dictionary.
+        if ($pretending || !Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->unsignedSmallInteger('term_length')->default(0));
+        }
+        if ($pretending || !in_array(self::INDEX, $this->indexes(), true)) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::INDEX));
         }
 
         // Backfill dictionaries built before this column existed, so TermExpander can filter by
@@ -43,13 +47,56 @@ return new class extends Migration
     {
         // hasColumn (not just hasTable): a test that recreates fuzzy_index_terms from the
         // pre-term_length migration leaves the table present but without this column/index,
-        // and hasColumn() is false for a missing table too, so one check covers both cases.
-        if (!Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
+        // and hasColumn() is false for a missing table too, so one check covers both cases. Under
+        // `migrate:rollback --pretend`, which runs no select, the column is there, as up() left it.
+        if (!DB::connection()->pretending() && !Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
             return; // the create-table migration's down() already removed it (or a test did)
         }
 
+        // Rolled back on its own (migrate:rollback --path) under 2026_10_01_000001, which replaced
+        // this migration's index with its own on (term_length, doc_count, id): dropping the column
+        // under that index fails on SQLite and SQL Server, cuts the index short on MySQL and
+        // MariaDB, and drops it on PostgreSQL, with 2026_10_01_000001 still recorded. Refuse first.
+        if (!DB::connection()->pretending() && array_intersect(self::LATER, $this->indexes()) !== []) {
+            throw new \RuntimeException('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first: its index on term_length is still there.');
+        }
+
         // Two statements on purpose: SQLite refuses to drop a column an index still references.
-        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex('fuzzy_index_terms_term_length_index'));
-        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length'));
+        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::INDEX));
+
+        if (DB::connection()->getDriverName() !== DbDialect::SQLITE) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length'));
+
+            return;
+        }
+
+        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
+        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, and its
+        // DROP TABLE fuzzy_index_terms, with foreign keys on, deleted every posting (ON DELETE
+        // CASCADE). Below 3.35 dropColumn() rebuilds the table, so foreign keys are off for both.
+        Schema::withoutForeignKeyConstraints(fn () => version_compare((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.35.0', '>=')
+            ? DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_terms') . ' DROP COLUMN term_length')
+            : Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length')));
+    }
+
+    /**
+     * The names of the indexes on fuzzy_index_terms, read from the catalog (Laravel 10 has no
+     * Schema::getIndexes()), each row cast to an object whatever the app's fetch mode.
+     *
+     * @return list<string>
+     */
+    private function indexes(): array
+    {
+        $connection = DB::connection();
+        $table      = $connection->getTablePrefix() . 'fuzzy_index_terms';
+
+        $rows = match ($connection->getDriverName()) {
+            DbDialect::SQLITE => $connection->select("select name from sqlite_master where type = 'index' and tbl_name = ?", [$table]),
+            DbDialect::PGSQL  => $connection->select('select c.relname as name from pg_index i join pg_class c on c.oid = i.indexrelid where i.indrelid = to_regclass(quote_ident(?))', [$table]),
+            DbDialect::SQLSRV => $connection->select('select name from sys.indexes where object_id = object_id(?) and name is not null', [$table]),
+            default           => $connection->select('select distinct index_name as name from information_schema.statistics where table_schema = database() and table_name = ?', [$table]),
+        };
+
+        return array_map(fn ($row) => strtolower((string) ((object) $row)->name), $rows);
     }
 };

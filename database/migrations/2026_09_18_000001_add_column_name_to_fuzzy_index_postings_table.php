@@ -22,29 +22,24 @@ return new class extends Migration
         // Only what is left to do: a run that failed part way left its first steps (MySQL, MariaDB
         // and SQLite run a migration outside a transaction and record it only once up() returns),
         // and the next `migrate` stopped at the column it had added. A failed key swap left the
-        // table without a unique key; it is added back.
-        $add  = !Schema::hasColumn('fuzzy_index_postings', 'column_name');
-        $key  = $this->uniqueKeyColumns();
-        $swap = !in_array('column_name', $key, true);
+        // table without a unique key; it is added back. `migrate --pretend` runs no select: it prints
+        // what an upgrade runs, on the 2.0.1 table (no column, the three-column key).
+        $pretending = DB::connection()->pretending();
+        $add        = $pretending || !Schema::hasColumn('fuzzy_index_postings', 'column_name');
+        $key        = $pretending ? ['term_id', 'model_type', 'model_id'] : $this->uniqueKeyColumns();
+        $swap       = !in_array('column_name', $key, true);
 
-        if (DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
-            // One ALTER, which InnoDB applies whole, so no failure leaves the key half swapped.
-            $changes = array_filter([
-                $add ? "ADD COLUMN column_name VARCHAR(64) NOT NULL DEFAULT ''" : null,
-                $swap && $key !== [] ? 'DROP INDEX postings_unique_idx' : null,
-                $swap ? 'ADD UNIQUE postings_unique_idx (term_id, model_type, model_id, column_name)' : null,
-            ]);
-            if ($changes !== []) {
-                DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_postings') . ' ' . implode(', ', $changes));
-            }
-
-            return;
-        }
-
+        // The column on its own: InnoDB adds it instantly, while one ALTER that also swapped the key
+        // rebuilt the whole postings table (about 6× the time).
         if ($add) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->string('column_name', 64)->default(''));
         }
-        if ($swap) {
+        if ($swap && DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
+            // One ALTER, which InnoDB applies whole, in place, so no failure leaves the key half
+            // swapped, and the term_id foreign key is never without an index.
+            DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_postings') . ' '
+                . ($key !== [] ? 'DROP INDEX postings_unique_idx, ' : '') . 'ADD UNIQUE postings_unique_idx (term_id, model_type, model_id, column_name)');
+        } elseif ($swap) {
             Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($key) {
                 if ($key !== []) {
                     $table->dropUnique('postings_unique_idx');
@@ -56,7 +51,9 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (!Schema::hasColumn('fuzzy_index_postings', 'column_name')) {
+        // `migrate:rollback --pretend` runs no select: the table as up() left it.
+        $pretending = DB::connection()->pretending();
+        if (!$pretending && !Schema::hasColumn('fuzzy_index_postings', 'column_name')) {
             return;
         }
 
@@ -64,26 +61,45 @@ return new class extends Migration
         // the user rebuild (documented in the upgrade guide).
         DB::table('fuzzy_index_postings')->where('column_name', '!=', '')->delete();
 
-        Schema::table('fuzzy_index_postings', function (Blueprint $table) {
-            $table->dropUnique('postings_unique_idx');
-            $table->unique(['term_id', 'model_type', 'model_id'], 'postings_unique_idx');
-        });
-        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
-        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, which added
-        // an index of its own on the term_id foreign key that a later migrate kept.
-        if (DB::connection()->getDriverName() === DbDialect::SQLITE
-            && version_compare((string) DB::selectOne('select sqlite_version() as v')->v, '3.35.0', '>=')) {
-            DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings') . ' DROP COLUMN column_name');
+        // Only a key that still has column_name: a rollback that stopped after the swap is run again.
+        $key = $pretending ? ['term_id', 'model_type', 'model_id', 'column_name'] : $this->uniqueKeyColumns();
+        if (in_array('column_name', $key, true)) {
+            if (DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
+                // One ALTER. Rolled back on its own (migrate:rollback --path), with
+                // 2026_10_01_000001's drop of postings_term_model_idx still in place, the key is the
+                // only index serving the term_id foreign key, and MySQL refused to drop it alone
+                // (1553) after the delete above had committed.
+                DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_postings')
+                    . ' DROP INDEX postings_unique_idx, ADD UNIQUE postings_unique_idx (term_id, model_type, model_id)');
+            } else {
+                Schema::table('fuzzy_index_postings', function (Blueprint $table) {
+                    $table->dropUnique('postings_unique_idx');
+                    $table->unique(['term_id', 'model_type', 'model_id'], 'postings_unique_idx');
+                });
+            }
+        }
+
+        if (DB::connection()->getDriverName() !== DbDialect::SQLITE) {
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name'));
 
             return;
         }
 
-        Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name'));
+        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
+        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, which added
+        // an index of its own on the term_id foreign key that a later migrate kept. Foreign keys
+        // are off around it, as in the term_length migration's down(): below 3.35 dropColumn()
+        // rebuilds the table.
+        Schema::withoutForeignKeyConstraints(fn () => version_compare((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.35.0', '>=')
+            ? DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings') . ' DROP COLUMN column_name')
+            : Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name')));
     }
 
     /**
      * The columns of postings_unique_idx, read from the catalog (Laravel 10 has no
-     * Schema::getIndexes()); [] when the table has no such key.
+     * Schema::getIndexes()); [] when the table has no such key. Each row is cast to an object, as
+     * Laravel's own schema reads do: an app-wide array fetch mode (a StatementPrepared listener
+     * that sets PDO::FETCH_ASSOC) applies to `migrate` too.
      *
      * @return list<string>
      */
@@ -116,6 +132,6 @@ return new class extends Migration
             ),
         };
 
-        return array_map(fn ($row) => strtolower((string) $row->col), $rows);
+        return array_map(fn ($row) => strtolower((string) ((object) $row)->col), $rows);
     }
 };

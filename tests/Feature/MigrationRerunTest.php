@@ -3,22 +3,26 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 use Ashiqfardus\LaravelFuzzySearch\Analytics\SearchAnalytics;
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 
+require_once __DIR__ . '/../TestModels.php';
+
 /**
  * SC-1. MySQL and MariaDB commit each DDL statement on its own, and the migrator wraps no migration
  * in a transaction there. A failure after the first statement of the term_length, column_name or
  * search-log migration (a lock-wait timeout, a killed deploy) left it half applied and unrecorded,
  * and every later `migrate` stopped at "1060 Duplicate column name" (1050 for the log table); a
- * failed key swap left the postings table with no unique key. Each now changes its table in one
- * ALTER where it can, which InnoDB applies whole, and skips what an earlier run did. The failure is
- * simulated: the statement after the migration's first DDL throws. PostgreSQL, SQLite and SQL
- * Server roll the migration back whole, and run the same checks.
+ * failed key swap left the postings table with no unique key. Each now skips what an earlier run
+ * did, and the postings key is swapped in one ALTER, which InnoDB applies whole. The failure is
+ * simulated: the statement after the migration's first DDL throws. PostgreSQL and SQL Server roll
+ * the migration back whole; SQLite, like MySQL, keeps each statement. All run the same checks.
  */
 class MigrationRerunTest extends TestCase
 {
@@ -30,6 +34,8 @@ class MigrationRerunTest extends TestCase
             'term_length' => ['2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table', 'fuzzy_index_terms', '/^\s*alter table\b.*term_length/i'],
             'column_name' => ['2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table', 'fuzzy_index_postings', '/^\s*alter table\b.*column_name/i'],
             'search_logs' => ['2026_09_19_000001_create_fuzzy_search_logs_table', 'fuzzy_search_logs', '/^\s*create table\b.*fuzzy_search_logs/i'],
+            // R11-L11: after two of its four indexes, so the next run adds only the other two.
+            'search_logs, after its second index' => ['2026_09_19_000001_create_fuzzy_search_logs_table', 'fuzzy_search_logs', '/\bsearch_logs_created_idx\b/i'],
         ];
     }
 
@@ -184,6 +190,129 @@ class MigrationRerunTest extends TestCase
             $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists(), $label);
             $this->assertSame($clean, $this->schema('fuzzy_index_postings'), $label);
         }
+    }
+
+    /**
+     * R11-L5. InnoDB adds a column instantly and builds an index in place, but one ALTER that does
+     * both rebuilds the whole table: the column_name migration's single ALTER rebuilt the postings
+     * table (3.96 s → 23.53 s at 2M postings on MySQL), and term_length's the dictionary. A rebuilt
+     * table gets a new tablespace.
+     */
+    public function test_the_column_migrations_do_not_rebuild_their_table_on_mysql_and_mariadb(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL/MariaDB only: the rebuild is InnoDB\'s; the CI MySQL and MariaDB jobs run this.');
+        }
+
+        $catalog = $this->dbDriver === 'mariadb' ? 'information_schema.innodb_sys_tables' : 'information_schema.innodb_tables';
+        $space   = fn (string $table) => (int) ((object) DB::selectOne("select space from {$catalog} where name = concat(database(), '/', ?)", [DB::connection()->getTablePrefix() . $table]))->space;
+
+        $this->rollBackTo('2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table');
+        // Rows a 2.0 index holds: MySQL rebuilds an empty table rather than alter it in place.
+        $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zebra', 'doc_count' => 1]);
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $term, 'model_type' => 'App\\Models\\Animal', 'model_id' => '1', 'frequency' => 1]);
+        foreach (['2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table' => 'fuzzy_index_terms', '2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table' => 'fuzzy_index_postings'] as $migration => $table) {
+            $before = $space($table);
+            $this->artisan('migrate', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run();
+            $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists(), $migration);
+            $this->assertSame($before, $space($table), "{$migration} rebuilt {$table}");
+        }
+        $this->migrate();
+    }
+
+    /**
+     * R11-L6. After a 2.0.1 → 2.1 upgrade in one `migrate`, `migrate:rollback --path` of the
+     * column_name migration runs its down() alone, with 2026_10_01_000001's drop of
+     * postings_term_model_idx still in place, so postings_unique_idx is the only index on
+     * MySQL/MariaDB that serves the term_id foreign key. down() committed its delete of the
+     * per-column postings, then failed to drop the key on its own (1553), and stayed recorded: every
+     * retry failed the same way. The key is now swapped in one ALTER there. The rows it keeps (the
+     * '' ones) stay, and a migrate after it ends at the fresh schema.
+     */
+    public function test_the_column_name_migration_rolls_back_on_its_own_after_a_one_batch_upgrade(): void
+    {
+        $migration = '2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table';
+        $fresh     = $this->schema('fuzzy_index_postings');
+
+        $this->rollBackTo('2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table');
+        $this->migrate(); // one batch, as an upgrade's migrate
+        app(IndexManager::class)->indexBatch(User::all());
+        $term = (int) DB::table('fuzzy_index_terms')->min('id');
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => '']);
+        $this->assertGreaterThan(0, DB::table('fuzzy_index_postings')->where('column_name', '!=', '')->count());
+
+        $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run());
+
+        $this->assertFalse(DB::table('migrations')->where('migration', $migration)->exists(), 'rolled back');
+        $this->assertFalse(Schema::hasColumn('fuzzy_index_postings', 'column_name'));
+        $this->assertSame(
+            [['App\\Models\\Legacy', '1']],
+            DB::table('fuzzy_index_postings')->get(['model_type', 'model_id'])->map(fn ($row) => [$row->model_type, (string) $row->model_id])->all()
+        );
+        $this->assertStringContainsString('term_id,model_type,model_id', str_replace(['"', ' '], '', $this->schema('fuzzy_index_postings')['indexes']['postings_unique_idx']));
+
+        $this->migrate();
+        $this->assertSame($fresh, $this->schema('fuzzy_index_postings'));
+    }
+
+    /**
+     * R11-L9 / TD-1. On Laravel 10 with doctrine/dbal (Filament 3 requires it), SQLite's
+     * dropColumn() went through Doctrine, which rebuilds the table. Rolling back the term_length
+     * migration ran DROP TABLE fuzzy_index_terms with foreign keys on, which cascaded to every
+     * posting, the '' ones the rollback keeps included; the rebuilt postings table of a column_name
+     * rollback carried an index of Doctrine's own on term_id (IDX_…). Both down()s drop the column
+     * natively now, with foreign keys off. A rollback of either keeps the rows it does not mean to
+     * delete, and the 2.0.1 indexes only.
+     */
+    public function test_rolling_back_either_column_migration_keeps_the_legacy_postings_and_the_old_indexes(): void
+    {
+        $indexes = fn (string $table) => array_values(array_filter(array_keys($this->schema($table)['indexes']), fn (string $name) => !preg_match('/primary|pkey/i', $name)));
+        $legacy  = fn () => DB::table('fuzzy_index_postings')->orderBy('model_id')->get(['model_type', 'model_id'])->map(fn ($row) => [$row->model_type, (string) $row->model_id])->all();
+
+        foreach (['2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table', '2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table'] as $migration) {
+            DB::table('fuzzy_index_postings')->delete();
+            DB::table('fuzzy_index_terms')->delete();
+            app(IndexManager::class)->indexBatch(User::all());
+            $terms = DB::table('fuzzy_index_terms')->count();
+            $term  = (int) DB::table('fuzzy_index_terms')->min('id');
+            DB::table('fuzzy_index_postings')->insert([
+                ['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => ''],
+                ['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '2', 'frequency' => 1, 'column_name' => ''],
+            ]);
+
+            $this->rollBackTo($migration);
+
+            $this->assertSame([['App\\Models\\Legacy', '1'], ['App\\Models\\Legacy', '2']], $legacy(), $migration);
+            $this->assertSame($terms, DB::table('fuzzy_index_terms')->count(), $migration);
+            $this->assertSame(['postings_model_idx', 'postings_term_model_idx', 'postings_unique_idx'], $indexes('fuzzy_index_postings'), $migration);
+            $this->assertSame([], preg_grep('/^idx_/i', $indexes('fuzzy_index_terms')), $migration);
+
+            $this->migrate();
+        }
+    }
+
+    /**
+     * TC-5. 2026_10_01_000001 replaces the term_length index with (term_length, doc_count, id).
+     * Rolled back on its own (migrate:rollback --path) after it, the term_length migration's down()
+     * failed at its first statement on every database ("index does not exist"), and dropping the
+     * column under the new index would fail on SQLite and SQL Server, cut the index to (doc_count,
+     * id) on MySQL and MariaDB, or drop it on PostgreSQL, while 2026_10_01 stayed recorded. down()
+     * now refuses, naming the migration to roll back first, and changes nothing.
+     */
+    public function test_the_term_length_migration_rolled_back_on_its_own_names_the_migration_to_roll_back_first(): void
+    {
+        $migration = '2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table';
+        $before    = $this->schema('fuzzy_index_terms');
+
+        try {
+            $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true, '--step' => 50])->run();
+            $this->fail('the rollback ran');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first', $e->getMessage());
+        }
+
+        $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists());
+        $this->assertSame($before, $this->schema('fuzzy_index_terms'));
     }
 
     /** A term_length column an earlier run added: migrate fills the words it left at 0. */

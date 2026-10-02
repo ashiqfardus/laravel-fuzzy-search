@@ -16,6 +16,24 @@ use Illuminate\Support\Facades\DB;
 final class TermExpander
 {
     /**
+     * TC-4: candidates() reads a length at a time (S1) when the model's total_tokens squared passes
+     * this many times the pool times the index's total_tokens, and the whole window once otherwise.
+     * Measured at 1M dictionary words, a pool of 500 and models that hold every k-th word, the two
+     * reads crossed between 1.3 and 2.1 on MySQL, 7.6 and 11 on PostgreSQL, and 19 and 37 on
+     * MariaDB and on SQL Server. SQLite reads a length at a time for every model: its read of the
+     * window scanned the whole window whatever the share (120–230 ms there), never faster.
+     *
+     * ponytail: the same even-spread cost model as probes(), on the meta totals; a model whose words
+     * cluster in a few lengths, or in the dictionary's tail, can sit on the wrong side of it.
+     */
+    private const PER_LENGTH_ABOVE = [
+        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL   => 2.0,
+        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::PGSQL   => 10.0,
+        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::SQLSRV  => 25.0,
+        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MARIADB => 25.0,
+    ];
+
+    /**
      * Dictionary terms within $maxDistance edits of $term, most common first.
      *
      * @param  ?string $modelType   Restrict to terms posted under this model_type (see postedUnder());
@@ -35,23 +53,40 @@ final class TermExpander
         $length = mb_strlen($term);
 
         // The $pool most common words of the length window, read one length at a time through
-        // (term_length, doc_count): each read stops after $pool rows in index order, and the
+        // (term_length, doc_count, id): each read stops after $pool rows in index order, and the
         // window's top $pool are among the lengths' own. One read of the whole window sorted every
         // word in it, a cost that grew with the dictionary (S1). Separate reads, not a UNION of
-        // limited parts, which SQLite and SQL Server do not accept. Ties keep the database's order.
-        $probe = $this->probes($modelType, $pool);
-        $rows  = [];
-        for ($l = max(1, $length - $maxDistance); $l <= $length + $maxDistance; $l++) {
-            $rows = [...$rows, ...$this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly, $probe)
-                ->select('term', 'doc_count')
-                ->where('term_length', $l)
-                ->where('term', '!=', $term)
-                ->orderByDesc('doc_count')
-                ->limit($pool)
-                ->get()
-                ->all()];
+        // limited parts, which SQLite and SQL Server do not accept. Equal counts are cut by id, the
+        // newest word first, in each read and in the merge: most words share a small count, so the
+        // cut usually falls inside a tie, and without the id the plan's order (which a statistics
+        // refresh changes) or the merge's length order picked the words a typo search finds.
+        //
+        // That is the read for a model holding a large share of the dictionary. For a small share
+        // each length's read was planned as a full read of the model's postings and of every word of
+        // that length, once per length (TC-4: 0.75–1.6 s a term on SQL Server at 1M words, where one
+        // read of the window took 50 ms): such a model reads the window once, through its own
+        // postings, as before S1 (see PER_LENGTH_ABOVE).
+        $from   = max(1, $length - $maxDistance);
+        $to     = $length + $maxDistance;
+        $above  = self::perLengthAbove();
+        $totals = $modelType === null || $above <= 0.0 ? null : $this->totals($modelType);
+        $read   = fn (bool $probe) => $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly, $probe)
+            ->select('id', 'term', 'doc_count')
+            ->where('term', '!=', $term)
+            ->orderByDesc('doc_count')
+            ->orderByDesc('id')
+            ->limit($pool);
+
+        if ($totals === null || $totals[0] * $totals[0] > $above * $pool * $totals[1]) {
+            $probe = $this->probes($modelType, $pool, $totals);
+            $rows  = [];
+            for ($l = $from; $l <= $to; $l++) {
+                $rows = [...$rows, ...$read($probe)->where('term_length', $l)->get()->all()];
+            }
+            usort($rows, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
+        } else {
+            $rows = $read(false)->whereBetween('term_length', [$from, $to])->get()->all();
         }
-        usort($rows, fn ($a, $b) => (int) $b->doc_count <=> (int) $a->doc_count); // stable: ties stay in read order
 
         $out = [];
         foreach (array_slice($rows, 0, $pool) as $row) {
@@ -161,7 +196,8 @@ final class TermExpander
                   ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
         }
 
-        $terms = $this->postedUnder($query, $modelType, $visibleOnly, $this->probes($modelType, $max))->orderByDesc('doc_count')->limit($max)->pluck('term');
+        // Equal counts by id, the newest word first, as candidates() cuts them.
+        $terms = $this->postedUnder($query, $modelType, $visibleOnly, $this->probes($modelType, $max))->orderByDesc('doc_count')->orderByDesc('id')->limit($max)->pluck('term');
 
         $weights = [];
         foreach ($terms as $term) {
@@ -226,24 +262,45 @@ final class TermExpander
      * Probing reads about $rows × (the index's postings / the model's) words, the full read the
      * model's postings, and the meta totals stand in for postings (total_tokens counts a model's
      * word occurrences): probe when the model's total_tokens squared passes $rows times the index's.
-     * MariaDB and PostgreSQL planned both cases well unhinted (SQL Server was not measured at this
-     * size); MariaDB ignores the hint, which reaches it on Laravel 10, whose MariaDB connection is a
-     * mysql one.
+     * MariaDB, PostgreSQL and SQL Server plan a large model's reads well unhinted; MariaDB ignores
+     * the hint, which reaches it on Laravel 10, whose MariaDB connection is a mysql one. A model
+     * below PER_LENGTH_ABOVE reads the window once, unhinted (see candidates()).
      *
      * ponytail: a cost model on the meta totals that assumes a model's words spread evenly over the
      * dictionary, so a model whose words are all rare can still probe long; replace it if MySQL
      * learns to cost a semi-join under a LIMIT.
      */
-    private function probes(?string $modelType, int $rows): bool
+    private function probes(?string $modelType, int $rows, ?array $totals = null): bool
     {
         if ($modelType === null || DB::connection()->getDriverName() !== \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL) {
             return false;
         }
 
-        $tokens = DB::table('fuzzy_index_meta')->pluck('total_tokens', 'model_type');
-        $own    = (float) ($tokens[$modelType] ?? 0);
+        [$own, $total] = $totals ?? $this->totals($modelType);
 
-        return $own * $own > $rows * (float) $tokens->sum();
+        return $own * $own > $rows * $total;
+    }
+
+    /** @return array{float, float} $modelType's total_tokens and the whole index's, from fuzzy_index_meta */
+    private function totals(string $modelType): array
+    {
+        $tokens = DB::table('fuzzy_index_meta')->pluck('total_tokens', 'model_type');
+
+        return [(float) ($tokens[$modelType] ?? 0), (float) $tokens->sum()];
+    }
+
+    /** PER_LENGTH_ABOVE for this connection; 0 reads a length at a time whatever the share (SQLite). */
+    private static function perLengthAbove(): float
+    {
+        $connection = DB::connection();
+        $driver     = $connection->getDriverName();
+        // Laravel 10 connects to MariaDB as mysql; the server tells them apart, without a query.
+        if ($driver === \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL
+            && stripos((string) $connection->getReadPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), 'mariadb') !== false) {
+            $driver = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MARIADB;
+        }
+
+        return self::PER_LENGTH_ABOVE[$driver] ?? 0.0;
     }
 
     /**
