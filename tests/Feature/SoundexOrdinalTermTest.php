@@ -87,4 +87,37 @@ class SoundexOrdinalTermTest extends TestCase
         // A term whose first letter is ASCII still takes soundex(): "Mila" finds "Mila Kunis" by sound.
         $this->assertContains('Mila Kunis', OrdinalItem::search('Myla')->using('soundex')->get()->pluck('title')->all());
     }
+
+    /**
+     * The stored side of the same: soundex() of a stored word whose first letter is not ASCII skipped
+     * that letter under glibc, so "Mila" found "Émile Zola" (M400) and "Lee" found "Øle Gunnar"
+     * (L000), and on macOS it returned a code that is not UTF-8 and the search threw. Such a word is
+     * now not compared by soundex() at all (ruling ER-172).
+     */
+    public function test_postgresql_does_not_compare_a_stored_word_whose_first_letter_is_not_ascii(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL only (CI runs it): fuzzystrmatch\'s soundex() is the native function there.');
+        }
+        try {
+            DB::statement('CREATE EXTENSION IF NOT EXISTS fuzzystrmatch');
+        } catch (\Throwable $e) {
+            $this->markTestSkipped('The fuzzystrmatch extension cannot be created here: ' . $e->getMessage());
+        }
+        config(['fuzzy-search.use_native_functions' => true]);
+        DB::table('ordinal_items')->insert([['title' => 'Mila Kunis'], ['title' => 'Émile Zola'], ['title' => 'Lee Marvin'], ['title' => 'Øle Gunnar'], ['title' => 'Anna Øle']]);
+
+        foreach (['Mila' => ['Mila Kunis'], 'Lee' => ['Lee Marvin']] as $term => $expected) {
+            $this->assertSame($expected, OrdinalItem::search($term)->using('soundex')->get()->pluck('title')->all(), "{$term} get");
+            $this->assertSame($expected, DB::table('ordinal_items')->whereFuzzy('title', $term, 'soundex')->pluck('title')->all(), "{$term} macro");
+        }
+
+        // A stored word whose first letter is ASCII is still compared, first word or last.
+        $this->assertSame(['Anna Øle'], OrdinalItem::search('Ana')->using('soundex')->get()->pluck('title')->all());
+
+        // The guard itself, which macOS's fuzzystrmatch cannot show: each word reaches soundex() only
+        // when it begins with an ASCII letter, inside a CASE, so PostgreSQL never evaluates it first.
+        $sql = DB::table('ordinal_items')->whereFuzzy('title', 'Mila', 'soundex')->toSql();
+        $this->assertSame(2, substr_count($sql, "~ '^[A-Za-z]' THEN SOUNDEX("), $sql);
+    }
 }

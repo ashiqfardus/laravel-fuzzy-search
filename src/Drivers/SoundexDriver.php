@@ -57,8 +57,16 @@ class SoundexDriver extends BaseDriver
             // Match first word OR last word on PostgreSQL.
             // SPLIT_PART(col, ' ', -1) requires PostgreSQL 14+. Use SUBSTRING with a
             // POSIX regex to extract the last space-delimited token — works on all versions.
+            // A stored word reaches soundex() only when it begins with an ASCII letter, as the term
+            // must (above): fuzzystrmatch skipped a leading non-ASCII letter under glibc ("Émile"
+            // encoded as M400 and matched "Mila") and returned a code that is not UTF-8 on macOS.
+            // Inside a CASE, so PostgreSQL never evaluates soundex() before the guard (ruling ER-172).
+            $first = "SPLIT_PART({$col}, ' ', 1)";
+            $last  = "TRIM(SUBSTRING({$col} FROM '[^ ]+$'))";
+            $code  = fn (string $word) => "CASE WHEN {$word} ~ '^[A-Za-z]' THEN SOUNDEX({$word}) END";
+
             return $query->$method(
-                "(SOUNDEX(SPLIT_PART({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(TRIM(SUBSTRING({$col} FROM '[^ ]+$'))) = SOUNDEX(?))",
+                "({$code($first)} = SOUNDEX(?) OR {$code($last)} = SOUNDEX(?))",
                 [$value, $value]
             );
         }
