@@ -157,8 +157,8 @@ class SearchableObserver
 
         foreach ($model->getSearchableColumns() as $column) {
             $metaphoneCol = $column . self::SUFFIX;
-            // Per connection, database and prefix too: another connection's, or another tenant's,
-            // table of this name may not have the column (SD-2).
+            // Per connection, as connectionKey() locates it: another connection's, or another
+            // tenant's (database, server or schema), table of this name may not have the column (SD-2, TC-2).
             $cacheKey     = SearchableColumns::connectionKey($connection) . '|' . $table . '.' . $metaphoneCol;
 
             if (!array_key_exists($cacheKey, static::$columnCache)) {
