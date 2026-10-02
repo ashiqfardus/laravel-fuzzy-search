@@ -68,6 +68,16 @@ return new class extends Migration
             $table->dropUnique('postings_unique_idx');
             $table->unique(['term_id', 'model_type', 'model_id'], 'postings_unique_idx');
         });
+        // SQLite 3.35+ drops the column itself. Laravel 10's dropColumn() with doctrine/dbal
+        // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, which added
+        // an index of its own on the term_id foreign key that a later migrate kept.
+        if (DB::connection()->getDriverName() === DbDialect::SQLITE
+            && version_compare((string) DB::selectOne('select sqlite_version() as v')->v, '3.35.0', '>=')) {
+            DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings') . ' DROP COLUMN column_name');
+
+            return;
+        }
+
         Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropColumn('column_name'));
     }
 

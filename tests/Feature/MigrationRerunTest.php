@@ -115,6 +115,21 @@ class MigrationRerunTest extends TestCase
         return ['columns' => $columns, 'indexes' => $indexes];
     }
 
+    /** A rollback, then migrate, of each 2.1 migration that changes a table ends at the fresh install's schema. */
+    #[DataProvider('interruptions')]
+    public function test_a_rollback_then_migrate_ends_at_the_fresh_schema(string $migration, string $table, string $after): void
+    {
+        $table = $table === 'fuzzy_search_logs' ? SearchAnalytics::table() : $table;
+        $fresh = $this->schema($table);
+
+        $this->rollBackTo($migration);
+        $this->migrate();
+
+        // On Laravel 10 with doctrine/dbal, SQLite's dropColumn() rebuilt fuzzy_index_postings
+        // through Doctrine, which added an index of its own on the term_id foreign key (IDX_…).
+        $this->assertSame($fresh, $this->schema($table));
+    }
+
     #[DataProvider('interruptions')]
     public function test_migrate_runs_again_after_a_failure_after_the_first_statement(string $migration, string $table, string $after): void
     {
