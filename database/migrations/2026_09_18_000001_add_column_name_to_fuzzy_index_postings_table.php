@@ -27,24 +27,17 @@ return new class extends Migration
         $key  = $this->uniqueKeyColumns();
         $swap = !in_array('column_name', $key, true);
 
-        if (DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
-            // One ALTER, which InnoDB applies whole, so no failure leaves the key half swapped.
-            $changes = array_filter([
-                $add ? "ADD COLUMN column_name VARCHAR(64) NOT NULL DEFAULT ''" : null,
-                $swap && $key !== [] ? 'DROP INDEX postings_unique_idx' : null,
-                $swap ? 'ADD UNIQUE postings_unique_idx (term_id, model_type, model_id, column_name)' : null,
-            ]);
-            if ($changes !== []) {
-                DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_postings') . ' ' . implode(', ', $changes));
-            }
-
-            return;
-        }
-
+        // The column on its own: InnoDB adds it instantly, while one ALTER that also swapped the key
+        // rebuilt the whole postings table (about 6× the time).
         if ($add) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->string('column_name', 64)->default(''));
         }
-        if ($swap) {
+        if ($swap && DbDialect::isMySqlFamily(DB::connection()->getDriverName())) {
+            // One ALTER, which InnoDB applies whole, in place, so no failure leaves the key half
+            // swapped, and the term_id foreign key is never without an index.
+            DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_postings') . ' '
+                . ($key !== [] ? 'DROP INDEX postings_unique_idx, ' : '') . 'ADD UNIQUE postings_unique_idx (term_id, model_type, model_id, column_name)');
+        } elseif ($swap) {
             Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($key) {
                 if ($key !== []) {
                     $table->dropUnique('postings_unique_idx');

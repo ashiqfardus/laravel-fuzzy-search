@@ -8,23 +8,22 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    private const INDEX = 'fuzzy_index_terms_term_length_index';
+
     public function up(): void
     {
         $driver = DB::connection()->getDriverName();
 
-        // A run that failed after this step left the column: on MySQL, MariaDB and SQLite the
-        // migrator runs a migration outside a transaction, so each statement stays, and it records
-        // the migration only once up() returns. The column is not added twice.
+        // A run that failed after a step left it: on MySQL, MariaDB and SQLite the migrator runs a
+        // migration outside a transaction, so each statement stays, and it records the migration
+        // only once up() returns. Neither the column nor its index is added twice. Two statements
+        // on purpose: InnoDB adds the column instantly and builds the index in place, while one
+        // ALTER doing both rebuilt the whole dictionary.
         if (!Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
-            if (DbDialect::isMySqlFamily($driver)) {
-                // One ALTER, which InnoDB applies whole: the column and its index, or neither.
-                DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_terms')
-                    . ' ADD COLUMN term_length SMALLINT UNSIGNED NOT NULL DEFAULT 0, ADD INDEX fuzzy_index_terms_term_length_index (term_length)');
-            } else {
-                Schema::table('fuzzy_index_terms', function (Blueprint $table) {
-                    $table->unsignedSmallInteger('term_length')->default(0)->index('fuzzy_index_terms_term_length_index');
-                });
-            }
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->unsignedSmallInteger('term_length')->default(0));
+        }
+        if (!in_array(self::INDEX, $this->indexes(), true)) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::INDEX));
         }
 
         // Backfill dictionaries built before this column existed, so TermExpander can filter by
@@ -49,7 +48,28 @@ return new class extends Migration
         }
 
         // Two statements on purpose: SQLite refuses to drop a column an index still references.
-        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex('fuzzy_index_terms_term_length_index'));
+        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::INDEX));
         Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length'));
+    }
+
+    /**
+     * The names of the indexes on fuzzy_index_terms, read from the catalog (Laravel 10 has no
+     * Schema::getIndexes()), each row cast to an object whatever the app's fetch mode.
+     *
+     * @return list<string>
+     */
+    private function indexes(): array
+    {
+        $connection = DB::connection();
+        $table      = $connection->getTablePrefix() . 'fuzzy_index_terms';
+
+        $rows = match ($connection->getDriverName()) {
+            DbDialect::SQLITE => $connection->select("select name from sqlite_master where type = 'index' and tbl_name = ?", [$table]),
+            DbDialect::PGSQL  => $connection->select('select c.relname as name from pg_index i join pg_class c on c.oid = i.indexrelid where i.indrelid = to_regclass(quote_ident(?))', [$table]),
+            DbDialect::SQLSRV => $connection->select('select name from sys.indexes where object_id = object_id(?) and name is not null', [$table]),
+            default           => $connection->select('select distinct index_name as name from information_schema.statistics where table_schema = database() and table_name = ?', [$table]),
+        };
+
+        return array_map(fn ($row) => strtolower((string) ((object) $row)->name), $rows);
     }
 };

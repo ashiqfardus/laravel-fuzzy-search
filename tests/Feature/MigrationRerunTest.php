@@ -15,10 +15,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
  * in a transaction there. A failure after the first statement of the term_length, column_name or
  * search-log migration (a lock-wait timeout, a killed deploy) left it half applied and unrecorded,
  * and every later `migrate` stopped at "1060 Duplicate column name" (1050 for the log table); a
- * failed key swap left the postings table with no unique key. Each now changes its table in one
- * ALTER where it can, which InnoDB applies whole, and skips what an earlier run did. The failure is
- * simulated: the statement after the migration's first DDL throws. PostgreSQL, SQLite and SQL
- * Server roll the migration back whole, and run the same checks.
+ * failed key swap left the postings table with no unique key. Each now skips what an earlier run
+ * did, and the postings key is swapped in one ALTER, which InnoDB applies whole. The failure is
+ * simulated: the statement after the migration's first DDL throws. PostgreSQL and SQL Server roll
+ * the migration back whole; SQLite, like MySQL, keeps each statement. All run the same checks.
  */
 class MigrationRerunTest extends TestCase
 {
@@ -184,6 +184,34 @@ class MigrationRerunTest extends TestCase
             $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists(), $label);
             $this->assertSame($clean, $this->schema('fuzzy_index_postings'), $label);
         }
+    }
+
+    /**
+     * R11-L5. InnoDB adds a column instantly and builds an index in place, but one ALTER that does
+     * both rebuilds the whole table: the column_name migration's single ALTER rebuilt the postings
+     * table (3.96 s → 23.53 s at 2M postings on MySQL), and term_length's the dictionary. A rebuilt
+     * table gets a new tablespace.
+     */
+    public function test_the_column_migrations_do_not_rebuild_their_table_on_mysql_and_mariadb(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL/MariaDB only: the rebuild is InnoDB\'s; the CI MySQL and MariaDB jobs run this.');
+        }
+
+        $catalog = $this->dbDriver === 'mariadb' ? 'information_schema.innodb_sys_tables' : 'information_schema.innodb_tables';
+        $space   = fn (string $table) => (int) ((object) DB::selectOne("select space from {$catalog} where name = concat(database(), '/', ?)", [DB::connection()->getTablePrefix() . $table]))->space;
+
+        $this->rollBackTo('2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table');
+        // Rows a 2.0 index holds: MySQL rebuilds an empty table rather than alter it in place.
+        $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zebra', 'doc_count' => 1]);
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $term, 'model_type' => 'App\\Models\\Animal', 'model_id' => '1', 'frequency' => 1]);
+        foreach (['2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table' => 'fuzzy_index_terms', '2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table' => 'fuzzy_index_postings'] as $migration => $table) {
+            $before = $space($table);
+            $this->artisan('migrate', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run();
+            $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists(), $migration);
+            $this->assertSame($before, $space($table), "{$migration} rebuilt {$table}");
+        }
+        $this->migrate();
     }
 
     /** A term_length column an earlier run added: migrate fills the words it left at 0. */
