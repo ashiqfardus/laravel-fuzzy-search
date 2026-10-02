@@ -72,7 +72,7 @@ return new class extends Migration
         // installed (Filament 3 requires it) rebuilt the table through Doctrine instead, which added
         // an index of its own on the term_id foreign key that a later migrate kept.
         if (DB::connection()->getDriverName() === DbDialect::SQLITE
-            && version_compare((string) DB::selectOne('select sqlite_version() as v')->v, '3.35.0', '>=')) {
+            && version_compare((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.35.0', '>=')) {
             DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings') . ' DROP COLUMN column_name');
 
             return;
@@ -83,7 +83,9 @@ return new class extends Migration
 
     /**
      * The columns of postings_unique_idx, read from the catalog (Laravel 10 has no
-     * Schema::getIndexes()); [] when the table has no such key.
+     * Schema::getIndexes()); [] when the table has no such key. Each row is cast to an object, as
+     * Laravel's own schema reads do: an app-wide array fetch mode (a StatementPrepared listener
+     * that sets PDO::FETCH_ASSOC) applies to `migrate` too.
      *
      * @return list<string>
      */
@@ -116,6 +118,6 @@ return new class extends Migration
             ),
         };
 
-        return array_map(fn ($row) => strtolower((string) $row->col), $rows);
+        return array_map(fn ($row) => strtolower((string) ((object) $row)->col), $rows);
     }
 };

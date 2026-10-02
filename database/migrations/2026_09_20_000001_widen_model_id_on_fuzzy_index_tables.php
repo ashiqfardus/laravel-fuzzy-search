@@ -58,6 +58,7 @@ return new class extends Migration
             $documents = DB::table('fuzzy_index_documents')->whereRaw($tooLong)->get(['model_type', 'model_id'])
                 ->concat(DbDialect::isMySqlFamily($driver) ? $this->collidingKeys() : []);
             foreach ($documents as $document) {
+                $document = (object) $document; // whatever the app's fetch mode
                 app(IndexManager::class)->removeFromIndex($document->model_type, $document->model_id);
             }
         }
@@ -81,6 +82,7 @@ return new class extends Migration
             . ' where table_schema = database() and table_name = ? and column_name = ?',
             [DB::connection()->getTablePrefix() . 'fuzzy_index_documents', 'model_type']
         );
+        $column = $column === null ? null : (object) $column; // whatever the app's fetch mode
         if ($column === null || !preg_match('/^\w+$/', (string) $column->charset) || !preg_match('/^\w+$/', (string) $column->collation)) {
             return [];
         }
@@ -88,10 +90,10 @@ return new class extends Migration
         $table  = DbDialect::rawIdentifier('fuzzy_index_documents');
         $folded = fn (string $key) => "CAST({$key} AS CHAR CHARACTER SET {$column->charset}) COLLATE {$column->collation}";
 
-        return DB::select(
+        return array_map(fn ($row) => (object) $row, DB::select(
             "select d.model_type, d.model_id from {$table} d join (select model_type, {$folded('model_id')} as folded from {$table}"
             . " group by model_type, folded having count(*) > 1) g on g.model_type = d.model_type and g.folded = {$folded('d.model_id')}"
-        );
+        ));
     }
 
     /** @param list<string> $tables */

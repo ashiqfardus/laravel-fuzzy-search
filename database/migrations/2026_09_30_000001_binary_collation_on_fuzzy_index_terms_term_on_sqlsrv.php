@@ -29,7 +29,9 @@ return new class extends Migration
         }
 
         $table     = $connection->getTablePrefix() . 'fuzzy_index_terms';
-        $collation = $connection->selectOne("select collation_name as c from sys.columns where object_id = object_id(?) and name = 'term'", [$table])?->c;
+        // Each row cast to an object, whatever the app's fetch mode (an array one applies to `migrate` too).
+        $column    = $connection->selectOne("select collation_name as c from sys.columns where object_id = object_id(?) and name = 'term'", [$table]);
+        $collation = $column === null ? null : ((object) $column)->c;
         if ($collation === null || str_contains(strtoupper($collation), '_BIN')) {
             return; // no dictionary here, or it compares byte-wise already
         }
@@ -81,6 +83,7 @@ return new class extends Migration
         $wrapped = $quote($table);
         $byIndex = [];
         foreach ($rows as $row) {
+            $row = (object) $row; // whatever the fetch mode
             $byIndex[$row->index_id]['row'] = $row;
             $byIndex[$row->index_id][$row->is_included_column ? 'include' : 'keys'][] = $quote($row->col) . ($row->is_descending_key ? ' DESC' : '');
         }

@@ -75,6 +75,6 @@ return new class extends Migration
             default           => $connection->select('select distinct index_name as name from information_schema.statistics where table_schema = database() and table_name = ?', [$table]),
         };
 
-        return array_map(fn ($row) => strtolower((string) $row->name), $rows);
+        return array_map(fn ($row) => strtolower((string) ((object) $row)->name), $rows); // whatever the fetch mode
     }
 };
