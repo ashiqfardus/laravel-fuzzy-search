@@ -3159,12 +3159,42 @@ class SearchBuilder
 
         $values = [];
         foreach ($rows as $row) {
-            $value = $shownOnly && !self::shows($row, $target['column']) ? '' : (string) SearchableColumns::read($row, $target['column']);
+            $value = $shownOnly && !self::leafShown($row, $target['column']) ? '' : (string) SearchableColumns::read(self::leafHolder($row, $target['column'])[0], $target['column']);
             if ($value !== '') {
                 $values[] = $value;
             }
         }
         return $values;
+    }
+
+    /**
+     * Where a relation path's leaf is read on a related row: the row itself, or, for a column the
+     * row has no attribute for that a loaded pivot holds, that pivot and the relation name it is
+     * under (TF-5). Eloquent moves a belongsToMany's withPivot() columns off the related model into
+     * its `pivot` relation (or the as() name), while the search matches the leaf through the pivot
+     * table's join, so `tags.note` is read where it was matched.
+     *
+     * @return array{0: mixed, 1: ?string} [the row the leaf is read on, the pivot's relation name]
+     */
+    private static function leafHolder(mixed $row, string $column): array
+    {
+        if ($row instanceof Model && !array_key_exists($column, $row->getAttributes())) {
+            foreach ($row->getRelations() as $name => $related) {
+                if ($related instanceof \Illuminate\Database\Eloquent\Relations\Pivot && array_key_exists($column, $related->getAttributes())) {
+                    return [$related, (string) $name];
+                }
+            }
+        }
+
+        return [$row, null];
+    }
+
+    /** shows() for a relation path's leaf on a related row: a pivot's column shows when the row shows the pivot and the pivot shows it. */
+    private static function leafShown(mixed $row, string $column): bool
+    {
+        [$holder, $pivot] = self::leafHolder($row, $column);
+
+        return $pivot === null ? self::shows($row, $column) : self::shows($row, $pivot) && self::shows($holder, $column);
     }
 
     /**
@@ -3239,7 +3269,7 @@ class SearchBuilder
             $next = [];
             foreach ($rows as $row) {
                 $loaded = $row instanceof Model ? self::loadedRelationName($row, $key) : null;
-                if (!self::shows($row, $loaded ?? $key)) {
+                if (!($loaded === null ? self::leafShown($row, $key) : self::shows($row, $loaded))) {
                     return false;
                 }
                 if ($loaded !== null) {
