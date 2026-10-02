@@ -714,6 +714,32 @@ class IndexManager
             // writes whose terms cross each hold a row the other needed.
             $posted   = $this->postedTerms($modelType, $ids);
             $existing = $this->termIds(array_map('strval', array_keys($counts)));
+            $driver   = DB::connection()->getDriverName();
+
+            // PostgreSQL: the words the read found missing go in first, at doc_count 0, sorted by
+            // term, ON CONFLICT DO NOTHING; their ids are re-read, and their increments join the
+            // id-ordered UPDATE below (ruling ER-169, TB-3). A word another write committed between
+            // two writes' reads was existing to one, locked in id order, and new to the other,
+            // upserted in term order: the two crossed, and at 16 writers the deadlocks chained until
+            // writes lost all three attempts. Here a write holds only rows it inserted itself, which
+            // no other write can see, and waits only on another's uncommitted insert of the same
+            // word, in the same sorted order; every lock after that is taken in id order. MySQL/
+            // MariaDB keep the upsert below (an INSERT IGNORE there takes gap locks, and measured
+            // far worse), and so does SQL Server, whose MERGE locks in plan order (retried).
+            if ($driver === DbDialect::PGSQL) {
+                $new = [];
+                foreach ($counts as $term => $increment) {
+                    if (!isset($existing[$term])) {
+                        $new[] = (string) $term;
+                    }
+                }
+                sort($new, SORT_STRING);
+                foreach (array_chunk($new, self::ROWS_PER_UPSERT) as $chunk) {
+                    DB::table('fuzzy_index_terms')->insertOrIgnore(array_map(fn (string $term) => ['term' => $term, 'doc_count' => 0, 'term_length' => mb_strlen($term)], $chunk));
+                }
+                $existing += $this->termIds($new);
+            }
+
             $deltas   = [];
             foreach ($posted as [$termId, $holders]) {
                 $deltas[$termId] = -$holders;
@@ -753,15 +779,17 @@ class IndexManager
             // failed when converting the nvarchar value 'paginate' to data type int". $termIds[$term]
             // lookups still work because PHP normalises numeric-string keys the same way on read.
             //
-            // Terms the dictionary lacks are inserted, sorted by term. A write that inserts one of
-            // them first turns this insert into an update of its row: the conflict branch raises it
-            // by this write's increment, the inserted row's own doc_count (EXCLUDED, or the MERGE
-            // source). So every write takes its new words in one sorted order (ER-74); a
-            // statement per increment, each sorted only within itself, let two batches take them
-            // in opposite orders. MySQL/MariaDB keep a statement per increment with a literal raise:
-            // the raise cannot name the inserted row there on both (MySQL deprecates VALUES(),
-            // MariaDB has no row alias). Two batches there can still take a shared new word in
-            // opposite orders; that deadlock is rare and retried (0 of 40 parallel batches lost).
+            // Terms the dictionary lacks are inserted, sorted by term (on PostgreSQL, only a word
+            // swept since its insert above, ER-75). A write that inserts one of them first turns
+            // this insert into an update of its row: the conflict branch raises it by this write's
+            // increment, the inserted row's own doc_count (EXCLUDED, or the MERGE source). So every
+            // write takes its new words in one sorted order (ER-74); a statement per increment, each
+            // sorted only within itself, let two batches take them in opposite orders. MySQL/MariaDB
+            // keep a statement per increment with a literal raise: the raise cannot name the
+            // inserted row there on both (MySQL deprecates VALUES(), MariaDB has no row alias). Two
+            // batches there can still take a shared new word in opposite orders, and a word one
+            // read as existing and the other as new still crosses (TB-3): retried, but at 16
+            // parallel writers a few lose all three attempts, so queued imports need job tries.
             $missing = [];
             foreach ($counts as $term => $increment) {
                 if (!isset($existing[$term])) {
@@ -770,7 +798,6 @@ class IndexManager
             }
             ksort($missing, SORT_STRING);
 
-            $driver = DB::connection()->getDriverName();
             $source = match (true) { // the inserted row's doc_count, as the conflict branch sees it
                 DbDialect::isMySqlFamily($driver) => null,
                 $driver === 'sqlsrv'              => DbDialect::rawIdentifier('laravel_source.doc_count'), // Laravel's MERGE source alias
