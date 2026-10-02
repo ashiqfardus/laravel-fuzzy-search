@@ -37,8 +37,9 @@ final class RankedCandidates
      * Eloquent's get() reads (its scopes applied, then hydrate(), eagerLoadRelations() and, from
      * Laravel 11, the afterQuery() callbacks), but the alias is taken off each row before it is
      * hydrated, so it never reaches a model: not its attributes, a retrieved listener, a cast or an
-     * afterQuery() callback (ruling ER-135). Only a model's first row is hydrated. A union is read as
-     * one table (rows()).
+     * afterQuery() callback (ruling ER-135). Only a model's first row is hydrated, the first in
+     * $base's order: an ordered page passes its order, so a join's row is the model's first by it
+     * (TE-6). A union is read as one table (rows()).
      *
      * @param  array<int|string> $rankedIds best first
      * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
@@ -406,7 +407,7 @@ final class RankedCandidates
      */
     public static function orderedKeys(QueryBuilder $query, string $qualifiedKey, int $offset, int $limit): array
     {
-        $order = (!self::joinsTables($query) && is_string($query->from)) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
+        $order = self::pageOrder($query);
         $key   = $qualifiedKey . ' as ' . self::KEY_ALIAS;
 
         if ($order === 'own') {
@@ -460,6 +461,23 @@ final class RankedCandidates
         }
 
         return array_slice(array_keys($keys), $offset, $limit);
+    }
+
+    /** How orderedKeys() pages $query: by its rows with no join and a table FROM, or a GROUP BY; else as joinedOrder() says. */
+    private static function pageOrder(QueryBuilder $query): string
+    {
+        return (!self::joinsTables($query) && is_string($query->from)) || !empty($query->groups) ? 'rows' : self::joinedOrder($query);
+    }
+
+    /**
+     * Whether $query's order tells apart the rows a join or a derived FROM repeats a model in: an
+     * order on a joined column or a select alias (orderedKeys()'s ROW_NUMBER() and walk), not one on
+     * the model's own columns, which all of a model's rows share. The page's models are then read in
+     * that order, so each is served with its first row by it (TE-6).
+     */
+    public static function ordersRepeatedRows(QueryBuilder $query): bool
+    {
+        return in_array(self::pageOrder($query), ['joined', 'alias'], true);
     }
 
     /**

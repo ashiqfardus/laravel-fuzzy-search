@@ -1804,9 +1804,23 @@ class SearchBuilder
         }
 
         $this->applyExplicitOrder($query, true);
-        $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
+        $read    = $query->toBase();
+        $byOrder = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::ordersRepeatedRows($read);
+        $keys    = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($read, \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
 
-        return ['total' => $total, 'page' => $this->attachBm25Scores(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $keys), $ranked, 0)];
+        // When the order tells apart the rows a join repeats a model in, the page's models are read
+        // in it: each is served with its first row by the order, the row that placed it, not the row
+        // the database returns first (TE-6). Not as SELECT DISTINCT, which rejects an order on a
+        // column it does not select (orderedKeys() pages such an order): models() keeps one row per
+        // key, so DISTINCT changes nothing it serves.
+        $page = $base;
+        if ($byOrder) {
+            $page = clone $base;
+            $page->getQuery()->distinct = false;
+            $this->applyExplicitOrder($page, true);
+        }
+
+        return ['total' => $total, 'page' => $this->attachBm25Scores(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($page, $keys), $ranked, 0)];
     }
 
     /**

@@ -492,14 +492,20 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * ER-135). A union is read as one derived table, and an override that reads without the callback
      * selects no alias: its models are matched by their own key.
      *
+     * A model a join repeats is served with its first row. Under an orderBy() that tells its rows
+     * apart (RankedCandidates::ordersRepeatedRows()) they are read in the builder's order, so that is
+     * its first row by the order, the row orderedPage() placed it by, not whichever the database
+     * returns first (TE-6). The key, which every row of one model shares, is left out of that order.
+     *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
      */
     private function modelsById(Builder $builder, \Illuminate\Database\Eloquent\Model $model, array $ids): array
     {
+        $orders                 = $this->orders($builder);
         $callback               = $builder->queryCallback;
         $builder                = clone $builder;
-        $builder->queryCallback = function ($query) use ($callback) {
+        $builder->queryCallback = function ($query) use ($callback, $orders) {
             if ($callback !== null) {
                 call_user_func($callback, $query);
                 RankedCandidates::groupOrWheres($query); // the page's ids, which Scout adds next, hold for every branch (RE-1)
@@ -515,6 +521,25 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             $query->withGlobalScope(RankedCandidates::KEY_ALIAS, fn (EloquentBuilder $query) => RankedCandidates::needsKeyAlias($query->getQuery(), $query->getModel())
                 ? RankedCandidates::selectKey($query->getQuery(), RankedCandidates::keyColumn($query))
                 : null);
+
+            if ($orders === []) {
+                return;
+            }
+
+            $read = $query->toBase();
+            foreach ($orders as $order) {
+                $read->orderBy($order['column'], $order['direction']);
+            }
+
+            // Not as SELECT DISTINCT, which rejects an order on a column it does not select: one row
+            // per id is kept, so DISTINCT changes nothing served.
+            if (RankedCandidates::ordersRepeatedRows($read)) {
+                $query->getQuery()->distinct = false;
+
+                foreach ($orders as $order) {
+                    $query->orderBy($order['column'], $order['direction']);
+                }
+            }
         };
 
         $models = [];
@@ -523,7 +548,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             $id = RankedCandidates::takeKey($found);
 
             if ($id !== null) {
-                $models[$id] = $found;
+                $models[$id] ??= $found;
             }
         }
 
