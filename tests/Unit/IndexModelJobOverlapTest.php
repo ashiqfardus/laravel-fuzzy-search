@@ -692,6 +692,38 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertSame([$id], User::search('quokka')->useInvertedIndex()->get()->pluck('id')->map(fn ($key) => (int) $key)->all());
     }
 
+    /**
+     * TB-1. `fuzzy-search:clear --all` ran its four DELETEs (postings, documents, meta, terms) each on
+     * its own, with no lock: a write for a new row that committed after the documents DELETE kept its
+     * document and lost its meta increment, and the rebuild after it found the row indexed already
+     * and never counted it. They now run in one transaction behind flush()'s lock, so the write
+     * lands after the clear.
+     */
+    public function test_a_write_during_clear_all_lands_after_it_with_its_meta_totals(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $id = DB::table('users')->insertGetId(['name' => 'Quokka Wombat', 'email' => 'numbat@quoll.test', 'created_at' => now(), 'updated_at' => now()]);
+
+        [$childError, $parentError] = $this->race(
+            fn () => \Illuminate\Support\Facades\Artisan::call('fuzzy-search:clear', ['--all' => true]),
+            fn () => app(IndexManager::class)->syncModel(User::class, $id),
+            '/^\s*delete from\W+fuzzy_index_documents\W/i', // clear --all pauses after its documents DELETE
+            1_000_000,
+            300_000,
+            pauseParent: false,
+        );
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $documents = DB::table('fuzzy_index_documents')->where('model_type', User::class);
+        $meta      = DB::table('fuzzy_index_meta')->where('model_type', User::class)->first(['total_docs', 'total_tokens']);
+        $this->assertSame(['documents' => [(string) $id], 'meta' => [1, (int) (clone $documents)->sum('doc_length')]], [
+            'documents' => (clone $documents)->pluck('model_id')->map(fn ($key) => (string) $key)->all(),
+            'meta'      => $meta === null ? null : [(int) $meta->total_docs, (int) $meta->total_tokens],
+        ]);
+        $this->assertSame([$id], User::search('quokka')->useInvertedIndex()->get()->pluck('id')->map(fn ($key) => (int) $key)->all());
+    }
+
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
     public function test_the_indexer_binds_model_ids_as_strings(): void
     {

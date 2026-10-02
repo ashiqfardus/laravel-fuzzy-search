@@ -20,12 +20,7 @@ class ClearCommand extends Command
     public function handle(IndexManager $indexManager): int
     {
         if ($this->option('all')) {
-            // Delete per-table rather than truncate so that foreign-key constraints
-            // are respected and only this package's tables are affected.
-            DB::table('fuzzy_index_postings')->delete();
-            DB::table('fuzzy_index_documents')->delete();
-            DB::table('fuzzy_index_meta')->delete();
-            DB::table('fuzzy_index_terms')->delete();
+            $indexManager->flushAll();
             $this->info('Cleared BM25 index for all models.');
             return self::SUCCESS;
         }

@@ -256,23 +256,49 @@ class IndexManager
     }
 
     /**
-     * Flush (delete) the entire index for a model class.
+     * Run a flush's DELETEs in one transaction that holds every index write off until it commits
+     * (flush() and flushAll()).
+     *
+     * PostgreSQL: lock first (ruling ER-151, SB-1). A write for a new row waited on nothing the
+     * DELETEs lock: it committed between them, so its document row stayed and its meta increment
+     * went into the meta row deleted next, a model with documents and no meta (BM25 found nothing)
+     * that no rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
+     * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
+     * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
+     * from its one writer, SQL Server from its DELETEs' locks (tested), each held to the commit:
+     * `clear --all` ran its DELETEs autocommitted, one by one, and lost the meta the same way (TB-1).
      */
-    public function flush(string $modelClass): void
+    private function flushing(\Closure $deletes): void
     {
-        DB::transaction(function () use ($modelClass) {
-            // PostgreSQL: hold every index write off for the flush (ruling ER-151, SB-1). A write
-            // for a new row of this model waited on nothing the DELETEs below lock: it committed
-            // between them, so its document row stayed and its meta increment went into the meta
-            // row deleted next, a model with documents and no meta (BM25 found nothing) that no
-            // rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
-            // ones at their claim (claimDocuments()' insert) until the commit; searches only read,
-            // and a second flush waits its turn. MySQL/MariaDB get the same from the DELETE's gap
-            // locks, SQLite from its one writer, SQL Server from its DELETE's locks (tested).
+        DB::transaction(function () use ($deletes) {
             if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
                 DB::statement('LOCK TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . ' IN SHARE ROW EXCLUSIVE MODE');
             }
 
+            $deletes();
+        });
+    }
+
+    /**
+     * Flush (delete) the index of every model: `fuzzy-search:clear --all`. Table by table rather
+     * than a truncate, so the foreign keys are respected and only the package's tables are touched.
+     */
+    public function flushAll(): void
+    {
+        $this->flushing(function () {
+            DB::table('fuzzy_index_postings')->delete();
+            DB::table('fuzzy_index_documents')->delete();
+            DB::table('fuzzy_index_meta')->delete();
+            DB::table('fuzzy_index_terms')->delete();
+        });
+    }
+
+    /**
+     * Flush (delete) the entire index for a model class.
+     */
+    public function flush(string $modelClass): void
+    {
+        $this->flushing(function () use ($modelClass) {
             // Give back this model's share of every term's doc_count first. A term another model
             // still uses survives the orphan sweep below, and it kept counting this model's
             // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
