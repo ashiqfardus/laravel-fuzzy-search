@@ -7,6 +7,7 @@ use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -82,6 +83,36 @@ class RelSuggestCasePost extends RelSuggestPost
     }
 }
 
+/** A morphed-to model that hides its title. */
+class RelSuggestVideo extends Model
+{
+    protected $table   = 'rel_suggest_videos';
+    protected $guarded = [];
+    public $timestamps = false;
+    protected $hidden  = ['title'];
+}
+
+/** A morphTo path, indexed by the docs' recipe. */
+class RelSuggestComment extends Model
+{
+    use Searchable;
+
+    protected $table   = 'rel_suggest_comments';
+    protected $guarded = [];
+    public $timestamps = false;
+    protected array $searchable = ['columns' => ['body' => 10, 'commentable.title' => 5]];
+
+    public function commentable(): MorphTo
+    {
+        return $this->morphTo();
+    }
+
+    public function searchableText(): array
+    {
+        return ['body' => $this->body, 'commentable.title' => $this->commentable?->title];
+    }
+}
+
 /**
  * SF-5. A relation column indexed through searchableText() is posted under its dotted name, which
  * the model itself never hides, so dictionary suggest() and didYouMean() offered the words of a
@@ -115,8 +146,9 @@ class HiddenRelationColumnSuggestionTest extends TestCase
 
     protected function tearDown(): void
     {
-        Schema::dropIfExists('rel_suggest_posts');
-        Schema::dropIfExists('rel_suggest_authors');
+        foreach (['rel_suggest_posts', 'rel_suggest_authors', 'rel_suggest_videos', 'rel_suggest_comments'] as $table) {
+            Schema::dropIfExists($table);
+        }
 
         parent::tearDown();
     }
@@ -175,5 +207,47 @@ class HiddenRelationColumnSuggestionTest extends TestCase
 
         // Matching keeps every column (ER-66): the hidden word still finds its row.
         $this->assertSame(['Alpha post'], $class::search('quentin')->useInvertedIndex()->get()->pluck('title')->all());
+    }
+
+    /**
+     * TF-1. A morphTo path was judged on the related model of a fresh instance's relation, which for a
+     * morphTo with no type is the model itself: `commentable.title` was judged as the comment's own
+     * title, never the video's, so a title the video hides was offered. The morphed-to class is the
+     * row's own, unknown to the dictionary, and docs/relationships.md calls morphTo paths
+     * unsupported: such a column's words are not offered.
+     */
+    public function test_a_morph_to_paths_words_are_not_offered(): void
+    {
+        foreach (['rel_suggest_videos', 'rel_suggest_comments'] as $table) {
+            Schema::dropIfExists($table);
+        }
+        Schema::create('rel_suggest_videos', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+        });
+        Schema::create('rel_suggest_comments', function (Blueprint $table) {
+            $table->id();
+            $table->string('body');
+            $table->string('commentable_type')->nullable();
+            $table->unsignedBigInteger('commentable_id')->nullable();
+        });
+        $video = DB::table('rel_suggest_videos')->insertGetId(['title' => 'Quokka unlisted video']);
+        DB::table('rel_suggest_comments')->insert(['body' => 'quaint remark', 'commentable_type' => RelSuggestVideo::class, 'commentable_id' => $video]);
+
+        app(IndexManager::class)->indexBatch(RelSuggestComment::all());
+        $search = RelSuggestComment::search('quokkka unlistd')->useInvertedIndex();
+        $search->get();
+        $offered = [
+            'index qu'    => RelSuggestComment::search('qu')->suggestFrom('index')->suggest(10),
+            'didYouMean'  => array_column(RelSuggestComment::search('quokkka')->didYouMean(), 'term'),
+            'debug terms' => array_map('strval', array_keys($search->getDebugInfo()['index_terms'])),
+        ];
+        $all = array_merge(...array_values($offered));
+
+        foreach (['quokka', 'unlisted'] as $word) {
+            $this->assertNotContains($word, $all, json_encode($offered));
+        }
+        $this->assertSame(['quaint'], $offered['index qu'], 'the model\'s own column'); // the morphed title's "quokka" left out
+        $this->assertSame(['quaint remark'], RelSuggestComment::search('quokka')->useInvertedIndex()->get()->pluck('body')->all(), 'matching keeps it (ER-66)');
     }
 }

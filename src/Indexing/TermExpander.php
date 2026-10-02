@@ -321,7 +321,7 @@ final class TermExpander
      * SearchBuilder::resolveColumnTarget() reads it. A segment is called only when it may be a
      * relation by SearchBuilder::isReachableRelation()'s rule for a declared path (ruling ER-50):
      * public, not static, no required parameter, and declared by neither Laravel nor this package;
-     * anything else, or a call that returns no Relation, hides the column.
+     * anything else, a call that returns no Relation, or a morphTo (see relation()), hides the column.
      */
     private static function pathShown(Model $model, string $column): bool
     {
@@ -364,7 +364,12 @@ final class TermExpander
 
         $relation = $model->{$segment}();
 
-        return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation ? [$method->getName(), $relation->getRelated()] : null;
+        // A morphTo's related class is each row's own *_type, which no class-level walk knows (on a
+        // fresh instance Laravel relates it to the model itself), and docs/relationships.md calls
+        // morphTo paths unsupported: its column is withheld (TF-1).
+        return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation && !$relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
+            ? [$method->getName(), $relation->getRelated()]
+            : null;
     }
 
     /** Eloquent's own rule for toArray() (getArrayableItems()): not in getHidden(), and in a non-empty getVisible(). */
