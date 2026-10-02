@@ -22,8 +22,10 @@ class LetterlessPerson extends Model
 /**
  * SF-1. PHP's metaphone() skips every byte that is not an ASCII letter, so "99", "Иван" and "東京"
  * all encode as '' — the code the observer writes for every value without an ASCII letter, and
- * for an empty one. `where name_metaphone = ''` then returned every such row. A term with no
- * ASCII letter now takes a contains LIKE on the column itself, as soundex does (RB-1).
+ * for an empty one. `where name_metaphone = ''` then returned every such row. A term whose code
+ * is empty now takes a contains LIKE on the column itself, as soundex does (RB-1). That includes
+ * a term whose ASCII letters metaphone drops (H, W and Y before no vowel: "H2O", "Hy", "W2";
+ * R11-M2).
  */
 class MetaphoneLetterlessTermTest extends TestCase
 {
@@ -66,6 +68,42 @@ class MetaphoneLetterlessTermTest extends TestCase
             'muller'  => ['Müller'],
         ];
 
+        $this->assertCases($cases);
+    }
+
+    public function test_a_term_whose_letters_encode_to_nothing_finds_only_the_rows_that_contain_it(): void
+    {
+        foreach (['H2O bottle', 'W2 form', 'Hwy 61', 'Hy', 'Hyde Park'] as $name) {
+            LetterlessPerson::create(['name' => $name]);
+        }
+        // Each term below has an ASCII letter and still encodes as '', the shadow code of every
+        // row without an encodable letter ("Hy" and "Hwy 61" among them).
+        $this->assertSame(9, DB::table('letterless_people')->where('name_metaphone', '')->count());
+
+        $this->assertCases([
+            'H2O'  => ['H2O bottle'],
+            'W2'   => ['W2 form'],
+            'hwy'  => ['Hwy 61'],
+            'HW'   => ['Hwy 61'],
+            'wy'   => ['Hwy 61'],
+            'Hy'   => ['Hy', 'Hyde Park'],
+            'WWII' => [],
+            'WW2'  => [],
+            '4H'   => [],
+            'H1'   => [],
+            'YY'   => [],
+            'hh'   => [],
+            'H.'   => [],
+            'Y-W'  => [],
+            // Controls: a term with a code still matches by sound, not as a contains match.
+            'w2 farm'   => ['W2 form'],
+            'hyde perk' => ['Hyde Park'],
+        ]);
+    }
+
+    /** @param array<string, string[]> $cases term => the names it finds, sorted */
+    private function assertCases(array $cases): void
+    {
         foreach ($cases as $term => $expected) {
             $label = json_encode($term, JSON_UNESCAPED_UNICODE);
             $make  = fn () => LetterlessPerson::search((string) $term);
