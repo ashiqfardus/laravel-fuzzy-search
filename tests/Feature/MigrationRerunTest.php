@@ -3,12 +3,16 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 use Ashiqfardus\LaravelFuzzySearch\Analytics\SearchAnalytics;
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
+
+require_once __DIR__ . '/../TestModels.php';
 
 /**
  * SC-1. MySQL and MariaDB commit each DDL statement on its own, and the migrator wraps no migration
@@ -212,6 +216,41 @@ class MigrationRerunTest extends TestCase
             $this->assertSame($before, $space($table), "{$migration} rebuilt {$table}");
         }
         $this->migrate();
+    }
+
+    /**
+     * R11-L6. After a 2.0.1 → 2.1 upgrade in one `migrate`, `migrate:rollback --path` of the
+     * column_name migration runs its down() alone, with 2026_10_01_000001's drop of
+     * postings_term_model_idx still in place, so postings_unique_idx is the only index on
+     * MySQL/MariaDB that serves the term_id foreign key. down() committed its delete of the
+     * per-column postings, then failed to drop the key on its own (1553), and stayed recorded: every
+     * retry failed the same way. The key is now swapped in one ALTER there. The rows it keeps (the
+     * '' ones) stay, and a migrate after it ends at the fresh schema.
+     */
+    public function test_the_column_name_migration_rolls_back_on_its_own_after_a_one_batch_upgrade(): void
+    {
+        $migration = '2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table';
+        $fresh     = $this->schema('fuzzy_index_postings');
+
+        $this->rollBackTo('2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table');
+        $this->migrate(); // one batch, as an upgrade's migrate
+        app(IndexManager::class)->indexBatch(User::all());
+        $term = (int) DB::table('fuzzy_index_terms')->min('id');
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => '']);
+        $this->assertGreaterThan(0, DB::table('fuzzy_index_postings')->where('column_name', '!=', '')->count());
+
+        $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run());
+
+        $this->assertFalse(DB::table('migrations')->where('migration', $migration)->exists(), 'rolled back');
+        $this->assertFalse(Schema::hasColumn('fuzzy_index_postings', 'column_name'));
+        $this->assertSame(
+            [['App\\Models\\Legacy', '1']],
+            DB::table('fuzzy_index_postings')->get(['model_type', 'model_id'])->map(fn ($row) => [$row->model_type, (string) $row->model_id])->all()
+        );
+        $this->assertStringContainsString('term_id,model_type,model_id', str_replace(['"', ' '], '', $this->schema('fuzzy_index_postings')['indexes']['postings_unique_idx']));
+
+        $this->migrate();
+        $this->assertSame($fresh, $this->schema('fuzzy_index_postings'));
     }
 
     /** A term_length column an earlier run added: migrate fills the words it left at 0. */
