@@ -149,6 +149,31 @@ class UnionLikePathTest extends TestCase
         }
     }
 
+    /**
+     * R11-L12. suggest()'s table scan reads limit × 3 rows of the union. Unwrapped, its prefix
+     * predicate went into the first part only, so the scan read the second part's rows whatever they
+     * held, and more than 30 of them ahead of its match left that match unread.
+     */
+    public function test_suggest_reads_the_matches_of_a_later_part_past_the_scan_limit(): void
+    {
+        DB::table('union_items')->insert(['name' => 'zebra first part', 'cat' => 1]);
+        for ($i = 1; $i <= 40; $i++) {
+            DB::table('union_items')->insert(['name' => "gamma filler {$i}", 'cat' => 2]);
+        }
+        DB::table('union_items')->insert(['name' => 'zebrafish second part', 'cat' => 2]);
+
+        $suggest = fn (\Closure $union) => UnionItem::search('zeb')->suggestFrom('table')->query($union)->suggest(10);
+
+        foreach ([
+            'union'    => fn ($q) => $q->where('cat', 1)->union(UnionItem::query()->where('cat', 2)),
+            'unionAll' => fn ($q) => $q->where('cat', 1)->unionAll(UnionItem::query()->where('cat', 2)),
+        ] as $shape => $union) {
+            $suggestions = $suggest($union);
+            $this->assertContains('zebrafish', $suggestions, "{$shape}: only the second part holds it");
+            $this->assertContains('zebra', $suggestions, $shape);
+        }
+    }
+
     public function test_a_plain_query_builder_union_is_searched_whole(): void
     {
         $query = DB::table('union_items')->whereNull('deleted_at')->where('cat', 1)
