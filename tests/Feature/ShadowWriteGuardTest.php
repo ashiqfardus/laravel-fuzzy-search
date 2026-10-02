@@ -43,6 +43,18 @@ class VirtualShadowPerson extends Model
     }
 }
 
+/** Its columns compare accent-insensitively where the database can (see setUp()). */
+class AccentShadowPerson extends Model
+{
+    use Searchable;
+
+    protected $table   = 'accent_shadow_people';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['name' => 10, 'legacy' => 1]];
+}
+
 /**
  * SB-3. The shadow code is computed from the text one process holds and written by a later,
  * separate UPDATE that did not check the text was still there. A save of the same row in between
@@ -65,12 +77,30 @@ class ShadowWriteGuardTest extends TestCase
             $table->string('nickname_metaphone')->nullable();
             $table->string('display_name_metaphone')->nullable();
         });
+        Schema::dropIfExists('accent_shadow_people');
+        Schema::create('accent_shadow_people', function ($table) {
+            $table->id();
+            $name   = $table->string('name')->nullable();
+            $legacy = $table->string('legacy')->nullable();
+            $table->string('name_metaphone')->nullable();
+            $table->string('legacy_metaphone')->nullable();
+
+            // Accent-insensitive, as the MySQL/MariaDB default and a SQL Server _AI collation are; a
+            // legacy latin1 column on MySQL/MariaDB. PostgreSQL and SQLite compare exactly anyway.
+            if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+                $name->collation('utf8mb4_unicode_ci');
+                $legacy->charset('latin1')->collation('latin1_swedish_ci');
+            } elseif (DB::getDriverName() === 'sqlsrv') {
+                $name->collation('Latin1_General_100_CI_AI');
+            }
+        });
         SearchableObserver::resetColumnCache();
     }
 
     protected function tearDown(): void
     {
         Schema::dropIfExists('guarded_shadow_people');
+        Schema::dropIfExists('accent_shadow_people');
         parent::tearDown();
     }
 
@@ -170,5 +200,99 @@ class ShadowWriteGuardTest extends TestCase
 
         $this->assertSame([metaphone('Sir Bob'), null], $read('nickname_metaphone'));
         $this->assertSame([null, metaphone('Doctor Who')], $read('display_name_metaphone'));
+    }
+
+    /**
+     * TB-2. The guard compared the text under the column's collation: on MySQL/MariaDB's
+     * accent-insensitive default (and a SQL Server _AI one) 'munoz ozturk' = 'muñoz öztürk', while
+     * metaphone() drops the accented letters (MNSSTRK, MSSTRK). A save racing an accent-only edit
+     * passed the guard and wrote its code beside the other text. The guard now compares exactly.
+     */
+    public function test_an_accent_only_edit_between_a_save_and_its_shadow_write_keeps_its_code(): void
+    {
+        $id = AccentShadowPerson::create(['name' => 'alpha'])->id;
+        $a  = AccentShadowPerson::find($id);
+        $b  = AccentShadowPerson::find($id);
+
+        AccentShadowPerson::updated(function (AccentShadowPerson $model) use ($a, $b) {
+            if ($model === $a) {
+                $b->update(['name' => 'muñoz öztürk']);
+            }
+        });
+        $a->update(['name' => 'munoz ozturk']);
+
+        $this->assertSame('muñoz öztürk', DB::table('accent_shadow_people')->where('id', $id)->value('name'));
+        $this->assertSame(metaphone('muñoz öztürk'), DB::table('accent_shadow_people')->where('id', $id)->value('name_metaphone'));
+        $this->assertSame(['muñoz öztürk'], AccentShadowPerson::search('mus sturk')->searchIn(['name'])->using('metaphone')->get()->pluck('name')->all());
+        $this->assertSame([], AccentShadowPerson::search('mns strk')->searchIn(['name'])->using('metaphone')->get()->pluck('name')->all());
+    }
+
+    public function test_the_backfill_keeps_the_code_of_an_accent_only_edit_made_after_its_chunk_was_read(): void
+    {
+        foreach (['alpha one', 'bravo two', 'munoz ozturk'] as $name) {
+            DB::table('accent_shadow_people')->insert(['name' => $name]); // no shadow yet
+        }
+
+        $chunk = AccentShadowPerson::query()->orderBy('id')->get();
+        AccentShadowPerson::find($chunk[2]->id)->update(['name' => 'muñoz öztürk']); // a save in between
+
+        app(SearchableObserver::class)->backfillShadowColumns($chunk);
+
+        $shadows = DB::table('accent_shadow_people')->orderBy('id')->pluck('name_metaphone')->all();
+        $this->assertSame([metaphone('alpha one'), metaphone('bravo two'), metaphone('muñoz öztürk')], $shadows);
+    }
+
+    /**
+     * The guard's NULL branch: a text cleared to NULL and a save of text racing it. Each write's code
+     * lands only while the column still holds its own text (NULL or the text), on the observer's
+     * write and the backfill's.
+     */
+    public function test_a_null_text_racing_a_save_never_leaves_its_code_beside_the_other_text(): void
+    {
+        $race = function (?string $first, ?string $then): int {
+            $id = GuardedShadowPerson::create(['name' => 'alpha'])->id;
+            $a  = GuardedShadowPerson::find($id);
+            $b  = GuardedShadowPerson::find($id);
+            $on = true;
+            GuardedShadowPerson::updated(function (GuardedShadowPerson $model) use ($a, $b, $then, &$on) {
+                if ($on && $model === $a) {
+                    $on = false;
+                    $b->update(['name' => $then]);
+                }
+            });
+            $a->update(['name' => $first]);
+
+            return $id;
+        };
+
+        $id = $race(null, 'zebra crossing'); // A clears the text; B writes text before A's shadow write
+        $this->assertSame(metaphone('zebra crossing'), $this->shadow($id));
+
+        $id = $race('stephen smith', null); // A writes text; B clears it before A's shadow write
+        $this->assertNull($this->shadow($id));
+
+        // The backfill read a row whose text was cleared without events (its shadow is stale); a save
+        // writes text and its code before the backfill runs.
+        $id    = DB::table('guarded_shadow_people')->insertGetId(['name' => null, 'name_metaphone' => 'STL']);
+        $chunk = GuardedShadowPerson::query()->whereKey($id)->get();
+        GuardedShadowPerson::find($id)->update(['name' => 'zebra crossing']);
+        app(SearchableObserver::class)->backfillShadowColumns($chunk);
+        $this->assertSame(metaphone('zebra crossing'), $this->shadow($id));
+    }
+
+    /**
+     * The exact comparison reads the column's characters, not its bytes: a latin1 column on
+     * MySQL/MariaDB holds 'Müller' in other bytes than the UTF-8 the text is bound in, and still
+     * matches it, so its save writes the code.
+     */
+    public function test_the_guard_matches_a_column_stored_in_another_character_set(): void
+    {
+        $id = AccentShadowPerson::create(['name' => 'Ann', 'legacy' => 'Müller Straße'])->id;
+
+        $this->assertSame(metaphone('Müller Straße'), DB::table('accent_shadow_people')->where('id', $id)->value('legacy_metaphone'));
+
+        DB::table('accent_shadow_people')->update(['legacy_metaphone' => null]);
+        app(SearchableObserver::class)->backfillShadowColumns(AccentShadowPerson::query()->get());
+        $this->assertSame(metaphone('Müller Straße'), DB::table('accent_shadow_people')->where('id', $id)->value('legacy_metaphone'));
     }
 }
