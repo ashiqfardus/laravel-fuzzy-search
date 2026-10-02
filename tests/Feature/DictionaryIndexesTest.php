@@ -236,9 +236,8 @@ class DictionaryIndexesTest extends TestCase
      * S1, MySQL: for a model holding most of the index, MySQL read every posting of the model
      * before each length's read (10–14 s a term at 1M words) instead of probing the postings once
      * per word, in doc_count order, until the pool is full (20–70 ms): the read carries the
-     * FirstMatch hint. A small model keeps MySQL's own plan, which reads its few postings; probing
-     * would walk the whole length for them (3 s at 1M words). MariaDB, PostgreSQL, SQLite and SQL
-     * Server plan both well.
+     * FirstMatch hint. A small model reads the whole window once (TC-4), with MySQL's own plan,
+     * which reads its few postings; probing would walk the whole length for them (3 s at 1M words).
      */
     public function test_mysql_probes_the_postings_for_a_model_that_holds_most_of_the_index(): void
     {
@@ -267,10 +266,62 @@ class DictionaryIndexesTest extends TestCase
         foreach ($product as $sql) {
             $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
         }
-        $this->assertCount(3, $category = $reads('App\\Models\\Category'));
-        foreach ($category as $sql) {
-            $this->assertStringNotContainsString('SEMIJOIN', $sql);
+        $this->assertCount(1, $category = $reads('App\\Models\\Category'));
+        $this->assertStringNotContainsString('SEMIJOIN', $category[0]);
+    }
+
+    /**
+     * TC-4. Read one length at a time, a model holding a small share of the dictionary was planned
+     * as a full read of its postings and of every word of that length, once per length: at 1M words
+     * 960–1,080 ms a term on SQL Server, where one read of the window took 63–79 ms (and 2–6× on the
+     * other databases). The share, from the meta totals, now picks the read: the window once for a
+     * small share, a length at a time for a large one (always on SQLite). Both find the same words,
+     * cut at the same place in a tie (equal counts across lengths here, newest word first).
+     */
+    public function test_a_model_with_a_small_share_reads_the_window_once_and_finds_the_same_words(): void
+    {
+        $rows = [];
+        foreach (range(4, 10) as $length) {
+            foreach (range(1, 60) as $i) {
+                $rows[] = ['term' => substr(str_repeat(chr(96 + $length), $length - 2) . sprintf('%02d', $i), 0, $length), 'doc_count' => $i * 7 % 61, 'term_length' => $length];
+            }
         }
+        foreach (array_chunk($rows, 100) as $chunk) {
+            DB::table('fuzzy_index_terms')->insert($chunk);
+        }
+        $words = DB::table('fuzzy_index_terms')->get(['id', 'term', 'doc_count'])->all();
+        foreach (array_chunk($words, 100) as $chunk) {
+            DB::table('fuzzy_index_postings')->insert(array_map(fn ($word) => ['term_id' => $word->id, 'model_type' => 'App\\Models\\Faq', 'model_id' => (string) $word->id, 'frequency' => 1, 'column_name' => 'body'], $chunk));
+        }
+
+        // The words a pool of 10 holds within 7 edits of ggggggg: every length here is in reach.
+        usort($words, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
+        $expected = array_values(array_filter(array_map(fn ($word) => (string) $word->term, array_slice($words, 0, 10)), fn (string $term) => TermExpander::distance('ggggggg', $term) <= 7));
+
+        $read = function () {
+            $reads = 0;
+            DB::listen(function ($query) use (&$reads) {
+                if (preg_match('/^\s*select\b/i', $query->sql) && str_contains($query->sql, 'term_length')) {
+                    $reads++;
+                }
+            });
+            $terms = array_column((new TermExpander)->candidates('ggggggg', 7, 10, 'App\\Models\\Faq', visibleOnly: false), 'term');
+            DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+
+            return [$reads, $terms];
+        };
+
+        // A small share: another model holds nearly all of the index.
+        DB::table('fuzzy_index_meta')->insert([
+            ['model_type' => 'App\\Models\\Faq', 'total_docs' => 420, 'total_tokens' => 420, 'avg_doc_length' => 1],
+            ['model_type' => 'App\\Models\\Product', 'total_docs' => 60000, 'total_tokens' => 10000000, 'avg_doc_length' => 16],
+        ]);
+        // SQLite reads a length at a time whatever the share: its window read scans the whole window.
+        $this->assertSame([$this->dbDriver === 'sqlite' ? 14 : 1, $expected], $read());
+
+        // The whole index: one read per length, 1 to 14, the same words.
+        DB::table('fuzzy_index_meta')->where('model_type', 'App\\Models\\Product')->delete();
+        $this->assertSame([14, $expected], $read());
     }
 
     /**
@@ -293,6 +344,8 @@ class DictionaryIndexesTest extends TestCase
         foreach ($ids->chunk(100) as $chunk) {
             DB::table('fuzzy_index_postings')->insert($chunk->values()->map(fn ($id, $i) => ['term_id' => $id, 'model_type' => User::class, 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name'])->all());
         }
+        // The model holds the whole index, so it reads a length at a time (TC-4).
+        DB::table('fuzzy_index_meta')->insert(['model_type' => User::class, 'total_docs' => 60, 'total_tokens' => count($ids), 'avg_doc_length' => 7]);
         $tables = DB::connection()->getTablePrefix() . 'fuzzy_index_terms, ' . DB::connection()->getTablePrefix() . 'fuzzy_index_postings';
         match ($this->dbDriver) {
             'pgsql'            => DB::statement('analyze ' . $tables),
