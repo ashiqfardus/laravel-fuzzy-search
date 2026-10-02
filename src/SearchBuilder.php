@@ -1747,29 +1747,38 @@ class SearchBuilder
      * score is the BM25 score through the scoring hooks (see hookedScore()), which can reorder the
      * window they re-rank. _score is normalised against $anchor, the score of the first row the
      * query accepts (in rank order without a hook: the same on every page, so scores stay comparable
-     * across pages), or against the best row among $models when that is higher: the hooks' window,
-     * which a page in rank order is read with, or the page under orderBy(). Not the first entry of
-     * $ranked: a row the query hides, such as another tenant's, would set the scale and reveal what
-     * it contains. A row $ranked lacks, a match past the ranking's cap that an ordered page serves,
-     * scores 0.
+     * across pages), or against the best row among the first $rerank of $models when that is
+     * higher: the hooks' window, which every page in rank order is read with, or, with no window,
+     * the page under orderBy(). Not the first entry of $ranked: a row the query hides, such as
+     * another tenant's, would set the scale and reveal what it contains. A row $ranked lacks, a
+     * match past the ranking's cap that an ordered page serves, scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
-     * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0).
+     * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0). A row
+     * past the window scores no more than the window's last (ruling ER-171): scaled against the rows
+     * a terminal read, a row past the window that outscored it set the scale, so get() scored the
+     * top result below 1 and a deeper page scored its own first row 1 (TE-4).
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
     protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX, ?float $anchor = null): Collection
     {
         $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
-        $top    = max($anchor ?? 0.0, (float) ($scores->max() ?? 0));
-
-        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
-        return $scores->take($rerank)->sortDesc()->union($scores->slice($rerank))->map(function (float $raw, $i) use ($models, $top) {
+        $window = $rerank > 0 ? $scores->take($rerank) : $scores;
+        $top    = max($anchor ?? 0.0, (float) ($window->max() ?? 0));
+        $score  = fn (float $raw) => $top > 0 ? round(round($raw, 6) / $top, 6) : round($raw, 6);
+        $floor  = $rerank > 0 && $window->isNotEmpty() ? $score((float) $window->min()) : INF;
+        $attach = function (float $raw, $i, float $cap) use ($models, $score) {
             $item             = $models[$i];
             $item->_raw_score = round($raw, 6);
-            $item->_score     = $top > 0 ? round($item->_raw_score / $top, 6) : $item->_raw_score;
+            $item->_score     = min($score($raw), $cap);
             return $item;
-        })->values();
+        };
+
+        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
+        return $scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
+            ->union($scores->slice($rerank)->map(fn (float $raw, $i) => $attach($raw, $i, $floor)))
+            ->values();
     }
 
     /**

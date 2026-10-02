@@ -118,4 +118,55 @@ class IndexCustomScoreRecencyTest extends TestCase
             $this->assertSame(12, $make()->count(), "{$hook} count");
         }
     }
+
+    /**
+     * TE-4 (ruling ER-171). With a hook, _score was scaled against the best hooked score among the
+     * rows a terminal read, the window and the page: once a row past the window outscored the
+     * window, get() scored the top result far below 1 and a page past the window scored its own
+     * first row 1, so one row had a different _score on each terminal. It is now scaled against the
+     * window on every terminal and page, and a row past the window scores no more than the window's
+     * last.
+     */
+    public function test_with_a_hook_every_terminal_scales_score_against_the_window(): void
+    {
+        foreach (range(1, 12) as $i) {
+            DB::table('users')->insert([
+                'name'       => sprintf('Saga %02d', $i),
+                'email'      => "saga{$i}@example.com",
+                'created_at' => $i > 5 ? now() : now()->subDays(200),
+            ]);
+        }
+        app(IndexManager::class)->indexBatch(RankHookFreeUser::all());
+        config(['fuzzy-search.max_candidates' => 5, 'fuzzy-search.bm25.candidate_chunk' => 5]);
+
+        // Equal BM25 scores rank by key: Saga 01 to 05 are the window. Past it, Saga 06 to 12 outscore it a thousandfold.
+        $hooks = [
+            'customScore' => [fn () => RankHookFreeUser::search('saga')->useInvertedIndex()
+                ->customScore(fn ($row, $score) => $score * match (true) {
+                    $row->name === 'Saga 04'   => 2,
+                    $row->name > 'Saga 05'     => 1000,
+                    default                    => 1,
+                }), ['Saga 04' => 1.0, 'Saga 01' => 0.5, 'Saga 02' => 0.5, 'Saga 03' => 0.5, 'Saga 05' => 0.5]],
+            'boostRecent' => [fn () => RankHookFreeUser::search('saga')->useInvertedIndex()->boostRecent(1000.0),
+                ['Saga 01' => 1.0, 'Saga 02' => 1.0, 'Saga 03' => 1.0, 'Saga 04' => 1.0, 'Saga 05' => 1.0]],
+        ];
+
+        foreach ($hooks as $hook => [$make, $window]) {
+            $last     = end($window);
+            $expected = $window + array_fill_keys(array_map(fn ($i) => sprintf('Saga %02d', $i), range(6, 12)), $last);
+            $scores   = fn ($rows) => collect($rows)->mapWithKeys(fn ($row) => [$row->name => (float) $row->_score])->all();
+
+            $this->assertEqualsWithDelta($expected, $scores($make()->take(1000)->get()), 0.000001, "{$hook}: get()");
+            $this->assertSame(array_keys($expected), array_keys($scores($make()->take(1000)->get())), "{$hook}: the order");
+            $this->assertEqualsWithDelta(1.0, (float) $make()->first()?->_score, 0.000001, "{$hook}: first()");
+
+            $paged = [];
+            foreach ([1, 2, 3] as $page) {
+                $paged += $scores($make()->paginate(5, 'page', $page)->items());
+                $this->assertEqualsWithDelta(array_slice($expected, ($page - 1) * 4, 4), $scores($make()->simplePaginate(4, 'page', $page)->items()), 0.000001, "{$hook}: simplePaginate page {$page}");
+                $this->assertEqualsWithDelta(array_slice($expected, ($page - 1) * 5, 5), $scores($make()->skip(($page - 1) * 5)->take(5)->get()), 0.000001, "{$hook}: skip()->take() page {$page}");
+            }
+            $this->assertEqualsWithDelta($expected, $paged, 0.000001, "{$hook}: paginate()");
+        }
+    }
 }
