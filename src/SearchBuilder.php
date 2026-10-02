@@ -1747,29 +1747,38 @@ class SearchBuilder
      * score is the BM25 score through the scoring hooks (see hookedScore()), which can reorder the
      * window they re-rank. _score is normalised against $anchor, the score of the first row the
      * query accepts (in rank order without a hook: the same on every page, so scores stay comparable
-     * across pages), or against the best row among $models when that is higher: the hooks' window,
-     * which a page in rank order is read with, or the page under orderBy(). Not the first entry of
-     * $ranked: a row the query hides, such as another tenant's, would set the scale and reveal what
-     * it contains. A row $ranked lacks, a match past the ranking's cap that an ordered page serves,
-     * scores 0.
+     * across pages), or against the best row among the first $rerank of $models when that is
+     * higher: the hooks' window, which every page in rank order is read with, or, with no window,
+     * the page under orderBy(). Not the first entry of $ranked: a row the query hides, such as
+     * another tenant's, would set the scale and reveal what it contains. A row $ranked lacks, a
+     * match past the ranking's cap that an ordered page serves, scores 0.
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
-     * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0).
+     * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0). A row
+     * past the window scores no more than the window's last (ruling ER-171): scaled against the rows
+     * a terminal read, a row past the window that outscored it set the scale, so get() scored the
+     * top result below 1 and a deeper page scored its own first row 1 (TE-4).
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
     protected function attachBm25Scores(Collection $models, array $ranked, int $rerank = PHP_INT_MAX, ?float $anchor = null): Collection
     {
         $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
-        $top    = max($anchor ?? 0.0, (float) ($scores->max() ?? 0));
-
-        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
-        return $scores->take($rerank)->sortDesc()->union($scores->slice($rerank))->map(function (float $raw, $i) use ($models, $top) {
+        $window = $rerank > 0 ? $scores->take($rerank) : $scores;
+        $top    = max($anchor ?? 0.0, (float) ($window->max() ?? 0));
+        $score  = fn (float $raw) => $top > 0 ? round(round($raw, 6) / $top, 6) : round($raw, 6);
+        $floor  = $rerank > 0 && $window->isNotEmpty() ? $score((float) $window->min()) : INF;
+        $attach = function (float $raw, $i, float $cap) use ($models, $score) {
             $item             = $models[$i];
             $item->_raw_score = round($raw, 6);
-            $item->_score     = $top > 0 ? round($item->_raw_score / $top, 6) : $item->_raw_score;
+            $item->_score     = min($score($raw), $cap);
             return $item;
-        })->values();
+        };
+
+        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
+        return $scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
+            ->union($scores->slice($rerank)->map(fn (float $raw, $i) => $attach($raw, $i, $floor)))
+            ->values();
     }
 
     /**
@@ -2592,10 +2601,8 @@ class SearchBuilder
      * it (RankedCandidates::rows(), rulings ER-125, ER-127), so the search predicate, filter() and the
      * order hold for every part: on the union they went into its first part's wheres and became the
      * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
-     * the LIKE path serves rows without one. The model's scopes already apply inside each part, and
-     * the eager loads are carried over. The union's own order is dropped when it has no limit or
-     * offset of its own: it cannot change which rows the union holds, and SQL Server rejects an ORDER
-     * BY in a derived table without TOP or OFFSET. $query itself when it has no union.
+     * the LIKE path serves rows without one. Read as the query was, its callbacks and its own order
+     * included (RankedCandidates::unionAsTable()). $query itself when it has no union.
      */
     private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
     {
@@ -2605,20 +2612,11 @@ class SearchBuilder
             return $query;
         }
 
-        if ($base->unionLimit === null && $base->unionOffset === null) {
-            $base->unionOrders            = null;
-            $base->bindings['unionOrder'] = [];
-        }
-
-        if ($query instanceof EloquentBuilder) {
-            $model = $query->getModel();
-
-            return $model->newQueryWithoutScopes()->fromSub($base, $model->getTable())->setEagerLoads($query->getEagerLoads());
-        }
-
         $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
 
-        return $base->newQuery()->fromSub($base, $from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0])));
+        return \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::unionAsTable($query, $query instanceof EloquentBuilder
+            ? $query->getModel()->getTable()
+            : ($from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0]))));
     }
 
     /** Whether $query reads SELECT DISTINCT, a global scope's distinct() included. */

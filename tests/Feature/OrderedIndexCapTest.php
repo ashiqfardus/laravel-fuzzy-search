@@ -167,6 +167,49 @@ class OrderedIndexCapTest extends TestCase
         $this->assertSame($first, $deep, 'get(): skip(1080) against skip(0)');
     }
 
+    /**
+     * TF-9. Whether the ranking holds every match was judged as its documents times the query's
+     * terms, typo expansions included, against bm25.max_postings_per_term: 35 documents of "black"
+     * and its five neighbours (35 rows read, under a cap of 100) were taken as capped (35 × 6 = 210),
+     * and the ordered read went through the postings. It is now judged by whether rank()'s read
+     * reached the cap: the ranking is listed by id, and a cut one still reads every match.
+     */
+    public function test_an_ordered_read_goes_through_the_postings_only_when_rank_reached_the_cap(): void
+    {
+        $rows = array_map(fn ($i) => ['name' => "Black item {$i}", 'email' => "b{$i}@example.test"], range(1, 30));
+        foreach (['Blank', 'Block', 'Blacks', 'Slack', 'Flack'] as $i => $word) {
+            $rows[] = ['name' => "{$word} thing", 'email' => "n{$i}@example.test"];
+        }
+        DB::table('users')->insert($rows);
+        app(IndexManager::class)->indexBatch(User::query()->where('email', 'like', '%@example.test')->get());
+
+        $names = User::query()->where('email', 'like', '%@example.test')->orderBy('name')->orderBy('id')->pluck('name')->all();
+        $make  = fn () => User::search('black')->useInvertedIndex()->orderBy('name');
+
+        // The cap at 100 (document, term) rows: rank() reads 35. At 20 it cuts the ranking.
+        foreach ([100 => 0, 20 => 2] as $cap => $throughPostings) {
+            config(['fuzzy-search.bm25.max_postings_per_term' => $cap]);
+
+            $reads = [];
+            DB::listen(function ($query) use (&$reads) {
+                if (str_contains($query->sql, 'users') && str_contains($query->sql, 'fuzzy_index_postings')) {
+                    $reads[] = $query->sql;
+                }
+            });
+
+            $page = $make()->paginate(10, 'page', 2);
+            $this->assertSame(35, $page->total(), "cap {$cap}: total");
+            $this->assertSame(array_slice($names, 10, 10), $page->pluck('name')->all(), "cap {$cap}: paginate");
+            $this->assertCount($throughPostings, $reads, "cap {$cap}: the ordered COUNT and page through the postings");
+            DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+
+            $this->assertSame(array_slice($names, 0, 10), $make()->take(10)->get()->pluck('name')->all(), "cap {$cap}: get");
+            $this->assertSame($names[0], $make()->first()?->name, "cap {$cap}: first");
+            $this->assertSame(array_slice($names, 10, 10), $make()->simplePaginate(10, 'page', 2)->pluck('name')->all(), "cap {$cap}: simplePaginate");
+            $this->assertSame(35, $make()->count(), "cap {$cap}: count");
+        }
+    }
+
     public function test_a_deep_scout_ordered_page_takes_as_many_queries_as_page_one(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

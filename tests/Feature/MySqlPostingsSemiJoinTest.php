@@ -29,9 +29,10 @@ class SemiJoinArticle extends Model
  * depends on sampled statistics, and without the hint it came out a hash join only about 2 runs in
  * 3 (L14, round 9), so the hint itself is asserted too.
  *
- * Since S3 a capped ranking on the model's own table is read from the postings, joined on the key
- * (CappedOrderedReadTest): one primary-key lookup per match, no hash join either. The subquery,
- * and its hint, are left for a union.
+ * Since S3 a capped ranking of a sparse word on the model's own table, with no constraint, is read
+ * from the postings, joined on the key (CappedOrderedReadTest): one primary-key lookup per match, no
+ * hash join either. The subquery, and its hint, are left for the rest (R11-M4): a dense word, a
+ * constraint, a union.
  */
 class MySqlPostingsSemiJoinTest extends TestCase
 {
@@ -50,7 +51,7 @@ class MySqlPostingsSemiJoinTest extends TestCase
         });
 
         foreach (array_chunk(range(0, 19999), 1000) as $chunk) {
-            DB::table('semijoin_articles')->insert(array_map(fn ($i) => ['title' => sprintf('alpha %05d', $i)], $chunk));
+            DB::table('semijoin_articles')->insert(array_map(fn ($i) => ['title' => sprintf($i % 20 === 0 ? 'alpha beta %05d' : 'alpha %05d', $i)], $chunk));
         }
 
         SemiJoinArticle::query()->chunkById(2000, fn ($articles) => app(IndexManager::class)->indexBatch($articles));
@@ -90,11 +91,25 @@ class MySqlPostingsSemiJoinTest extends TestCase
         // (ruling ER-124), and so does an ordered read of a ranking that holds every match (ER-132).
         $this->assertSame([], $this->postingsReads($page), 'a whole ranking');
 
-        // A ranking capped at bm25.max_postings_per_term is read from the postings, joined on the key.
+        // A ranking capped at bm25.max_postings_per_term of a word in every row is read through the
+        // subquery, FirstMatch.
         config(['fuzzy-search.bm25.max_postings_per_term' => 10000]);
         $reads = $this->postingsReads($page);
 
-        $this->assertCount(2, $reads, 'the ordered COUNT and page');
+        $this->assertCount(2, $reads, 'the ordered COUNT and page of a dense word');
+
+        foreach ($reads as [$sql, $bindings]) {
+            $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
+
+            $plan = $this->plan($sql, $bindings);
+            $this->assertStringNotContainsStringIgnoringCase('hash join', $plan, "{$sql}\n{$plan}");
+        }
+
+        // Of a word in 5% of them, from the postings, joined on the key.
+        config(['fuzzy-search.bm25.max_postings_per_term' => 500]);
+        $reads = $this->postingsReads(fn () => SemiJoinArticle::search('beta')->typoTolerance(0)->useInvertedIndex()->orderBy('title')->paginate(10, 'page', 90));
+
+        $this->assertCount(2, $reads, 'the ordered COUNT and page of a sparse word');
 
         foreach ($reads as [$sql, $bindings]) {
             $this->assertStringNotContainsString('SEMIJOIN', $sql);

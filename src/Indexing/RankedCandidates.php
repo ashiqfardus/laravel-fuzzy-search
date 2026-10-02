@@ -70,8 +70,13 @@ final class RankedCandidates
             // The afterQuery() callbacks see the chunk's models, as they see get()'s, and what they
             // return is served, as get() serves it: a model they were given under its id, and another
             // instance (withoutRelations() and replicate() return copies, SA-6) under its own key,
-            // where a given model's own key is the id it was read under (not a join's id, nor a
-            // select() without the key). Any other model is dropped: it cannot be placed in the ranking.
+            // where a given model's own key is the id it was read under, else under the id of a given
+            // model whose attributes it has (a copy under a join's id or a select() without the key,
+            // TA-3). Any other model is dropped: it cannot be placed in the ranking (a replicate(),
+            // which has no key, unless the callback gives it one). An item that is no model (an
+            // array, a DTO) throws: it emptied every page, silently (TA-6). Ruling ER-167 preferred
+            // running the callbacks once on the ranked, scored page, which SearchBuilder assembles
+            // (the page, its scores, the cache's re-read, highlighting), not this read.
             if (method_exists($read, 'applyAfterQueryCallbacks')) {
                 $given = array_flip(array_map('spl_object_id', $found));
                 $byKey = [];
@@ -84,11 +89,15 @@ final class RankedCandidates
                 $kept = [];
                 foreach ($read->applyAfterQueryCallbacks($read->getModel()->newCollection($models)) as $model) {
                     if (!$model instanceof Model) {
-                        continue;
+                        throw new \LogicException(sprintf(
+                            '%s: an index search places each row its afterQuery() callbacks return in the ranking by its key, and one returned %s: return the models, and map them after get().',
+                            $read->getModel()::class,
+                            get_debug_type($model)
+                        ));
                     }
 
                     $own = $model->getKey();
-                    $id  = $given[spl_object_id($model)] ?? ($own === null ? null : $byKey[(string) $own] ?? null);
+                    $id  = $given[spl_object_id($model)] ?? ($own === null ? null : $byKey[(string) $own] ?? null) ?? self::copied($model, $found, $kept);
 
                     if ($id !== null) {
                         $kept[$id] ??= $model;
@@ -105,6 +114,24 @@ final class RankedCandidates
         }
 
         return $base->getModel()->newCollection($collected);
+    }
+
+    /**
+     * The id of the first model of $given, not yet $kept, whose attributes $copy has, all of them and
+     * no other (a clone, withoutRelations()), or null.
+     *
+     * @param array<int|string, Model> $given id => the model read under it
+     * @param array<int|string, Model> $kept  id => the model served under it
+     */
+    private static function copied(Model $copy, array $given, array $kept): int|string|null
+    {
+        foreach ($given as $id => $model) {
+            if (!isset($kept[$id]) && $model->getAttributes() === $copy->getAttributes()) {
+                return $id;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -182,17 +209,25 @@ final class RankedCandidates
      * How many models $query returns: models, not rows — a one-to-many join repeats a model once per
      * joined row, so an ungrouped query counts its distinct keys (COUNT(DISTINCT key) on every
      * driver). A grouped query is counted as a subquery, where the key is out of scope and its groups
-     * are the rows. ORDER BY / LIMIT on the query are dropped for the count (PostgreSQL rejects an
-     * ORDER BY on a bare aggregate).
+     * are the rows; with a join and no select list Laravel selects its FROM's every column there, as
+     * "users as u".* under an alias, which failed, and failed under a fromSub() (R11-L3): it selects
+     * those of the table the key is named through. ORDER BY / LIMIT on the query are dropped for the
+     * count (PostgreSQL rejects an ORDER BY on a bare aggregate).
      */
     public static function countModels(Builder $query): int
     {
         $key   = self::keyColumn($query);
         $query = (clone $query)->toBase();
 
-        return (int) ($query->groups || $query->havings
-            ? $query->getCountForPagination()
-            : $query->distinct()->getCountForPagination([$key]));
+        if ($query->groups || $query->havings) {
+            if (!empty($query->joins) && str_contains($key, '.')) {
+                $query->columns ??= [substr($key, 0, strrpos($key, '.')) . '.*'];
+            }
+
+            return (int) $query->getCountForPagination();
+        }
+
+        return (int) $query->distinct()->getCountForPagination([$key]);
     }
 
     /**
@@ -207,10 +242,10 @@ final class RankedCandidates
      *  - any key: a ranking of at most one bm25.candidate_chunk.
      * Otherwise, on the index's own connection, the postings restrict it (Bm25Scorer::whereRanked()):
      * they bind no id, and let every match through, those rank() left out past
-     * bm25.max_postings_per_term too, which a capped ranking needs. On MySQL and MariaDB the matched
-     * ids are joined on the key, one key lookup per match, but over a union or for a string key of a
-     * derived FROM (whereMatches()); the subquery used elsewhere compares the postings with a cast of
-     * the key, so it reads every row the query accepts (a SoftDeletes table whole). SQL Server keeps
+     * bm25.max_postings_per_term too, which a capped ranking needs. On MySQL and MariaDB, for a read
+     * with no constraint and a sparse word, the matched ids are joined on the key, one key lookup per
+     * match (whereMatches()); the subquery used elsewhere compares the postings with a cast of the
+     * key, so it reads every row the query accepts (a SoftDeletes table whole). SQL Server keeps
      * it for a longer ranking: it compiles every new inlined list slowly, and at 200k rows a bound
      * list of 2,000 integer ids took 3.4 s where the subquery takes 70 to 110 ms. So does a string
      * key on PostgreSQL, where it costs what a listed read does. On another connection, where the
@@ -229,14 +264,16 @@ final class RankedCandidates
         $chunk = self::chunkSize(null);
         $int   = in_array($model->getKeyType(), ['int', 'integer'], true);
 
-        // rank() reads one row per document and term, best first, up to max_postings_per_term. Its
-        // documents times the terms bound the rows it read: under the cap, it read them all, and
-        // the ranking holds every match.
-        $whole = count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+        // rank() reads one row per document and term, best first, up to max_postings_per_term: the
+        // ranking holds every match unless its read reached the cap (TF-9: its documents times the
+        // terms, typo and prefix expansions and synonyms included, reached it from a sixth of the cap
+        // for a word with five neighbours). That bound stands in for a ranking rank() did not just make.
+        $read  = app(Bm25Scorer::class)->lastRead($terms, $modelType, $columnWeights);
+        $whole = $read === null ? count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
             if (!$whole || !self::listsWhole($base, $int, count($ids))) {
-                return self::whereMatches($base, $terms, $modelType, $columnWeights);
+                return self::whereMatches($base, $terms, $modelType, $columnWeights, $read !== null && $read['share'] <= self::JOIN_SHARE);
             }
         } else {
             $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
@@ -471,18 +508,52 @@ final class RankedCandidates
     }
 
     /**
-     * $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a
-     * global scope: on MySQL and MariaDB joined to the matched ids of the postings on the model's key,
-     * but over a union, which they materialize without an index on the key (the join measured slower
-     * there on MariaDB: 4.8 s for 3.7 s at 1M rows).
+     * The largest share of the model's documents (fuzzy_index_meta.total_docs) the words' postings
+     * may reach (Bm25Scorer::lastRead()) for an ordered read with no constraint to be joined to them
+     * (whereMatches(); R11-M4, ruling ER-162). Measured on the COUNT and a page of 20 by an indexed
+     * column, at 200k and 1M rows:
+     *  - MySQL 9.6: the join read a word in 5 to 10% of the rows 6 to 14 times faster than the
+     *    subquery (0.5 s for 3.0 s at 1M rows), and kept a lead to about 60% while it read the
+     *    word's postings through postings_unique_idx. But once a word holds about an eighth of the
+     *    model's postings, MySQL reads them through postings_model_idx, every posting of the model,
+     *    and the join lost 2 to 10 times (30.7 s for 3.2 s at 1M rows, a word in 25% of rows of
+     *    about one posting each). A tenth of the rows keeps an index of one posting a row below that.
+     *  - MariaDB 11.4, at 1M rows: 3.4 to 5.9 times faster to 10%, even between 12 and 20%, and 1.8
+     *    to 18 times slower from 25% (it materializes the matched ids before it looks them up).
      */
-    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights): Builder
+    private const JOIN_SHARE = 0.1;
+
+    /**
+     * $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a
+     * global scope: on MySQL and MariaDB joined to the matched ids of the postings on the model's key
+     * only for a $sparse word, its postings at most JOIN_SHARE of the model's documents, and a read
+     * with no constraint (ruling ER-162). The join reads every matched posting, and the servers
+     * materialize it for the COUNT and again for the page (R11-M4). Under a selective where() the
+     * subquery reads only the rows the where accepts: 2 ms for a tenant of 100 rows at 200k rows,
+     * where the join took 3.3 s for a word in every row; and for a dense word it reads the table
+     * once (0.7 s, where the join took 4.3 s on MySQL). A union, which the servers materialize
+     * without an index on the key, read slower through the join too (4.8 s for 3.7 s at 1M rows on
+     * MariaDB).
+     */
+    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights, bool $sparse = false): Builder
     {
         $key   = self::keyColumn($base);
-        $model = self::readsUnion($base) ? null : $base->getModel();
+        $model = $sparse && self::unconstrained($base) ? $base->getModel() : null;
 
         return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
             ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model));
+    }
+
+    /**
+     * Whether $base reads its model's table with no constraint: no where, join, group, having or
+     * union, the caller's or a global scope's, but the SoftDeletes scope's (it hides few rows), and a
+     * FROM that names a table (an alias of it too).
+     */
+    private static function unconstrained(Builder $base): bool
+    {
+        $query = (clone $base)->withoutGlobalScope(\Illuminate\Database\Eloquent\SoftDeletingScope::class)->toBase();
+
+        return empty($query->wheres) && empty($query->joins) && empty($query->groups) && empty($query->havings) && empty($query->unions) && is_string($query->from);
     }
 
     /**
@@ -528,14 +599,10 @@ final class RankedCandidates
 
     /**
      * $base, with a union read as one derived table named as the model's table (rulings ER-125,
-     * ER-127): every read here restricts the union's rows to ranked ids, adds the key to the select
-     * list or orders the rows, and on a union each of those reached only its first part (the other
-     * parts were read whole, or their select lists no longer matched). The model's scopes already
-     * apply inside that part, and the eager loads are carried over. The union's own order is dropped
-     * when it has no limit or offset of its own: it cannot change which rows the union holds, and SQL
-     * Server rejects an ORDER BY in a derived table without TOP or OFFSET (a union with a limit stays
-     * unsupported there, as on the LIKE path). $base itself when it has no union, so a second call
-     * changes nothing.
+     * ER-127; unionAsTable()): every read here restricts the union's rows to ranked ids, adds the key
+     * to the select list or orders the rows, and on a union each of those reached only its first part
+     * (the other parts were read whole, or their select lists no longer matched). $base itself when
+     * it has no union, so a second call changes nothing.
      *
      * Every read then names the key through that table, so a union whose parts select no key has
      * none to name, and failed with the database's unknown-column error: it throws a LogicException
@@ -561,12 +628,51 @@ final class RankedCandidates
             ));
         }
 
-        if ($query->unionLimit === null && $query->unionOffset === null) {
-            $query->unionOrders            = null;
-            $query->bindings['unionOrder'] = [];
+        return self::unionAsTable($base, $model->getTable());
+    }
+
+    /**
+     * $query, a query with a union, as one derived table named $as, read as the query was (SE-2, the
+     * index path's rows() and the LIKE and extended paths' SearchBuilder::unionAsTable()):
+     *  - an Eloquent query's scopes already apply inside each part, and its eager loads are carried
+     *    over;
+     *  - its afterQuery() callbacks (Laravel 11+), the Eloquent query's and its query builder's, run
+     *    on what the outer read returns: a derived table's own never run;
+     *  - the union's own order, when it has no limit or offset of its own, orders the outer read, as
+     *    an orderBy() on a query without a union does, its bindings with it: it cannot change which
+     *    rows the union holds, and SQL Server rejects an ORDER BY in a derived table without TOP or
+     *    OFFSET (a union with a limit stays unsupported there).
+     */
+    public static function unionAsTable(Builder|QueryBuilder $query, string $as): Builder|QueryBuilder
+    {
+        $union  = clone ($query instanceof Builder ? $query->toBase() : $query); // toBase() is the query itself without scopes
+        $orders = null;
+
+        if ($union->unionLimit === null && $union->unionOffset === null) {
+            [$orders, $bindings]           = [$union->unionOrders, $union->bindings['unionOrder']];
+            $union->unionOrders            = null;
+            $union->bindings['unionOrder'] = [];
         }
 
-        return $model->newQueryWithoutScopes()->fromSub($query, $model->getTable())->setEagerLoads($base->getEagerLoads());
+        $table = $query instanceof Builder
+            ? $query->getModel()->newQueryWithoutScopes()->fromSub($union, $as)->setEagerLoads($query->getEagerLoads())
+            : $union->newQuery()->fromSub($union, $as);
+        $outer = $table instanceof Builder ? $table->getQuery() : $table;
+
+        if ($orders) {
+            $outer->orders            = $orders;
+            $outer->bindings['order'] = $bindings;
+        }
+
+        if (method_exists($outer, 'afterQuery')) {
+            $outer->afterQuery(fn ($result) => $union->applyAfterQueryCallbacks($result));
+        }
+
+        if ($query instanceof Builder && method_exists($query, 'afterQuery')) {
+            $table->afterQuery(fn ($result) => $query->applyAfterQueryCallbacks($result));
+        }
+
+        return $table;
     }
 
     /**

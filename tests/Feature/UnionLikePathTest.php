@@ -149,6 +149,87 @@ class UnionLikePathTest extends TestCase
         }
     }
 
+    /**
+     * R11-L2. Read as one derived table, a union lost its afterQuery() callbacks (Laravel 11+) on
+     * every path, and its own orderBy() on the LIKE path: the rows came back in the database's
+     * order and the callbacks never ran. A union is now read as the same query without one: its
+     * callbacks run on what it returns, and an order of its own, with no limit, orders the rows.
+     */
+    public function test_a_union_keeps_its_own_order_and_its_after_query_callbacks_on_every_path(): void
+    {
+        $afterQuery = method_exists(\Illuminate\Database\Eloquent\Builder::class, 'afterQuery');
+
+        foreach ([UnionItem::class, UnionCodeItem::class] as $model) {
+            $calls  = new \ArrayObject();
+            $tagged = fn (string $shape) => function ($models) use ($calls, $shape) {
+                $calls[$shape] = ($calls[$shape] ?? 0) + 1;
+
+                return $models->each(fn ($row) => $row->setAttribute('tagged', $shape));
+            };
+            $shapes = [
+                'one query' => fn ($q) => $q->whereIn('cat', [1, 2])->orderBy('name', 'desc')->when($afterQuery, fn ($q) => $q->afterQuery($tagged('one query'))),
+                'union'     => fn ($q) => $q->where('cat', 1)->union($model::query()->where('cat', 2))->orderBy('name', 'desc')->when($afterQuery, fn ($q) => $q->afterQuery($tagged('union'))),
+            ];
+            $paths = [
+                'default'     => fn ($shape) => $model::search('alpha')->query($shape),
+                'noRelevance' => fn ($shape) => $model::search('alpha')->withRelevance(false)->query($shape),
+                'orderBy'     => fn ($shape) => $model::search('alpha')->orderBy('cat')->query($shape),
+                'extended'    => fn ($shape) => $model::search('')->extended('alpha')->query($shape),
+                'index'       => fn ($shape) => $model::search('alpha')->typoTolerance(0)->useInvertedIndex()->query($shape),
+                'index order' => fn ($shape) => $model::search('alpha')->typoTolerance(0)->useInvertedIndex()->orderBy('cat')->query($shape),
+            ];
+
+            foreach ($paths as $path => $make) {
+                $served  = [];
+                $through = [];
+                foreach ($shapes as $shape => $query) {
+                    $calls[$shape]   = 0;
+                    $rows            = $make($query)->take(100)->get();
+                    $through[$shape] = $rows->every(fn ($row) => $row->tagged === ($afterQuery ? $shape : null));
+
+                    $served[$shape] = [
+                        'get'            => $rows->pluck('name')->all(),
+                        'paginate'       => collect($make($query)->paginate(7, 'page', 2)->items())->pluck('name')->all(),
+                        'simplePaginate' => collect($make($query)->simplePaginate(7, 'page', 2)->items())->pluck('name')->all(),
+                        'first'          => $make($query)->first()?->name,
+                        'count'          => $make($query)->count(),
+                        'calls'          => $calls[$shape],
+                    ];
+                }
+
+                $label = class_basename($model) . " {$path}";
+                $this->assertNotEmpty($served['one query']['get'], $label);
+                $this->assertSame(['one query' => true, 'union' => true], $through, "{$label}: every row went through its query's callback");
+                $this->assertSame($afterQuery, $served['union']['calls'] > 0, "{$label}: the union's callback ran");
+                $this->assertSame($served['one query'], $served['union'], "{$label}: the union is read as the same query without one");
+            }
+        }
+    }
+
+    /** R11-L2 on a plain query builder: a union's own order and its query builder's afterQuery() callbacks. */
+    public function test_a_plain_query_builder_union_keeps_its_own_order_and_callbacks(): void
+    {
+        $afterQuery = method_exists(\Illuminate\Database\Query\Builder::class, 'afterQuery');
+        $served     = [];
+
+        foreach ([
+            'one query' => DB::table('union_items')->whereNull('deleted_at')->whereIn('cat', [1, 2])->orderBy('name', 'desc'),
+            'union'     => DB::table('union_items')->whereNull('deleted_at')->where('cat', 1)
+                ->union(DB::table('union_items')->whereNull('deleted_at')->where('cat', 2))->orderBy('name', 'desc'),
+        ] as $shape => $query) {
+            if ($afterQuery) {
+                $query->afterQuery(fn ($rows) => $rows->each(fn ($row) => $row->tagged = $shape));
+            }
+
+            $rows           = (new SearchBuilder($query, app(\Ashiqfardus\LaravelFuzzySearch\FuzzySearch::class)))->search('alpha')->searchIn(['name', 'body'])->withRelevance(false)->take(100)->get();
+            $served[$shape] = [$rows->pluck('name')->all(), $rows->pluck('tagged')->unique()->values()->all()];
+        }
+
+        $this->assertNotEmpty($served['union'][0]);
+        $this->assertSame($served['one query'][0], $served['union'][0], 'the union\'s own order');
+        $this->assertSame($afterQuery ? ['union'] : [null], $served['union'][1], 'the union\'s callbacks');
+    }
+
     public function test_a_plain_query_builder_union_is_searched_whole(): void
     {
         $query = DB::table('union_items')->whereNull('deleted_at')->where('cat', 1)

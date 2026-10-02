@@ -239,8 +239,9 @@ return [
          * holds every match. Past this many, on SQL Server, for a string key on PostgreSQL
          * (or over a union on MySQL or MariaDB), and for a string list past the database's
          * placeholder limit, the postings restrict the read instead (a subquery; on MySQL and
-         * MariaDB, but over a union, a join on the key), as they do a ranking capped at
-         * max_postings_per_term. On SQL Server, and for such a
+         * MariaDB, for a query with no constraint and words in at most a tenth of the rows, a
+         * join on the key), as they do a ranking capped at max_postings_per_term. On SQL
+         * Server, and for such a
          * string key or one on SQLite, a constrained relevance search checks a ranking of
          * at most max(candidate_chunk, max_candidates) ids by key, this many per query, and
          * reads a longer one through that subquery. It is also the chunk the index path hydrates a
