@@ -609,19 +609,33 @@ class IndexManager
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
      *
+     * A re-read row of another index type leaves $modelType's index too: a single-table-inheritance
+     * parent's query hydrates a child row as the child, which is indexed under its own type. Under
+     * $modelType, the parent's reindexRelated(), a job named with the parent class and a child saved
+     * through a parent instance filed child rows where the child's own saves never reached them
+     * (R11-M1). Such rows are written under their own type after the commit, one level deep: a row
+     * that type's query hydrates as yet another type is not followed further.
+     *
      * @param  list<int|string>     $keys    saved models, reloaded here
      * @param  array<string, Model> $unsaved key => instance, indexed as given
      * @param  bool                 $scout   re-read with Scout's visibility (see indexBatch())
+     * @param  bool                 $refile  write the rows of another index type under it (see above)
      * @return int the number of models indexed
      */
-    private function write(string $modelType, array $keys, array $unsaved, bool $scout = false): int
+    private function write(string $modelType, array $keys, array $unsaved, bool $scout = false, bool $refile = true): int
     {
-        $indexed = DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
+        [$indexed, $elsewhere] = DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
             $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
-            $byModel = []; // id => [column => [term => frequency]]
+            $byModel   = []; // id => [column => [term => frequency]]
+            $elsewhere = []; // index type => keys of the rows hydrated as a class indexed under it
             foreach ($this->reload($modelType, $keys, $scout) + $unsaved as $id => $model) {
+                // indexBatch() groups the unsaved instances by type, so only a re-read row can differ.
+                if (($type = self::indexType($model)) !== $modelType) {
+                    $elsewhere[$type][] = $model->getKey();
+                    continue;
+                }
                 if (!self::indexesModel($model)) {
                     continue;
                 }
@@ -766,10 +780,14 @@ class IndexManager
                 ensure: $byModel !== [],
             );
 
-            return count($byModel);
+            return [count($byModel), $elsewhere];
         }, self::ATTEMPTS);
 
         $this->analyzeUnanalyzedIndex();
+
+        foreach ($refile ? $elsewhere : [] as $type => $typeKeys) {
+            $indexed += $this->write($type, $typeKeys, [], $scout, refile: false);
+        }
 
         return $indexed;
     }

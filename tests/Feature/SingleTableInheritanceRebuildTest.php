@@ -229,6 +229,62 @@ class SingleTableInheritanceRebuildTest extends TestCase
         }
     }
 
+    public static function writesForTheParentClass(): array
+    {
+        return [
+            'reindexRelated() on the parent'   => ['reindexRelated'],
+            'IndexModelJob for the parent'     => ['job'],
+            'a save through a parent instance' => ['save'],
+        ];
+    }
+
+    /**
+     * R11-M1. A write for the parent class re-read its keys through the parent's query, which
+     * hydrates a child row as the child, and filed every row under the parent: the parent's
+     * reindexRelated(), an IndexModelJob named with the parent class, and a child row saved through
+     * a parent instance (created as one, or a parent row turned into a child) put child rows in the
+     * parent's index, where the child's later saves (under its own type) never reached them. Each
+     * re-read row is now indexed under its own type.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('writesForTheParentClass')]
+    public function test_without_search_index_type_a_write_for_the_parent_class_files_a_child_row_under_the_child(string $write): void
+    {
+        $this->rebuild(StiParent::class);
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+
+        if ($write === 'reindexRelated') {
+            $this->assertSame(2, StiParent::reindexRelated('kind', 'child'));
+        } elseif ($write === 'job') {
+            (new IndexModelJob(StiParent::class, 1))->handle(app(IndexManager::class));
+            (new IndexModelJob(StiParent::class, 3))->handle(app(IndexManager::class));
+        } else {
+            $created = StiParent::create(['title' => 'alpha six', 'kind' => 'child']);
+            $this->assertInstanceOf(StiParent::class, $created);
+            $this->assertNotInstanceOf(StiChild::class, $created);
+            $this->assertSame([1, 3, 6], $this->indexedIds(StiChild::class), 'created through the parent class');
+
+            // A parent row that becomes a child leaves the parent's index for the child's.
+            $row = StiParent::query()->find(2);
+            $this->assertNotInstanceOf(StiChild::class, $row);
+            $row->update(['title' => 'alpha deux', 'kind' => 'child']);
+            $this->assertSame([1, 2, 3, 6], $this->indexedIds(StiChild::class), 'turned into a child');
+            $this->assertSame([4, 5], $this->indexedIds(StiParent::class));
+            $this->assertSame(2, (int) DB::table('fuzzy_index_meta')->where('model_type', StiParent::class)->value('total_docs'));
+            $this->assertSame(['alpha five', 'alpha four'], $this->indexTitles(StiParent::class, 'alpha'));
+
+            return;
+        }
+
+        $this->assertSame([StiChild::class => 2, StiParent::class => 3], $this->documents(), 'no child row under the parent');
+        $this->assertSame(3, (int) DB::table('fuzzy_index_meta')->where('model_type', StiParent::class)->value('total_docs'));
+
+        // The child's own save updates the one copy there is: the parent's index never serves it by its old title.
+        StiParent::query()->find(1)->update(['title' => 'omega one']);
+        $this->assertSame(['alpha five', 'alpha four', 'alpha two'], $this->indexTitles(StiParent::class, 'alpha'));
+        $this->assertSame([], $this->indexTitles(StiParent::class, 'omega'));
+        $this->assertSame(['omega one'], $this->indexTitles(StiChild::class, 'omega'));
+    }
+
     /**
      * The Scout engine has no class to be asked for: a collection that mixes classes (Scout's import
      * of the parent) is indexed under each model's index type, as delete() removes it; under the
