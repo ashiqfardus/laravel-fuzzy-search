@@ -3812,8 +3812,9 @@ class SearchBuilder
                 $connection->getName(), $connection->getDriverName(), $connection->getConfig('host'), $connection->getConfig('port'),
                 $connection->getDatabaseName(), $connection->getTablePrefix(),
                 // Schema-per-tenant on PostgreSQL switches search_path on one connection and database.
+                // scalar(): an app-wide array fetch mode makes selectOne() return an array (TC-3).
                 $connection->getDriverName() === 'pgsql'
-                    ? $connection->selectOne("select current_setting('search_path') as search_path")->search_path
+                    ? $connection->scalar("select current_setting('search_path')")
                     : null,
             ],
             'base_sql'               => $this->query->toSql(),

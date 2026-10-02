@@ -352,10 +352,11 @@ class IndexManager
             }
 
             $grammar = $connection->getQueryGrammar();
-            $pages   = $connection->selectOne(
+            // scalar(): an app-wide array fetch mode makes selectOne() return an array (TC-3).
+            $pages   = $connection->scalar(
                 "select pg_relation_size(to_regclass(?)) / current_setting('block_size')::int as pages",
                 [$grammar->wrapTable('fuzzy_index_postings')]
-            )->pages;
+            );
 
             if ((int) $pages < 16) {
                 return;
@@ -449,16 +450,18 @@ class IndexManager
     private function statisticsStale(\Illuminate\Database\Connection $connection): bool
     {
         $id = $connection->getName() . '|' . $connection->getDatabaseName() . '|' . $connection->getTablePrefix()
-            . '|' . $connection->selectOne("select current_setting('search_path') as search_path")->search_path;
+            . '|' . $connection->scalar("select current_setting('search_path')");
 
         if (isset(self::$analyzed[$id])) {
             return false;
         }
 
+        // As an object whatever the fetch mode: an app-wide array mode makes it an array (TC-3).
         $table = $connection->selectOne(
             "select reltuples, relpages, pg_relation_size(oid) / current_setting('block_size')::int as pages from pg_class where oid = to_regclass(?)",
             [$connection->getQueryGrammar()->wrapTable('fuzzy_index_postings')]
         );
+        $table = $table === null ? null : (object) $table;
 
         $described = $table !== null && (float) $table->reltuples > 0 && (int) $table->pages <= 2 * max(1, (int) $table->relpages);
 
