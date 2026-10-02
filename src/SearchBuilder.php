@@ -755,8 +755,9 @@ class SearchBuilder
         $own        = array_flip($this->indexedOwnTerms);
         $expansions = array_diff_key($this->indexedTermWeights, $own);
 
+        $class   = (string) $this->resolveIndexModelClass();
         $visible = $expansions === [] ? [] : app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)
-            ->visible(array_map('strval', array_keys($expansions)), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType((string) $this->resolveIndexModelClass()));
+            ->visible(array_map('strval', array_keys($expansions)), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($class), $class); // judged on the searched class (TA-1)
 
         return array_intersect_key($this->indexedTermWeights, $own + array_flip($visible));
     }
@@ -3840,7 +3841,7 @@ class SearchBuilder
             if (!$indexed) {
                 return null;
             }
-            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass));
+            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $modelClass); // hidden columns judged on the searched class (TA-1)
         } catch (\Illuminate\Database\QueryException $e) {
             // Same rule as didYouMean(): a missing dictionary means "not migrated" and hands the
             // query back to the table scan; anything else is a real database error and must
@@ -3970,7 +3971,7 @@ class SearchBuilder
         // path costs one query instead of two. A missing table (migrations not run) means
         // "nothing to suggest"; anything else is a real SQL error and must surface.
         try {
-            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass));
+            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $modelClass); // hidden columns judged on the searched class (TA-1)
         } catch (\Illuminate\Database\QueryException $e) {
             if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
                 throw $e; // a real database error — surface it
