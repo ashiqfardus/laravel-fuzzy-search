@@ -64,10 +64,33 @@ class IndexManager
      * name resolves the same way; one that no longer exists is its own type. Every index write,
      * delete, flush and search names the type through here, so a child's save and a rebuild of its
      * parent cannot write two indexes (SA-1).
+     *
+     * The type is the class itself or a concrete Eloquent model it extends, else a LogicException
+     * names the hook (R11-L1): a write re-reads the rows through the type's query and a search reads
+     * the type's postings, so a sibling's scope left the model unindexed, an unrelated model's index
+     * was served, and an abstract base or a morph alias could not be read at all. An ancestor is
+     * returned under its declared name, however the hook spells it.
      */
     public static function indexType(Model|string $model): string
     {
-        return method_exists($model, 'searchIndexType') ? $model::searchIndexType() : (is_string($model) ? $model : $model::class);
+        $class = is_string($model) ? $model : $model::class;
+        if (!method_exists($model, 'searchIndexType')) {
+            return $class;
+        }
+
+        $type = $model::searchIndexType();
+        if ($type === $class) {
+            return $type;
+        }
+
+        $parent = class_exists($type) ? new \ReflectionClass($type) : null;
+        if ($parent === null || $parent->isAbstract() || !$parent->isSubclassOf(Model::class) || !is_a($class, $parent->getName(), true)) {
+            $class = ltrim($class, '\\');
+
+            throw new \LogicException("{$class}::searchIndexType() returned [{$type}], which is neither {$class} nor a concrete Eloquent model it extends: return the class itself, or the single-table-inheritance parent whose index it shares.");
+        }
+
+        return $parent->getName();
     }
 
     /**

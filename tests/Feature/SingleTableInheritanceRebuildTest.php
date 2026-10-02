@@ -125,6 +125,68 @@ class StiScoutChild extends StiScoutParent
     }
 }
 
+/** An abstract base on the same table: no concrete parent, so the children name one of them (R11-L1). */
+abstract class StiVehicle extends Model
+{
+    use Searchable;
+
+    protected $table    = 'sti_items';
+    protected $guarded  = [];
+    public $timestamps  = false;
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    public static function searchIndexType(): string
+    {
+        return StiCar::class;
+    }
+}
+
+class StiCar extends StiVehicle
+{
+}
+
+/** Names its sibling. */
+class StiTruck extends StiVehicle
+{
+}
+
+/** Names its abstract parent. */
+class StiAbstractTyped extends StiVehicle
+{
+    public static function searchIndexType(): string
+    {
+        return StiVehicle::class;
+    }
+}
+
+/** Names a morph alias, as a model_type column often holds. */
+class StiAliasTyped extends StiParent
+{
+    public static function searchIndexType(): string
+    {
+        return 'sti_item';
+    }
+}
+
+/** Names Eloquent's Model. */
+class StiModelTyped extends StiParent
+{
+    public static function searchIndexType(): string
+    {
+        return Model::class;
+    }
+}
+
+/** Names a model of another hierarchy. */
+class StiUnrelatedTyped extends StiParent
+{
+    public static function searchIndexType(): string
+    {
+        return StiTypedParent::class;
+    }
+}
+
 /**
  * RC-3. indexBatch() took the model type from a chunk's first model, and re-read the chunk's keys
  * through that class's query: a rebuild of an STI parent whose chunk began with a child indexed the
@@ -402,6 +464,74 @@ class SingleTableInheritanceRebuildTest extends TestCase
         $this->assertSame([], StiTypedChild::search('fuor')->didYouMean(), 'four is only on a parent row, which the child scope hides');
         $this->assertSame(['four'], array_column(StiTypedParent::search('fuor')->didYouMean(), 'term'));
         $this->assertSame(['alpha'], StiTypedChild::search('alp')->suggestFrom('index')->suggest());
+    }
+
+    public static function invalidIndexTypes(): array
+    {
+        return [
+            'a sibling'             => [StiTruck::class, StiCar::class],
+            'an abstract ancestor'  => [StiAbstractTyped::class, StiVehicle::class],
+            'a morph alias'         => [StiAliasTyped::class, 'sti_item'],
+            'Eloquent\'s Model'     => [StiModelTyped::class, Model::class],
+            'an unrelated model'    => [StiUnrelatedTyped::class, StiTypedParent::class],
+        ];
+    }
+
+    /**
+     * R11-L1. indexType() took whatever the hook returned. A class that is not the model or one of
+     * its ancestors failed silently: a sibling's global scope hid every row of the model from its
+     * write, so the model was never indexed, and an unrelated model's postings were served to its
+     * search. Such a hook now throws a LogicException naming it, on every path that reads the type;
+     * the observer reports it, as it reports every failed index write, and the save goes on.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidIndexTypes')]
+    public function test_a_search_index_type_that_is_neither_the_class_nor_a_concrete_ancestor_throws_naming_the_hook(string $class, string $type): void
+    {
+        $message = "{$class}::searchIndexType() returned [{$type}]";
+        $paths   = [
+            'index search'  => fn () => $class::search('alpha')->useInvertedIndex()->get(),
+            'didYouMean()'  => fn () => $class::search('alpah')->didYouMean(),
+            'rebuild'       => fn () => \Illuminate\Support\Facades\Artisan::call('fuzzy-search:rebuild', ['model' => $class]),
+            'clear'         => fn () => \Illuminate\Support\Facades\Artisan::call('fuzzy-search:clear', ['model' => $class]),
+            'IndexModelJob' => fn () => (new IndexModelJob($class, 1))->handle(app(IndexManager::class)),
+            'indexModel()'  => fn () => app(IndexManager::class)->indexModel($class::query()->find(2)), // a parent row: hydrated as $class
+        ];
+        foreach ($paths as $path => $run) {
+            try {
+                $run();
+                $this->fail("{$path}: no exception");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString($message, $e->getMessage(), $path);
+            }
+        }
+
+        $reported = [];
+        $this->app->instance(\Illuminate\Contracts\Debug\ExceptionHandler::class, new class($reported) implements \Illuminate\Contracts\Debug\ExceptionHandler {
+            public function __construct(private array &$reported) {}
+            public function report(\Throwable $e) { $this->reported[] = $e; }
+            public function shouldReport(\Throwable $e) { return true; }
+            public function render($request, \Throwable $e) { throw $e; }
+            public function renderForConsole($output, \Throwable $e) { throw $e; }
+        });
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        $class::query()->find(2)->update(['title' => 'omega two']);
+
+        $this->assertSame('omega two', DB::table('sti_items')->where('id', 2)->value('title'), 'the save goes on');
+        $this->assertCount(1, $reported);
+        $this->assertInstanceOf(\LogicException::class, $reported[0]);
+        $this->assertStringContainsString($message, $reported[0]->getMessage());
+        $this->assertSame([], $this->documents());
+    }
+
+    /** The model's own class, and a concrete ancestor named in any spelling PHP accepts, are its type. */
+    public function test_a_search_index_type_naming_the_class_or_a_concrete_ancestor_is_the_type(): void
+    {
+        $this->assertSame(StiCar::class, IndexManager::indexType(StiCar::class));
+        $this->assertSame(StiCar::class, IndexManager::indexType(new StiCar()));
+        $this->assertSame(StiTypedParent::class, IndexManager::indexType(StiTypedChild::class));
+        $this->assertSame(StiTypedParent::class, IndexManager::indexType('\\' . StiTypedChild::class));
+        $this->assertSame(StiTypedParent::class, IndexManager::indexType(strtolower(StiTypedChild::class)));
+        $this->assertSame(StiChild::class, IndexManager::indexType(new StiChild())); // no override: its own class
     }
 
     /** The probe's third case: Scout's import and fuzzy-search:rebuild of the parent build one index. */

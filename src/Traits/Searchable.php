@@ -131,8 +131,10 @@ trait Searchable
      * each child to return the parent class: the hierarchy then has one index, which every save,
      * delete, rebuild and search of any class in it reads and writes, and a child's search reads
      * it through its own global scope. Static, so the commands and the search resolve it from the
-     * class. Changing it needs `fuzzy-search:rebuild --fresh` of the type. See
-     * IndexManager::indexType(), which every index read and write goes through (SA-1).
+     * class. It must name the class itself or a concrete Eloquent model it extends: anything else (a
+     * sibling, an abstract base, a morph alias) throws a LogicException where the type is read.
+     * Changing it needs `fuzzy-search:rebuild --fresh` of the type. See IndexManager::indexType(),
+     * which every index read and write goes through (SA-1).
      */
     public static function searchIndexType(): string
     {
