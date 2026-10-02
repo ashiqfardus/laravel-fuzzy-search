@@ -84,12 +84,15 @@ class SearchableIndexingObserver
 
     protected function reindex(Model $model): void
     {
-        $class = IndexManager::indexType($model);
+        $class = $model::class;
         $key   = $model->getKey();
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 
         $this->afterCommit($model, function () use ($class, $key, $async, $queue) {
+            // Resolved here, so a searchIndexType() that names no valid type is reported like any
+            // failed index write, not thrown from the save (R11-L1).
+            $class = IndexManager::indexType($class);
             if ($async) {
                 IndexModelJob::dispatch($class, $key)->onQueue($queue);
                 return;

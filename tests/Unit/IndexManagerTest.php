@@ -331,11 +331,14 @@ class IndexManagerTest extends TestCase
         $this->assertSame(['alpha' => 1, 'beta' => 1, 'gamma' => 1], DB::table('fuzzy_index_terms')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->sortKeys()->all());
 
         // gamma leaves, delta comes: one UPDATE, for gamma alone (delta is a new word, inserted).
+        // PostgreSQL inserts delta at doc_count 0 first and raises it in the same id-ordered pass
+        // (ER-169), so there it is locked and updated with gamma.
         $model->update(['name' => 'alpha beta delta']);
         [$updates, $locks] = $statements(fn () => $manager->indexModel($model));
+        $changed = $this->dbDriver === 'pgsql' ? ['gamma', 'delta'] : ['gamma'];
         $this->assertCount(1, $updates);
-        $this->assertStringContainsString('WHERE id IN (' . $ids(['gamma'])[0] . ')', $updates[0]->sql);
-        $this->assertSame($ids(['alpha', 'beta', 'gamma']), array_map('intval', $locks[0]->bindings ?? []));
+        $this->assertStringContainsString('WHERE id IN (' . implode(',', $ids($changed)) . ')', $updates[0]->sql);
+        $this->assertSame($ids($this->dbDriver === 'pgsql' ? ['alpha', 'beta', 'delta', 'gamma'] : ['alpha', 'beta', 'gamma']), array_map('intval', $locks[0]->bindings ?? []));
         $this->assertSame(['alpha' => 1, 'beta' => 1, 'delta' => 1, 'gamma' => 0], DB::table('fuzzy_index_terms')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->sortKeys()->all());
     }
 
@@ -478,12 +481,29 @@ class IndexManagerTest extends TestCase
         $model   = $this->makeIndexableModel($id);
         $manager = $this->makeIndexManager();
 
+        if ($this->dbDriver === 'pgsql') {
+            // PostgreSQL inserts a write's new words first, ON CONFLICT DO NOTHING (ER-169), and
+            // upserts only a word swept between its dictionary read and its locking read (ER-75).
+            // Make one: "alpha" is in the dictionary with no posting (an orphan a flush would
+            // sweep), and another connection deletes it right after the write re-reads its ids.
+            DB::table('fuzzy_index_terms')->insert(['term' => 'alpha', 'doc_count' => 0, 'term_length' => 5]);
+            config(['database.connections.sweep' => config('database.connections.' . config('database.default'))]);
+            $swept = false;
+            $this->app['db']->listen(function ($query) use (&$swept) {
+                if (!$swept && preg_match('/^\s*select\b.*fuzzy_index_terms\W+where\W+term\W+in\b/is', $query->sql) && $query->bindings === ['beta']) {
+                    $swept = true;
+                    DB::connection('sweep')->table('fuzzy_index_terms')->where('term', 'alpha')->delete();
+                }
+            });
+        }
+
         $queries = [];
         $this->app['db']->listen(function ($query) use (&$queries) {
             $queries[] = ['query' => $query->sql];
         });
 
         $manager->indexModel($model);
+        DB::purge('sweep');
 
         // The upsert that inserts new terms and, on a conflict, raises doc_count: an INSERT, or
         // on SQL Server a MERGE.
@@ -496,6 +516,7 @@ class IndexManagerTest extends TestCase
             $this->assertStringContainsString('fuzzy_index_terms.doc_count + ', $q['query']);
             $this->assertStringNotContainsString('= doc_count + ', $q['query']);
         }
+        $this->assertSame(['alpha' => 1, 'beta' => 1], DB::table('fuzzy_index_terms')->orderBy('term')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->all());
     }
 
     public function test_shared_term_doc_count_reaches_two_when_indexed_by_two_models(): void

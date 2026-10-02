@@ -440,8 +440,9 @@ class IndexModelJobOverlapTest extends TestCase
     public static function parallelBatchShapes(): array
     {
         return [
-            'every word new, index flushed each round' => [true],
-            're-index, no flush'                       => [false],
+            'every word new, index flushed each round'                     => [true, 4, false],
+            're-index, no flush'                                           => [false, 4, false],
+            'every word new, flushed each round, 16 Scout import chunks' => [true, 16, true],
         ];
     }
 
@@ -460,9 +461,16 @@ class IndexModelJobOverlapTest extends TestCase
      *   claim's locking read of a batch's ids locked the other batches' rows too, and the
      *   batches deadlocked on each other's claims, re-index or not. MySQL/MariaDB now claim
      *   each id with its own point read (ER-77).
+     * - TB-3 (ruling ER-169): a word another batch committed between two batches' dictionary reads
+     *   was "existing" to one, locked in id order, and "new" to the other, upserted in term
+     *   order. On PostgreSQL the crossings chained: 16 batches rolled back 15 to 66 attempts and 5
+     *   to 9 lost all three, and a queued scout:import on 16 workers left chunks unindexed. There
+     *   every write now inserts its missing words first and takes every word in id order. The
+     *   16-batch shape writes through the Scout engine's update(), which a queued import's
+     *   MakeSearchable job calls.
      */
     #[DataProvider('parallelBatchShapes')]
-    public function test_parallel_batches_do_not_lose_all_their_attempts(bool $flush): void
+    public function test_parallel_batches_do_not_lose_all_their_attempts(bool $flush, int $batches, bool $scout): void
     {
         if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
             $this->markTestSkipped('The race needs several processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
@@ -477,9 +485,18 @@ class IndexModelJobOverlapTest extends TestCase
             // test measures lock order, not fork survival; it runs against a local SQL Server.
             $this->markTestSkipped('Forked ODBC children are unreliable on CI runners; run against a local SQL Server.');
         }
+        if ($batches > 4 && $this->dbDriver !== 'pgsql') {
+            // Ruling ER-169: MySQL/MariaDB and SQL Server keep the term-ordered insert of new words,
+            // whose crossings at 16 writers are retried and can lose a batch (documented: give the
+            // jobs tries). The id-ordered dictionary write is PostgreSQL's.
+            $this->markTestSkipped('16 parallel writers sharing new words are guaranteed no deadlock on PostgreSQL only (ER-169).');
+        }
         config(['database.connections.race' => config('database.connections.' . config('database.default'))]);
 
-        DB::table('users')->insert(array_fill(0, 100, ['name' => 'race', 'email' => 'race', 'created_at' => now(), 'updated_at' => now()]));
+        $rows = 25 * $batches;
+        foreach (array_chunk(range(1, $rows), 100) as $chunk) {
+            DB::table('users')->insert(array_fill(0, count($chunk), ['name' => 'race', 'email' => 'race', 'created_at' => now(), 'updated_at' => now()]));
+        }
         $ids        = DB::table('users')->where('name', 'race')->orderBy('id')->pluck('id')->all();
         $vocabulary = array_map(fn ($i) => 'zq' . strtr((string) $i, '0123456789', 'abcdefghij'), range(100, 159)); // 60 words
         $log        = sys_get_temp_dir() . '/fuzzy-race-batches-' . getmypid() . '-' . uniqid();
@@ -496,7 +513,8 @@ class IndexModelJobOverlapTest extends TestCase
             app(IndexManager::class)->indexBatch(User::whereKey($ids)->get()); // every round re-indexes
         }
 
-        for ($round = 0; $round < 10; $round++) {
+        $rounds = $batches > 4 ? 20 : 10; // 16 batches over 10 rounds sometimes met no crossing before ER-169
+        for ($round = 0; $round < $rounds; $round++) {
             $text();
             if ($flush) {
                 app(IndexManager::class)->flush(User::class); // every word is new again
@@ -512,7 +530,9 @@ class IndexModelJobOverlapTest extends TestCase
                     try {
                         DB::setDefaultConnection('race');
                         \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback\n", FILE_APPEND));
-                        app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
+                        $scout
+                            ? app(FuzzySearchEngine::class)->update(User::whereKey($batch)->get())
+                            : app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
                     } catch (\Throwable $e) {
                         file_put_contents($log, 'failed: ' . strtok($e->getMessage(), "\n") . "\n", FILE_APPEND);
                     } finally {
@@ -530,17 +550,18 @@ class IndexModelJobOverlapTest extends TestCase
         @unlink($log);
         $failed  = array_values(preg_grep('/^failed/', $lines));
         $retried = count($lines) - 2 * count($failed); // a failed batch logs its last rollback and "failed"
-        $report  = count($failed) . ' of 40 batches failed, ' . $retried . ' retried: ' . ($failed[0] ?? '');
+        $report  = count($failed) . ' of ' . $rounds * $batches . ' batches failed, ' . $retried . ' retried: ' . ($failed[0] ?? '');
 
         $this->assertSame([], $failed, $report);
-        // No batch loses all its attempts; a retry is allowed on every database. PostgreSQL takes a
-        // write's new words in one sorted order (ER-74), but a word a third batch commits between
-        // two batches' dictionary reads is "existing" to one, locked in id order before its upsert,
-        // and "new" to the other, upserted in term order: those two can still deadlock, rarely
-        // (one retry in a CI run on PostgreSQL 14, ruling ER-160), and the retry recovers. MySQL/
-        // MariaDB keep a statement per doc_count increment, and SQL Server retries 1 to 5 batches of
-        // the flushed shape in most local runs. The two-batch race below guards ER-74 itself.
-        $this->assertSame(100, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
+        // PostgreSQL inserts a write's missing words first and then takes every word it touches in
+        // id order (ER-169), and nothing else deadlocks there, so no batch even retries: three
+        // attempts would hide the deadlock. MySQL/MariaDB keep a statement per doc_count increment
+        // (their crossings are retried), and SQL Server retries 1 to 5 batches of the flushed shape
+        // in most local runs; both recover on retry at four batches.
+        if ($this->dbDriver === 'pgsql') {
+            $this->assertSame(0, $retried, $report);
+        }
+        $this->assertSame($rows, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
 
         // Every term counts the rows posting it, and meta the documents.
         $holders = [];
@@ -605,6 +626,109 @@ class IndexModelJobOverlapTest extends TestCase
             ['kilo' => 1, 'lima' => 3, 'mike' => 3],
             DB::table('fuzzy_index_terms')->orderBy('term')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->all(),
         );
+    }
+
+    /**
+     * TB-3, ruling ER-169: the crossing ER-160 named, made deterministic. A reads aaword and zzword as
+     * missing and pauses; C indexes zzword and commits; B reads zzword as existing and aaword as
+     * missing, locks zzword in id order and pauses; A then inserts aaword and waits on zzword, while
+     * B, resuming, waits on A's aaword: a deadlock, retried, which at 16 writers chained until
+     * batches lost all three attempts. On PostgreSQL a write now inserts the words it is missing
+     * first, holding only rows it inserted itself, and then takes every word in id order, so A
+     * waits for B's commit at its insert of aaword and neither rolls back.
+     */
+    public function test_a_word_committed_between_two_writes_dictionary_reads_deadlocks_neither(): void
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
+            $this->markTestSkipped('The race needs three processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
+        }
+        if ($this->dbDriver !== 'pgsql') {
+            // SQLite runs one writer at a time; MySQL/MariaDB and SQL Server keep the term-ordered
+            // insert of new words (ER-169), so this crossing is still a deadlock there, retried.
+            $this->markTestSkipped('The id-ordered dictionary write that removes this deadlock is PostgreSQL\'s (ER-169).');
+        }
+        config(['database.connections.race' => config('database.connections.' . config('database.default'))]);
+
+        $row  = fn (string $name) => DB::table('users')->insertGetId(['name' => $name, 'email' => '', 'created_at' => now(), 'updated_at' => now()]);
+        $a    = $row('aaword zzword');
+        $b    = $row('zzword aaword');
+        $c    = $row('zzword');
+        $base = sys_get_temp_dir() . '/fuzzy-race-er169-' . getmypid() . '-' . uniqid();
+        $log  = "{$base}.log";
+        $job  = fn (int $id) => (new IndexModelJob(User::class, $id))->handle(app(IndexManager::class));
+
+        $children = [
+            function () use ($job, $c, $base) { // C: commits zzword while A is paused after its dictionary read
+                self::waitFor("{$base}.a1", 20);
+                $job($c);
+                touch("{$base}.c1");
+            },
+            function () use ($job, $b, $base) { // B: zzword is existing to it; pauses with zzword locked
+                self::waitFor("{$base}.c1", 20);
+                $paused = false;
+                DB::listen(function ($query) use (&$paused, $base) {
+                    if (!$paused && preg_match('/^\s*update\W+fuzzy_index_terms\W+set\W+doc_count/is', $query->sql)) {
+                        $paused = true;
+                        touch("{$base}.b1");
+                        usleep(400_000);
+                    }
+                });
+                $job($b);
+            },
+        ];
+        $pids = [];
+        foreach ($children as $i => $child) {
+            $pid = pcntl_fork();
+            if ($pid === -1) {
+                $this->markTestSkipped('pcntl_fork() failed.');
+            }
+            if ($pid === 0) {
+                try {
+                    DB::setDefaultConnection('race');
+                    \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback {$i}\n", FILE_APPEND));
+                    $child();
+                } catch (\Throwable $e) {
+                    file_put_contents($log, "failed {$i}: " . strtok($e->getMessage(), "\n") . "\n", FILE_APPEND);
+                } finally {
+                    posix_kill(getmypid(), SIGKILL); // no destructors, no PHPUnit shutdown: they belong to the parent
+                }
+            }
+            $pids[] = $pid;
+        }
+
+        // A, here: pauses after its dictionary read until B holds zzword.
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback a\n", FILE_APPEND));
+        $paused = false;
+        DB::listen(function ($query) use (&$paused, $base) {
+            if (!$paused && preg_match('/^\s*select\b.*\bfrom\W+fuzzy_index_terms\W+where\W+term\W+in\b/is', $query->sql)) {
+                $paused = true;
+                touch("{$base}.a1");
+                self::waitFor("{$base}.b1", 20);
+            }
+        });
+        $error = null;
+        try {
+            $job($a);
+        } catch (\Throwable $e) {
+            $error = (string) $e;
+        }
+        foreach ($pids as $pid) {
+            pcntl_waitpid($pid, $status);
+        }
+        $lines = is_file($log) ? file($log, FILE_IGNORE_NEW_LINES) : [];
+        $held  = file_exists("{$base}.b1");
+        foreach (glob("{$base}.*") as $file) {
+            @unlink($file);
+        }
+
+        $this->assertTrue($held, 'B never reached its doc_count update');
+        $this->assertNull($error);
+        $this->assertSame([], $lines, 'a write rolled back (a deadlock retried) or failed');
+        $this->assertSame(
+            ['aaword' => 2, 'zzword' => 3],
+            DB::table('fuzzy_index_terms')->whereIn('term', ['aaword', 'zzword'])->orderBy('term')->pluck('doc_count', 'term')->map(fn ($count) => (int) $count)->all(),
+        );
+        $this->assertSame(3, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
     }
 
     public static function orphanSweepPauses(): array
@@ -676,6 +800,38 @@ class IndexModelJobOverlapTest extends TestCase
             fn () => app(IndexManager::class)->flush(User::class),
             fn () => app(IndexManager::class)->syncModel(User::class, $id),
             '/^\s*delete from\W+fuzzy_index_documents\W/i', // the flush pauses after its documents DELETE
+            1_000_000,
+            300_000,
+            pauseParent: false,
+        );
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $documents = DB::table('fuzzy_index_documents')->where('model_type', User::class);
+        $meta      = DB::table('fuzzy_index_meta')->where('model_type', User::class)->first(['total_docs', 'total_tokens']);
+        $this->assertSame(['documents' => [(string) $id], 'meta' => [1, (int) (clone $documents)->sum('doc_length')]], [
+            'documents' => (clone $documents)->pluck('model_id')->map(fn ($key) => (string) $key)->all(),
+            'meta'      => $meta === null ? null : [(int) $meta->total_docs, (int) $meta->total_tokens],
+        ]);
+        $this->assertSame([$id], User::search('quokka')->useInvertedIndex()->get()->pluck('id')->map(fn ($key) => (int) $key)->all());
+    }
+
+    /**
+     * TB-1. `fuzzy-search:clear --all` ran its four DELETEs (postings, documents, meta, terms) each on
+     * its own, with no lock: a write for a new row that committed after the documents DELETE kept its
+     * document and lost its meta increment, and the rebuild after it found the row indexed already
+     * and never counted it. They now run in one transaction behind flush()'s lock, so the write
+     * lands after the clear.
+     */
+    public function test_a_write_during_clear_all_lands_after_it_with_its_meta_totals(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $id = DB::table('users')->insertGetId(['name' => 'Quokka Wombat', 'email' => 'numbat@quoll.test', 'created_at' => now(), 'updated_at' => now()]);
+
+        [$childError, $parentError] = $this->race(
+            fn () => \Illuminate\Support\Facades\Artisan::call('fuzzy-search:clear', ['--all' => true]),
+            fn () => app(IndexManager::class)->syncModel(User::class, $id),
+            '/^\s*delete from\W+fuzzy_index_documents\W/i', // clear --all pauses after its documents DELETE
             1_000_000,
             300_000,
             pauseParent: false,

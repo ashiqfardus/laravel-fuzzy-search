@@ -36,14 +36,16 @@ final class TermExpander
     /**
      * Dictionary terms within $maxDistance edits of $term, most common first.
      *
-     * @param  ?string $modelType   Restrict to terms posted under this model_type (see postedUnder());
-     *                              null leaves the dictionary unscoped.
-     * @param  bool    $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
-     *                              on for didYouMean(), which hands the words back; off for the typo
-     *                              expansion, which only matches.
+     * @param  ?string     $modelType   Restrict to terms posted under this model_type (see postedUnder());
+     *                                  null leaves the dictionary unscoped.
+     * @param  bool|string $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
+     *                                  on for didYouMean(), which hands the words back; off for the typo
+     *                                  expansion, which only matches. True judges them on $modelType's
+     *                                  class, a class name on that class: the searched one, which
+     *                                  searchIndexType() may index under another type (TA-1).
      * @return list<array{term: string, doc_count: int, distance: int}>
      */
-    public function candidates(string $term, int $maxDistance, int $pool, ?string $modelType = null, bool $visibleOnly = true): array
+    public function candidates(string $term, int $maxDistance, int $pool, ?string $modelType = null, bool|string $visibleOnly = true): array
     {
         if ($term === '' || $pool <= 0) {
             return [];
@@ -162,14 +164,15 @@ final class TermExpander
      * fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there if
      * as-you-type latency matters on a large dictionary.
      *
-     * @param  ?string $modelType   Restrict to terms posted under this model_type (see postedUnder());
-     *                              null leaves the dictionary unscoped.
-     * @param  bool    $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
-     *                              on for suggest(), which hands the words back; off for asYouType(),
-     *                              which only matches.
+     * @param  ?string     $modelType   Restrict to terms posted under this model_type (see postedUnder());
+     *                                  null leaves the dictionary unscoped.
+     * @param  bool|string $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
+     *                                  on for suggest(), which hands the words back; off for asYouType(),
+     *                                  which only matches. A class name judges them on that class, as
+     *                                  in candidates().
      * @return array<string, float>
      */
-    public function prefix(string $prefix, int $max, ?string $modelType = null, bool $visibleOnly = true): array
+    public function prefix(string $prefix, int $max, ?string $modelType = null, bool|string $visibleOnly = true): array
     {
         if ($prefix === '' || $max <= 0) {
             return [];
@@ -208,20 +211,21 @@ final class TermExpander
     }
 
     /**
-     * Which of $terms are posted under a column $modelType shows (see visibleColumnsOnly()):
-     * SearchBuilder::getDebugInfo() hands its index_terms back, so it lists only those expansions
-     * (ER-87), while the search itself matched every column (ER-66).
+     * Which of $terms are posted under $modelType in a column $modelClass shows (see
+     * visibleColumnsOnly(); null: $modelType's class): SearchBuilder::getDebugInfo() hands its
+     * index_terms back, so it lists only those expansions (ER-87), while the search itself matched
+     * every column (ER-66).
      *
      * @param  array<int, string> $terms
      * @return list<string>
      */
-    public function visible(array $terms, string $modelType): array
+    public function visible(array $terms, string $modelType, ?string $modelClass = null): array
     {
         if ($terms === []) {
             return [];
         }
 
-        return $this->postedUnder(DB::table('fuzzy_index_terms')->whereIn('term', array_map('strval', $terms)), $modelType, true, $this->probes($modelType, count($terms)))
+        return $this->postedUnder(DB::table('fuzzy_index_terms')->whereIn('term', array_map('strval', $terms)), $modelType, $modelClass ?? true, $this->probes($modelType, count($terms)))
             ->pluck('term')
             ->map(fn ($term) => (string) $term)
             ->all();
@@ -231,10 +235,10 @@ final class TermExpander
      * Restrict a fuzzy_index_terms query to terms posted under $modelType: a whereExists
      * semi-join against fuzzy_index_postings, which postings_unique_idx (term_id, model_type,
      * model_id, column_name) covers. The dictionary is shared by every indexed model, so an
-     * unscoped lookup offers other models' terms. Null leaves the query unscoped. $probe: see
-     * probes().
+     * unscoped lookup offers other models' terms. Null leaves the query unscoped. $visibleOnly: see
+     * candidates(). $probe: see probes().
      */
-    private function postedUnder(Builder $query, ?string $modelType, bool $visibleOnly, bool $probe = false): Builder
+    private function postedUnder(Builder $query, ?string $modelType, bool|string $visibleOnly, bool $probe = false): Builder
     {
         if ($modelType !== null) {
             $query->whereExists(function ($q) use ($modelType, $visibleOnly, $probe) {
@@ -243,8 +247,8 @@ final class TermExpander
                   ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
                   ->where('sp.model_type', $modelType);
 
-                if ($visibleOnly) {
-                    $this->visibleColumnsOnly($q, $modelType);
+                if ($visibleOnly !== false) {
+                    $this->visibleColumnsOnly($q, $modelType, $visibleOnly === true ? $modelType : $visibleOnly);
                 }
             });
         }
@@ -315,14 +319,20 @@ final class TermExpander
      * name, which the model never lists: it is judged by pathShown() instead, so a column the
      * related model hides, or a relation the model hides, gives no word either (SF-5), and one
      * they show is offered, a non-empty $visible on the model notwithstanding.
+     *
+     * The columns are judged on $modelClass, the searched class, not on the type its rows are posted
+     * under (TA-1). Where the two differ (searchIndexType(): a single-table-inheritance child
+     * searched through its parent's index), the type's postings also hold the other classes' rows,
+     * whose columns the searched class may not have or may hide differently: only the columns it
+     * declares and shows are offered, legacy '' postings left out.
      */
-    private function visibleColumnsOnly(Builder $postings, string $modelType): void
+    private function visibleColumnsOnly(Builder $postings, string $modelType, string $modelClass): void
     {
-        if (!is_subclass_of($modelType, Model::class)) {
+        if (!is_subclass_of($modelClass, Model::class)) {
             return;
         }
 
-        $model   = new $modelType();
+        $model   = new $modelClass();
         $hidden  = $model->getHidden();
         $visible = $model->getVisible();
         $columns = method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : [];
@@ -340,6 +350,13 @@ final class TermExpander
             ? !$paths[mb_substr($column, 0, 64)]
             : !self::shows($model, $column);
         $legacyOk = array_filter(array_map('strval', $columns), $isHidden) === [];
+
+        if ($modelClass !== $modelType) {
+            $flat = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column));
+            $postings->whereIn('sp.column_name', [...array_values($flat), ...$shownPaths]);
+
+            return;
+        }
 
         if ($visible !== []) {
             $postings->whereIn('sp.column_name', [...$visible, ...$shownPaths, ...($legacyOk ? [''] : [])]);
@@ -361,7 +378,9 @@ final class TermExpander
      * SearchBuilder::resolveColumnTarget() reads it. A segment is called only when it may be a
      * relation by SearchBuilder::isReachableRelation()'s rule for a declared path (ruling ER-50):
      * public, not static, no required parameter, and declared by neither Laravel nor this package;
-     * anything else, or a call that returns no Relation, hides the column.
+     * anything else, a call that returns no Relation, or a morphTo (see relation()), hides the column.
+     * A belongsToMany pivot column (withPivot()) is no attribute of the related model: toArray() puts
+     * it under the related model's pivot accessor, on the pivot model, and it is judged there (TF-10).
      */
     private static function pathShown(Model $model, string $column): bool
     {
@@ -381,10 +400,15 @@ final class TermExpander
             $current = $relation[1];
         }
 
+        $last = $relation[2];
+        if ($last instanceof \Illuminate\Database\Eloquent\Relations\BelongsToMany && in_array($leaf, $last->getPivotColumns(), true)) {
+            return self::shows($current, $last->getPivotAccessor()) && self::shows($last->newPivot(), $leaf);
+        }
+
         return self::shows($current, $leaf);
     }
 
-    /** @return array{string, Model}|null the relation's declared name and its related model */
+    /** @return array{string, Model, \Illuminate\Database\Eloquent\Relations\Relation}|null the relation's declared name, its related model and the relation */
     private static function relation(Model $model, string $segment): ?array
     {
         $method = new \ReflectionMethod($model, $segment);
@@ -404,7 +428,12 @@ final class TermExpander
 
         $relation = $model->{$segment}();
 
-        return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation ? [$method->getName(), $relation->getRelated()] : null;
+        // A morphTo's related class is each row's own *_type, which no class-level walk knows (on a
+        // fresh instance Laravel relates it to the model itself), and docs/relationships.md calls
+        // morphTo paths unsupported: its column is withheld (TF-1).
+        return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation && !$relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
+            ? [$method->getName(), $relation->getRelated(), $relation]
+            : null;
     }
 
     /** Eloquent's own rule for toArray() (getArrayableItems()): not in getHidden(), and in a non-empty getVisible(). */

@@ -30,7 +30,7 @@ $post->_highlighted['author.name'];            // "<mark>Tolkien</mark>"
 - A relation `searchIn()` reads is loaded even after `without()`. To keep it out of a response, constrain it with `with()`, hide it (`$hidden`/`makeHidden()`), or shape the response with an API resource.
 - `searchIn()` on a `Model::search()` builder *adds* the listed columns to the model's configured `$searchable['columns']` (it has never replaced them); to search only the listed columns, list them all in `searchIn()` or build the query from `new SearchBuilder(Model::query(), app(FuzzySearch::class))`.
 - Relation columns are not part of the SQL relevance `ORDER BY`, so when more than `max_candidates` rows match, rows that match only through a relation may fall outside the rescored window.
-- Polymorphic (`morphTo`) relation paths are not supported.
+- Polymorphic (`morphTo`) relation paths are not supported. A `morphTo` path that `searchableText()` indexes (`commentable.title`) is matched on the index, but dictionary `suggest()` and `didYouMean()` never offer its words: the class it reaches is each row's own, so whether that class hides the column is not known.
 
 **BM25 index:** relations are not joined at query time. Define `searchableText()` to put related text into the index, eager-load it during rebuilds with `searchIndexQuery()`, declare the foreign key in `reindex_on`, and reindex the children when the parent changes:
 

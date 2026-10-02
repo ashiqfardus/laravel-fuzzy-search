@@ -64,10 +64,33 @@ class IndexManager
      * name resolves the same way; one that no longer exists is its own type. Every index write,
      * delete, flush and search names the type through here, so a child's save and a rebuild of its
      * parent cannot write two indexes (SA-1).
+     *
+     * The type is the class itself or a concrete Eloquent model it extends, else a LogicException
+     * names the hook (R11-L1): a write re-reads the rows through the type's query and a search reads
+     * the type's postings, so a sibling's scope left the model unindexed, an unrelated model's index
+     * was served, and an abstract base or a morph alias could not be read at all. An ancestor is
+     * returned under its declared name, however the hook spells it.
      */
     public static function indexType(Model|string $model): string
     {
-        return method_exists($model, 'searchIndexType') ? $model::searchIndexType() : (is_string($model) ? $model : $model::class);
+        $class = is_string($model) ? $model : $model::class;
+        if (!method_exists($model, 'searchIndexType')) {
+            return $class;
+        }
+
+        $type = $model::searchIndexType();
+        if ($type === $class) {
+            return $type;
+        }
+
+        $parent = class_exists($type) ? new \ReflectionClass($type) : null;
+        if ($parent === null || $parent->isAbstract() || !$parent->isSubclassOf(Model::class) || !is_a($class, $parent->getName(), true)) {
+            $class = ltrim($class, '\\');
+
+            throw new \LogicException("{$class}::searchIndexType() returned [{$type}], which is neither {$class} nor a concrete Eloquent model it extends: return the class itself, or the single-table-inheritance parent whose index it shares.");
+        }
+
+        return $parent->getName();
     }
 
     /**
@@ -233,23 +256,49 @@ class IndexManager
     }
 
     /**
-     * Flush (delete) the entire index for a model class.
+     * Run a flush's DELETEs in one transaction that holds every index write off until it commits
+     * (flush() and flushAll()).
+     *
+     * PostgreSQL: lock first (ruling ER-151, SB-1). A write for a new row waited on nothing the
+     * DELETEs lock: it committed between them, so its document row stayed and its meta increment
+     * went into the meta row deleted next, a model with documents and no meta (BM25 found nothing)
+     * that no rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
+     * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
+     * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
+     * from its one writer, SQL Server from its DELETEs' locks (tested), each held to the commit:
+     * `clear --all` ran its DELETEs autocommitted, one by one, and lost the meta the same way (TB-1).
      */
-    public function flush(string $modelClass): void
+    private function flushing(\Closure $deletes): void
     {
-        DB::transaction(function () use ($modelClass) {
-            // PostgreSQL: hold every index write off for the flush (ruling ER-151, SB-1). A write
-            // for a new row of this model waited on nothing the DELETEs below lock: it committed
-            // between them, so its document row stayed and its meta increment went into the meta
-            // row deleted next, a model with documents and no meta (BM25 found nothing) that no
-            // rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
-            // ones at their claim (claimDocuments()' insert) until the commit; searches only read,
-            // and a second flush waits its turn. MySQL/MariaDB get the same from the DELETE's gap
-            // locks, SQLite from its one writer, SQL Server from its DELETE's locks (tested).
+        DB::transaction(function () use ($deletes) {
             if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
                 DB::statement('LOCK TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . ' IN SHARE ROW EXCLUSIVE MODE');
             }
 
+            $deletes();
+        });
+    }
+
+    /**
+     * Flush (delete) the index of every model: `fuzzy-search:clear --all`. Table by table rather
+     * than a truncate, so the foreign keys are respected and only the package's tables are touched.
+     */
+    public function flushAll(): void
+    {
+        $this->flushing(function () {
+            DB::table('fuzzy_index_postings')->delete();
+            DB::table('fuzzy_index_documents')->delete();
+            DB::table('fuzzy_index_meta')->delete();
+            DB::table('fuzzy_index_terms')->delete();
+        });
+    }
+
+    /**
+     * Flush (delete) the entire index for a model class.
+     */
+    public function flush(string $modelClass): void
+    {
+        $this->flushing(function () use ($modelClass) {
             // Give back this model's share of every term's doc_count first. A term another model
             // still uses survives the orphan sweep below, and it kept counting this model's
             // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
@@ -613,19 +662,33 @@ class IndexManager
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
      *
+     * A re-read row of another index type leaves $modelType's index too: a single-table-inheritance
+     * parent's query hydrates a child row as the child, which is indexed under its own type. Under
+     * $modelType, the parent's reindexRelated(), a job named with the parent class and a child saved
+     * through a parent instance filed child rows where the child's own saves never reached them
+     * (R11-M1). Such rows are written under their own type after the commit, one level deep: a row
+     * that type's query hydrates as yet another type is not followed further.
+     *
      * @param  list<int|string>     $keys    saved models, reloaded here
      * @param  array<string, Model> $unsaved key => instance, indexed as given
      * @param  bool                 $scout   re-read with Scout's visibility (see indexBatch())
+     * @param  bool                 $refile  write the rows of another index type under it (see above)
      * @return int the number of models indexed
      */
-    private function write(string $modelType, array $keys, array $unsaved, bool $scout = false): int
+    private function write(string $modelType, array $keys, array $unsaved, bool $scout = false, bool $refile = true): int
     {
-        $indexed = DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
+        [$indexed, $elsewhere] = DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
             $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
-            $byModel = []; // id => [column => [term => frequency]]
+            $byModel   = []; // id => [column => [term => frequency]]
+            $elsewhere = []; // index type => keys of the rows hydrated as a class indexed under it
             foreach ($this->reload($modelType, $keys, $scout) + $unsaved as $id => $model) {
+                // indexBatch() groups the unsaved instances by type, so only a re-read row can differ.
+                if (($type = self::indexType($model)) !== $modelType) {
+                    $elsewhere[$type][] = $model->getKey();
+                    continue;
+                }
                 if (!self::indexesModel($model)) {
                     continue;
                 }
@@ -655,6 +718,32 @@ class IndexManager
             // writes whose terms cross each hold a row the other needed.
             $posted   = $this->postedTerms($modelType, $ids);
             $existing = $this->termIds(array_map('strval', array_keys($counts)));
+            $driver   = DB::connection()->getDriverName();
+
+            // PostgreSQL: the words the read found missing go in first, at doc_count 0, sorted by
+            // term, ON CONFLICT DO NOTHING; their ids are re-read, and their increments join the
+            // id-ordered UPDATE below (ruling ER-169, TB-3). A word another write committed between
+            // two writes' reads was existing to one, locked in id order, and new to the other,
+            // upserted in term order: the two crossed, and at 16 writers the deadlocks chained until
+            // writes lost all three attempts. Here a write holds only rows it inserted itself, which
+            // no other write can see, and waits only on another's uncommitted insert of the same
+            // word, in the same sorted order; every lock after that is taken in id order. MySQL/
+            // MariaDB keep the upsert below (an INSERT IGNORE there takes gap locks, and measured
+            // far worse), and so does SQL Server, whose MERGE locks in plan order (retried).
+            if ($driver === DbDialect::PGSQL) {
+                $new = [];
+                foreach ($counts as $term => $increment) {
+                    if (!isset($existing[$term])) {
+                        $new[] = (string) $term;
+                    }
+                }
+                sort($new, SORT_STRING);
+                foreach (array_chunk($new, self::ROWS_PER_UPSERT) as $chunk) {
+                    DB::table('fuzzy_index_terms')->insertOrIgnore(array_map(fn (string $term) => ['term' => $term, 'doc_count' => 0, 'term_length' => mb_strlen($term)], $chunk));
+                }
+                $existing += $this->termIds($new);
+            }
+
             $deltas   = [];
             foreach ($posted as [$termId, $holders]) {
                 $deltas[$termId] = -$holders;
@@ -694,15 +783,17 @@ class IndexManager
             // failed when converting the nvarchar value 'paginate' to data type int". $termIds[$term]
             // lookups still work because PHP normalises numeric-string keys the same way on read.
             //
-            // Terms the dictionary lacks are inserted, sorted by term. A write that inserts one of
-            // them first turns this insert into an update of its row: the conflict branch raises it
-            // by this write's increment, the inserted row's own doc_count (EXCLUDED, or the MERGE
-            // source). So every write takes its new words in one sorted order (ER-74); a
-            // statement per increment, each sorted only within itself, let two batches take them
-            // in opposite orders. MySQL/MariaDB keep a statement per increment with a literal raise:
-            // the raise cannot name the inserted row there on both (MySQL deprecates VALUES(),
-            // MariaDB has no row alias). Two batches there can still take a shared new word in
-            // opposite orders; that deadlock is rare and retried (0 of 40 parallel batches lost).
+            // Terms the dictionary lacks are inserted, sorted by term (on PostgreSQL, only a word
+            // swept since its insert above, ER-75). A write that inserts one of them first turns
+            // this insert into an update of its row: the conflict branch raises it by this write's
+            // increment, the inserted row's own doc_count (EXCLUDED, or the MERGE source). So every
+            // write takes its new words in one sorted order (ER-74); a statement per increment, each
+            // sorted only within itself, let two batches take them in opposite orders. MySQL/MariaDB
+            // keep a statement per increment with a literal raise: the raise cannot name the
+            // inserted row there on both (MySQL deprecates VALUES(), MariaDB has no row alias). Two
+            // batches there can still take a shared new word in opposite orders, and a word one
+            // read as existing and the other as new still crosses (TB-3): retried, but at 16
+            // parallel writers a few lose all three attempts, so queued imports need job tries.
             $missing = [];
             foreach ($counts as $term => $increment) {
                 if (!isset($existing[$term])) {
@@ -711,7 +802,6 @@ class IndexManager
             }
             ksort($missing, SORT_STRING);
 
-            $driver = DB::connection()->getDriverName();
             $source = match (true) { // the inserted row's doc_count, as the conflict branch sees it
                 DbDialect::isMySqlFamily($driver) => null,
                 $driver === 'sqlsrv'              => DbDialect::rawIdentifier('laravel_source.doc_count'), // Laravel's MERGE source alias
@@ -770,10 +860,14 @@ class IndexManager
                 ensure: $byModel !== [],
             );
 
-            return count($byModel);
+            return [count($byModel), $elsewhere];
         }, self::ATTEMPTS);
 
         $this->analyzeUnanalyzedIndex();
+
+        foreach ($refile ? $elsewhere : [] as $type => $typeKeys) {
+            $indexed += $this->write($type, $typeKeys, [], $scout, refile: false);
+        }
 
         return $indexed;
     }
@@ -794,7 +888,14 @@ class IndexManager
         $rows        = [];
 
         foreach (array_chunk($keys, 1000) as $chunk) {
-            $query = IndexQuery::for($modelType);
+            // From the write connection, as are the relations searchIndexQuery() eager loads (TA-4):
+            // under a read/write split this read went to the replica outside a transaction on the
+            // model's connection (a queue worker; in-process without `sticky`), and a replica behind
+            // the commit gave a deleted row back, or the old text, which this write then indexed.
+            $query = IndexQuery::for($modelType)->useWritePdo();
+            $query->setEagerLoads(array_map(fn (\Closure $constraints) => function ($relation) use ($constraints) {
+                $constraints($relation->useWritePdo());
+            }, $query->getEagerLoads()));
             if ($scout) {
                 $query->withoutGlobalScopes();
             }
