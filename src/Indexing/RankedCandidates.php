@@ -56,7 +56,8 @@ final class RankedCandidates
             // A model's first row: a join may repeat it, and MariaDB gives a ROLLUP's summary row the
             // last group's key under the alias, where its own key is NULL. A row without one is skipped.
             foreach (self::selectKey($read->getQuery(), $key)->get() as $row) {
-                $id = $row->{self::KEY_ALIAS};
+                $row = (object) $row; // an app-wide array fetch mode (PDO::FETCH_ASSOC) returns arrays
+                $id  = $row->{self::KEY_ALIAS};
                 unset($row->{self::KEY_ALIAS});
 
                 if ($id !== null) {
