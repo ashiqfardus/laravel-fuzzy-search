@@ -324,7 +324,8 @@ final class TermExpander
      * under (TA-1). Where the two differ (searchIndexType(): a single-table-inheritance child
      * searched through its parent's index), the type's postings also hold the other classes' rows,
      * whose columns the searched class may not have or may hide differently: only the columns it
-     * declares and shows are offered, legacy '' postings left out.
+     * declares and shows, and the type's class shows too (R12-L4), are offered, legacy '' postings
+     * left out.
      */
     private function visibleColumnsOnly(Builder $postings, string $modelType, string $modelClass): void
     {
@@ -352,8 +353,17 @@ final class TermExpander
         $legacyOk = array_filter(array_map('strval', $columns), $isHidden) === [];
 
         if ($model::class !== $modelType) { // as PHP names it: a leading backslash or another case is the class itself (R12-L3)
-            $flat = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column));
-            $postings->whereIn('sp.column_name', [...array_values($flat), ...$shownPaths]);
+            // The type's class must show it too (R12-L4): its postings hold every class's rows, and a
+            // column a sibling hides reached a child that shows it, past the parent's $hidden.
+            $type  = new $modelType();
+            $flat  = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column) && self::shows($type, $column));
+            $typed = [];
+            foreach ($columns as $column) {
+                if (str_contains((string) $column, '.') && $paths[mb_substr((string) $column, 0, 64)] && self::pathShown($type, (string) $column)) {
+                    $typed[] = mb_substr((string) $column, 0, 64);
+                }
+            }
+            $postings->whereIn('sp.column_name', [...array_values($flat), ...$typed]);
 
             return;
         }
