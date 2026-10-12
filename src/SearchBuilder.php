@@ -1274,6 +1274,7 @@ class SearchBuilder
 
         return [
             'models'     => $models,
+            'arrays'     => is_array($results->first()),
             'columns'    => $this->columnWeights,
             'decoration' => $decoration,
             'more'       => $this->morePages,
@@ -1286,11 +1287,11 @@ class SearchBuilder
     }
 
     /**
-     * A cached result for this request (rulings ER-58, ER-83, ER-92): a plain query builder's rows
-     * as stdClass again; models re-read by key, in the cached order, through the current query — its
-     * global scopes, and its eager loads with their constraint closures plus the relation paths
-     * searchIn() reads — so a row deleted since is dropped and retrieved listeners run for this
-     * viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
+     * A cached result for this request (rulings ER-58, ER-83, ER-92): rows that are not models as
+     * the miss served them, stdClass or arrays (UA-3); models re-read by key, in the cached order,
+     * through the current query — its global scopes, and its eager loads with their constraint
+     * closures plus the relation paths searchIn() reads — so a row deleted since is dropped and
+     * retrieved listeners run for this viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
      * retrieved listeners run, then the same eager loads — and served as cached, a row deleted
      * since included, until the entry expires. Then highlighted and debugged as a live get() would
      * (decorate()). Costs the keyed read and the eager loads on a hit.
@@ -1304,10 +1305,10 @@ class SearchBuilder
             $this->searchIn($payload['columns']);
         }
 
+        // Rows in the miss's shape (UA-3): arrays under an array fetch mode or an afterQuery() that
+        // maps to arrays, else stdClass; in a base collection, as Eloquent's map() serves non-models.
         if (!$payload['models']) {
-            $rows = array_map(fn (array $row) => (object) $row, $payload['rows']);
-
-            return $this->decorate($this->query instanceof EloquentBuilder ? $this->query->getModel()->newCollection($rows) : collect($rows), $payload['decoration']);
+            return $this->decorate(collect(empty($payload['arrays']) ? array_map(fn (array $row) => (object) $row, $payload['rows']) : $payload['rows']), $payload['decoration']);
         }
 
         // Models come from the builder's own model, or from useInvertedIndex(Model::class) on a plain query builder.
@@ -1583,7 +1584,7 @@ class SearchBuilder
         }
 
         if ($this->debugMode) {
-            $sorted = $this->addDebugInfo($sorted);
+            $sorted = $this->addDebugInfo($sorted, 'bm25');
         }
 
         $this->dispatchExecuted('bm25', 'bm25', count($ranked), $sorted->count(), $startedAt);
@@ -2246,7 +2247,7 @@ class SearchBuilder
         }
 
         if ($this->debugMode) {
-            $sorted = $this->addDebugInfo($sorted);
+            $sorted = $this->addDebugInfo($sorted, 'bm25');
         }
 
         $paginator = new \Illuminate\Pagination\LengthAwarePaginator(
@@ -2639,19 +2640,33 @@ class SearchBuilder
         $keyShown = self::selectsAny($query, [...$names, $keyColumn]);
 
         // A SELECT DISTINCT left unordered (no orderBy(), and no relevance order: see buildQuery())
-        // is read by what it selects (R11-M3): the key when the select holds it, else every plain
-        // column it selects. A distinct row is unique over its selected columns, so either is a total
-        // order: paginate()'s window and its pages past max_candidates (one OFFSET read each) are read
-        // in that one order and partition the matches. Unordered, SQL Server's grammar ordered the
-        // OFFSET by (SELECT 0), which a SELECT DISTINCT rejects (145), and elsewhere the pages could
-        // overlap. A select of raw expressions or aliases only stays unordered. A query builder's key
-        // is "id", when its table has one.
+        // is read by what it selects (R11-M3, UA-5, UF-6): the key when the select holds it; a query
+        // builder's `*` (or `table.*`) over a table with no `id`, every column of the table; else
+        // every column it selects, an aliased one by its alias. A distinct row is unique over its
+        // selected columns, so each is a total order: paginate()'s window and its pages past
+        // max_candidates (one OFFSET read each) are read in that one order and partition the matches.
+        // Unordered, SQL Server's grammar ordered the OFFSET by (SELECT 0), which a SELECT DISTINCT
+        // rejects (145), and elsewhere the pages could overlap. A select of raw expressions only stays
+        // unordered. PostgreSQL's distinct('col') (DISTINCT ON) is ordered by its own columns first,
+        // as PostgreSQL requires (42P10, UA-1): one row each, and the order above picks which.
         if ($distinct && $orders === []) {
-            $byKey = $keyShown && ($query instanceof EloquentBuilder
-                || ($from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from)) !== null
-                && in_array('id', SearchableColumns::onTable($base->getConnection(), $from[0]), true));
+            $from    = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+            $columns = $from === null || $query instanceof EloquentBuilder ? [] : SearchableColumns::onTable($base->getConnection(), $from[0]);
 
-            foreach ($byKey ? [$keyColumn] : self::plainColumns($query) as $column) {
+            if ($keyShown && ($query instanceof EloquentBuilder || in_array('id', $columns, true))) {
+                $columns = [$keyColumn];
+            } elseif ($columns !== [] && self::selectsAny($query, [($from[1] ?? self::lastSegment($from[0])) . '.*'])) {
+                $qualified = $this->qualifiedColumnMap($query);
+                $columns   = array_map(fn (string $column) => ($qualified[$column] ?? '') . $column, $columns);
+            } else {
+                $columns = self::plainColumns($query);
+            }
+
+            if (is_array($base->distinct) && $base->getGrammar() instanceof \Illuminate\Database\Query\Grammars\PostgresGrammar) {
+                $columns = [...$base->distinct, ...array_filter($columns, fn ($column) => !in_array($column, $base->distinct, true))];
+            }
+
+            foreach ($columns as $column) {
                 $query->orderBy($column, 'asc');
             }
 
@@ -2727,16 +2742,21 @@ class SearchBuilder
     }
 
     /**
-     * The columns $query selects as written, each once: no `*`, `table.*`, alias or raw expression.
+     * The columns $query selects, each once, as an ORDER BY names them: a column as written, an
+     * aliased one (`name as label`) by its alias. No `*`, `table.*` or raw expression.
      *
      * @return string[]
      */
     private static function plainColumns(Builder|EloquentBuilder $query): array
     {
-        return array_values(array_unique(array_filter(
-            ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? [],
-            fn ($column) => is_string($column) && !str_ends_with($column, '*') && preg_match('/\s+as\s+/i', $column) !== 1
-        )));
+        $columns = [];
+        foreach (($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? [] as $column) {
+            if (is_string($column) && !str_ends_with($column, '*')) {
+                $columns[] = preg_split('/\s+as\s+/i', $column)[1] ?? $column;
+            }
+        }
+
+        return array_values(array_unique($columns));
     }
 
     /**
@@ -2818,6 +2838,20 @@ class SearchBuilder
 
         return $driver === \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::PGSQL
             && $this->accentInsensitiveEnabled && (bool) config('fuzzy-search.use_native_functions', false);
+    }
+
+    /**
+     * Letters the databases sqlFoldsAccents() trusts fold and Accents::fold() leaves as they are
+     * (UF-2): MySQL 8's utf8mb4_0900_ai_ci and MariaDB's uca1400_ai_ci fold ł and đ in LIKE, and
+     * PostgreSQL's unaccent() also æ, œ and þ. Only for TF-8's scoring and highlighting (sqlFold()):
+     * the index pipeline and the LIKE term variants keep Accents::fold() as it is.
+     */
+    private const SQL_FOLDS = ['Ł' => 'L', 'ł' => 'l', 'Đ' => 'D', 'đ' => 'd', 'Æ' => 'AE', 'æ' => 'ae', 'Œ' => 'OE', 'œ' => 'oe', 'Þ' => 'TH', 'þ' => 'th'];
+
+    /** $value as TF-8 compares it where the SQL folded accents: Accents::fold(), then SQL_FOLDS. */
+    private static function sqlFold(string $value): string
+    {
+        return strtr(Accents::fold($value), self::SQL_FOLDS);
     }
 
     /**
@@ -3080,9 +3114,10 @@ class SearchBuilder
             $term   = mb_strtolower($term, 'UTF-8');
             $folded = trim($this->removeAccents($term));
             $key    = $folds ? $folded : $term;
+            $twin   = $foldsValues ? trim(self::sqlFold($term)) : '';
             $groups[$key === '' ? $term : $key][] = $term;
-            if ($foldsValues && $folded !== '' && $folded !== $term) {
-                $groups[$key === '' ? $term : $key][] = $folded; // compared with the folded values (TF-8)
+            if ($twin !== '' && $twin !== $term) {
+                $groups[$key === '' ? $term : $key][] = $twin; // compared with the folded values (TF-8)
             }
         }
         $groups = array_values($groups);
@@ -3115,21 +3150,33 @@ class SearchBuilder
                     $values = [''];
                 }
 
-                // Each value lowered and cut once, not once per term; where the SQL compared accents
-                // away (sqlFoldsAccents()), its folded form too, so "José" scores as "jose" does.
-                $values = array_merge(...array_map(function (string $value) use ($foldsValues): array {
+                // Each value lowered and cut once, not once per term.
+                $values = array_map(function (string $value): array {
                     $lower = mb_strtolower($value, 'UTF-8');
-                    $forms = $foldsValues ? array_unique([$lower, Accents::fold($lower)]) : [$lower];
 
-                    return array_map(fn (string $form) => [$form, Utf8::scoringInput($form)], $forms);
-                }, $values));
+                    return [$lower, Utf8::scoringInput($lower)];
+                }, $values);
+                $folded = [];
 
                 // A to-many relation contributes its best related row, never an average.
                 foreach ($groups as $i => $group) {
                     $groupScore = 0;
-                    foreach ($values as [$lower, $cut]) {
-                        foreach ($group as $term) {
-                            $groupScore = max($groupScore, $this->scoreLowered($lower, $cut, $term, $weight, $fuzzy[$i]));
+                    foreach ($values as $k => [$lower, $cut]) {
+                        $forms = [[$lower, $cut]];
+                        // Where the SQL compared accents away (sqlFoldsAccents()), a value holding none
+                        // of the group's terms as written is compared folded too, so "José" scores as
+                        // "jose" does: folded once, and only then (R12-M1; a long non-ASCII value
+                        // folded on every row cost 3-4 times the scoring).
+                        if ($foldsValues && array_filter($group, fn (string $term) => str_contains($lower, $term)) === []) {
+                            $folded[$k] ??= self::sqlFold($lower);
+                            if ($folded[$k] !== $lower) {
+                                $forms[] = [$folded[$k], Utf8::scoringInput($folded[$k])];
+                            }
+                        }
+                        foreach ($forms as [$form, $formCut]) {
+                            foreach ($group as $term) {
+                                $groupScore = max($groupScore, $this->scoreLowered($form, $formCut, $term, $weight, $fuzzy[$i]));
+                            }
                         }
                     }
                     $colScore += $groupScore;
@@ -3474,10 +3521,14 @@ class SearchBuilder
         // repeats the term cost megabytes a row (15 rows of 60 KB: 57 MB, and 8 MB of JSON).
         $max = max(0, (int) config('fuzzy-search.highlighting.max_matches', 100));
 
-        // Where the SQL compared accents away, the folded term is found in the folded value (TF-8).
-        $find = $this->sqlFoldsAccents() ? $this->foldedMatchOffsets(...) : $this->findMatchOffsets(...);
+        // Where the SQL compared accents away, the folded term is found in the folded value (TF-8):
+        // each value folded once for every needle, each distinct character once a pass ($memo).
+        // Folding a long value's every character for every needle cost 16-39 times the
+        // highlighting (R12-M1).
+        $folds = $this->sqlFoldsAccents();
+        $memo  = [];
 
-        return $results->map(function ($item) use ($needles, $terms, $open, $close, $max, $find) {
+        return $results->map(function ($item) use ($needles, $terms, $open, $close, $max, $folds, &$memo) {
             $matches     = [];
             $highlighted = [];
 
@@ -3492,9 +3543,10 @@ class SearchBuilder
                 $chosen  = $values[0];
                 $indices = [];
                 foreach ($values as $value) {
-                    $found = [];
+                    $found  = [];
+                    $folded = $folds ? $this->foldedText($value, $memo) : null;
                     foreach ($needles as $needle) {
-                        $found = array_merge($found, $find($value, $needle, $max));
+                        $found = array_merge($found, $folded === null ? $this->findMatchOffsets($value, $needle, $max) : $this->foldedMatchOffsets($value, $needle, $max, $folded));
                     }
                     // Merge only where there are several needles (the index and extended paths,
                     // or a LIKE term with a folded variant): a single LIKE needle keeps v2.0's raw,
@@ -3588,45 +3640,90 @@ class SearchBuilder
     }
 
     /**
-     * findMatchOffsets() on the accent-folded value and term (TF-8): each character of $value is
-     * folded on its own (Accents::fold()), and a match in the folded text is mapped back to the bytes
-     * of the characters it covers in $value, so "muller" marks "Müller" and "strasse" marks "Straße".
-     * A combining mark, which folds to nothing, stays inside the range of the letter it follows; two
-     * matches that meet inside one letter folded to two (ß) become one range. A value with no byte
-     * past ASCII, or one that is not valid UTF-8, is searched as it is.
+     * $value accent-folded for foldedMatchOffsets() (TF-8): each character folded on its own
+     * (sqlFold()), once a pass however often it recurs ($memo), and the anchors that map the
+     * folded text back to $value: one per character whose fold is not one character of its own byte
+     * length ("é" → "e", "ß" → "ss", a combining mark → ""), as [its first byte in the folded text,
+     * its fold's length, its first and last byte in $value]. Between anchors the two texts run byte
+     * for byte. A value with no byte past ASCII, or one that is not valid UTF-8, is itself.
+     *
+     * @param  array<string, string> $memo
+     * @return array{0: string, 1: array<int, array{int, int, int, int}>}
      */
-    private function foldedMatchOffsets(string $value, string $term, int $max = 0): array
+    private function foldedText(string $value, array &$memo): array
     {
-        $needle = Accents::fold($term);
         if (preg_match('/[\x80-\xFF]/', $value) !== 1 || !mb_check_encoding($value, 'UTF-8')) {
-            return $this->findMatchOffsets($value, $needle, $max);
+            return [$value, []];
         }
 
-        $folded = '';
-        $starts = []; // per byte of $folded: the first and last byte of the character it came from
-        $ends   = [];
-        $offset = 0;
-        foreach (mb_str_split($value, 1, 'UTF-8') as $char) {
-            $form = isset($char[1]) ? Accents::fold($char) : $char;
-            $last = $offset + strlen($char) - 1;
-            if ($form === '' && $ends !== []) {
-                $ends[count($ends) - 1] = $last;
+        preg_match_all('/[^\x00-\x7F]/u', $value, $chars);
+        $forms   = [];
+        $resized = [];
+        foreach (array_unique($chars[0]) as $char) {
+            $forms[$char] = $memo[$char] ??= self::sqlFold($char);
+            if (strlen($forms[$char]) !== strlen($char) || mb_strlen($forms[$char], 'UTF-8') !== 1) {
+                $resized[$char] = $forms[$char];
             }
-            for ($i = strlen($form); $i > 0; $i--) {
-                $starts[] = $offset;
-                $ends[]   = $last;
-            }
-            $folded .= $form;
-            $offset += strlen($char);
         }
+
+        $anchors = [];
+        if ($resized !== []) {
+            preg_match_all('/' . implode('|', array_map(fn (string $char) => preg_quote($char, '/'), array_keys($resized))) . '/u', $value, $found, PREG_OFFSET_CAPTURE);
+            $shift = 0; // folded offset minus value offset, so far
+            foreach ($found[0] as [$char, $at]) {
+                $anchors[] = [$at + $shift, strlen($resized[$char]), $at, $at + strlen($char) - 1];
+                $shift    += strlen($resized[$char]) - strlen($char);
+            }
+        }
+
+        return [strtr($value, $forms), $anchors];
+    }
+
+    /**
+     * findMatchOffsets() of the folded $term in the folded $value (TF-8), each match mapped back to
+     * the bytes of the characters it covers in $value, so "muller" marks "Müller" and "strasse"
+     * marks "Straße". A combining mark, which folds to nothing, stays inside the range of the letter
+     * it follows; two matches that meet inside one letter folded to two (ß) become one range. A
+     * value with no byte past ASCII, or one that is not valid UTF-8, is searched as it is. $text is
+     * $value's foldedText(), when the caller has it.
+     *
+     * @param array{0: string, 1: array<int, array{int, int, int, int}>}|null $text
+     */
+    private function foldedMatchOffsets(string $value, string $term, int $max = 0, ?array $text = null): array
+    {
+        $memo              = [];
+        [$folded, $anchors] = $text ?? $this->foldedText($value, $memo);
+        $needle            = self::sqlFold($term);
+
+        // The index of the last anchor at or before folded byte $at (-1: none), and $at's byte in $value.
+        $locate = function (int $at, bool $end) use ($anchors): array {
+            [$low, $high, $found] = [0, count($anchors) - 1, -1];
+            while ($low <= $high) {
+                $mid = ($low + $high) >> 1;
+                [$low, $high, $found] = $anchors[$mid][0] <= $at ? [$mid + 1, $high, $mid] : [$low, $mid - 1, $found];
+            }
+            if ($found < 0) {
+                return [$found, $at];
+            }
+            [$from, $length, $first, $last] = $anchors[$found];
+
+            return [$found, $at < $from + $length ? ($end ? $last : $first) : $last + 1 + $at - ($from + $length)];
+        };
 
         $ranges = [];
         foreach ($this->findMatchOffsets($folded, $needle, $max) as [$start, $end]) {
+            [, $start]   = $locate($start, false);
+            [$i, $end]   = $locate($end, true);
+            // A combining mark (folded to nothing) right after the match is the matched letter's.
+            while (isset($anchors[++$i]) && $anchors[$i][1] === 0 && $anchors[$i][2] === $end + 1) {
+                $end = $anchors[$i][3];
+            }
+
             $last = count($ranges) - 1;
-            if ($last >= 0 && $starts[$start] <= $ranges[$last][1]) {
-                $ranges[$last][1] = max($ranges[$last][1], $ends[$end]);
+            if ($last >= 0 && $start <= $ranges[$last][1]) {
+                $ranges[$last][1] = max($ranges[$last][1], $end);
             } else {
-                $ranges[] = [$starts[$start], $ends[$end]];
+                $ranges[] = [$start, $end];
             }
         }
 
@@ -3980,7 +4077,7 @@ class SearchBuilder
         $rawTerm  = Utf8::lowerAscii(FuzzySearch::capTerm($this->searchTerm));
         $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
 
-        $results = $this->suggestCandidateQuery($safeTerm)->limit($limit * 3)->get();
+        $results = $this->shortestFirst($this->suggestCandidateQuery($safeTerm), $targets)->limit($limit * 3)->get();
 
         // Extract unique suggestions from results
         foreach ($results as $result) {
@@ -4114,6 +4211,30 @@ class SearchBuilder
         }
 
         return $suggestQuery;
+    }
+
+    /**
+     * suggest()'s table scan reads only the first limit × 3 rows: the shortest values of the first
+     * column it reads come first, then by value (TE-9), so the shortest completions are in them,
+     * whatever plan the database takes (rowid, heap or index order; on PostgreSQL an UPDATE that
+     * changed no value changed the suggestions). The database sorts every matching row for it. Not
+     * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression.
+     *
+     * @param array<string, array{relation: ?string, column: string}> $targets suggestTargets()
+     */
+    private function shortestFirst(Builder|EloquentBuilder $query, array $targets): Builder|EloquentBuilder
+    {
+        $base   = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
+        $direct = array_values(array_filter($targets, fn (array $t) => $t['relation'] === null));
+
+        if ($direct !== [] && empty($base->orders) && !$base->distinct && empty($base->groups) && empty($base->havings)) {
+            // Under a join, qualified as suggestCandidateQuery() matches it.
+            $column = ($this->qualifiedColumnMap($query)[$direct[0]['column']] ?? '') . $direct[0]['column'];
+            $query->orderByRaw(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::lengthFunction($base->getConnection()->getDriverName()) . '(' . $base->getGrammar()->wrap($column) . ')')
+                ->orderBy($column);
+        }
+
+        return $query;
     }
 
     /**

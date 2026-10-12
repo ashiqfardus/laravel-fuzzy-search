@@ -6,6 +6,7 @@ require_once __DIR__ . '/../TestModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 
@@ -74,5 +75,35 @@ class DebugIndexTermsTest extends TestCase
         $terms = $builder->getDebugInfo()['index_terms'];
 
         $this->assertSame(['sample', 'example'], array_map('strval', array_keys($terms)));
+    }
+
+    /**
+     * TE-10. debugScore() on useInvertedIndex() named the LIKE path's 'fuzzy' as the algorithm, where
+     * lastExecution() (the FuzzySearchExecuted event) says 'bm25': the explanation named a path that
+     * did not run. Every index terminal now reports 'bm25'; column_scores stays empty, as BM25 scores
+     * whole documents (README's Debug section).
+     */
+    public function test_debug_score_on_the_index_path_names_bm25(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+
+        foreach (['john', 'jonh'] as $term) {
+            $search = fn () => User::search($term)->useInvertedIndex()->debugScore();
+            $runs   = [
+                'get'            => fn ($builder) => $builder->get(),
+                'paginate'       => fn ($builder) => collect($builder->paginate(5)->items()),
+                'simplePaginate' => fn ($builder) => collect($builder->simplePaginate(5)->items()),
+                'first'          => fn ($builder) => collect([$builder->first()]),
+            ];
+            foreach ($runs as $label => $run) {
+                $builder = $search();
+                $debug   = $run($builder)->first()->_debug;
+                $this->assertSame('bm25', $debug['algorithm'], "{$term} {$label}");
+                $this->assertSame([], $debug['column_scores'], "{$term} {$label}");
+                if (in_array($label, ['get', 'paginate'], true)) {
+                    $this->assertSame($builder->lastExecution()->algorithm, $debug['algorithm'], "{$term} {$label}");
+                }
+            }
+        }
     }
 }

@@ -251,8 +251,10 @@ class FuzzySearch
      * `searchUsing()` calls it bare with the whole term — either way the predicate is added as
      * its own group (applyFuzzyWhereMultiple() wraps itself), so it composes with Filament's
      * other constraints.
-     * With no columns the model's $searchable columns are used (Searchable trait models only);
-     * when that leaves none, a typed search matches nothing.
+     * With no columns the model's $searchable columns are used (Searchable trait models only),
+     * without its relation columns (a dotted name whose head is a method of the model, as
+     * SearchBuilder reads it: `author.name`), which are no SQL column of the table (UD-2); when
+     * that leaves none, a typed search matches nothing.
      *
      * The columns are SQL columns of the table being queried (or already-qualified `table.column`
      * names), not relation paths: each one is passed through qualifyColumn() so the predicate
@@ -268,7 +270,8 @@ class FuzzySearch
                 is_array($columns)  => $columns,
                 is_string($columns) => [$columns],
                 default             => method_exists($query->getModel(), 'getSearchableColumns')
-                    ? $query->getModel()->getSearchableColumns()
+                    ? array_filter($query->getModel()->getSearchableColumns(), fn (string $c) => !str_contains($c, '.')
+                        || !method_exists($query->getModel(), strstr($c, '.', true)))
                     : [],
             };
 

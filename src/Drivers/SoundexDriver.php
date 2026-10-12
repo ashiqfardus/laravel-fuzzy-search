@@ -11,6 +11,12 @@ use Illuminate\Database\Query\Builder;
  */
 class SoundexDriver extends BaseDriver
 {
+    /**
+     * What a word PostgreSQL's soundex() encodes right begins with: ASCII non-letters (NUL aside),
+     * then an ASCII letter. Read the same by PCRE and by PostgreSQL's regex engine.
+     */
+    private const PG_LEAD = '[\x01-\x40\x5B-\x60\x7B-\x7F]*[A-Za-z]';
+
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
     {
         $col = $this->quoteColumn($column, $query);
@@ -21,10 +27,11 @@ class SoundexDriver extends BaseDriver
         // and µ, which PCRE counts as letters (so "2º" matched every letterless word there);
         // PostgreSQL's fuzzystrmatch only an ASCII one. Such a term takes the pattern fallback,
         // as it does on the databases without SOUNDEX(). On PostgreSQL so does a term whose first
-        // letter is not ASCII: fuzzystrmatch skips a leading byte its C library does not call a
-        // letter, so under glibc "Émile" encoded from its "m" (M400, the code of "Mila"), and on
-        // macOS it kept the byte and returned a code that is not UTF-8.
-        if (preg_match($this->driver === 'pgsql' ? '/^\P{L}*[A-Za-z]/u' : '/(?![ªºµ])\pL/u', $value) !== 1) {
+        // letter is not ASCII, or that a character outside ASCII leads: fuzzystrmatch skips a
+        // leading byte its C library does not call a letter, so under glibc "Émile" encoded from
+        // its "m" (M400, the code of "Mila"), and on macOS it kept the byte and returned a code
+        // that is not UTF-8 (“Mila” too). ASCII punctuation and digits it skips under every locale.
+        if (preg_match($this->driver === 'pgsql' ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
             return $this->applyFallback($query, $column, $value, $boolean);
         }
 
@@ -57,13 +64,14 @@ class SoundexDriver extends BaseDriver
             // Match first word OR last word on PostgreSQL.
             // SPLIT_PART(col, ' ', -1) requires PostgreSQL 14+. Use SUBSTRING with a
             // POSIX regex to extract the last space-delimited token — works on all versions.
-            // A stored word reaches soundex() only when it begins with an ASCII letter, as the term
-            // must (above): fuzzystrmatch skipped a leading non-ASCII letter under glibc ("Émile"
-            // encoded as M400 and matched "Mila") and returned a code that is not UTF-8 on macOS.
-            // Inside a CASE, so PostgreSQL never evaluates soundex() before the guard (ruling ER-172).
+            // A stored word reaches soundex() only under the term's rule (above): an ASCII letter
+            // led by ASCII non-letters only ("(Mila)", "2Mila", UA-4). fuzzystrmatch skipped a
+            // leading non-ASCII letter under glibc ("Émile" encoded as M400 and matched "Mila") and
+            // returned a code that is not UTF-8 on macOS. Inside a CASE, so PostgreSQL never
+            // evaluates soundex() before the guard (ruling ER-172).
             $first = "SPLIT_PART({$col}, ' ', 1)";
             $last  = "TRIM(SUBSTRING({$col} FROM '[^ ]+$'))";
-            $code  = fn (string $word) => "CASE WHEN {$word} ~ '^[A-Za-z]' THEN SOUNDEX({$word}) END";
+            $code  = fn (string $word) => "CASE WHEN {$word} ~ '^" . self::PG_LEAD . "' THEN SOUNDEX({$word}) END";
 
             return $query->$method(
                 "({$code($first)} = SOUNDEX(?) OR {$code($last)} = SOUNDEX(?))",

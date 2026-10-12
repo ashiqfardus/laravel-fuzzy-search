@@ -7,6 +7,27 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+
+/** relationships.md's shape: a relation column among the model's $searchable columns. */
+class TableSearchRelationUser extends User
+{
+    protected array $searchable = ['columns' => ['name' => 10, 'users.email' => 5, 'notes.body' => 2]];
+
+    public function notes(): HasMany
+    {
+        return $this->hasMany(TableSearchNote::class, 'user_id');
+    }
+}
+
+class TableSearchNote extends \Illuminate\Database\Eloquent\Model
+{
+    protected $table   = 'table_search_notes';
+    protected $guarded = [];
+    public $timestamps = false;
+}
 
 class TableSearchTest extends TestCase
 {
@@ -72,5 +93,33 @@ class TableSearchTest extends TestCase
         (FuzzySearch::tableSearch(['name']))($query, 'jonh');
 
         $this->assertStringContainsString($query->getQuery()->getGrammar()->wrap('users.name'), $query->toSql());
+    }
+
+    /**
+     * UD-2. With no columns the closure took the model's $searchable columns whole, and qualified a
+     * relation column (`notes.body`) as the SQL column "notes"."body", which the table query does
+     * not have: every typed search of a Filament table over such a model threw. The no-argument
+     * form now leaves the relation columns out, to Filament's own searchable(); a `table.column`
+     * name whose head is no relation is still searched as written.
+     */
+    public function test_with_no_columns_a_relation_column_of_the_model_is_left_out(): void
+    {
+        Schema::dropIfExists('table_search_notes');
+        Schema::create('table_search_notes', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->string('body');
+        });
+        DB::table('table_search_notes')->insert(['user_id' => User::query()->where('name', 'John Doe')->value('id'), 'body' => 'kestrel']);
+
+        $search = fn (string $term) => TableSearchRelationUser::query()
+            ->where(fn ($q) => FuzzySearch::tableSearch()($q, $term))->orderBy('id')->pluck('name')->all();
+
+        $this->assertContains('John Doe', $search('jonh'));
+        $this->assertContains('John Doe', $search('john@example')); // users.email, the table's own
+        $this->assertSame([], $search('kestrel'));                   // only in the relation column
+        $this->assertSame(TableSearchRelationUser::query()->count(), TableSearchRelationUser::query()->where(fn ($q) => FuzzySearch::tableSearch()($q, ''))->count());
+
+        Schema::dropIfExists('table_search_notes');
     }
 }

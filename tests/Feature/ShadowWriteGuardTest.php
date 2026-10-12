@@ -55,6 +55,18 @@ class AccentShadowPerson extends Model
     protected array $searchable = ['columns' => ['name' => 10, 'legacy' => 1]];
 }
 
+/** A JSON column searched without a cast, beside its metaphone shadow. */
+class JsonShadowDoc extends Model
+{
+    use Searchable;
+
+    protected $table   = 'json_shadow_docs';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['meta' => 1]];
+}
+
 /**
  * SB-3. The shadow code is computed from the text one process holds and written by a later,
  * separate UPDATE that did not check the text was still there. A save of the same row in between
@@ -294,5 +306,36 @@ class ShadowWriteGuardTest extends TestCase
         DB::table('accent_shadow_people')->update(['legacy_metaphone' => null]);
         app(SearchableObserver::class)->backfillShadowColumns(AccentShadowPerson::query()->get());
         $this->assertSame(metaphone('Müller Straße'), DB::table('accent_shadow_people')->where('id', $id)->value('legacy_metaphone'));
+    }
+
+    /**
+     * R12-L2. The guard compared the stored text with the attribute, but only a character column
+     * stores the text as written: MySQL's JSON re-formats it, so the guard never matched and the
+     * shadow was never written, and PostgreSQL's json has no = operator, so every save threw (42883)
+     * after its own UPDATE. A column that is not character-typed is written unguarded, as a cast
+     * column is.
+     */
+    public function test_a_json_column_s_shadow_is_written_on_every_database(): void
+    {
+        Schema::dropIfExists('json_shadow_docs');
+        Schema::create('json_shadow_docs', function ($table) {
+            $table->id();
+            $table->json('meta')->nullable();
+            $table->string('meta_metaphone')->nullable();
+        });
+        \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+        if (\Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::typesOn(DB::connection(), 'json_shadow_docs') === []) {
+            $this->markTestSkipped('Laravel 10 before Schema::getColumns(): the column types cannot be read, so every column is guarded, as documented.');
+        }
+
+        $json = '{"name":"Anna Stefan"}';
+        $doc  = JsonShadowDoc::create(['meta' => $json]);
+        $this->assertSame(\Ashiqfardus\LaravelFuzzySearch\Drivers\MetaphoneDriver::code($json), DB::table('json_shadow_docs')->value('meta_metaphone'));
+
+        DB::table('json_shadow_docs')->update(['meta_metaphone' => null]);
+        app(SearchableObserver::class)->backfillShadowColumns(JsonShadowDoc::query()->whereKey($doc->id)->get());
+        $this->assertNotNull(DB::table('json_shadow_docs')->value('meta_metaphone'), 'the backfill');
+
+        Schema::dropIfExists('json_shadow_docs');
     }
 }

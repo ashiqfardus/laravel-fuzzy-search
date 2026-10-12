@@ -93,4 +93,23 @@ class SuggestBaseQueryTest extends TestCase
         $this->assertContains('john', array_column($before, 'term'));
         $this->assertSame($before, $after);
     }
+
+    /**
+     * TE-9. The table scan read the first limit × 3 rows that start with the term in whatever order
+     * the plan gave (rowid, heap or index order), then sorted that sample by length: with more such
+     * rows than that, the shortest completions in the table were offered only by chance, and on
+     * PostgreSQL an UPDATE that changed no value changed the suggestions. The scan now reads the
+     * shortest values first, then by value.
+     */
+    public function test_the_table_scan_offers_the_shortest_completions_in_the_table(): void
+    {
+        $rows = [];
+        for ($i = 0; $i < 40; $i++) {
+            $rows[] = ['name' => 'Qu' . substr(md5((string) $i), 0, 8) . ' Smith', 'email' => "q{$i}@example.com"];
+        }
+        User::query()->insert([...$rows, ...array_map(fn (string $name) => ['name' => $name, 'email' => strtolower(strtok($name, ' ')) . '@example.com'], ['Quin Black', 'Quo Snow', 'Quy Adams', 'Qual Lee'])]);
+
+        $this->assertSame(['Quo', 'Quy', 'Qual', 'Quin'], array_slice(User::search('qu')->searchIn(['name'])->suggestFrom('table')->suggest(5), 0, 4));
+        $this->assertSame(['Quo', 'Quy', 'Qual', 'Quin'], array_slice(User::search('qu')->searchIn(['name', 'email'])->suggestFrom('table')->suggest(5), 0, 4));
+    }
 }

@@ -158,4 +158,64 @@ class DistinctRelevanceOrderTest extends TestCase
         $this->assertStringNotContainsString('order by', strtolower($notes->toSql()));
         $this->assertCount(5, $notes->paginate(5)->items());
     }
+
+    /**
+     * UA-1, UA-5, UF-6. Three selects R11-M3's order missed. PostgreSQL's distinct('name') (DISTINCT
+     * ON) was ordered by the key, which it rejects unless the order starts with the DISTINCT ON
+     * columns (42P10, on every read); an aliased column (`name as label`) was left out of the order,
+     * and a query builder's `select *` over a table with no `id` was not ordered at all, so their
+     * pages past max_candidates repeated rows on PostgreSQL. Each is now read in one total order.
+     */
+    public function test_distinct_on_an_alias_and_a_table_without_id_are_read_in_one_total_order(): void
+    {
+        config(['fuzzy-search.max_candidates' => 5]);
+        Schema::dropIfExists('distinct_codes');
+        Schema::create('distinct_codes', function ($table) {
+            $table->string('code', 20)->primary();
+            $table->string('name');
+            $table->string('body')->nullable();
+        });
+        $codes = [];
+        foreach (DB::table('distinct_items')->orderBy('name')->get(['name', 'body']) as $n => $item) {
+            $codes[] = ['code' => sprintf('c%02d', 30 - $n), 'name' => $item->name, 'body' => $item->body];
+        }
+        DB::table('distinct_codes')->insert($codes);
+
+        $builder = fn ($base) => (new SearchBuilder($base, app(FuzzySearch::class)))->search('alpha');
+        $shapes  = [
+            'distinct on'       => [fn () => DistinctItem::search('alpha')->distinct('name'), 'name'],
+            'distinct on norel' => [fn () => DistinctItem::search('alpha')->withRelevance(false)->distinct('name'), 'name'],
+            'alias'             => [fn () => DistinctItem::search('alpha')->withRelevance(false)->distinct()->select('cat', 'name as label'), 'label'],
+            'qb alias'          => [fn () => $builder(DB::table('distinct_items')->select('cat', 'name as label'))->searchIn(['name' => 10, 'body' => 5])->distinct(), 'label'],
+            'qb no id'          => [fn () => $builder(DB::table('distinct_codes'))->searchIn(['name' => 10, 'body' => 5])->distinct(), 'name'],
+            'qb no id table.*'  => [fn () => $builder(DB::table('distinct_codes')->select('distinct_codes.*'))->searchIn(['name' => 10, 'body' => 5])->withRelevance(false)->distinct(), 'name'],
+        ];
+
+        foreach ($shapes as $label => [$make, $column]) {
+            $names = [];
+            for ($page = 1; $page <= 5; $page++) {
+                $paginator = $make()->paginate(5, 'page', $page);
+                $this->assertSame(25, $paginator->total(), "{$label} total");
+                $names = [...$names, ...array_map(fn ($row) => $row->{$column}, $paginator->items())];
+            }
+            sort($names);
+            $this->assertSame($this->matching, $names, "{$label} pages");
+            $this->assertContains($make()->first()?->{$column}, $this->matching, "{$label} first");
+            $this->assertCount(5, $make()->get(), "{$label} get"); // the max_candidates window
+        }
+
+        // The order each read takes, whatever plan the database picks.
+        $grammar = DB::connection()->getQueryGrammar();
+        $order   = fn (SearchBuilder $builder) => strtolower((string) strstr($builder->toSql(), 'order by'));
+        $this->assertStringContainsString($grammar->wrap('cat') . ' asc, ' . $grammar->wrap('label') . ' asc', $order($shapes['alias'][0]()));
+        $this->assertStringContainsString($grammar->wrap('cat') . ' asc, ' . $grammar->wrap('label') . ' asc', $order($shapes['qb alias'][0]()));
+        $this->assertStringContainsString($grammar->wrap('code') . ' asc, ' . $grammar->wrap('name') . ' asc, ' . $grammar->wrap('body') . ' asc', $order($shapes['qb no id'][0]()));
+        $this->assertStringContainsString($grammar->wrap('code') . ' asc, ' . $grammar->wrap('name') . ' asc, ' . $grammar->wrap('body') . ' asc', $order($shapes['qb no id table.*'][0]()));
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            // DISTINCT ON's columns first, then the key: one row a name, the same one on every read.
+            $this->assertStringStartsWith('order by "name" asc, "distinct_items"."id" asc', $order($shapes['distinct on norel'][0]()));
+        }
+
+        Schema::dropIfExists('distinct_codes');
+    }
 }

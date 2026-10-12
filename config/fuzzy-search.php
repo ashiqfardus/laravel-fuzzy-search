@@ -12,7 +12,7 @@ return [
     | - "levenshtein": Edit distance based, configurable tolerance
     | - "soundex": Phonetic matching for similar sounding words
     | - "trigram": N-gram similarity (best with PostgreSQL pg_trgm)
-    | - "metaphone": Double-metaphone phonetic matching
+    | - "metaphone": Metaphone phonetic matching (PHP's metaphone(); needs a {column}_metaphone shadow column)
     | - "similar_text": PHP similar_text() percentage similarity
     | - "simple" / "like": Basic LIKE matching (fastest, no typo tolerance)
     |
