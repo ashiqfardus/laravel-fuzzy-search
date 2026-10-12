@@ -318,6 +318,58 @@ class IndexManager
     }
 
     /**
+     * SQL Server: take the index's write lock, an application lock owned by the enclosing
+     * transaction, so its index writes run one at a time (ruling ER-180). Called first in every
+     * index write's transaction (claimDocuments(), which write() and removeFromIndex() start
+     * with), before any other lock: the claim, the dictionary rows and the model types' and
+     * columns' inserts all come after it. Parallel writers deadlocked there until they lost all
+     * their attempts: the claim's MERGE takes HOLDLOCK range locks on the varchar model_id key,
+     * whose string order interleaves id ranges ('1000' < '10000' < '1001'); the dictionary's
+     * locking read took a range lock past the newest word, which every other writer's new word
+     * waited on; the doc_count UPDATE and the dictionary MERGE crossed; fuzzy_index_terms
+     * escalated to a table lock. Three immediate retries could not break such a sustained cycle,
+     * so rebuild workers died and left the index partial.
+     *
+     * One lock per index (database and table prefix), not per model type: every model type
+     * shares fuzzy_index_terms. The commit or rollback releases it, so each of write()'s
+     * attempts takes it again; inside a transaction of yours it is held until yours ends. The
+     * wait is the connection's LOCK_TIMEOUT, as for every other lock the write takes: none by
+     * default. A lock not granted throws, naming the lock and sp_getapplock's code.
+     *
+     * ponytail: one writer per index on SQL Server, the whole write transaction (the claim, the
+     * re-read, tokenizing and the SQL) at a time; only what runs before it, such as a rebuild's
+     * chunk load, stays parallel. To lift it, fix the cycles one by one: no HOLDLOCK on
+     * adjustDocCounts()' locking read, MERGE hints of our own for the claim, LOCK_ESCALATION
+     * off on fuzzy_index_terms, and the doc_count UPDATE in the order the dictionary MERGE locks.
+     */
+    private function lockIndexForWrite(): void
+    {
+        $connection = DB::connection();
+
+        if ($connection->getDriverName() !== DbDialect::SQLSRV) {
+            return;
+        }
+
+        $resource = 'fuzzy-search:write:' . $connection->getDatabaseName() . ':' . $connection->getTablePrefix();
+        if (DbDialect::varcharLength($resource) > 255) { // sp_getapplock's limit
+            $resource = 'fuzzy-search:write:' . sha1($connection->getDatabaseName() . ':' . $connection->getTablePrefix());
+        }
+
+        $result = (int) $connection->scalar(
+            "DECLARE @result int; EXEC @result = sp_getapplock @Resource = ?, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = @@LOCK_TIMEOUT; SELECT @result AS result",
+            [$resource],
+            false
+        );
+
+        if ($result < 0) {
+            // -3's words are those of SQL Server's own deadlock error, so Laravel handles it as
+            // one: retried at the top level, thrown as a DeadlockException in a transaction of yours.
+            $reason = [-1 => 'the wait timed out', -2 => 'the request was cancelled', -3 => 'the request has been chosen as the deadlock victim'][$result] ?? 'a parameter or call error';
+            throw new \RuntimeException(sprintf('fuzzy-search: the index write lock [%s] was not granted: sp_getapplock returned %d (%s).', $resource, $result, $reason));
+        }
+    }
+
+    /**
      * Claim the models' document rows for the enclosing transaction: insert a placeholder
      * (doc_length 0) where none exists, then lock every row. Every write to a model's index
      * entries (write() and removeFromIndex(), and so IndexModelJob, the Scout engine and the
@@ -327,12 +379,15 @@ class IndexManager
      * The upsert also waits for a concurrent first insert of the row, which a lock on a missing
      * row cannot; SQLite takes its database write lock on it. A crashed process releases the
      * lock with its connection. Ids are claimed in sorted order, so two batches cannot deadlock.
+     * On SQL Server the index's write lock comes first (lockIndexForWrite()).
      *
      * @param  array<int|string>  $modelIds
      * @return array<int|string, int> model id => doc_length, for the models already indexed
      */
     private function claimDocuments(string $modelType, array $modelIds): array
     {
+        $this->lockIndexForWrite();
+
         $modelIds = array_map('strval', $modelIds);
         sort($modelIds, SORT_STRING);
         $indexed = [];

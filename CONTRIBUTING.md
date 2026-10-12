@@ -451,7 +451,7 @@ Write assertions that hold on every driver:
 Read `$this->dbDriver` inside a test when the expectation legitimately differs per
 database. CI runs the suite on every supported database (see `.github/workflows/ci.yml`).
 
-Some guards hold on one database only. The indexer inserts a batch's new dictionary words in one sorted order, so that parallel batches cannot deadlock on them, and `tests/Unit/IndexModelJobOverlapTest.php` fails when that order is lost on PostgreSQL only. On SQL Server under its default `READ COMMITTED`, the second batch waits at its document claim, or at its locking read of the dictionary, before it inserts any word, so the races cannot reproduce the deadlock there. CI runs no SQL Server cell with `READ_COMMITTED_SNAPSHOT` on (Azure SQL's default, and what the BM25 guide recommends), where the sorted insert is what prevents it. After changing how `IndexManager` inserts new words, run that test file on PostgreSQL.
+Some guards hold on one database only. The indexer inserts a batch's new dictionary words in one sorted order, so that parallel batches cannot deadlock on them, and `tests/Unit/IndexModelJobOverlapTest.php` fails when that order is lost on PostgreSQL only. On SQL Server every index write takes its index's application lock before any other (`sp_getapplock`, `tests/Feature/IndexWriteLockTest.php`), so the second batch waits there, under `READ COMMITTED` or `READ_COMMITTED_SNAPSHOT`, and the races cannot reproduce the deadlock. After changing how `IndexManager` inserts new words, run that test file on PostgreSQL.
 
 ### Running Tests
 
