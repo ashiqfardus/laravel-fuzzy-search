@@ -384,6 +384,19 @@ class SearchBuilder
         return array_filter($this->resolveColumnTargets(), fn ($t) => $t['relation'] !== null);
     }
 
+    /**
+     * The targets a search matches: every searchIn() column but one weighted 0 or less, which the
+     * index search leaves out too (Bm25Scorer::excludedColumns()). A weight of 0 takes a column out of
+     * the search on every path, its matching and counting, suggest()'s table scan and an extended()
+     * field scope included, not only out of _score (TE-8).
+     *
+     * @return array<string, array{relation: ?string, column: string}> keyed by the searchIn() column
+     */
+    protected function searchedTargets(): array
+    {
+        return array_filter($this->resolveColumnTargets(), fn (string $column) => ($this->columnWeights[$column] ?? 1) > 0, ARRAY_FILTER_USE_KEY);
+    }
+
     /** @return string[] unique relation paths, for eager loading */
     protected function relationPaths(): array
     {
@@ -1804,9 +1817,23 @@ class SearchBuilder
         }
 
         $this->applyExplicitOrder($query, true);
-        $keys = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($query->toBase(), \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
+        $read    = $query->toBase();
+        $byOrder = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::ordersRepeatedRows($read);
+        $keys    = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::orderedKeys($read, \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base), $offset, $limit);
 
-        return ['total' => $total, 'page' => $this->attachBm25Scores(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, $keys), $ranked, 0)];
+        // When the order tells apart the rows a join repeats a model in, the page's models are read
+        // in it: each is served with its first row by the order, the row that placed it, not the row
+        // the database returns first (TE-6). Not as SELECT DISTINCT, which rejects an order on a
+        // column it does not select (orderedKeys() pages such an order): models() keeps one row per
+        // key, so DISTINCT changes nothing it serves.
+        $page = $base;
+        if ($byOrder) {
+            $page = clone $base;
+            $page->getQuery()->distinct = false;
+            $this->applyExplicitOrder($page, true);
+        }
+
+        return ['total' => $total, 'page' => $this->attachBm25Scores(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($page, $keys), $ranked, 0)];
     }
 
     /**
@@ -1818,9 +1845,21 @@ class SearchBuilder
      */
     private function bm25Window(string $modelClass): int
     {
-        return self::hasSearchScoreHook($modelClass) || $this->customScoreCallback !== null || $this->recencyBoostEnabled
+        return $this->customScoreCallback !== null || $this->recencyBoostEnabled
             ? (int) config('fuzzy-search.max_candidates', 1000)
-            : 0;
+            : self::searchScoreWindow($modelClass);
+    }
+
+    /**
+     * How many of the first ranked rows $modelClass's getSearchScore() override re-ranks:
+     * max_candidates when it overrides it, else none. bm25Window()'s read, which the Scout engine
+     * shares, so a Scout search ranks a hook model as useInvertedIndex() does (TE-5).
+     *
+     * @internal
+     */
+    public static function searchScoreWindow(string $modelClass): int
+    {
+        return self::hasSearchScoreHook($modelClass) ? (int) config('fuzzy-search.max_candidates', 1000) : 0;
     }
 
     /**
@@ -1885,11 +1924,16 @@ class SearchBuilder
 
         $dbDriver = $this->query->getConnection()->getDriverName();
 
-        // Group the resolved targets: direct columns as before; relation columns by path.
-        $direct    = array_values($this->directTargets());
+        // Group the searched targets (a column weighted 0 is none, TE-8): direct columns as before;
+        // relation columns by path.
+        $direct    = [];
         $relations = [];
-        foreach ($this->relationTargets() as $target) {
-            $relations[$target['relation']][] = $target['column'];
+        foreach ($this->searchedTargets() as $target) {
+            if ($target['relation'] === null) {
+                $direct[] = $target['column'];
+            } else {
+                $relations[$target['relation']][] = $target['column'];
+            }
         }
 
         // whereHas() needs the Eloquent builder; Query Builder sources never have relations (Task 1).
@@ -1909,8 +1953,11 @@ class SearchBuilder
             $this->suggestTargets()
         ));
 
-        (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
-            ->compile($ast, $compileTarget, $direct, $relations);
+        // Every column weighted 0: nothing is searched, so nothing matches, as on the index (TE-8).
+        $direct === [] && $relations === []
+            ? $this->query->whereRaw('0 = 1')
+            : (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
+                ->compile($ast, $compileTarget, $direct, $relations);
 
         if ($this->query instanceof EloquentBuilder && !empty($this->relationPaths())) {
             $this->eagerLoadRelationPaths($this->query, $this->relationPaths());
@@ -2523,9 +2570,10 @@ class SearchBuilder
         $searchTerm = $this->processSearchTerm($this->searchTerm);
 
         if ($searchTerm !== '') {
-            // No column: match nothing, never every row (a fallback() retry after the index path
-            // reaches here without matchesNothing(); '0 = 1' is Laravel's own whereIn([]) form).
-            $this->searchableColumns === [] ? $this->query->whereRaw('0 = 1') : $this->applySearchConditions($searchTerm);
+            // No column, or every one weighted 0 (searchedTargets()): match nothing, never every row
+            // (a fallback() retry after the index path reaches here without matchesNothing(); '0 = 1'
+            // is Laravel's own whereIn([]) form).
+            $this->searchedTargets() === [] ? $this->query->whereRaw('0 = 1') : $this->applySearchConditions($searchTerm);
         }
 
         // Eager-load every relation a searchIn() column points at, so PHP rescoring and
@@ -2631,7 +2679,9 @@ class SearchBuilder
      * order hold for every part: on the union they went into its first part's wheres and became the
      * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
      * the LIKE path serves rows without one. Read as the query was, its callbacks and its own order
-     * included (RankedCandidates::unionAsTable()). $query itself when it has no union.
+     * included (RankedCandidates::unionAsTable()). $query itself when it has no union. A
+     * schema-qualified table (billing.invoices) names it by its last segment: no database takes a
+     * qualified alias (TE-7).
      */
     private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
     {
@@ -2644,7 +2694,7 @@ class SearchBuilder
         $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
 
         return \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::unionAsTable($query, $query instanceof EloquentBuilder
-            ? $query->getModel()->getTable()
+            ? self::lastSegment($query->getModel()->getTable())
             : ($from === null ? 'union_rows' : ($from[1] ?? self::lastSegment($from[0]))));
     }
 
@@ -2861,18 +2911,18 @@ class SearchBuilder
         $allTerms = array_unique($allTerms);
 
         // The SQL names a direct column qualified under a join; the targets themselves (scoring,
-        // highlighting) keep the logical name.
+        // highlighting) keep the logical name. A column weighted 0 is not searched (TE-8).
         $own     = $this->qualifiedColumnMap($this->query);
         $targets = array_map(
             fn (array $t) => $t['relation'] === null ? ['relation' => null, 'column' => ($own[$t['column']] ?? '') . $t['column']] : $t,
-            $this->resolveColumnTargets()
+            $this->searchedTargets()
         );
 
         // whereHas() needs an Eloquent group, but an Eloquent where(Closure) group carries the
         // model's table, not the FROM and its alias, which a driver may read (metaphone's shadow
         // column check). Direct columns alone group on the base query, as compileExtendedQuery()
         // does; the SQL is the same.
-        $group = $this->query instanceof EloquentBuilder && $this->relationTargets() === []
+        $group = $this->query instanceof EloquentBuilder && array_filter(array_column($targets, 'relation')) === []
             ? $this->query->getQuery()
             : $this->query;
 
@@ -4068,8 +4118,9 @@ class SearchBuilder
 
     /**
      * The searchIn() targets suggest()'s table scan matches and reads, and extended()'s unknown-field
-     * message names: those the model does not hide by its class-level $hidden/$visible (for a
-     * relation column, each segment on the model that holds it, then the leaf on the related model).
+     * message names: those searched (searchedTargets(): a column weighted 0 is not) that the model
+     * does not hide by its class-level $hidden/$visible (for a relation column, each segment on the
+     * model that holds it, then the leaf on the related model).
      * For suggest(): a row that matches only through a hidden column can yield no suggestion
      * (ER-51), so matching it would only use up the rows the scan fetches (NF-1). Only the WHERE
      * narrows (ruling ER-67): the SELECT stays as it is, so an accessor that reads a hidden
@@ -4079,7 +4130,7 @@ class SearchBuilder
      */
     private function suggestTargets(): array
     {
-        $targets = $this->resolveColumnTargets();
+        $targets = $this->searchedTargets();
 
         if (!$this->query instanceof EloquentBuilder) {
             return $targets;

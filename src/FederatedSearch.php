@@ -292,11 +292,12 @@ class FederatedSearch
             return $builder;
         }
 
-        // Fall back to query builder approach
+        // Fall back to query builder approach. A column weighted 0 is not searched, as on
+        // Model::search() (SearchBuilder::searchedTargets(), TE-8).
         $instance = new $modelClass();
         $weighted = $this->weightedColumnsExistingOn($instance);
         $columns = !empty($weighted)
-            ? array_keys($weighted)
+            ? array_keys(array_filter($weighted, fn (int $weight) => $weight > 0))
             : (empty($this->columnWeights) ? $this->getColumnsForModel($instance) : []);
 
         if (empty($columns)) {

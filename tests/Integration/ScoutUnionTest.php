@@ -34,6 +34,26 @@ class ScoutUnionUser extends Model
     }
 }
 
+/** ScoutUnionUser's table, named with its schema (TE-7): main. on SQLite, public. on PostgreSQL, dbo. on SQL Server, the database on MySQL and MariaDB. */
+class ScoutQualifiedUnionUser extends Model
+{
+    use Searchable, FuzzySearchable {
+        FuzzySearchable::search insteadof Searchable;
+        Searchable::search as scoutSearch;
+        FuzzySearchable::bootSearchable insteadof Searchable;
+    }
+
+    public static string $qualified = 'main.users';
+    protected $guarded = [];
+
+    protected array $searchable = ['columns' => ['name' => 10]];
+
+    public function getTable(): string
+    {
+        return static::$qualified;
+    }
+}
+
 class ScoutUnionTag extends Model
 {
     protected $table   = 'scout_union_tags';
@@ -102,6 +122,32 @@ class ScoutUnionTest extends TestCase
             'orderBy get'      => [['Jane Doe', 'John Doe'], 2],
             'orderBy paginate' => [[2, ['John Doe']], 1],
         ], $found);
+    }
+
+    /**
+     * TE-7: a union on a model whose table is schema-qualified (billing.invoices) is read as one derived
+     * table named by the table alone, which Scout's own restriction of the page to its ids, by the
+     * model's qualified key ("public"."users"."id"), did not name: every read threw. It names the key
+     * as the FROM does now, and so does Scout 10.0's count of paginate()'s total.
+     */
+    public function test_a_union_on_a_schema_qualified_table_serves_the_matches_either_part_holds(): void
+    {
+        ScoutQualifiedUnionUser::$qualified = match ($this->dbDriver) {
+            'sqlite' => 'main.users',
+            'pgsql'  => 'public.users',
+            'sqlsrv' => 'dbo.users',
+            default  => \Illuminate\Support\Facades\DB::connection()->getDatabaseName() . '.users',
+        };
+        app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->indexBatch(ScoutQualifiedUnionUser::all());
+
+        $union = fn () => ScoutQualifiedUnionUser::scoutSearch('doe')
+            ->query(fn ($query) => $query->where('email', 'jane@example.com')->union(ScoutQualifiedUnionUser::query()->whereIn('name', ['John Doe', 'Alice Smith'])));
+
+        $this->assertSame(['John Doe', 'Jane Doe'], $union()->get()->pluck('name')->all(), 'get');
+        $this->assertSame([2, ['Jane Doe']], [($page = $union()->paginate(1, 'page', 2))->total(), $page->pluck('name')->all()], 'paginate page 2');
+        $this->assertSame([false, ['Jane Doe']], [($page = $union()->simplePaginate(1, 'page', 2))->hasMorePages(), $page->pluck('name')->all()], 'simplePaginate page 2');
+        $this->assertSame(['Jane Doe', 'John Doe'], $union()->orderBy('name')->get()->pluck('name')->all(), 'orderBy get');
+        $this->assertSame([2, ['John Doe']], [($page = $union()->orderBy('name')->paginate(1, 'page', 2))->total(), $page->pluck('name')->all()], 'orderBy paginate page 2');
     }
 
     /**

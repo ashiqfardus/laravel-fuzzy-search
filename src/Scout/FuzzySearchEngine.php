@@ -174,6 +174,9 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * (otherwise a selective where() returns a short or empty page while matches exist further down
      * the ranking), and none past bm25.max_postings_per_term, where the ranking ends. With orderBy()
      * it is every match they accept, in that order (orderedPage()). A page past the total reads no row.
+     * A model's getSearchScore() override re-ranks the first max_candidates matches in relevance order,
+     * as on SearchBuilder's index path (rerankedPage(); SearchBuilder::searchScoreWindow()), and every
+     * score is passed through it (TE-5).
      *
      * @return array{results: Collection, total: int}
      */
@@ -186,19 +189,74 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         $terms  = $this->terms($builder);
         $ranked = $this->scorer->rank($terms, IndexManager::indexType($builder->model), $this->columnWeights($builder));
         $query  = $this->constrainedQuery($builder);
+        $window = SearchBuilder::searchScoreWindow($builder->model::class);
 
         if ($ranked !== [] && $orders !== []) {
             ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $terms, $offset, $limit);
+            $scores = $this->pick($ranked, $keys);
+            $scores = $window > 0 ? $this->hooked($builder, $scores) + $scores : $scores; // a gone row keeps its place; map() drops it
         } else {
             $accepted = $query === null || $ranked === [] ? $ranked : RankedCandidates::accepted($query, $ranked, $terms, IndexManager::indexType($builder->model), $this->columnWeights($builder));
             $total    = count($accepted);
-            $keys     = array_slice(array_keys($accepted), $offset, $limit);
+            $scores   = $window > 0
+                ? $this->rerankedPage($builder, $accepted, $window, $offset, $limit)
+                : $this->pick($ranked, array_slice(array_keys($accepted), $offset, $limit));
         }
 
         return [
-            'results' => $this->hydrate($this->pick($ranked, $keys), $builder->model),
+            'results' => $this->hydrate($scores, $builder->model),
             'total'   => $total,
         ];
+    }
+
+    /**
+     * The page [$offset, $offset + $limit) of $accepted (model_id => BM25 score, best first) under the
+     * model's getSearchScore() override, cut as SearchBuilder's index path cuts it (indexedResults(),
+     * ruling ER-88): the first $window matches re-ranked by their hooked score, a match whose row is
+     * gone holding no place among them, then the matches past them in BM25 order, each at its rank,
+     * every one with its hooked score (TE-5). Each page reads the window's rows, as the builder's does.
+     *
+     * @param  array<int|string, float> $accepted
+     * @return array<int|string, float> model_id => hooked score, in page order
+     */
+    private function rerankedPage(Builder $builder, array $accepted, int $window, int $offset, int $limit): array
+    {
+        if ($offset >= count($accepted) || $limit < 1) {
+            return [];
+        }
+
+        $limit = min($limit, count($accepted)); // take(PHP_INT_MAX): $offset + $limit stays an int
+        $first = $this->hooked($builder, array_slice($accepted, 0, $window, true));
+        arsort($first); // stable: rows the hook left tied keep their BM25 rank
+        $start = max($offset, $window);
+        $tail  = $this->hooked($builder, array_slice($accepted, $start, max(0, $offset + $limit - $start), true));
+
+        return array_slice($first + $tail, min($offset, count($first)), $limit, true);
+    }
+
+    /**
+     * $scores (model_id => BM25 score) through the model's getSearchScore() override, for each id
+     * whose model the page read finds (modelsById(), a bm25.candidate_chunk at a time); an id whose
+     * row is gone is left out.
+     *
+     * @param  array<int|string, float> $scores
+     * @return array<int|string, float>
+     */
+    private function hooked(Builder $builder, array $scores): array
+    {
+        $hooked = [];
+
+        foreach (array_chunk(array_keys($scores), max(1, (int) config('fuzzy-search.bm25.candidate_chunk', 200))) as $chunk) {
+            $models = $this->modelsById($builder, $builder->model, RankedCandidates::keysFor($builder->model, $chunk));
+
+            foreach ($chunk as $id) {
+                if (isset($models[$id])) {
+                    $hooked[$id] = (float) $models[$id]->getSearchScore((float) $scores[$id]);
+                }
+            }
+        }
+
+        return $hooked;
     }
 
     /**
@@ -492,14 +550,20 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * ER-135). A union is read as one derived table, and an override that reads without the callback
      * selects no alias: its models are matched by their own key.
      *
+     * A model a join repeats is served with its first row. Under an orderBy() that tells its rows
+     * apart (RankedCandidates::ordersRepeatedRows()) they are read in the builder's order, so that is
+     * its first row by the order, the row orderedPage() placed it by, not whichever the database
+     * returns first (TE-6). The key, which every row of one model shares, is left out of that order.
+     *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
      */
     private function modelsById(Builder $builder, \Illuminate\Database\Eloquent\Model $model, array $ids): array
     {
+        $orders                 = $this->orders($builder);
         $callback               = $builder->queryCallback;
         $builder                = clone $builder;
-        $builder->queryCallback = function ($query) use ($callback) {
+        $builder->queryCallback = function ($query) use ($callback, $orders) {
             if ($callback !== null) {
                 call_user_func($callback, $query);
                 RankedCandidates::groupOrWheres($query); // the page's ids, which Scout adds next, hold for every branch (RE-1)
@@ -507,14 +571,34 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
             // A union is read as one derived table (RankedCandidates::rows()), so the ids Scout then
             // restricts the query to restrict every part of it, not only its first. Its scopes apply
-            // inside that table already.
+            // inside that table already. Scout names the key there as the FROM does (TE-7).
             if (($rows = RankedCandidates::rows($query)) !== $query) {
                 $query->setQuery($rows->getQuery())->withoutGlobalScopes();
             }
+            GroupedQueryCallback::restrictByKeyColumn($query);
 
             $query->withGlobalScope(RankedCandidates::KEY_ALIAS, fn (EloquentBuilder $query) => RankedCandidates::needsKeyAlias($query->getQuery(), $query->getModel())
                 ? RankedCandidates::selectKey($query->getQuery(), RankedCandidates::keyColumn($query))
                 : null);
+
+            if ($orders === []) {
+                return;
+            }
+
+            $read = $query->toBase();
+            foreach ($orders as $order) {
+                $read->orderBy($order['column'], $order['direction']);
+            }
+
+            // Not as SELECT DISTINCT, which rejects an order on a column it does not select: one row
+            // per id is kept, so DISTINCT changes nothing served.
+            if (RankedCandidates::ordersRepeatedRows($read)) {
+                $query->getQuery()->distinct = false;
+
+                foreach ($orders as $order) {
+                    $query->orderBy($order['column'], $order['direction']);
+                }
+            }
         };
 
         $models = [];
@@ -523,7 +607,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             $id = RankedCandidates::takeKey($found);
 
             if ($id !== null) {
-                $models[$id] = $found;
+                $models[$id] ??= $found;
             }
         }
 
