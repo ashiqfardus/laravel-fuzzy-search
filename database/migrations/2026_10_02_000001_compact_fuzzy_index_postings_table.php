@@ -28,11 +28,11 @@ use Illuminate\Support\Facades\Schema;
  * spaces included, on MySQL/MariaDB (2026_09_20_000001's NO PAD binary collation), and in the
  * database's own collation elsewhere, so an ORDER BY model_id, the rank cut's tiebreak, reads as before.
  *
- * The postings are copied into fuzzy_index_postings_compact one range of term ids at a time, each
- * range one INSERT … SELECT committed on its own, so no transaction covers the whole table: 49 s for
- * 300,000 indexed rows on MySQL, 86 s on PostgreSQL (a loaded laptop). A range covers about CHUNK documents by the words'
- * doc_count. A posting whose document row is missing (an index left inconsistent) has no length, and
- * is dropped: the count, taken a range at a time, is logged. Then the old table is dropped, the new one takes its name, and the
+ * The postings are copied into fuzzy_index_postings_compact one range of the earlier table's ids at
+ * a time (copyUp()), each range one INSERT … SELECT committed with a progress mark, so no
+ * transaction covers the whole table: about 11 minutes for 96M postings (6M rows) on MySQL, plus the
+ * secondary index. A posting whose document row is missing (an index left inconsistent) has no
+ * length, and is dropped: the count, taken a range at a time, is logged. Then the old table is dropped, the new one takes its name, and the
  * secondary index and the foreign keys are added with their final names: term_id cascades from
  * fuzzy_index_terms as before, and model_type_id references fuzzy_index_model_types. column_id has no
  * foreign key: MySQL would add an index on it, a quarter of the table's size, for a parent no write

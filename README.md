@@ -1390,6 +1390,7 @@ Measured on one laptop database at a time, with rows of about 16 indexed words e
 
 - **Size:** about 1.5 GB of index per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows; the earlier postings layout took 2.6 times as much on MySQL and 1.4 times on PostgreSQL), several times the table it indexes. The postings table is most of it.
 - **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MySQL at 3M rows, four searchers managed 1.1 searches a second with a p95 of 18 s.
+- **Upgrading to 2.1:** the compact postings migration copies the postings table, about 11 minutes for 6M rows on MySQL plus its secondary index, and the new code's index searches fail until it finishes: see the [upgrade guide](docs/UPGRADE_v2.0_TO_v2.1.md) (`php artisan down`, or flush and rebuild a large index instead).
 - **Index builds:** one process indexed about 2,800 rows a second at 1M rows on MySQL and 1,100 at 3M. More rebuild processes help (four gave 2.2× one on MySQL, 1.6× on PostgreSQL); `indexing.chunk_size` does not.
 
 | Database (memory for the engine) | Index searches under 1 s | Every search and command finishes | First failure |
