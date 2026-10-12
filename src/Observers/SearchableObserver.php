@@ -183,11 +183,19 @@ class SearchableObserver
      * from that text, a loaded attribute read as stored. Not a declared column's accessor, cast or
      * date: the code comes from what those return, which the stored text cannot vouch for (an
      * accessor may read other columns or relations), and a virtual column, an accessor with no
-     * column behind it, has no stored text to compare at all. Those are written unguarded.
+     * column behind it, has no stored text to compare at all. Nor a column that is not
+     * character-typed (R12-L2, SearchableColumns::typesOn()): only a character column stores the
+     * text as written, while MySQL's JSON re-formats it (the guard never matched, so the shadow was
+     * never written) and PostgreSQL's json has no = operator (every save threw, 42883). Those are
+     * written unguarded. Where the types cannot be read (Laravel 10 before Schema::getColumns()),
+     * every column is guarded.
      */
     protected function guarded(Model $model, string $column): bool
     {
+        $types = SearchableColumns::typesOn($model->getConnection(), $model->getTable());
+
         return array_key_exists($column, $model->getAttributes())
+            && ($types === [] || SearchableColumns::isTextType($types[$column] ?? null))
             && (!SearchableColumns::declared($model)
                 || !($model->hasGetMutator($column) || $model->hasAttributeGetMutator($column) || $model->hasCast($column) || in_array($column, $model->getDates(), true)));
     }
