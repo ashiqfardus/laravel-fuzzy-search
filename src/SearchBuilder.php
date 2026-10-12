@@ -4298,13 +4298,15 @@ class SearchBuilder
      * column it reads come first, then by value (TE-9), so the shortest completions are in them,
      * whatever plan the database takes (rowid, heap or index order; on PostgreSQL an UPDATE that
      * changed no value changed the suggestions). The database sorts every matching row for it. Not
-     * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression.
+     * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression,
+     * a global scope's included: read from the scoped query (toBase()), or a scope's distinct() got
+     * the order, which PostgreSQL and SQL Server reject (VC-2).
      *
      * @param array<string, array{relation: ?string, column: string}> $targets suggestTargets()
      */
     private function shortestFirst(Builder|EloquentBuilder $query, array $targets): Builder|EloquentBuilder
     {
-        $base   = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
+        $base   = $query instanceof EloquentBuilder ? $query->toBase() : $query;
         $direct = array_values(array_filter($targets, fn (array $t) => $t['relation'] === null));
 
         if ($direct !== [] && empty($base->orders) && !$base->distinct && empty($base->groups) && empty($base->havings)) {
