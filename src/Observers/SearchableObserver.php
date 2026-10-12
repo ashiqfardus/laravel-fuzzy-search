@@ -54,7 +54,7 @@ class SearchableObserver
                 $text = $model->getAttributes()[$column];
                 $text === null
                     ? $query->whereNull($column)
-                    : $query->whereRaw(DbDialect::sameText($query->getGrammar()->wrap($column), $model->getConnection()->getDriverName()), [(string) $text]);
+                    : $query->whereRaw($this->sameText($model, $query->getGrammar()->wrap($column)), [(string) $text]);
             }
 
             $query->update([$shadow => $code]);
@@ -106,7 +106,7 @@ class SearchableObserver
         foreach ($byColumn as $shadow => $rows) {
             $target = $grammar->wrap($shadow);
             $source = $grammar->wrap(substr($shadow, 0, -strlen(self::SUFFIX)));
-            $same   = DbDialect::sameText($source, $connection->getDriverName());
+            $same   = $this->sameText($first, $source);
 
             foreach (array_chunk($rows, 500, true) as $chunk) {
                 $ids      = RankedCandidates::keysFor($first, array_keys($chunk));
@@ -188,7 +188,7 @@ class SearchableObserver
      * text as written, while MySQL's JSON re-formats it (the guard never matched, so the shadow was
      * never written) and PostgreSQL's json has no = operator (every save threw, 42883). Those are
      * written unguarded. Where the types cannot be read (Laravel 10 before Schema::getColumns()),
-     * every column is guarded.
+     * every column is guarded, and compared as sameText() says.
      */
     protected function guarded(Model $model, string $column): bool
     {
@@ -198,6 +198,24 @@ class SearchableObserver
             && ($types === [] || SearchableColumns::isTextType($types[$column] ?? null))
             && (!SearchableColumns::declared($model)
                 || !($model->hasGetMutator($column) || $model->hasAttributeGetMutator($column) || $model->hasCast($column) || in_array($column, $model->getDates(), true)));
+    }
+
+    /**
+     * The guard's comparison of a column of $model's table, written as SQL, with the bound text:
+     * DbDialect::sameText(). Where the types cannot be read (Laravel 10 before 10.30), a JSON column
+     * is guarded too, and PostgreSQL's json has no = operator (every save threw, 42883; R13-L3): the
+     * column is compared there as text, trailing spaces aside as on MySQL and SQL Server (a char(n)
+     * column reads back padded, and spaces never change a code). json keeps the text as written, so
+     * its save writes the code; jsonb re-formats it, as MySQL's JSON does, so their shadow is written
+     * by fuzzy-search:rebuild's backfill, which reads that text, and not on save.
+     */
+    protected function sameText(Model $model, string $column): string
+    {
+        $driver = $model->getConnection()->getDriverName();
+
+        return $driver === DbDialect::PGSQL && SearchableColumns::typesOn($model->getConnection(), $model->getTable()) === []
+            ? "rtrim({$column}::text) = rtrim(?)"
+            : DbDialect::sameText($column, $driver);
     }
 
     /**

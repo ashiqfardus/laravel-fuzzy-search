@@ -67,6 +67,18 @@ class JsonShadowDoc extends Model
     protected array $searchable = ['columns' => ['meta' => 1]];
 }
 
+/** JSON and padded columns searched without a cast, each beside its metaphone shadow (jsonb and char(n) on PostgreSQL). */
+class UntypedShadowDoc extends Model
+{
+    use Searchable;
+
+    protected $table   = 'untyped_shadow_docs';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['meta' => 1, 'metab' => 1, 'code' => 1]];
+}
+
 /**
  * SB-3. The shadow code is computed from the text one process holds and written by a later,
  * separate UPDATE that did not check the text was still there. A save of the same row in between
@@ -337,5 +349,54 @@ class ShadowWriteGuardTest extends TestCase
         $this->assertNotNull(DB::table('json_shadow_docs')->value('meta_metaphone'), 'the backfill');
 
         Schema::dropIfExists('json_shadow_docs');
+    }
+
+    /**
+     * R13-L3. Where the column types cannot be read (Laravel 10 before 10.30 has no
+     * Schema::getColumns()), every column stays guarded, and PostgreSQL's json has no = operator:
+     * every save of a model with a json column and its shadow threw (42883) after its own UPDATE.
+     * The guard compares the column's text there, trailing spaces aside. json keeps the text as
+     * written, so its save writes the code; jsonb (and MySQL's JSON) re-format it, so their shadow
+     * is written by the rebuild's backfill, which reads that text. Unreadable types are simulated
+     * through typesOn()'s memo.
+     */
+    public function test_a_json_column_s_shadow_is_written_where_the_column_types_cannot_be_read(): void
+    {
+        $pg = $this->dbDriver === 'pgsql';
+        Schema::dropIfExists('untyped_shadow_docs');
+        Schema::create('untyped_shadow_docs', function ($table) use ($pg) {
+            $table->id();
+            $table->json('meta')->nullable();
+            $table->string('meta_metaphone')->nullable();
+            if ($pg) {
+                $table->jsonb('metab')->nullable();
+                $table->string('metab_metaphone')->nullable();
+                $table->char('code', 12)->nullable(); // bpchar: read back padded
+                $table->string('code_metaphone')->nullable();
+            }
+        });
+        \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+        (new \ReflectionProperty(\Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::class, 'types'))
+            ->setValue(null, [\Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::connectionKey(DB::connection()) . '|untyped_shadow_docs' => []]);
+        $this->assertSame([], \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::typesOn(DB::connection(), 'untyped_shadow_docs'));
+
+        $code = fn (?string $text) => $text === null ? null : \Ashiqfardus\LaravelFuzzySearch\Drivers\MetaphoneDriver::code($text);
+        $json = '{"name":"Anna Stefan","city":"Tokyo"}';
+        $doc  = UntypedShadowDoc::create($pg ? ['meta' => $json, 'metab' => $json, 'code' => 'Anna Stefan'] : ['meta' => $json]);
+        $row  = (array) DB::table('untyped_shadow_docs')->where('id', $doc->id)->first();
+        if ($pg) {
+            $this->assertSame($code($json), $row['meta_metaphone'], 'json keeps the text as written: its save writes the code');
+            $this->assertSame($code('Anna Stefan'), $row['code_metaphone']);
+        }
+
+        DB::table('untyped_shadow_docs')->update(array_fill_keys(array_keys(array_filter($row, fn ($v, $k) => str_ends_with($k, '_metaphone'), ARRAY_FILTER_USE_BOTH)) ?: ['meta_metaphone'], null));
+        app(SearchableObserver::class)->backfillShadowColumns(UntypedShadowDoc::query()->whereKey($doc->id)->get());
+        $row = (array) DB::table('untyped_shadow_docs')->where('id', $doc->id)->first();
+        foreach ($pg ? ['meta', 'metab', 'code'] : ['meta'] as $column) {
+            $this->assertNotNull($row["{$column}_metaphone"], "the backfill writes {$column}'s shadow");
+            $this->assertSame($code($row[$column]), $row["{$column}_metaphone"], $column);
+        }
+
+        Schema::dropIfExists('untyped_shadow_docs');
     }
 }
