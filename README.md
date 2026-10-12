@@ -514,6 +514,8 @@ User::search('joh')->searchIn(['name'])->suggest(5);
 // Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
 ```
 
+The scan reads at most `limit × 3` matching rows, the shortest values of the first column it searches first (then by value), so the shortest completions in the table are among them; it sorts every row that starts with the term to find them. A base query with an order, a `distinct()` or a `groupBy()` of its own is read in that order instead.
+
 **What scopes a suggestion.** `filter()` and `filterIn()` never do: they belong to the search itself, which `suggest()` and `didYouMean()` deliberately do not run. The constraints you put on the builder's base query — `where()`, `join()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — are honoured as follows. What counts as a constraint is a WHERE, a JOIN, a HAVING or a GROUP BY clause, a union or a FROM subquery (`fromSub()`); an aliased table (`from('users as u')`) alone is not one.
 
 - **The table scan** (an un-indexed model, `suggestFrom('table')`, or `'auto'` under a constraint) runs on the base query, so every one of those constraints narrows it.
@@ -699,7 +701,7 @@ foreach ($users as $user) {
 }
 ```
 
-`column_scores` is each column's score times its weight (`john` is a prefix of both values, worth `scoring.prefix_match` = 80: 80 × 10 and 80 × 5), and `final_score` is the row's `_score`. `prefix_boost` is what `prefixBoost()` set (1.0 when not called). On `useInvertedIndex()` `column_scores` is empty, because BM25 scores whole documents. `algorithm` is `extended` for an `extended()` query.
+`column_scores` is each column's score times its weight (`john` is a prefix of both values, worth `scoring.prefix_match` = 80: 80 × 10 and 80 × 5), and `final_score` is the row's `_score`. `prefix_boost` is what `prefixBoost()` set (1.0 when not called). On `useInvertedIndex()` `algorithm` is `bm25` and `column_scores` is empty, because BM25 scores whole documents. `algorithm` is `extended` for an `extended()` query.
 
 ---
 
