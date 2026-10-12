@@ -4027,7 +4027,7 @@ class SearchBuilder
         $rawTerm  = Utf8::lowerAscii(FuzzySearch::capTerm($this->searchTerm));
         $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
 
-        $results = $this->suggestCandidateQuery($safeTerm, true)->limit($limit * 3)->get();
+        $results = $this->shortestFirst($this->suggestCandidateQuery($safeTerm), $targets)->limit($limit * 3)->get();
 
         // Extract unique suggestions from results
         foreach ($results as $result) {
@@ -4121,7 +4121,7 @@ class SearchBuilder
      * so its SQL can be pinned per driver via toSql() without needing a live connection for
      * every driver — see tests/Unit/SearchBuilderTest.php.
      */
-    protected function suggestCandidateQuery(string $safeTerm, bool $shortestFirst = false): Builder|EloquentBuilder
+    protected function suggestCandidateQuery(string $safeTerm): Builder|EloquentBuilder
     {
         $driver = $this->query->getConnection()->getDriverName();
 
@@ -4160,20 +4160,31 @@ class SearchBuilder
             $this->eagerLoadRelationPaths($suggestQuery, $paths);
         }
 
-        // suggest() reads only the first limit × 3 rows: the shortest values of the first column it
-        // reads first, then by value (TE-9), so the shortest completions are in them, whatever plan
-        // the database takes (rowid, heap or index order; on PostgreSQL an UPDATE that changed no
-        // value changed the suggestions). It sorts every matching row. Not where the query orders
-        // itself, or where a DISTINCT or a GROUP BY would reject the expression.
-        $base   = $suggestQuery instanceof EloquentBuilder ? $suggestQuery->getQuery() : $suggestQuery;
+        return $suggestQuery;
+    }
+
+    /**
+     * suggest()'s table scan reads only the first limit × 3 rows: the shortest values of the first
+     * column it reads come first, then by value (TE-9), so the shortest completions are in them,
+     * whatever plan the database takes (rowid, heap or index order; on PostgreSQL an UPDATE that
+     * changed no value changed the suggestions). The database sorts every matching row for it. Not
+     * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression.
+     *
+     * @param array<string, array{relation: ?string, column: string}> $targets suggestTargets()
+     */
+    private function shortestFirst(Builder|EloquentBuilder $query, array $targets): Builder|EloquentBuilder
+    {
+        $base   = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
         $direct = array_values(array_filter($targets, fn (array $t) => $t['relation'] === null));
-        if ($shortestFirst && $direct !== [] && empty($base->orders) && !$base->distinct && empty($base->groups) && empty($base->havings)) {
-            $column = ($own[$direct[0]['column']] ?? '') . $direct[0]['column'];
-            $suggestQuery->orderByRaw(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::lengthFunction($driver) . '(' . $base->getGrammar()->wrap($column) . ')')
+
+        if ($direct !== [] && empty($base->orders) && !$base->distinct && empty($base->groups) && empty($base->havings)) {
+            // Under a join, qualified as suggestCandidateQuery() matches it.
+            $column = ($this->qualifiedColumnMap($query)[$direct[0]['column']] ?? '') . $direct[0]['column'];
+            $query->orderByRaw(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::lengthFunction($base->getConnection()->getDriverName()) . '(' . $base->getGrammar()->wrap($column) . ')')
                 ->orderBy($column);
         }
 
-        return $suggestQuery;
+        return $query;
     }
 
     /**
