@@ -390,4 +390,46 @@ class DictionaryIndexesTest extends TestCase
             $this->assertDoesNotMatchRegularExpression('/temp b-tree for order by|filesort|\bsort\b/i', $plan, $plan);
         }
     }
+
+    /**
+     * R13-M2. suggest()'s and didYouMean()'s dictionary reads withheld every dotted column name
+     * (R12-L5) through a subquery on fuzzy_index_columns, which nothing analyzed: PostgreSQL guessed
+     * hundreds of dotted columns, charged the subquery to every probe of the postings, and read each
+     * length through a scan of all of them instead (7-9 s for 15 didYouMean() calls at 40,000 rows,
+     * against 0.7 s). The dotted ids are read first, and each read stays an index probe. PostgreSQL
+     * only (CI runs it): its plan is the one that flipped; the others planned the subquery well.
+     */
+    public function test_the_visible_dictionary_reads_probe_the_postings_on_postgresql(): void
+    {
+        if ($this->dbDriver !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL only (CI runs it): the plan that flipped is PostgreSQL\'s.');
+        }
+        $type    = IndexManager::modelTypeId(User::class, insert: true);
+        $columns = IndexManager::columnIds(['name', 'author.name'], insert: true); // a dotted name only searchableText() gives
+        $terms   = DB::getQueryGrammar()->wrapTable('fuzzy_index_terms');
+        $posts   = DB::getQueryGrammar()->wrapTable('fuzzy_index_postings');
+
+        // 20,000 words of 6 to 9 characters, 2 postings each, one under a dotted column.
+        DB::statement("insert into {$terms} (term, doc_count, term_length) select t, 1 + g % 97, length(t) from (select g, 'w' || lpad(g::text, 5, '0') || repeat('x', g % 4) as t from generate_series(1, 20000) g) w");
+        DB::statement(sprintf("insert into {$posts} (term_id, model_type_id, model_id, column_id, frequency, doc_length) select t.id, %d, (t.id * 4 + k)::text, case when k = 2 then %d else %d end, 1, 6 from {$terms} t cross join generate_series(1, 2) k", $type, $columns['author.name'], $columns['name']));
+        DB::statement("analyze {$posts}, {$terms}"); // as a rebuild's analyzeIndex() did: never the column dictionary
+        // The model holds the whole index, so candidates() reads a length at a time (TC-4).
+        DB::table('fuzzy_index_meta')->insert(['model_type' => User::class, 'total_docs' => 40000, 'total_tokens' => 40000, 'avg_doc_length' => 6]);
+
+        $reads = [];
+        DB::listen(function ($query) use (&$reads) {
+            if (str_contains($query->sql, 'fuzzy_index_postings')) {
+                $reads[] = [$query->sql, $query->bindings];
+            }
+        });
+        $this->assertNotSame([], (new TermExpander)->candidates('w01234x', 2, 300, User::class));
+        (new TermExpander)->prefix('w0123', 10, User::class);
+        DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+
+        $this->assertNotSame([], $reads);
+        foreach ($reads as [$sql, $bindings]) {
+            $plan = implode("\n", array_column(array_map(fn ($row) => (array) $row, DB::select('explain ' . $sql, $bindings)), 'QUERY PLAN'));
+            $this->assertDoesNotMatchRegularExpression('/Seq Scan on \S*fuzzy_index_postings/', $plan, $plan);
+        }
+    }
 }

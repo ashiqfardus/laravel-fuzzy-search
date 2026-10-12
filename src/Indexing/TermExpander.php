@@ -15,6 +15,9 @@ use Illuminate\Support\Facades\DB;
  */
 final class TermExpander
 {
+    /** @var list<int>|null the dotted column ids, read once an expander (see visibleColumnsOnly()) */
+    private ?array $dotted = null;
+
     /**
      * TC-4: candidates() reads a length at a time (S1) when the model's total_tokens squared passes
      * this many times the pool times the index's total_tokens, and the whole window once otherwise.
@@ -389,10 +392,15 @@ final class TermExpander
         // A dotted name only the searchableText() hook gives (a morphTo path, a relation key the
         // model never declares) has no relation walk to judge it by, and the model never hides a
         // dotted name: it is withheld, as only a declared, shown path is offered (R12-L5). The
-        // postings name columns by id, so the dotted names are read from the column dictionary.
-        $postings->where(fn (Builder $q) => $q
-            ->whereNotIn('sp.column_id', fn (Builder $dotted) => $dotted->select('id')->from('fuzzy_index_columns')->where('name', 'like', '%.%'))
-            ->orWhereIn('sp.column_id', $ids($shownPaths)));
+        // postings name columns by id, so the dotted ids are read from the column dictionary first,
+        // once an expander (SearchBuilder resolves one per call, so a dotted column another process
+        // records later is withheld too): as a subquery of each read, on a dictionary no rebuild
+        // analyzed, it made PostgreSQL scan every posting instead of probing them (R13-M2).
+        $this->dotted ??= DB::table('fuzzy_index_columns')->where('name', 'like', '%.%')->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $withheld = array_diff($this->dotted, $ids($shownPaths));
+        if ($withheld !== []) {
+            $postings->whereNotIn('sp.column_id', array_values($withheld));
+        }
     }
 
     /**
