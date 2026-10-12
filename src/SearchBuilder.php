@@ -388,7 +388,7 @@ class SearchBuilder
 
     /**
      * The targets a search matches: every searchIn() column but one weighted 0 or less, which the
-     * index search leaves out too (Bm25Scorer::excludedColumns()). A weight of 0 takes a column out of
+     * index search leaves out too (Bm25Scorer::readColumns()). A weight of 0 takes a column out of
      * the search on every path, its matching and counting, suggest()'s table scan and an extended()
      * field scope included, not only out of _score (TE-8).
      *
