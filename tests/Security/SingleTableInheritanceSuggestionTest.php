@@ -148,6 +148,82 @@ class StiNoteContact extends StiNoteParent
     }
 }
 
+/** R13-L4: the parent hides the owner but declares no relation of that name; only the children do. */
+class StiOwnedParent extends Model
+{
+    use Searchable;
+
+    protected $table   = 'sti_suggest_items';
+    protected $guarded = [];
+    public $timestamps = false;
+    protected $hidden  = ['note', 'owner'];
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    public function searchableText(): array
+    {
+        return ['title' => $this->title, 'owner.name' => method_exists($this, 'owner') ? $this->owner?->name : null];
+    }
+
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $attributes = (array) $attributes;
+        $class      = match ($attributes['kind'] ?? '') {
+            'employee' => StiOwnedEmployee::class,
+            'contact'  => StiOwnedContact::class,
+            default    => static::class,
+        };
+        $model = (new $class)->newInstance([], true);
+        $model->setRawAttributes($attributes, true);
+        $model->setConnection($connection ?: $this->getConnectionName());
+
+        return $model;
+    }
+}
+
+/** Declares the owner relation, hidden as the parent hides it. */
+class StiOwnedEmployee extends StiOwnedParent
+{
+    protected array $searchable = ['columns' => ['title' => 1, 'owner.name' => 1]];
+
+    public function owner(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(StiNoteOwner::class, 'owner_id');
+    }
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('kind', fn ($query) => $query->where('kind', 'employee'));
+    }
+
+    public static function searchIndexType(): string
+    {
+        return StiOwnedParent::class;
+    }
+}
+
+/** Declares the owner relation and shows it. */
+class StiOwnedContact extends StiOwnedParent
+{
+    protected $hidden = [];
+    protected array $searchable = ['columns' => ['title' => 1, 'owner.name' => 1]];
+
+    public function owner(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(StiNoteOwner::class, 'owner_id');
+    }
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('kind', fn ($query) => $query->where('kind', 'contact'));
+    }
+
+    public static function searchIndexType(): string
+    {
+        return StiOwnedParent::class;
+    }
+}
+
 /**
  * TA-1. Under searchIndexType(), dictionary suggest(), didYouMean() and getDebugInfo()['index_terms']
  * judged hidden columns on the index type, the parent: a searchable column a child hides, and a
@@ -263,5 +339,44 @@ class SingleTableInheritanceSuggestionTest extends TestCase
         }
         $this->assertSame(['beta'], StiNoteContact::search('bet')->suggestFrom('index')->suggest(10), 'a column the parent shows is still offered');
         $this->assertSame(['beta two'], StiNoteContact::search('yonder')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all(), 'matching keeps it (ER-66)');
+    }
+
+    /**
+     * R13-L4. A relation only the children declare is no method of the parent, so the parent judged
+     * its path as a table-qualified column, by the leaf alone (`name`, which it shows): its
+     * `$hidden = ['owner']` never counted, and a contact, which shows its owner, was offered an
+     * employee's owner name. The parent must show the path's head too.
+     */
+    public function test_a_childs_suggestions_leave_out_a_relation_only_the_children_declare_and_the_parent_hides(): void
+    {
+        Schema::dropIfExists('sti_suggest_owners');
+        Schema::create('sti_suggest_owners', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+        });
+        $owner = DB::table('sti_suggest_owners')->insertGetId(['name' => 'Xanadu']);
+        DB::table('sti_suggest_items')->insert([
+            ['title' => 'beta one', 'secret' => null, 'note' => null, 'kind' => 'employee', 'owner_id' => $owner],
+            ['title' => 'beta two', 'secret' => null, 'note' => null, 'kind' => 'contact', 'owner_id' => null],
+        ]);
+        $this->artisan('fuzzy-search:rebuild', ['model' => StiOwnedParent::class, '--fresh' => true])->assertExitCode(0);
+        $this->assertContains('xanadu', DB::table('fuzzy_index_terms')->pluck('term')->all(), 'precondition: the owner name is indexed');
+
+        $debug = function (string $term) {
+            $search = StiOwnedContact::search($term)->useInvertedIndex()->typoTolerance(2);
+            $search->get();
+
+            return array_map('strval', array_keys($search->getDebugInfo()['index_terms']));
+        };
+        $offered = [
+            'contact index xa'  => StiOwnedContact::search('xa')->suggestFrom('index')->suggest(10),
+            'contact dym'       => array_column(StiOwnedContact::search('xanadoo')->didYouMean(), 'term'),
+            'contact debug'     => $debug('xanadoo'),
+            'employee index xa' => StiOwnedEmployee::search('xa')->suggestFrom('index')->suggest(10),
+            'parent index xa'   => StiOwnedParent::search('xa')->suggestFrom('index')->suggest(10),
+        ];
+        $this->assertNotContains('xanadu', array_merge(...array_values($offered)), json_encode($offered));
+        $this->assertSame(['beta'], StiOwnedContact::search('bet')->suggestFrom('index')->suggest(10), 'a column the parent shows is still offered');
+        $this->assertSame(['beta one'], StiOwnedEmployee::search('xanadu')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all(), 'matching keeps it (ER-66)');
     }
 }
