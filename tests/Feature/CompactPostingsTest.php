@@ -226,7 +226,7 @@ class CompactPostingsTest extends TestCase
         $this->assertStringNotContainsString('fuzzy_index_documents', $sql);
         $postings = array_values(array_filter($plan, fn ($row) => $row['table'] === DB::connection()->getTablePrefix() . 'p'))[0];
         $this->assertSame('PRIMARY', $postings['key'], json_encode($plan));
-        $this->assertSame('range', $postings['type'], json_encode($plan));
+        $this->assertContains($postings['type'], ['ref', 'range'], json_encode($plan)); // a prefix of the key: ref for one word, range for several
     }
 
     /** PostgreSQL: the ranking is an Index Only Scan of the postings' primary key (its INCLUDE columns). */

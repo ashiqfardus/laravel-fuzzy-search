@@ -181,6 +181,8 @@ class DictionaryIndexesTest extends TestCase
         app(IndexManager::class)->indexBatch(User::all());
         $id   = (int) DB::table('fuzzy_index_terms')->min('id');
         $path = realpath(self::MIGRATION);
+        // The compact postings first: this migration refuses under them.
+        $this->artisan('migrate:rollback', ['--path' => realpath(self::COMPACT), '--realpath' => true])->assertExitCode(0);
         $this->artisan('migrate:rollback', ['--path' => $path, '--realpath' => true])->assertExitCode(0);
 
         $default = DB::getDefaultConnection();
@@ -220,7 +222,7 @@ class DictionaryIndexesTest extends TestCase
         $this->assertMigrated();
     }
 
-    /** MySQL/MariaDB: postings.term_id keeps its foreign key, served by postings_unique_idx. */
+    /** MySQL/MariaDB: postings.term_id keeps its foreign key, served by postings_unique_idx (by the primary key under the compact postings). */
     public function test_the_term_foreign_key_survives_the_drop(): void
     {
         if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
@@ -232,8 +234,9 @@ class DictionaryIndexesTest extends TestCase
             [DB::connection()->getTablePrefix() . 'fuzzy_index_postings', DB::connection()->getTablePrefix() . 'fuzzy_index_terms']
         );
         $this->assertCount(1, $keys);
-        $this->assertSame(['postings_unique_idx'], array_values(array_intersect(
-            ['postings_unique_idx'],
+        $serving = Schema::hasColumn('fuzzy_index_postings', 'model_type_id') ? 'PRIMARY' : 'postings_unique_idx';
+        $this->assertSame([$serving], array_values(array_intersect(
+            [$serving],
             array_map(fn ($row) => (string) $row->name, DB::select(
                 'select index_name as name from information_schema.statistics where table_schema = database() and table_name = ? and seq_in_index = 1 and column_name = ?',
                 [DB::connection()->getTablePrefix() . 'fuzzy_index_postings', 'term_id']

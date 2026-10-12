@@ -38,8 +38,8 @@ class PostgresAnalyzeFailureTest extends TestCase
             $this->markTestSkipped('The package runs ANALYZE on PostgreSQL only; the CI PostgreSQL jobs run this.');
         }
 
-        // 300 zebras: about 20 pages of postings, past the 16 pages under which nothing is analyzed (ER-112).
-        $rows = array_map(fn ($i) => ['name' => "Zebra {$i}", 'email' => "z{$i}@example.test"], range(1, 300));
+        // 600 zebras: about 20 pages of compact postings, past the 16 pages under which nothing is analyzed (ER-112).
+        $rows = array_map(fn ($i) => ['name' => "Zebra {$i}", 'email' => "z{$i}@example.test"], range(1, 600));
         foreach (array_chunk($rows, 100) as $chunk) {
             DB::table('users')->insert($chunk);
         }
@@ -112,7 +112,7 @@ class PostgresAnalyzeFailureTest extends TestCase
         $this->unlock();
         $this->assertTrue($ran, 'the app\'s after-commit callback ran');
         $this->assertSame(1, DB::table('products')->where('title', 'Order 1')->count());
-        $this->assertSame(300, DB::table('fuzzy_index_documents')->count());
+        $this->assertSame(600, DB::table('fuzzy_index_documents')->count());
         $this->assertLockTimeoutsReported();
     }
 
@@ -142,7 +142,7 @@ class PostgresAnalyzeFailureTest extends TestCase
         $indexed = app(IndexManager::class)->indexBatch($this->zebras());
 
         $this->unlock();
-        $this->assertSame(300, $indexed);
+        $this->assertSame(600, $indexed);
         $this->assertLockTimeoutsReported();
     }
 
