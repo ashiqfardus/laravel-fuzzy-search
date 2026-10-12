@@ -52,6 +52,9 @@ return new class extends Migration
     private const BY_MODEL = 'postings_model_idx';
     private const UNIQUE  = 'postings_unique_idx';
 
+    private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
+    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // 2026_10_01_000001's before round 12
+
     /** The documents one copy statement covers, by the words' doc_count (a word in several of a document's columns has a posting for each). */
     private const CHUNK = 100000;
 
@@ -117,6 +120,10 @@ return new class extends Migration
             'model_type_id' => ['fuzzy_index_model_types', false],
         ]);
 
+        if (!$pretending) {
+            $this->converge();
+        }
+
         // PostgreSQL: statistics (a never-analyzed table is planned as if it held a few rows, ruling
         // ER-106), and the visibility map that lets the ranking's index-only read skip the heap.
         // Unprepared: VACUUM runs only as a statement of its own.
@@ -169,6 +176,41 @@ return new class extends Migration
         Schema::dropIfExists('fuzzy_index_columns');
 
         IndexManager::resetPipelineCache();
+    }
+
+    /**
+     * R12-L6: bring an install of an earlier 2.1 build to the 2.1.0 schema. Its recorded migrations
+     * never run again, and two of them changed since: 2026_09_20_000001 now gives model_id a NO PAD
+     * binary collation on MySQL/MariaDB, where an earlier build gave utf8mb4_bin (which pads: 'SKU1'
+     * and 'SKU1 ' were one key), and 2026_10_01_000001 now indexes the dictionary on (term_length,
+     * doc_count, id), where an earlier build left out the id. Every install runs this migration, so
+     * it converges here: the documents' model_id (the postings were created with the collation, and
+     * their copy compared the old columns, so this comes after it; a stricter collation joins no two
+     * keys), then the dictionary's index. Under --pretend nothing: the upgrade from 2.0.1 runs the
+     * migrations as they are now.
+     */
+    private function converge(): void
+    {
+        $connection = DB::connection();
+
+        if (DbDialect::isMySqlFamily($connection->getDriverName())) {
+            $collation = self::noPadBinary();
+            $column    = $connection->selectOne(
+                "select collation_name as c from information_schema.columns where table_schema = database() and table_name = ? and column_name = 'model_id'",
+                [$connection->getTablePrefix() . 'fuzzy_index_documents']
+            );
+            if ($column !== null && strtolower((string) ((object) $column)->c) !== $collation) {
+                DB::statement('ALTER TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . " MODIFY model_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE {$collation} NOT NULL");
+            }
+        }
+
+        $terms = $this->indexes('fuzzy_index_terms');
+        if (in_array(self::LENGTH_COUNT, $terms, true)) {
+            if (!in_array(self::LENGTH_COUNT_ID, $terms, true)) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], self::LENGTH_COUNT_ID));
+            }
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::LENGTH_COUNT));
+        }
     }
 
     /**

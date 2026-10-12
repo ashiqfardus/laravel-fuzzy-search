@@ -85,6 +85,11 @@ class CompactPostingsMigrationTest extends TestCase
         Schema::dropIfExists('migrated_notes');
         Schema::dropIfExists('migrated_codes');
 
+        // A migrate in the test records a second batch, and the teardown's rollback undoes only the
+        // last one: the first batch's tables would stay for the next class, whose prefixed tables'
+        // index names collide with them on PostgreSQL (one namespace per schema).
+        $this->dropLeftoverFuzzyIndexTables();
+
         parent::tearDown();
     }
 
@@ -254,6 +259,61 @@ class CompactPostingsMigrationTest extends TestCase
 
         // A second run (a migration whose record was lost, a copy of it in the app) changes nothing.
         $this->fetching($arrays, fn () => (require self::PATH . '/' . self::MIGRATION . '.php')->up());
+        $this->assertSame($before, $this->searches());
+    }
+
+    /** @return array<string, mixed> the collations of model_id and the dictionary's indexes, as the catalog reads them */
+    private function convergedSchema(): array
+    {
+        $prefix  = DB::connection()->getTablePrefix();
+        $indexes = match ($this->dbDriver) {
+            'sqlite' => DB::select("select name from sqlite_master where type = 'index' and tbl_name = ?", [$prefix . 'fuzzy_index_terms']),
+            'pgsql'  => DB::select('select c.relname as name from pg_index i join pg_class c on c.oid = i.indexrelid where i.indrelid = to_regclass(quote_ident(?))', [$prefix . 'fuzzy_index_terms']),
+            'sqlsrv' => DB::select('select name from sys.indexes where object_id = object_id(?) and name is not null', [$prefix . 'fuzzy_index_terms']),
+            default  => DB::select('select distinct index_name as name from information_schema.statistics where table_schema = database() and table_name = ?', [$prefix . 'fuzzy_index_terms']),
+        };
+        $names = array_map(fn ($row) => strtolower((string) $row->name), $indexes);
+        sort($names);
+
+        $collations = in_array($this->dbDriver, ['mysql', 'mariadb'], true)
+            ? array_map(fn ($row) => (string) $row->c, DB::select(
+                "select collation_name as c from information_schema.columns where table_schema = database() and table_name in (?, ?) and column_name = 'model_id' order by table_name",
+                [$prefix . 'fuzzy_index_documents', $prefix . 'fuzzy_index_postings']
+            ))
+            : [];
+
+        return ['terms indexes' => $names, 'model_id collations' => $collations];
+    }
+
+    /**
+     * R12-L6. A 2.1 build before round 12 recorded 2026_09_20_000001 with model_id in utf8mb4_bin
+     * (which pads: 'SKU1' and 'SKU1 ' were one key) and 2026_10_01_000001 with the dictionary index
+     * on (term_length, doc_count) alone; recorded migrations never run again. The compact postings
+     * migration, which every install runs, brings both to the 2.1.0 schema, with no index row lost:
+     * a key longer than 36 characters, and keys that differ only by case.
+     */
+    public function test_an_install_of_an_earlier_2_1_build_reaches_the_2_1_0_schema(): void
+    {
+        $fresh = $this->convergedSchema();
+        $this->index();
+        DB::table('migrated_codes')->insert(['code' => str_repeat('x', 40), 'label' => 'copper ingot']);
+        app(IndexManager::class)->indexBatch(MigratedCode::all());
+        $before = $this->searches();
+
+        // 83c12c7's schema, in the earlier postings layout.
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            foreach (['fuzzy_index_postings', 'fuzzy_index_documents'] as $table) {
+                DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable($table) . ' MODIFY model_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL');
+            }
+        }
+        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count'], 'fuzzy_index_terms_term_length_doc_count_index'));
+        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex('fuzzy_index_terms_term_length_doc_count_id_index'));
+        $this->assertNotSame($fresh, $this->convergedSchema());
+
+        $this->artisanOk('migrate');
+
+        $this->assertSame($fresh, $this->convergedSchema());
         $this->assertSame($before, $this->searches());
     }
 
