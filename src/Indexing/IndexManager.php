@@ -65,11 +65,14 @@ class IndexManager
      * delete, flush and search names the type through here, so a child's save and a rebuild of its
      * parent cannot write two indexes (SA-1).
      *
-     * The type is the class itself or a concrete Eloquent model it extends, else a LogicException
-     * names the hook (R11-L1): a write re-reads the rows through the type's query and a search reads
-     * the type's postings, so a sibling's scope left the model unindexed, an unrelated model's index
-     * was served, and an abstract base or a morph alias could not be read at all. An ancestor is
-     * returned under its declared name, however the hook spells it.
+     * The type is the class itself or a concrete Eloquent model it extends that reads the same table
+     * on the same connection, else a LogicException names the hook (R11-L1, UA-2): a write re-reads
+     * the rows through the type's query and a search reads the type's postings, so a sibling's scope
+     * left the model unindexed, an unrelated model's index was served, an abstract base or a morph
+     * alias could not be read at all, and an ancestor on another table indexed its own rows in the
+     * model's place. An ancestor resolves to its own type, so a grandchild whose hook names its
+     * parent lands in the index the parent's rows are in (UA-6), under the declared name however a
+     * hook spells it.
      */
     public static function indexType(Model|string $model): string
     {
@@ -83,14 +86,34 @@ class IndexManager
             return $type;
         }
 
+        // Memoized: a rebuild resolves every row's type, and the check builds two models.
+        return self::$ancestorTypes[$class . "\0" . $type] ??= self::ancestorType($class, $type);
+    }
+
+    /** @var array<string, string> "class\0hook's value" => index type */
+    private static array $ancestorTypes = [];
+
+    private static function ancestorType(string $class, string $type): string
+    {
         $parent = class_exists($type) ? new \ReflectionClass($type) : null;
-        if ($parent === null || $parent->isAbstract() || !$parent->isSubclassOf(Model::class) || !is_a($class, $parent->getName(), true)) {
+        if ($parent === null || $parent->isAbstract() || !$parent->isSubclassOf(Model::class) || !is_a($class, $parent->getName(), true)
+            || !self::sameTable($class, $parent->getName())) {
             $class = ltrim($class, '\\');
 
-            throw new \LogicException("{$class}::searchIndexType() returned [{$type}], which is neither {$class} nor a concrete Eloquent model it extends: return the class itself, or the single-table-inheritance parent whose index it shares.");
+            throw new \LogicException("{$class}::searchIndexType() returned [{$type}], which is neither {$class} nor a concrete Eloquent model it extends on the same table and connection: return the class itself, or the single-table-inheritance parent whose index it shares.");
         }
 
-        return $parent->getName();
+        return self::indexType($parent->getName());
+    }
+
+    /** Whether the two model classes read the same table on the same connection. */
+    private static function sameTable(string $class, string $other): bool
+    {
+        $make   = fn (string $c) => ($r = new \ReflectionClass($c))->isInstantiable() ? new $c() : $r->newInstanceWithoutConstructor();
+        [$a, $b] = [$make($class), $make($other)];
+
+        return $a->getTable() === $b->getTable()
+            && ($a->getConnectionName() ?? config('database.default')) === ($b->getConnectionName() ?? config('database.default'));
     }
 
     /**

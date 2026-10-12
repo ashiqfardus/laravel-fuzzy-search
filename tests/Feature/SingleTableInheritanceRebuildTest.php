@@ -187,6 +187,87 @@ class StiUnrelatedTyped extends StiParent
     }
 }
 
+/** A subclass on a table of its own, not single-table inheritance, that names its parent (UA-2). */
+class StiOtherTableTyped extends StiParent
+{
+    protected $table = 'sti_archived_items';
+
+    public static function searchIndexType(): string
+    {
+        return StiParent::class;
+    }
+}
+
+/** A subclass of the same table on another connection, naming its parent (UA-2). */
+class StiOtherConnectionTyped extends StiParent
+{
+    protected $connection = 'sti_other_connection';
+
+    public static function searchIndexType(): string
+    {
+        return StiParent::class;
+    }
+}
+
+/** Three levels on one table, each hook naming its own parent (UA-6). */
+class StiChainVehicle extends Model
+{
+    use Searchable;
+
+    protected $table    = 'sti_items';
+    protected $guarded  = [];
+    public $timestamps  = false;
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $attributes = (array) $attributes;
+        $class      = match ($attributes['kind'] ?? '') {
+            'car'    => StiChainCar::class,
+            'sports' => StiChainSportsCar::class,
+            default  => static::class,
+        };
+        $model = (new $class)->newInstance([], true);
+        $model->setRawAttributes($attributes, true);
+        $model->setConnection($connection ?: $this->getConnectionName());
+
+        return $model;
+    }
+}
+
+class StiChainCar extends StiChainVehicle
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('kind', fn ($query) => $query->whereIn('kind', static::kinds()));
+        static::creating(fn ($model) => $model->kind ??= static::kinds()[0]);
+    }
+
+    protected static function kinds(): array
+    {
+        return ['car', 'sports'];
+    }
+
+    public static function searchIndexType(): string
+    {
+        return StiChainVehicle::class;
+    }
+}
+
+class StiChainSportsCar extends StiChainCar
+{
+    protected static function kinds(): array
+    {
+        return ['sports'];
+    }
+
+    public static function searchIndexType(): string
+    {
+        return StiChainCar::class;
+    }
+}
+
 /**
  * RC-3. indexBatch() took the model type from a chunk's first model, and re-read the chunk's keys
  * through that class's query: a rebuild of an STI parent whose chunk began with a child indexed the
@@ -204,7 +285,7 @@ class SingleTableInheritanceRebuildTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['sti_items', 'job_batches'] as $table) {
+        foreach (['sti_items', 'job_batches', 'sti_archived_items'] as $table) {
             Schema::dropIfExists($table);
         }
         Schema::create('sti_items', function (Blueprint $table) {
@@ -225,7 +306,7 @@ class SingleTableInheritanceRebuildTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach (['sti_items', 'job_batches'] as $table) {
+        foreach (['sti_items', 'job_batches', 'sti_archived_items'] as $table) {
             Schema::dropIfExists($table);
         }
 
@@ -267,6 +348,21 @@ class SingleTableInheritanceRebuildTest extends TestCase
     private function indexTitles(string $class, string $term): array
     {
         return $class::search($term)->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->sort()->values()->all();
+    }
+
+    /** The exceptions reported from here on (the observer reports a failed index write). */
+    private function reports(): \ArrayObject
+    {
+        $reported = new \ArrayObject();
+        $this->app->instance(\Illuminate\Contracts\Debug\ExceptionHandler::class, new class($reported) implements \Illuminate\Contracts\Debug\ExceptionHandler {
+            public function __construct(private \ArrayObject $reported) {}
+            public function report(\Throwable $e) { $this->reported[] = $e; }
+            public function shouldReport(\Throwable $e) { return true; }
+            public function render($request, \Throwable $e) { throw $e; }
+            public function renderForConsole($output, \Throwable $e) { throw $e; }
+        });
+
+        return $reported;
     }
 
     private function rebuild(string $class, array $options = []): void
@@ -505,14 +601,7 @@ class SingleTableInheritanceRebuildTest extends TestCase
             }
         }
 
-        $reported = [];
-        $this->app->instance(\Illuminate\Contracts\Debug\ExceptionHandler::class, new class($reported) implements \Illuminate\Contracts\Debug\ExceptionHandler {
-            public function __construct(private array &$reported) {}
-            public function report(\Throwable $e) { $this->reported[] = $e; }
-            public function shouldReport(\Throwable $e) { return true; }
-            public function render($request, \Throwable $e) { throw $e; }
-            public function renderForConsole($output, \Throwable $e) { throw $e; }
-        });
+        $reported = $this->reports();
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
         $class::query()->find(2)->update(['title' => 'omega two']);
 
@@ -557,5 +646,85 @@ class SingleTableInheritanceRebuildTest extends TestCase
         StiScoutParent::query()->find(1)->update(['title' => 'omega one']);
         $this->assertSame([1, 2, 4, 5], $this->indexedIds(StiScoutParent::class));
         $this->assertSame(['omega one'], StiScoutParent::scoutSearch('omega')->get()->pluck('title')->all());
+    }
+
+    /**
+     * UA-6. indexType() returned the ancestor a hook named, as named: in a three-level hierarchy
+     * whose every hook names its own parent, the grandchild was indexed under the middle class,
+     * whose own hook names the root, so no search read it (the root's and the middle class's index
+     * searches read the root's index), and a rebuild --fresh of the root kept it so. The named
+     * ancestor now resolves to its own index type, the root's.
+     */
+    public function test_a_hook_naming_its_parent_resolves_to_the_parents_own_index_type(): void
+    {
+        $this->assertSame(StiChainVehicle::class, IndexManager::indexType(StiChainSportsCar::class));
+        $this->assertSame(StiChainVehicle::class, IndexManager::indexType(new StiChainSportsCar()));
+
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        StiChainCar::create(['title' => 'red sedan']);
+        StiChainSportsCar::create(['title' => 'red roadster']);
+        StiChainVehicle::create(['title' => 'red tractor', 'kind' => 'vehicle']);
+
+        $this->assertSame([StiChainVehicle::class => 3], $this->documents(), 'each saved through its own class');
+        $this->assertSame(['red roadster', 'red sedan', 'red tractor'], $this->indexTitles(StiChainVehicle::class, 'red'));
+        $this->assertSame(['red roadster', 'red sedan'], $this->indexTitles(StiChainCar::class, 'red'));
+        $this->assertSame(['red roadster'], $this->indexTitles(StiChainSportsCar::class, 'red'));
+
+        $this->rebuild(StiChainVehicle::class);
+        $this->assertSame([StiChainVehicle::class => 8], $this->documents(), 'one index after a rebuild --fresh of the root');
+        $this->assertSame(['red roadster', 'red sedan'], $this->indexTitles(StiChainCar::class, 'red'));
+        $this->assertSame(2, StiChainCar::search('red')->useInvertedIndex()->typoTolerance(0)->count());
+    }
+
+    /**
+     * UA-2. R11-L1's guard took any concrete ancestor: a subclass on a table of its own whose hook
+     * names its parent was re-read through the parent's table on every write, so the parent's row
+     * with each id was indexed in its place, its own text never was, and its index search served
+     * its own rows for the parent's words. The ancestor must read the class's table on the class's
+     * connection, or the hook throws, as R11-L1's do; a save reports it.
+     */
+    public function test_a_search_index_type_naming_an_ancestor_on_another_table_or_connection_throws(): void
+    {
+        Schema::create('sti_archived_items', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+            $table->string('kind', 16);
+        });
+        StiOtherTableTyped::query()->create(['title' => 'quokka archive', 'kind' => 'parent']);
+
+        try {
+            IndexManager::indexType(StiOtherConnectionTyped::class);
+            $this->fail('another connection: no exception');
+        } catch (\LogicException $e) {
+            $this->assertStringContainsString(StiOtherConnectionTyped::class . '::searchIndexType() returned [' . StiParent::class . ']', $e->getMessage());
+        }
+
+        $class   = StiOtherTableTyped::class;
+        $message = "{$class}::searchIndexType() returned [" . StiParent::class . ']';
+        $paths   = [
+            'indexType()'   => fn () => IndexManager::indexType($class),
+            'index search'  => fn () => $class::search('quokka')->useInvertedIndex()->get(),
+            'didYouMean()'  => fn () => $class::search('qokka')->didYouMean(),
+            'rebuild'       => fn () => \Illuminate\Support\Facades\Artisan::call('fuzzy-search:rebuild', ['model' => $class]),
+            'IndexModelJob' => fn () => (new IndexModelJob($class, 1))->handle(app(IndexManager::class)),
+            'indexModel()'  => fn () => app(IndexManager::class)->indexModel($class::query()->find(1)),
+        ];
+        foreach ($paths as $path => $run) {
+            try {
+                $run();
+                $this->fail("{$path}: no exception");
+            } catch (\LogicException $e) {
+                $this->assertStringContainsString($message, $e->getMessage(), $path);
+            }
+        }
+
+        $reported = $this->reports();
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        $class::query()->find(1)->update(['title' => 'quokka archived']);
+
+        $this->assertSame('quokka archived', DB::table('sti_archived_items')->where('id', 1)->value('title'), 'the save goes on');
+        $this->assertCount(1, $reported);
+        $this->assertStringContainsString($message, $reported[0]->getMessage());
+        $this->assertSame([], $this->documents(), 'the post with the same id is not indexed in its place');
     }
 }
