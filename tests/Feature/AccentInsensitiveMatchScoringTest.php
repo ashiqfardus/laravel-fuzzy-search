@@ -147,4 +147,42 @@ class AccentInsensitiveMatchScoringTest extends TestCase
         $this->assertSame([[1, 2], [3, 4]], $offsets('banana', 'an'));
         $this->assertSame(['José'], $slices('José Ramírez', 'josé'));
     }
+
+    /**
+     * R12-M1. Folded highlighting folded every character of a value once for every needle, and
+     * scoring folded every value whole on every row: on MySQL's default collation a highlighted
+     * search over long non-ASCII text cost 16-39 times the unfolded one. A value is now folded once
+     * for every needle, each distinct character once (PHP only: run on every database).
+     */
+    public function test_folded_highlighting_folds_each_distinct_character_once(): void
+    {
+        $value   = str_repeat('Jöhn Müller wohnt in der Straße. Ёжик и йогурт. ', 1400); // 64 KB, 13 distinct non-ASCII characters
+        $offsets = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder::class, 'foldedMatchOffsets');
+        $builder = AccentScoredPerson::search('x');
+
+        \Ashiqfardus\LaravelFuzzySearch\Support\Accents::$decompositions = 0;
+        $found = $offsets->invoke($builder, $value, 'muller', 3);
+        $this->assertSame(['Müller', 'Müller', 'Müller'], array_map(fn (array $r) => substr($value, $r[0], $r[1] - $r[0] + 1), $found));
+        $this->assertLessThanOrEqual(count(array_unique(mb_str_split((string) preg_replace('/[\x00-\x7F]/', '', $value)))), \Ashiqfardus\LaravelFuzzySearch\Support\Accents::$decompositions);
+    }
+
+    /** R12-M1 through a search: a value that holds the term as typed is not folded to score it. */
+    public function test_a_highlighted_search_folds_each_distinct_character_once_a_pass(): void
+    {
+        if (!$this->foldsInSql()) {
+            $this->markTestSkipped('MySQL/MariaDB only (CI runs them): the suite\'s utf8mb4_unicode_ci is the accent-insensitive collation that folds.');
+        }
+        $body = str_repeat('Jöhn Müller wohnt in der Straße. Ёжик и йогурт. ', 3); // within the column's 255
+        DB::table('accent_scored_people')->delete();
+        foreach (range(1, 20) as $i) {
+            DB::table('accent_scored_people')->insert(['name' => "Muller {$i} {$body}"]);
+        }
+
+        \Ashiqfardus\LaravelFuzzySearch\Support\Accents::$decompositions = 0;
+        $rows = AccentScoredPerson::search('muller')->using('simple')->highlight()->take(20)->get();
+        $this->assertCount(20, $rows);
+        $this->assertStringStartsWith('<em>Muller</em> 1', $rows->firstWhere('name', "Muller 1 {$body}")->_highlighted['name']);
+        // 13 distinct non-ASCII characters, once each for the whole result; no value folded whole to score.
+        $this->assertLessThanOrEqual(13, \Ashiqfardus\LaravelFuzzySearch\Support\Accents::$decompositions);
+    }
 }

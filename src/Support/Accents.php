@@ -5,6 +5,9 @@ namespace Ashiqfardus\LaravelFuzzySearch\Support;
 /** Accent folding shared by the index pipeline and the LIKE path. Task 4 adds the intl path. */
 final class Accents
 {
+    /** @internal How many strings fold() decomposed (past its ASCII shortcut): a cost guard for tests. */
+    public static int $decompositions = 0;
+
     public static function usesIntl(): bool
     {
         return class_exists(\Normalizer::class);
@@ -25,6 +28,7 @@ final class Accents
         if (!preg_match('/[\x80-\xFF]/', $string)) {
             return $string; // pure ASCII: nothing to decompose and no key of MAP can match
         }
+        self::$decompositions++;
 
         if (self::usesIntl()) {
             $decomposed = \Normalizer::normalize($string, \Normalizer::FORM_D);
