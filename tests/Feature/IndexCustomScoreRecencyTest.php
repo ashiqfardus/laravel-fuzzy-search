@@ -169,4 +169,36 @@ class IndexCustomScoreRecencyTest extends TestCase
             $this->assertEqualsWithDelta($expected, $paged, 0.000001, "{$hook}: paginate()");
         }
     }
+
+    /**
+     * VC-3 (pass-4 UF-4). _score divided the hooked score rounded to six places by the unrounded
+     * top: the row that sets the top scored round($raw, 6) / $raw, 1.000004 when its seventh place
+     * rounded up. The top row scores exactly 1 now, on every terminal, and none scores more.
+     */
+    public function test_with_boost_recent_the_top_result_scores_exactly_one(): void
+    {
+        $this->travelTo(now()->startOfDay());
+        foreach (range(1, 12) as $i) {
+            DB::table('users')->insert([
+                'name'       => 'Nova ' . str_repeat('x', $i) . ($i % 3 === 0 ? ' nova' : ''),
+                'email'      => "nova{$i}@example.com",
+                'created_at' => now()->subDays($i * 7 + $i % 5),
+            ]);
+        }
+        app(IndexManager::class)->indexBatch(RankHookFreeUser::all());
+
+        // A score's seventh place rounds up about half the time: one search after another, each
+        // with its own decay, so the old division shows on some of them.
+        foreach (range(1, 24) as $days) {
+            $make  = fn () => RankHookFreeUser::search('nova')->useInvertedIndex()->boostRecent(1.0 + $days / 7, 'created_at', $days * 5);
+            $label = "boostRecent over {$days} × 5 days";
+            $rows  = $make()->get();
+
+            $this->assertSame(1.0, (float) $rows->first()->_score, "{$label}: get()");
+            $this->assertLessThanOrEqual(1.0, $rows->max('_score'), $label);
+            $this->assertSame(1.0, (float) $make()->first()->_score, "{$label}: first()");
+            $this->assertSame(1.0, (float) $make()->paginate(5)->items()[0]->_score, "{$label}: paginate() page 1");
+            $this->assertSame(1.0, (float) $make()->simplePaginate(5)->items()[0]->_score, "{$label}: simplePaginate() page 1");
+        }
+    }
 }

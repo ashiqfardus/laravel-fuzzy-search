@@ -1857,7 +1857,7 @@ class SearchBuilder
         $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
         $window = $rerank > 0 ? $scores->take($rerank) : $scores;
         $top    = max($anchor ?? 0.0, (float) ($window->max() ?? 0));
-        $score  = fn (float $raw) => $top > 0 ? round(round($raw, 6) / $top, 6) : round($raw, 6);
+        $score  = fn (float $raw) => $top > 0 ? round($raw / $top, 6) : round($raw, 6); // unrounded: the top row scores exactly 1 (VC-3)
         $floor  = $rerank > 0 && $window->isNotEmpty() ? $score((float) $window->min()) : INF;
         $attach = function (float $raw, $i, float $cap) use ($models, $score) {
             $item             = $models[$i];
