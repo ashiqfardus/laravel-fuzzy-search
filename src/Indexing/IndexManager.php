@@ -221,12 +221,7 @@ class IndexManager
             return $keys === [] ? [] : [self::indexType($class) => $keys];
         }
 
-        $root  = self::hierarchyRoot($class);
-        $types = DB::table('fuzzy_index_meta')->useWritePdo()->pluck('model_type')
-            ->map(fn ($type) => (string) $type)
-            ->filter(fn (string $type) => class_exists($type) && is_a($type, $root, true) && self::sameTable($type, $root))
-            ->values()->all();
-
+        $types = self::hierarchyTypes($class);
         $filed = [];
         foreach ($types === [] ? [] : array_chunk(array_map('strval', $keys), 1000) as $chunk) {
             $rows = DB::table('fuzzy_index_documents')->useWritePdo()
@@ -239,6 +234,49 @@ class IndexManager
         }
 
         return $filed;
+    }
+
+    /** @return list<string> the indexed types of $class's hierarchy (see filedUnder()) */
+    private static function hierarchyTypes(string $class): array
+    {
+        $root = self::hierarchyRoot($class);
+
+        return DB::table('fuzzy_index_meta')->useWritePdo()->pluck('model_type')
+            ->map(fn ($type) => (string) $type)
+            ->filter(fn (string $type) => class_exists($type) && is_a($type, $root, true) && self::sameTable($type, $root))
+            ->values()->all();
+    }
+
+    /**
+     * Take the rows that are gone from the table out of every index type of $class's
+     * single-table-inheritance hierarchy but $class's own: `rebuild --fresh` flushes that type
+     * alone and indexes the rows its query reads, so a child row deleted without model events (a
+     * query-builder delete()) stayed in the child's index after a fresh rebuild of the parent
+     * (R13-L5). One keyed read of the table per 1,000 documents of each other type. A class whose
+     * query hydrates every row as itself has no other type: nothing is read.
+     */
+    public function unfileGone(string $class): void
+    {
+        if (!self::hydratesOtherClasses($class)) {
+            return;
+        }
+
+        $root = self::hierarchyRoot($class, concrete: true);
+        $own  = self::indexType($class);
+        foreach (self::hierarchyTypes($class) as $type) {
+            if ($type === $own) {
+                continue;
+            }
+            DB::table('fuzzy_index_documents')->useWritePdo()->where('model_type', $type)->select('model_id')
+                ->chunkById(1000, function ($rows) use ($root, $type) {
+                    $ids  = $rows->map(fn ($row) => (string) ((object) $row)->model_id)->all(); // an app-wide array fetch mode returns arrays
+                    $live = Model::withoutEvents(fn () => (new $root())->newModelQuery()->useWritePdo()->whereKey($ids)->pluck((new $root())->getKeyName()));
+                    $gone = array_values(array_diff($ids, $live->map(fn ($key) => (string) $key)->all()));
+                    if ($gone !== []) {
+                        $this->write($type, $gone, [], refile: false); // the type's re-read finds none: they leave
+                    }
+                }, 'model_id');
+        }
     }
 
     /**
@@ -1076,7 +1114,36 @@ class IndexManager
 
             $byModel   = []; // id => [column => [term => frequency]]
             $elsewhere = []; // index type => keys of the rows hydrated as a class indexed under it
-            foreach ($this->reload($modelType, $keys, $scout) + $unsaved as $id => $model) {
+            $reloaded  = $this->reload($modelType, $keys, $scout);
+
+            // A key the type's own re-read missed, under single-table inheritance: the caller named
+            // the type from an instance, not the row (a stale child instance saved or deleted after
+            // another request moved the row to another kind, a delete through a parent instance
+            // loaded without the type column, IndexModelJob named with the parent or the child after
+            // a query-builder write). Read through the hierarchy's root without global scopes, a
+            // live row goes to its kind's type, and a gone one leaves every other type that holds it
+            // (filedUnder()), both through the refile below, whose write re-reads with that type's
+            // scopes (VB-1, R13-L5). A write that does not refile (the refile's own, unfileElsewhere()'s)
+            // drops what this finds.
+            if (count($reloaded) < count($keys) && self::hydratesOtherClasses($modelType)) {
+                $missed = array_values(array_diff(array_map('strval', $keys), array_map('strval', array_keys($reloaded))));
+                $root   = self::hierarchyRoot($modelType, concrete: true);
+                $live   = [];
+                foreach (Model::withoutEvents(fn () => (new $root())->newModelQuery()->useWritePdo()->whereKey($missed)->get()) as $row) {
+                    $live[(string) $row->getKey()] = true;
+                    if (($type = self::indexType($row)) !== $modelType) {
+                        $elsewhere[$type][] = $row->getKey();
+                    }
+                }
+                $gone = array_values(array_filter($missed, fn (string $key) => !isset($live[$key])));
+                foreach ($gone === [] ? [] : $this->filedUnder($modelType, $gone) as $type => $typeKeys) {
+                    if ($type !== $modelType) {
+                        $elsewhere[$type] = [...($elsewhere[$type] ?? []), ...$typeKeys];
+                    }
+                }
+            }
+
+            foreach ($reloaded + $unsaved as $id => $model) {
                 // indexBatch() groups the unsaved instances by type, so only a re-read row can differ.
                 if (($type = self::indexType($model)) !== $modelType) {
                     $elsewhere[$type][] = $model->getKey();

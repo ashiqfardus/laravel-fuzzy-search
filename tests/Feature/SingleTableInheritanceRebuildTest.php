@@ -25,7 +25,11 @@ class StiParent extends Model
     public function newFromBuilder($attributes = [], $connection = null)
     {
         $attributes = (array) $attributes;
-        $class      = ($attributes['kind'] ?? '') === 'child' ? StiChild::class : static::class;
+        $class      = match ($attributes['kind'] ?? '') {
+            'child'   => StiChild::class,
+            'sibling' => StiSibling::class,
+            default   => static::class,
+        };
         $model      = (new $class)->newInstance([], true);
         $model->setRawAttributes($attributes, true);
         $model->setConnection($connection ?: $this->getConnectionName());
@@ -39,6 +43,14 @@ class StiChild extends StiParent
     protected static function booted(): void
     {
         static::addGlobalScope('child', fn ($query) => $query->where('kind', 'child'));
+    }
+}
+
+class StiSibling extends StiParent
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('sibling', fn ($query) => $query->where('kind', 'sibling'));
     }
 }
 
@@ -943,5 +955,141 @@ class SingleTableInheritanceRebuildTest extends TestCase
         $this->assertSame([StiScoutUntypedChild::class => 1, StiScoutUntypedParent::class => 3], $this->totals());
         $this->assertSame(4, $this->docCount('alpha'));
         $this->assertSame(['alpha five', 'alpha four', 'alpha one'], StiScoutUntypedParent::scoutSearch('alpha')->get()->pluck('title')->sort()->values()->all());
+    }
+
+    public static function staleWrites(): array
+    {
+        $cases = [];
+        foreach (['in-process' => false, 'queued' => true] as $mode => $async) {
+            foreach (['a stale child save after a demotion', 'a stale child delete after a demotion', 'IndexModelJob named with the child after a raw demotion',
+                'a delete through a parent instance read without the type column', 'IndexModelJob named with the parent after a query-builder delete',
+                'a stale child save after a move to a sibling'] as $case) {
+                $cases["{$case}, {$mode}"] = [$case, $async];
+            }
+        }
+
+        return $cases;
+    }
+
+    /**
+     * VB-1, R13-L5. A save or delete names its types from the instance, and IndexModelJob from the
+     * class it is given, not from the row: a type whose scoped re-read missed the key only dropped
+     * it. A stale child instance saved after another request moved the row left its new text in no
+     * index (the new kind kept the old), deleted, it left the row in the new kind's index (counted
+     * and suggested); a parent instance read without the type column deleted a child row out of
+     * no index; and the documented per-row repair, IndexModelJob, named with the child after a mass
+     * type change filed the row nowhere, named with the parent after a query-builder delete left
+     * the child's entry. A key the re-read misses is now read through the root without scopes: a
+     * live row is filed under its kind, a gone one leaves every type that holds it.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('staleWrites')]
+    public function test_a_write_whose_type_misses_the_row_files_it_by_the_row(string $case, bool $async): void
+    {
+        $this->rebuild(StiParent::class);
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => $async]);
+        $job = fn (string $class, int $id) => (new IndexModelJob($class, $id))->handle(app(IndexManager::class));
+
+        match ($case) {
+            'a stale child save after a demotion' => (function () {
+                $stale = StiChild::query()->find(1);
+                StiChild::query()->find(1)->update(['kind' => 'parent']); // another request
+                $stale->update(['title' => 'omega one']);                  // the UPDATE sets the title alone
+
+                $this->assertSame(['kind' => 'parent', 'title' => 'omega one'], (array) DB::table('sti_items')->where('id', 1)->first(['kind', 'title']));
+                $this->assertSame([3], $this->indexedIds(StiChild::class));
+                $this->assertSame([1, 2, 4, 5], $this->indexedIds(StiParent::class));
+                $this->assertSame(['omega one'], $this->indexTitles(StiParent::class, 'omega'), 'found by its new text');
+                $this->assertSame(['alpha five', 'alpha four', 'alpha two'], $this->indexTitles(StiParent::class, 'alpha'), 'not by its old one');
+            })(),
+            'a stale child delete after a demotion' => (function () {
+                $stale = StiChild::query()->find(3);
+                StiChild::query()->find(3)->update(['kind' => 'parent']);
+                $stale->delete();
+
+                $this->assertNull(DB::table('sti_items')->where('id', 3)->first());
+                $this->assertSame([1], $this->indexedIds(StiChild::class));
+                $this->assertSame([2, 4, 5], $this->indexedIds(StiParent::class));
+                $this->assertSame(0, StiParent::search('three')->useInvertedIndex()->typoTolerance(0)->count());
+                $this->assertSame([], StiParent::search('thre')->suggestFrom('index')->suggest());
+            })(),
+            'IndexModelJob named with the child after a raw demotion' => (function () use ($job) {
+                DB::table('sti_items')->where('id', 1)->update(['kind' => 'parent', 'title' => 'omega one']);
+                $job(StiChild::class, 1);
+
+                $this->assertSame([3], $this->indexedIds(StiChild::class));
+                $this->assertSame([1, 2, 4, 5], $this->indexedIds(StiParent::class));
+                $this->assertSame(['omega one'], $this->indexTitles(StiParent::class, 'omega'));
+            })(),
+            'a delete through a parent instance read without the type column' => (function () {
+                $row = StiParent::query()->select(['id', 'title'])->find(1);
+                $this->assertNotInstanceOf(StiChild::class, $row);
+                $row->delete();
+
+                $this->assertSame([3], $this->indexedIds(StiChild::class));
+                $this->assertSame([2, 4, 5], $this->indexedIds(StiParent::class));
+            })(),
+            'IndexModelJob named with the parent after a query-builder delete' => (function () use ($job) {
+                StiParent::query()->whereKey(1)->delete(); // no model event: the README's per-row repair follows
+                $job(StiParent::class, 1);
+
+                $this->assertSame([3], $this->indexedIds(StiChild::class));
+                $this->assertSame([2, 4, 5], $this->indexedIds(StiParent::class));
+            })(),
+            'a stale child save after a move to a sibling' => (function () {
+                $stale = StiChild::query()->find(1);
+                StiParent::query()->find(1)->update(['kind' => 'sibling']); // hydrated as the child, moved by another request
+                $this->assertSame([1], $this->indexedIds(StiSibling::class));
+                $stale->update(['title' => 'omega one']);
+
+                $this->assertSame([3], $this->indexedIds(StiChild::class));
+                $this->assertSame([1], $this->indexedIds(StiSibling::class));
+                $this->assertSame(['omega one'], $this->indexTitles(StiSibling::class, 'omega'));
+                $this->assertSame([], $this->indexTitles(StiSibling::class, 'alpha'));
+            })(),
+        };
+
+        // Each row once, in one index: the totals and every word's doc_count match the table.
+        $this->assertSame((int) DB::table('sti_items')->count(), array_sum($this->totals()));
+        $this->assertSame((int) DB::table('sti_items')->where('title', 'like', 'alpha%')->count(), $this->docCount('alpha'));
+        $this->assertSame((int) DB::table('sti_items')->where('title', 'like', 'omega%')->count(), $this->docCount('omega'));
+    }
+
+    /** R13-L5 (15). rebuild --fresh of the parent flushes its own type: a child row deleted without events stayed in the child's index. */
+    public function test_a_fresh_rebuild_of_the_parent_takes_a_deleted_row_out_of_every_kind(): void
+    {
+        $this->rebuild(StiParent::class);
+        $this->rebuild(StiAlphaView::class);
+        StiParent::query()->whereKey([1, 2])->delete(); // a child row and a parent row, no model event
+
+        $this->rebuild(StiParent::class);
+
+        $this->assertSame([3], $this->indexedIds(StiChild::class));
+        $this->assertSame([4, 5], $this->indexedIds(StiParent::class));
+        $this->assertSame([4, 5], $this->indexedIds(StiAlphaView::class), 'a subclass that is no kind keeps its own index, less the deleted row');
+        $this->assertSame([StiAlphaView::class => 2, StiChild::class => 1, StiParent::class => 2], $this->totals());
+        $this->assertSame(0, $this->docCount('one'));
+        $this->assertSame(5, $this->docCount('alpha'));
+    }
+
+    /** The re-read of a missed key is for a class that hydrates other classes only: a plain model's write reads its table once. */
+    public function test_only_a_class_that_hydrates_other_classes_rereads_a_missed_key(): void
+    {
+        $sql = null;
+        DB::listen(function ($query) use (&$sql) {
+            if ($sql !== null) {
+                $sql[] = $query->sql;
+            }
+        });
+        $reads = function (string $class) use (&$sql): int {
+            $sql = [];
+            (new IndexModelJob($class, 99))->handle(app(IndexManager::class)); // no such row
+            $read = count(array_filter($sql, fn (string $statement) => stripos($statement, 'select') === 0 && str_contains($statement, 'sti_items')));
+            $sql  = null;
+
+            return $read;
+        };
+
+        $this->assertSame(1, $reads(StiCar::class), 'no newFromBuilder() of its own: the write\'s re-read alone');
+        $this->assertSame(2, $reads(StiChild::class), 'the re-read, then the root\'s');
     }
 }
