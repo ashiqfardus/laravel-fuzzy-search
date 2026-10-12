@@ -115,6 +115,18 @@ class RelSuggestComment extends Model
     }
 }
 
+/** R12-L5: the morphTo path only searchableText() names. */
+class RelSuggestHookComment extends RelSuggestComment
+{
+    protected array $searchable = ['columns' => ['body' => 10]];
+}
+
+/** R12-L5: the relation paths only searchableText() names. */
+class RelSuggestHookPost extends RelSuggestPost
+{
+    protected array $searchable = ['columns' => ['title' => 10]];
+}
+
 /** Keeps its pivot out of toArray(), the usual way to keep pivot data out of JSON. */
 class RelSuggestTag extends Model
 {
@@ -310,6 +322,52 @@ class HiddenRelationColumnSuggestionTest extends TestCase
         }
         $this->assertSame(['quaint'], $offered['index qu'], 'the model\'s own column'); // the morphed title's "quokka" left out
         $this->assertSame(['quaint remark'], RelSuggestComment::search('quokka')->useInvertedIndex()->get()->pluck('body')->all(), 'matching keeps it (ER-66)');
+    }
+
+    /**
+     * R12-L5. Only a dotted column $searchable['columns'] declares was judged; one only the
+     * searchableText() hook names passed as long as the model did not hide its dotted name, which no
+     * model does. So a morphTo path's words (a video's hidden title) and a relation path's (an
+     * author's hidden email) were offered, though the docs say a morphTo path never is and that the
+     * check needs the name declared. An undeclared dotted posting is now never offered.
+     */
+    public function test_an_undeclared_dotted_paths_words_are_not_offered(): void
+    {
+        $post = $this->offered(RelSuggestHookPost::class);
+        foreach (['quentin', 'zanzibar'] as $word) {
+            $this->assertNotContains($word, array_merge(...array_values($post)), json_encode($post));
+        }
+        $this->assertContains('quiet', $post['index qu'], 'the model\'s own column');
+        $this->assertSame(['Alpha post'], RelSuggestHookPost::search('quentin')->useInvertedIndex()->get()->pluck('title')->all(), 'matching keeps it (ER-66)');
+
+        foreach (['rel_suggest_videos', 'rel_suggest_comments'] as $table) {
+            Schema::dropIfExists($table);
+        }
+        Schema::create('rel_suggest_videos', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+        });
+        Schema::create('rel_suggest_comments', function (Blueprint $table) {
+            $table->id();
+            $table->string('body');
+            $table->string('commentable_type')->nullable();
+            $table->unsignedBigInteger('commentable_id')->nullable();
+        });
+        $video = DB::table('rel_suggest_videos')->insertGetId(['title' => 'Quokka unlisted video']);
+        DB::table('rel_suggest_comments')->insert(['body' => 'quaint remark', 'commentable_type' => RelSuggestVideo::class, 'commentable_id' => $video]);
+
+        app(IndexManager::class)->indexBatch(RelSuggestHookComment::all());
+        $search = RelSuggestHookComment::search('quokkka unlistd')->useInvertedIndex();
+        $search->get();
+        $comment = [
+            'index qu'    => RelSuggestHookComment::search('qu')->suggestFrom('index')->suggest(10),
+            'didYouMean'  => array_column(RelSuggestHookComment::search('quokkka')->didYouMean(), 'term'),
+            'debug terms' => array_map('strval', array_keys($search->getDebugInfo()['index_terms'])),
+        ];
+        foreach (['quokka', 'unlisted'] as $word) {
+            $this->assertNotContains($word, array_merge(...array_values($comment)), json_encode($comment));
+        }
+        $this->assertSame(['quaint'], $comment['index qu'], 'the model\'s own column');
     }
 
     public static function pivotPosts(): array

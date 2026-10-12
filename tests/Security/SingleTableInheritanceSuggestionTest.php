@@ -70,6 +70,84 @@ class StiSuggestSibling extends StiSuggestParent
     }
 }
 
+class StiNoteOwner extends Model
+{
+    protected $table   = 'sti_suggest_owners';
+    protected $guarded = [];
+    public $timestamps = false;
+}
+
+/** R12-L4: a parent that hides a column and a relation, one child that hides them too, one that shows them. */
+class StiNoteParent extends Model
+{
+    use Searchable;
+
+    protected $table   = 'sti_suggest_items';
+    protected $guarded = [];
+    public $timestamps = false;
+    protected $hidden  = ['note', 'owner'];
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    public function owner(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(StiNoteOwner::class, 'owner_id');
+    }
+
+    public function searchableText(): array
+    {
+        return ['title' => $this->title, 'note' => $this->note, 'owner.name' => $this->owner?->name];
+    }
+
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $attributes = (array) $attributes;
+        $class      = match ($attributes['kind'] ?? '') {
+            'employee' => StiNoteEmployee::class,
+            'contact'  => StiNoteContact::class,
+            default    => static::class,
+        };
+        $model = (new $class)->newInstance([], true);
+        $model->setRawAttributes($attributes, true);
+        $model->setConnection($connection ?: $this->getConnectionName());
+
+        return $model;
+    }
+}
+
+/** Hides the HR note and the owner, as the parent does. */
+class StiNoteEmployee extends StiNoteParent
+{
+    protected array $searchable = ['columns' => ['title' => 1, 'note' => 1, 'owner.name' => 1]];
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('kind', fn ($query) => $query->where('kind', 'employee'));
+    }
+
+    public static function searchIndexType(): string
+    {
+        return StiNoteParent::class;
+    }
+}
+
+/** Shows its note and its owner. */
+class StiNoteContact extends StiNoteParent
+{
+    protected $hidden = [];
+    protected array $searchable = ['columns' => ['title' => 1, 'note' => 1, 'owner.name' => 1]];
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('kind', fn ($query) => $query->where('kind', 'contact'));
+    }
+
+    public static function searchIndexType(): string
+    {
+        return StiNoteParent::class;
+    }
+}
+
 /**
  * TA-1. Under searchIndexType(), dictionary suggest(), didYouMean() and getDebugInfo()['index_terms']
  * judged hidden columns on the index type, the parent: a searchable column a child hides, and a
@@ -90,6 +168,7 @@ class SingleTableInheritanceSuggestionTest extends TestCase
             $table->string('secret')->nullable();
             $table->string('note')->nullable();
             $table->string('kind', 16);
+            $table->unsignedBigInteger('owner_id')->nullable();
         });
         DB::table('sti_suggest_items')->insert([
             ['title' => 'alpha one', 'secret' => 'quixotic', 'note' => null, 'kind' => 'child'],
@@ -104,6 +183,7 @@ class SingleTableInheritanceSuggestionTest extends TestCase
     protected function tearDown(): void
     {
         Schema::dropIfExists('sti_suggest_items');
+        Schema::dropIfExists('sti_suggest_owners');
 
         parent::tearDown();
     }
@@ -141,5 +221,47 @@ class SingleTableInheritanceSuggestionTest extends TestCase
         $this->assertSame(['alpha one'], StiSuggestChild::search('quixotic')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all());
         // And the sibling, which declares and shows its note, is offered it.
         $this->assertSame(['zephyrine'], StiSuggestSibling::search('zep')->suggestFrom('index')->suggest(10));
+    }
+
+    /**
+     * R12-L4. TA-1 judged a class searched through its parent's index on that class alone, so a
+     * child that shows a column (or a relation path) was offered the words a sibling and the parent
+     * hide: a contact's suggestions served an employee's HR note. The documented remedy, hiding the
+     * column on the parent, no longer reached a sibling's search. The type's class must show it too.
+     */
+    public function test_a_childs_suggestions_leave_out_what_the_parent_hides(): void
+    {
+        Schema::dropIfExists('sti_suggest_owners');
+        Schema::create('sti_suggest_owners', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+        });
+        $owner = DB::table('sti_suggest_owners')->insertGetId(['name' => 'Xanadu']);
+        DB::table('sti_suggest_items')->insert([
+            ['title' => 'beta one', 'secret' => null, 'note' => 'zymurgy', 'kind' => 'employee', 'owner_id' => $owner],
+            ['title' => 'beta two', 'secret' => null, 'note' => 'yonder', 'kind' => 'contact', 'owner_id' => null],
+        ]);
+        $this->artisan('fuzzy-search:rebuild', ['model' => StiNoteParent::class, '--fresh' => true])->assertExitCode(0);
+
+        $debug = function (string $term) {
+            $search = StiNoteContact::search($term)->useInvertedIndex()->typoTolerance(2);
+            $search->get();
+
+            return array_map('strval', array_keys($search->getDebugInfo()['index_terms']));
+        };
+        $offered = [
+            'index zy'    => StiNoteContact::search('zy')->suggestFrom('index')->suggest(10),
+            'index xa'    => StiNoteContact::search('xa')->suggestFrom('index')->suggest(10),
+            'didYouMean'  => array_column(StiNoteContact::search('zymurgi')->didYouMean(), 'term'),
+            'owner'       => array_column(StiNoteContact::search('xanadoo')->didYouMean(), 'term'),
+            'debug terms' => $debug('zymurgi xanadoo'),
+        ];
+        $all = array_merge(...array_values($offered));
+
+        foreach (['zymurgy', 'xanadu'] as $word) {
+            $this->assertNotContains($word, $all, json_encode($offered));
+        }
+        $this->assertSame(['beta'], StiNoteContact::search('bet')->suggestFrom('index')->suggest(10), 'a column the parent shows is still offered');
+        $this->assertSame(['beta two'], StiNoteContact::search('yonder')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all(), 'matching keeps it (ER-66)');
     }
 }

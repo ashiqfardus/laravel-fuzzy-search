@@ -318,13 +318,15 @@ final class TermExpander
      * A relation column (author.email, indexed through searchableText()) is posted under its dotted
      * name, which the model never lists: it is judged by pathShown() instead, so a column the
      * related model hides, or a relation the model hides, gives no word either (SF-5), and one
-     * they show is offered, a non-empty $visible on the model notwithstanding.
+     * they show is offered, a non-empty $visible on the model notwithstanding. A dotted name the
+     * model does not declare in $searchable['columns'] gives no word at all (R12-L5).
      *
      * The columns are judged on $modelClass, the searched class, not on the type its rows are posted
      * under (TA-1). Where the two differ (searchIndexType(): a single-table-inheritance child
      * searched through its parent's index), the type's postings also hold the other classes' rows,
      * whose columns the searched class may not have or may hide differently: only the columns it
-     * declares and shows are offered, legacy '' postings left out.
+     * declares and shows, and the type's class shows too (R12-L4), are offered, legacy '' postings
+     * left out.
      */
     private function visibleColumnsOnly(Builder $postings, string $modelType, string $modelClass): void
     {
@@ -351,9 +353,18 @@ final class TermExpander
             : !self::shows($model, $column);
         $legacyOk = array_filter(array_map('strval', $columns), $isHidden) === [];
 
-        if ($modelClass !== $modelType) {
-            $flat = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column));
-            $postings->whereIn('sp.column_name', [...array_values($flat), ...$shownPaths]);
+        if ($model::class !== $modelType) { // as PHP names it: a leading backslash or another case is the class itself (R12-L3)
+            // The type's class must show it too (R12-L4): its postings hold every class's rows, and a
+            // column a sibling hides reached a child that shows it, past the parent's $hidden.
+            $type  = new $modelType();
+            $flat  = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column) && self::shows($type, $column));
+            $typed = [];
+            foreach ($columns as $column) {
+                if (str_contains((string) $column, '.') && $paths[mb_substr((string) $column, 0, 64)] && self::pathShown($type, (string) $column)) {
+                    $typed[] = mb_substr((string) $column, 0, 64);
+                }
+            }
+            $postings->whereIn('sp.column_name', [...array_values($flat), ...$typed]);
 
             return;
         }
@@ -366,6 +377,11 @@ final class TermExpander
         if ($excluded !== []) {
             $postings->whereNotIn('sp.column_name', $excluded);
         }
+
+        // A dotted name only the searchableText() hook gives (a morphTo path, a relation key the
+        // model never declares) has no relation walk to judge it by, and the model never hides a
+        // dotted name: it is withheld, as only a declared, shown path is offered (R12-L5).
+        $postings->where(fn (Builder $q) => $q->where('sp.column_name', 'not like', '%.%')->orWhereIn('sp.column_name', $shownPaths));
     }
 
     /**

@@ -64,6 +64,12 @@ class SearchableIndexingObserver
             return true;
         }
 
+        // A save that changes the class the row hydrates as (single-table inheritance's type column)
+        // moves it to another index type, though no searchable column changed (UB-1).
+        if (IndexManager::rowClass($model) !== IndexManager::rowClass($model, $model->getRawOriginal())) {
+            return true;
+        }
+
         $triggers   = method_exists($model, 'getReindexTriggers') ? $model->getReindexTriggers() : [];
         $attributes = $model->getAttributes();
 
@@ -84,25 +90,30 @@ class SearchableIndexingObserver
 
     protected function reindex(Model $model): void
     {
-        $class = $model::class;
+        $row   = clone $model; // as saved or deleted: a later save can change this instance before the commit
         $key   = $model->getKey();
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 
-        $this->afterCommit($model, function () use ($class, $key, $async, $queue) {
+        $this->afterCommit($model, function () use ($row, $key, $async, $queue) {
             // Resolved here, so a searchIndexType() that names no valid type is reported like any
-            // failed index write, not thrown from the save (R11-L1).
-            $class = IndexManager::indexType($class);
-            if ($async) {
-                IndexModelJob::dispatch($class, $key)->onQueue($queue);
-                return;
-            }
+            // failed index write, not thrown from the save (R11-L1). Named by the row's kind, now
+            // and before the save, not by the instance's class alone: under single-table
+            // inheritance a parent instance can hold a child row, which was filed under the child
+            // (R11-M1) and stayed there when the instance was deleted, and a type change through
+            // the child's instance left the child's index and joined no other (UB-1, UD-3, UD-4).
+            foreach (IndexManager::rowTypes($row) as $type) {
+                if ($async) {
+                    IndexModelJob::dispatch($type, $key)->onQueue($queue);
+                    continue;
+                }
 
-            // Run the job in-process rather than indexing $model directly: the job reloads the
-            // row from the database, so accessors that read relations see the current related
-            // rows instead of whatever was already loaded on this instance before the change,
-            // and a deleted row leaves the index only if it is still gone or trashed.
-            (new IndexModelJob($class, $key))->handle(app(IndexManager::class));
+                // Run the job in-process rather than indexing $model directly: the job reloads the
+                // row from the database, so accessors that read relations see the current related
+                // rows instead of whatever was already loaded on this instance before the change,
+                // and a deleted row leaves the index only if it is still gone or trashed.
+                (new IndexModelJob($type, $key))->handle(app(IndexManager::class));
+            }
         });
     }
 

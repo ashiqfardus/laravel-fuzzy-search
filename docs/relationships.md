@@ -64,7 +64,7 @@ class Author extends Model
 }
 ```
 
-The hook's keys are the declared column names (`author.name`, not `author`): the index weighs a key by the searchable column of that name, and any other key weighs 1.
+The hook's keys are the declared column names (`author.name`, not `author`): the index weighs a key by the searchable column of that name, and any other key weighs 1. Dictionary `suggest()` and `didYouMean()` offer a dotted key's words only when `$searchable['columns']` declares it and the models show it: an undeclared one is matched on the index but never offered.
 
 Changing a parent row (renaming an author) does **not** reindex its children automatically — that is what the `saved` hook above is for.
 

@@ -59,13 +59,15 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
         // a trashed model kept while scout.soft_delete is on (ER-72). One write per index type when
         // the collection mixes them (Scout's import of a single-table-inheritance parent): each
-        // model is indexed under its index type, as delete() removes it and a rebuild writes it
-        // (RC-3, SA-1).
+        // model is indexed under the type of its row's kind, the class the parent's query builds it
+        // as, as a rebuild writes it, and is re-synced under the other types of its hierarchy that
+        // may hold it, as delete() removes it from them (RC-3, SA-1, UB-1).
         $this->indexManager->indexBatch($models, scout: true);
     }
 
     public function delete($models): void
     {
+        $keys = []; // class => keys
         foreach ($models as $model) {
             // A queued delete's model, restored with only its Scout key (forceFill() under
             // getScoutKeyName()): a custom one leaves it without the primary key the index row is
@@ -78,7 +80,19 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             }
 
             if ($key !== null) { // a model without a key was never indexed
-                $this->indexManager->removeFromIndex(IndexManager::indexType($model), $key);
+                $keys[$model::class][] = $key;
+            }
+        }
+
+        // Removed under every type of its single-table hierarchy that holds it, not the instance's:
+        // a row created through the parent class as a child is filed under the child (R11-M1), and a
+        // queued delete restores only the key, as the class it was queued with (UD-3). A class whose
+        // query hydrates only itself removes under its own type, as before.
+        foreach ($keys as $class => $classKeys) {
+            foreach ($this->indexManager->filedUnder($class, $classKeys) as $type => $typeKeys) {
+                foreach ($typeKeys as $key) {
+                    $this->indexManager->removeFromIndex($type, $key);
+                }
             }
         }
     }
