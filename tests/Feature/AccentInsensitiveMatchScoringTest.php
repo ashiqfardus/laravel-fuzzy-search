@@ -128,6 +128,12 @@ class AccentInsensitiveMatchScoringTest extends TestCase
         $rows = $this->rows(AccentScoredPerson::search('cafe')->using('simple')->accentInsensitive()->highlight()->get());
         $this->assertSame('<em>Café</em> Olé', $rows['Café Olé'][2]);
         $this->assertSame(1.0, (float) $rows['Café Olé'][1]);
+
+        // UF-2: unaccent() folds ł, which Accents::fold() does not: the row it found is a prefix match.
+        DB::table('accent_scored_people')->insert([['name' => 'Łukasz Nowak'], ['name' => 'Lukaszewski Jan']]);
+        $rows = $this->rows(AccentScoredPerson::search('lukasz')->using('simple')->accentInsensitive()->highlight()->get());
+        $this->assertSame('<em>Łukasz</em> Nowak', $rows['Łukasz Nowak'][2]);
+        $this->assertSame(1.0, (float) $rows['Łukasz Nowak'][1]);
     }
 
     /** The folded search maps each match back to whole characters of the value (MySQL/MariaDB path, called directly). */
@@ -146,6 +152,16 @@ class AccentInsensitiveMatchScoringTest extends TestCase
         // ASCII and an accented term on an accented value keep findMatchOffsets()'s raw ranges.
         $this->assertSame([[1, 2], [3, 4]], $offsets('banana', 'an'));
         $this->assertSame(['José'], $slices('José Ramírez', 'josé'));
+
+        // UF-2: letters MySQL 8's and MariaDB 11's _ai_ci collations or PostgreSQL's unaccent() fold
+        // and Accents::fold() leaves, folded here too, typed either way.
+        $this->assertSame(['Łukasz'], $slices('Łukasz Nowak', 'lukasz'));
+        $this->assertSame(['Łukasz'], $slices('Łukasz Nowak', 'łukasz'));
+        $this->assertSame(['Đorđe'], $slices('Đorđe Balašević', 'dorde'));
+        $this->assertSame(['Ærø'], $slices('Ærø Island', 'aero'));
+        $this->assertSame(['Œuvre'], $slices('Œuvre Complète', 'oeuvre'));
+        $this->assertSame(['Þór'], $slices('Þór Heyerdahl', 'thor'));
+        $this->assertSame(['æ'], $slices('Cæsar', 'e')); // inside a letter folded to two, the whole letter
     }
 
     /**

@@ -2791,6 +2791,20 @@ class SearchBuilder
     }
 
     /**
+     * Letters the databases sqlFoldsAccents() trusts fold and Accents::fold() leaves as they are
+     * (UF-2): MySQL 8's utf8mb4_0900_ai_ci and MariaDB's uca1400_ai_ci fold ł and đ in LIKE, and
+     * PostgreSQL's unaccent() also æ, œ and þ. Only for TF-8's scoring and highlighting (sqlFold()):
+     * the index pipeline and the LIKE term variants keep Accents::fold() as it is.
+     */
+    private const SQL_FOLDS = ['Ł' => 'L', 'ł' => 'l', 'Đ' => 'D', 'đ' => 'd', 'Æ' => 'AE', 'æ' => 'ae', 'Œ' => 'OE', 'œ' => 'oe', 'Þ' => 'TH', 'þ' => 'th'];
+
+    /** $value as TF-8 compares it where the SQL folded accents: Accents::fold(), then SQL_FOLDS. */
+    private static function sqlFold(string $value): string
+    {
+        return strtr(Accents::fold($value), self::SQL_FOLDS);
+    }
+
+    /**
      * A token's alternatives on the LIKE path: each of its variants and that variant's synonyms.
      *
      * @return string[]
@@ -3050,9 +3064,10 @@ class SearchBuilder
             $term   = mb_strtolower($term, 'UTF-8');
             $folded = trim($this->removeAccents($term));
             $key    = $folds ? $folded : $term;
+            $twin   = $foldsValues ? trim(self::sqlFold($term)) : '';
             $groups[$key === '' ? $term : $key][] = $term;
-            if ($foldsValues && $folded !== '' && $folded !== $term) {
-                $groups[$key === '' ? $term : $key][] = $folded; // compared with the folded values (TF-8)
+            if ($twin !== '' && $twin !== $term) {
+                $groups[$key === '' ? $term : $key][] = $twin; // compared with the folded values (TF-8)
             }
         }
         $groups = array_values($groups);
@@ -3103,7 +3118,7 @@ class SearchBuilder
                         // "jose" does: folded once, and only then (R12-M1; a long non-ASCII value
                         // folded on every row cost 3-4 times the scoring).
                         if ($foldsValues && array_filter($group, fn (string $term) => str_contains($lower, $term)) === []) {
-                            $folded[$k] ??= Accents::fold($lower);
+                            $folded[$k] ??= self::sqlFold($lower);
                             if ($folded[$k] !== $lower) {
                                 $forms[] = [$folded[$k], Utf8::scoringInput($folded[$k])];
                             }
@@ -3576,7 +3591,7 @@ class SearchBuilder
 
     /**
      * $value accent-folded for foldedMatchOffsets() (TF-8): each character folded on its own
-     * (Accents::fold()), once a pass however often it recurs ($memo), and the anchors that map the
+     * (sqlFold()), once a pass however often it recurs ($memo), and the anchors that map the
      * folded text back to $value: one per character whose fold is not one character of its own byte
      * length ("é" → "e", "ß" → "ss", a combining mark → ""), as [its first byte in the folded text,
      * its fold's length, its first and last byte in $value]. Between anchors the two texts run byte
@@ -3595,7 +3610,7 @@ class SearchBuilder
         $forms   = [];
         $resized = [];
         foreach (array_unique($chars[0]) as $char) {
-            $forms[$char] = $memo[$char] ??= Accents::fold($char);
+            $forms[$char] = $memo[$char] ??= self::sqlFold($char);
             if (strlen($forms[$char]) !== strlen($char) || mb_strlen($forms[$char], 'UTF-8') !== 1) {
                 $resized[$char] = $forms[$char];
             }
@@ -3628,7 +3643,7 @@ class SearchBuilder
     {
         $memo              = [];
         [$folded, $anchors] = $text ?? $this->foldedText($value, $memo);
-        $needle            = Accents::fold($term);
+        $needle            = self::sqlFold($term);
 
         // The index of the last anchor at or before folded byte $at (-1: none), and $at's byte in $value.
         $locate = function (int $at, bool $end) use ($anchors): array {
