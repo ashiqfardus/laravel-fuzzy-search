@@ -97,6 +97,8 @@ class SearchBuilder
     protected array $indexedTermWeights = [];
     /** @var string[] The user's own words and their synonyms among $indexedTermWeights, not expansions — see visibleIndexTerms(). */
     private array $indexedOwnTerms = [];
+    /** @var list<list<string>>|null Under tokenize()->matchAll(), each word's terms among $indexedTermWeights (itself, its synonyms and expansions), of which a match holds one each — see indexedQueryTerms(). */
+    private ?array $indexedTermGroups = null;
     protected ?string $extendedQuery = null;
     /** @var string[] Positive leaf terms of the compiled extended query — see positiveLeafTerms(). */
     protected array $extendedLeafTerms = [];
@@ -1606,7 +1608,42 @@ class SearchBuilder
             }
         }
 
+        // tokenize()->matchAll() (TE-11): a match holds one term of each word's group
+        // (indexedQueryTerms(), which runs first), in a column the search reads, restricted
+        // through the postings as a constraint, so every terminal and total sees it. The ranking
+        // ranks any word's matches; the base keeps those that hold every word. Only on the
+        // connection the index lives on, with a key the postings subquery can name.
+        $key = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::keyColumn($base);
+        if (count($this->indexedTermGroups ?? []) > 1 && $base->getQuery()->getConnection() === DB::connection() && str_contains($key, '.')) {
+            $groups  = $this->indexedTermGroups;
+            $type    = \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass);
+            $weights = $this->indexColumnWeights($modelClass);
+            $base->withGlobalScope('fuzzy-search:match-all', function (EloquentBuilder $query) use ($groups, $key, $type, $weights) {
+                foreach ($groups as $group) {
+                    app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class)->whereRanked($query->getQuery(), $key, $group, $type, $weights);
+                }
+            });
+        }
+
         return $base;
+    }
+
+    /**
+     * The column weights the index path reads with (TE-12): the builder's, and, when its columns
+     * leave out one the model searches (searchOn() with columns, a plain query builder's
+     * searchIn()), every other column at 0 (Bm25Scorer::OTHER_COLUMNS), so a match is in the
+     * builder's columns, as on the LIKE paths. A Model::search() builder searches the model's
+     * columns and searchIn()'s, so its reads do not change.
+     *
+     * @return array<string, int|float>
+     */
+    protected function indexColumnWeights(string $modelClass): array
+    {
+        $model   = class_exists($modelClass) ? new $modelClass() : null;
+        $indexed = $model !== null && method_exists($model, 'getSearchableColumns') ? array_map('strval', $model->getSearchableColumns()) : [];
+        $narrow  = $this->searchableColumns !== [] && array_diff($indexed, array_map('strval', $this->searchableColumns)) !== [];
+
+        return $narrow ? $this->columnWeights + [\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::OTHER_COLUMNS => 0] : $this->columnWeights;
     }
 
     /**
@@ -1627,6 +1664,13 @@ class SearchBuilder
         $terms      = $indexManager->processTerms($this->searchTerm, $override, $modelClass);
         $weights    = array_fill_keys($terms, 1.0);
 
+        // tokenize()->matchAll() (TE-11): each word's terms, which the LIKE paths read as "every
+        // word matches": the word, its synonyms, its typo and prefix expansions. term => true each.
+        $groups = $this->tokenizeSearch && $this->tokenMatchMode === 'all' ? [] : null;
+        foreach ($groups === null ? [] : $terms as $term) {
+            $groups[(string) $term] = [(string) $term => true];
+        }
+
         // Synonyms are alternatives the caller declared, not typos: full weight. They are
         // looked up on the raw lowercased words (before stemming) and then processed like
         // any other query text so the stemmer and stop words apply to them too. Both splits
@@ -1640,12 +1684,18 @@ class SearchBuilder
             ));
 
             foreach ($words as $word) {
+                $own = $groups === null ? [] : $indexManager->processTerms($word, $override, $modelClass);
                 foreach ($this->expandWithSynonyms($word) as $synonym) {
                     if ($synonym === $word) {
                         continue;
                     }
                     foreach ($indexManager->processTerms($synonym, $override, $modelClass) as $term) {
                         $weights[$term] = 1.0;
+                        foreach ($own as $ownTerm) {
+                            if (isset($groups[(string) $ownTerm])) {
+                                $groups[(string) $ownTerm][(string) $term] = true;
+                            }
+                        }
                     }
                 }
             }
@@ -1655,8 +1705,8 @@ class SearchBuilder
         $distance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
 
         if ($distance > 0 && $terms !== []) {
-            $fuzzy   = (array) config('fuzzy-search.bm25.fuzzy', []);
-            $weights = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->expand(
+            $fuzzy  = (array) config('fuzzy-search.bm25.fuzzy', []);
+            $expand = fn (array $terms) => app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->expand(
                 array_map('strval', $terms),
                 $distance,
                 (int) config('fuzzy-search.typo_tolerance.min_word_length', 4),
@@ -1665,6 +1715,26 @@ class SearchBuilder
                 (bool) ($fuzzy['damping'] ?? true),
                 \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass),
             );
+
+            if ($groups === null) {
+                $weights = $expand($terms);
+            } else {
+                // A group's terms expanded together, the weights merged as one expand() merges
+                // them (the higher weight of a term reached twice), the terms of no group too.
+                $weights = [];
+                $grouped = [];
+                foreach ($groups as $own => $members) {
+                    $grouped += $members;
+                    foreach ($expand(array_keys($members)) as $term => $weight) {
+                        $groups[$own][(string) $term] = true;
+                        $weights[$term]               = max($weights[$term] ?? 0.0, $weight);
+                    }
+                }
+                $rest = array_values(array_diff(array_map('strval', $terms), array_map('strval', array_keys($grouped))));
+                foreach ($rest === [] ? [] : $expand($rest) as $term => $weight) {
+                    $weights[$term] = max($weights[$term] ?? 0.0, $weight);
+                }
+            }
         }
 
         if ($this->asYouType) {
@@ -1686,11 +1756,15 @@ class SearchBuilder
                 // damped typo expansion of the same term; `+=` would have kept the lower one).
                 foreach ($prefixed as $term => $weight) {
                     $weights[$term] = max($weights[$term] ?? 0.0, $weight);
+                    if (isset($groups[(string) end($lastTerms)])) {
+                        $groups[(string) end($lastTerms)][(string) $term] = true;
+                    }
                 }
             }
         }
 
-        $this->indexedOwnTerms = array_map('strval', $terms); // the processed words and synonyms, before any expansion
+        $this->indexedOwnTerms   = array_map('strval', $terms); // the processed words and synonyms, before any expansion
+        $this->indexedTermGroups = $groups === null ? null : array_values(array_map(fn (array $group) => array_map('strval', array_keys($group)), $groups));
 
         return $this->indexedTermWeights = $weights;
     }
@@ -1797,7 +1871,7 @@ class SearchBuilder
      */
     private function orderedIndexedPage(string $modelClass, EloquentBuilder $base, array $ranked, int $offset, int $limit, ?array $read = null): array
     {
-        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights, $read);
+        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass), $read);
         $total = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
@@ -2234,7 +2308,7 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights, $read); // model_id => score, best first
+        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass), $read); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
@@ -2248,7 +2322,7 @@ class SearchBuilder
         }
 
         $accepted  = $this->hasIndexedConstraints($base)
-            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights)
+            ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass))
             : $ranked;
         $page      = collect();
         $more      = false;

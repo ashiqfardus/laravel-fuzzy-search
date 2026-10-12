@@ -46,14 +46,30 @@ class Bm25Scorer
     }
 
     /**
-     * The ids (IndexManager::columnIds()) of the columns whose weight is <= 0: they contribute
-     * nothing to rank(), and count() must skip them too. A column without an id has no posting.
-     *
-     * @return list<int>
+     * In $columnWeights, the weight of every column it does not name: 0 restricts a read to the
+     * named columns weighted above 0, and to postings written before column weighting ('', weight
+     * 1): a search the builder restricted to some of the model's columns (searchOn() with columns,
+     * a plain query builder's searchIn()) matches those alone, as on the LIKE paths (TE-12).
      */
-    private function excludedColumns(array $columnWeights): array
+    public const OTHER_COLUMNS = '*';
+
+    /**
+     * Restrict a postings read to the columns $columnWeights lets through, by their ids
+     * (IndexManager::columnIds(); a column without one has no posting): not one weighted <= 0, which
+     * contributes nothing to rank(), so count() and the ordered read skip it too; and, with
+     * OTHER_COLUMNS at 0, only the named ones.
+     */
+    private function readColumns(\Illuminate\Database\Query\Builder $postings, string $column, array $columnWeights): void
     {
-        return array_values(IndexManager::columnIds(array_keys(array_filter($columnWeights, fn ($w) => (float) $w <= 0))));
+        $excluded = array_values(IndexManager::columnIds(array_keys(array_filter($columnWeights, fn ($w) => (float) $w <= 0))));
+        if ($excluded !== []) {
+            $postings->whereNotIn($column, $excluded);
+        }
+
+        if (array_key_exists(self::OTHER_COLUMNS, $columnWeights) && (float) $columnWeights[self::OTHER_COLUMNS] <= 0) {
+            $named = array_keys(array_filter($columnWeights, fn ($w, $name) => (string) $name !== self::OTHER_COLUMNS && (float) $w > 0, ARRAY_FILTER_USE_BOTH));
+            $postings->whereIn($column, array_values(IndexManager::columnIds([...array_map('strval', $named), ''])));
+        }
     }
 
     /**
@@ -105,7 +121,7 @@ class Bm25Scorer
         return (int) DB::table('fuzzy_index_postings')
             ->where('model_type_id', $typeId)
             ->whereIn('term_id', $termIds)
-            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('column_id', $cols))
+            ->tap(fn ($q) => $this->readColumns($q, 'column_id', $columnWeights))
             ->distinct('model_id')
             ->count('model_id');
     }
@@ -168,7 +184,7 @@ class Bm25Scorer
             ->from('fuzzy_index_postings as fzr')
             ->where('fzr.model_type_id', $typeId)
             ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
-            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_id', $cols));
+            ->tap(fn ($q) => $this->readColumns($q, 'fzr.column_id', $columnWeights));
 
         $lookup = $model !== null && DbDialect::isMySqlFamily($driver) ? self::keyLookup($query, $model) : null;
 
@@ -368,7 +384,7 @@ class Bm25Scorer
         $postings = DB::table('fuzzy_index_postings as p')
             ->where('p.model_type_id', $typeId)
             ->whereIn('p.term_id', $termIds)
-            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('p.column_id', $cols))
+            ->tap(fn ($q) => $this->readColumns($q, 'p.column_id', $columnWeights))
             ->groupBy('p.model_id', 'p.term_id')
             ->select('p.model_id', 'p.term_id')
             ->selectRaw('MAX(' . DbDialect::rawIdentifier('p.doc_length') . ') as doc_len')
