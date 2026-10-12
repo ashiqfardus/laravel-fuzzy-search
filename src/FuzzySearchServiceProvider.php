@@ -21,6 +21,12 @@ class FuzzySearchServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        // A new application starts with nothing remembered from an earlier one in the process: each
+        // test of an app's suite boots one, and Laravel's DatabaseTruncation empties the index tables
+        // in between with the event dispatcher unset, so the model types' and columns' ids remembered
+        // from the last test named other rows (VC-1).
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
+
         $this->mergeConfigFrom(__DIR__ . '/../config/fuzzy-search.php', 'fuzzy-search');
 
         $this->app->singleton(FuzzySearch::class, function ($app) {
@@ -70,6 +76,13 @@ class FuzzySearchServiceProvider extends ServiceProvider
 
         // Load package migrations
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+
+        // The database rebuilt in this process (`migrate:fresh`, a schema dump loaded, which runs no
+        // package migration): the ids remembered name other rows, or none (VD-6).
+        \Illuminate\Support\Facades\Event::listen(
+            [\Illuminate\Database\Events\SchemaLoaded::class, \Illuminate\Database\Events\MigrationsEnded::class],
+            fn () => \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache()
+        );
 
         // Persisted search analytics — always registered; the listener reads
         // analytics.enabled per event, so turning it on after boot starts recording.

@@ -545,12 +545,14 @@ class IndexManager
     /** @var array<string, array<string, int>> SearchableColumns::connectionKey()|table => name => id, of the model types and columns (see dictionaryIds()) */
     private static array $dictionary = [];
 
-    /** @var array<string, true> connection names whose search_path statements forget $dictionary (PostgreSQL, see dictionaryIds()) */
+    /** @var array<string, true> connection names whose statements are watched to forget $dictionary (see dictionaryIds()) */
     private static array $watched = [];
 
     /**
      * Forget the per-process caches: the pipelines, which PostgreSQL index tables have statistics,
-     * and the model types' and columns' ids (the migrations that create those tables call this).
+     * and the model types' and columns' ids. The migrations that create those tables call this, and
+     * so does the service provider for each new application (each test of an app's suite) and after
+     * migrations or a schema dump ran in the process.
      */
     public static function resetPipelineCache(): void
     {
@@ -592,8 +594,11 @@ class IndexManager
      * DatabaseTransactions Laravel runs after-commit callbacks inside the test's own transaction,
      * which it then rolls back (VJ-1). On PostgreSQL a statement on the connection that sets
      * search_path (a runtime SET of schema-per-tenant) forgets them: each tenant schema numbers its
-     * own, and the config, which connectionKey() reads, does not change (VJ-2). Watched rather than
-     * read on every lookup, which added a query to every search.
+     * own, and the config, which connectionKey() reads, does not change (VJ-2). So does a truncate
+     * or delete of either dictionary, on any connection: a test that empties the index tables
+     * between two writes numbers the names again from 1, and a remembered id then named another
+     * model's type or column, whose search served the first model's rows (VC-1, VD-6). Watched
+     * rather than read on every lookup, which added a query to every search.
      *
      * $insert adds the missing names, sorted, so concurrent first writes take them in one order: a
      * write waits for another's uncommitted insert of the same name, then finds it, through a current
@@ -609,13 +614,23 @@ class IndexManager
         $key        = SearchableColumns::connectionKey($connection) . '|' . $table;
         $ids        = [];
 
-        // ponytail: a search_path changed outside Laravel's query events (a raw PDO exec, a
-        // server-side function) is not seen; read current_setting() per lookup if that matters.
-        if ($connection->getDriverName() === DbDialect::PGSQL && !isset(self::$watched[$connection->getName()])) {
+        // ponytail: a search_path changed, or a dictionary emptied, outside Laravel's query events
+        // (a raw PDO exec, a server-side function, a restore, DatabaseTruncation, which unsets the
+        // dispatcher: the provider's reset per application covers that one) is not seen; read
+        // current_setting() per lookup if that matters.
+        if (!isset(self::$watched[$connection->getName()])) {
             self::$watched[$connection->getName()] = true;
-            $connection->listen(function (\Illuminate\Database\Events\QueryExecuted $query) use ($connection) {
+            $pgsql = $connection->getDriverName() === DbDialect::PGSQL;
+            $connection->listen(function (\Illuminate\Database\Events\QueryExecuted $query) use ($connection, $pgsql) {
+                // Runs for every query: two stripos() before any regex. Laravel's truncate() is a
+                // `truncate [table]` on the servers, a `delete from` on SQLite; a prefix and a schema
+                // may come before the name.
+                if ((stripos($query->sql, 'fuzzy_index_model_types') !== false || stripos($query->sql, 'fuzzy_index_columns') !== false)
+                    && preg_match('/^\s*(?:truncate|delete\s+from)\s+(?:table\s+)?(?:\S+\.)?["`\[]?\w*fuzzy_index_(?:model_types|columns)\b/i', $query->sql) === 1) {
+                    self::$dictionary = [];
+                }
                 // A SET [SESSION|LOCAL] search_path or set_config('search_path', …), not a read of it.
-                if ($query->connectionName === $connection->getName() && preg_match("/\\bset\\s+(session\\s+|local\\s+)?search_path\\b|set_config\\s*\\(\\s*'search_path'/i", $query->sql) === 1) {
+                if ($pgsql && $query->connectionName === $connection->getName() && preg_match("/\\bset\\s+(session\\s+|local\\s+)?search_path\\b|set_config\\s*\\(\\s*'search_path'/i", $query->sql) === 1) {
                     self::$dictionary = [];
                 }
             });
