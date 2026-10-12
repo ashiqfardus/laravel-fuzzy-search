@@ -1845,9 +1845,21 @@ class SearchBuilder
      */
     private function bm25Window(string $modelClass): int
     {
-        return self::hasSearchScoreHook($modelClass) || $this->customScoreCallback !== null || $this->recencyBoostEnabled
+        return $this->customScoreCallback !== null || $this->recencyBoostEnabled
             ? (int) config('fuzzy-search.max_candidates', 1000)
-            : 0;
+            : self::searchScoreWindow($modelClass);
+    }
+
+    /**
+     * How many of the first ranked rows $modelClass's getSearchScore() override re-ranks:
+     * max_candidates when it overrides it, else none. bm25Window()'s read, which the Scout engine
+     * shares, so a Scout search ranks a hook model as useInvertedIndex() does (TE-5).
+     *
+     * @internal
+     */
+    public static function searchScoreWindow(string $modelClass): int
+    {
+        return self::hasSearchScoreHook($modelClass) ? (int) config('fuzzy-search.max_candidates', 1000) : 0;
     }
 
     /**

@@ -453,7 +453,7 @@ User::search('john')
 
 The callback runs once per row on every path, LIKE, extended and `useInvertedIndex()`, before normalisation, and results are ranked by what it returns. It receives the row's column score on the LIKE and extended paths, and its BM25 raw score on the index path.
 
-A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP, with the same score, before `customScore()` and `boostRecent()` and before normalisation, and results are ranked by what it returns. On the index path these three hooks re-rank the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. Pages past that window keep the BM25 order, and every match is on exactly one page. Each page then also reads the window's rows, at most `max_candidates` of them. The trait's own method returns the score unchanged.
+A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP, with the same score, before `customScore()` and `boostRecent()` and before normalisation, and results are ranked by what it returns. On the index path these three hooks re-rank the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. The Scout engine runs `getSearchScore()` the same way (the other two belong to the builder), so a Scout search ranks the model as `useInvertedIndex()` does. Pages past that window keep the BM25 order, and every match is on exactly one page. Each page then also reads the window's rows, at most `max_candidates` of them. The trait's own method returns the score unchanged.
 
 ### Recency Boost
 
@@ -1255,7 +1255,7 @@ class Product extends Model
         'accent_insensitive' => true,
     ];
 
-    // Custom scoring logic: runs once per row before normalisation, on the LIKE, extended and index paths
+    // Custom scoring logic: runs once per row before normalisation, on the LIKE, extended and index paths and in the Scout engine
     public function getSearchScore(float $baseScore): float
     {
         return $this->is_featured ? $baseScore * 1.5 : $baseScore;
