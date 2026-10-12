@@ -176,13 +176,21 @@ class IndexManager
     /** @var array<string, bool> class => hydratesOtherClasses() */
     private static array $hydrates = [];
 
-    /** The topmost model class $class extends that reads its table on its connection, or the topmost concrete one (memoized). */
+    /**
+     * The topmost model class $class extends that dispatches the kinds (hydratesOtherClasses()) and
+     * reads its table on its connection, or the topmost concrete one (memoized). A parent whose
+     * newFromBuilder() is Eloquent's builds every row as itself: Laravel's default User extends
+     * Illuminate\Foundation\Auth\User, concrete and on `users`, which read every row's kind as the
+     * framework class, so a rebuild wrote each chunk under it and a save of a child row through
+     * the parent filed it nowhere (VD-5).
+     */
     private static function hierarchyRoot(string $class, bool $concrete = false): string
     {
         $key = ($concrete ? 'concrete ' : '') . $class;
         if (!isset(self::$roots[$key])) {
             $root = $class;
             while (($parent = get_parent_class($root)) !== false && $parent !== Model::class && is_subclass_of($parent, Model::class)
+                && self::hydratesOtherClasses($parent)
                 && !($concrete && (new \ReflectionClass($parent))->isAbstract()) && self::sameTable($parent, $class)) {
                 $root = $parent;
             }
@@ -197,8 +205,9 @@ class IndexManager
 
     /**
      * The index types of $class's single-table-inheritance hierarchy that hold each of $keys: every
-     * indexed type whose class extends the topmost model $class extends on its table and connection,
-     * so the parent's, a sibling's and a subclass's index alike. A key-only model (Scout's queued
+     * indexed type whose class extends the hierarchy's root (hierarchyRoot(): the topmost model $class
+     * extends that dispatches the kinds on its table and connection), so the parent's, a sibling's
+     * and a subclass's index alike. A key-only model (Scout's queued
      * delete) and a row re-read as its new kind cannot tell the type it was filed under before. A
      * class whose query hydrates every row as itself files them under its own type only: that type
      * is returned with every key, unread.
