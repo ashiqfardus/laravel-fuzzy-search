@@ -1261,6 +1261,7 @@ class SearchBuilder
 
         return [
             'models'     => $models,
+            'arrays'     => is_array($results->first()),
             'columns'    => $this->columnWeights,
             'decoration' => $decoration,
             'more'       => $this->morePages,
@@ -1273,8 +1274,8 @@ class SearchBuilder
     }
 
     /**
-     * A cached result for this request (rulings ER-58, ER-83, ER-92): a plain query builder's rows
-     * as stdClass again; models re-read by key, in the cached order, through the current query — its
+     * A cached result for this request (rulings ER-58, ER-83, ER-92): rows that are not models as
+     * the miss served them, stdClass or arrays; models re-read by key, in the cached order, through the current query — its
      * global scopes, and its eager loads with their constraint closures plus the relation paths
      * searchIn() reads — so a row deleted since is dropped and retrieved listeners run for this
      * viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
@@ -1291,10 +1292,10 @@ class SearchBuilder
             $this->searchIn($payload['columns']);
         }
 
+        // Rows in the miss's shape (UA-3): arrays under an array fetch mode or an afterQuery() that
+        // maps to arrays, else stdClass; in a base collection, as Eloquent's map() serves non-models.
         if (!$payload['models']) {
-            $rows = array_map(fn (array $row) => (object) $row, $payload['rows']);
-
-            return $this->decorate($this->query instanceof EloquentBuilder ? $this->query->getModel()->newCollection($rows) : collect($rows), $payload['decoration']);
+            return $this->decorate(collect(empty($payload['arrays']) ? array_map(fn (array $row) => (object) $row, $payload['rows']) : $payload['rows']), $payload['decoration']);
         }
 
         // Models come from the builder's own model, or from useInvertedIndex(Model::class) on a plain query builder.
