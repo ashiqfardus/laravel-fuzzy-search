@@ -199,37 +199,6 @@ class Bm25Scorer
             ->whereRaw($subquery->getGrammar()->wrap('fzr.model_id') . " = {$cast}"));
     }
 
-    /** @var array{string, float, bool}|null rank()'s last read: its key (readKey()), share and cut, see lastRead() */
-    private ?array $read = null;
-
-    /**
-     * What rank()'s last ranking read, when it ranked $terms for $modelType with $columnWeights, for
-     * RankedCandidates::matches() to choose the ordered read right after it; null for any other
-     * ranking:
-     *  - share: the terms' document frequencies summed over the model's total_docs (a document that
-     *    holds two of the terms counts twice);
-     *  - cut: whether its read reached bm25.max_postings_per_term, so that the ranking may lack
-     *    matches (TF-9).
-     *
-     * @param  array<int, string>|array<string, float> $terms
-     * @return array{share: float, cut: bool}|null
-     */
-    public function lastRead(array $terms, string $modelType, array $columnWeights = []): ?array
-    {
-        return $this->read !== null && $this->read[0] === self::readKey($this->weights($terms), $modelType, $columnWeights)
-            ? ['share' => $this->read[1], 'cut' => $this->read[2]]
-            : null;
-    }
-
-    /** @param array<string, float> $weights */
-    private static function readKey(array $weights, string $modelType, array $columnWeights): string
-    {
-        ksort($weights, SORT_STRING);
-        ksort($columnWeights, SORT_STRING);
-
-        return serialize([$modelType, $weights, $columnWeights]);
-    }
-
     /**
      * MySQL/MariaDB: how whereRanked()'s join looks a matched model_id up on $model's key, as a
      * sprintf() format of it, or null where no index can serve the lookup. An integer key is compared
@@ -313,14 +282,24 @@ class Bm25Scorer
      * equals the merged frequency, so unweighted calls and legacy (column '') postings
      * score exactly as before column weights existed.
      *
+     * $read is set to what the ranking read, for RankedCandidates::matches() to choose the ordered
+     * read of the same search (UD-1: a memo on the scorer, read back from the container, missed under
+     * Octane, where a Scout engine keeps the scorer of the request it was made in); null when it read
+     * no postings:
+     *  - share: the terms' document frequencies summed over the model's total_docs (a document that
+     *    holds two of the terms counts twice);
+     *  - cut: whether its read reached bm25.max_postings_per_term, so that the ranking may lack
+     *    matches (TF-9).
+     *
      * @param  array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param  array<string, int|float>                $columnWeights column => weight; '' and unknown names weigh 1
+     * @param  array{share: float, cut: bool}|null     $read          set to what the ranking read (see above)
      * @return array<int|string, float>
      */
-    public function rank(array $terms, string $modelType, array $columnWeights = []): array
+    public function rank(array $terms, string $modelType, array $columnWeights = [], ?array &$read = null): array
     {
-        $this->read = null;
-        $weights    = $this->weights($terms);
+        $read    = null;
+        $weights = $this->weights($terms);
         if ($weights === []) {
             return [];
         }
@@ -400,7 +379,7 @@ class Bm25Scorer
             ->limit($maxPostings)
             ->get();
 
-        $this->read = [self::readKey($weights, $modelType, $columnWeights), array_sum(array_map('intval', $df)) / $N, $postings->count() >= $maxPostings];
+        $read = ['share' => array_sum(array_map('intval', $df)) / $N, 'cut' => $postings->count() >= $maxPostings];
 
         $scores = [];
         foreach ($postings as $row) {

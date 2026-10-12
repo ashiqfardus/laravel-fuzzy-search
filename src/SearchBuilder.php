@@ -1791,12 +1791,13 @@ class SearchBuilder
      * the cap has no BM25 score, so its _score is 0 (ruling ER-96: scoring the page's ids would
      * repeat rank()'s statistics queries); _score is normalised against the page's best row.
      *
-     * @param  array<int|string, float> $ranked model_id => score
+     * @param  array<int|string, float>            $ranked model_id => score
+     * @param  array{share: float, cut: bool}|null $read   what rank() read for $ranked (see Bm25Scorer::rank())
      * @return array{total: int, page: Collection}
      */
-    private function orderedIndexedPage(string $modelClass, EloquentBuilder $base, array $ranked, int $offset, int $limit): array
+    private function orderedIndexedPage(string $modelClass, EloquentBuilder $base, array $ranked, int $offset, int $limit, ?array $read = null): array
     {
-        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights);
+        $query = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::matches($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights, $read);
         $total = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
@@ -2233,7 +2234,7 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights); // model_id => score, best first
+        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->columnWeights, $read); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
@@ -2241,7 +2242,7 @@ class SearchBuilder
         }
 
         if ($this->sortBy !== []) {
-            $ordered = $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit);
+            $ordered = $this->orderedIndexedPage($modelClass, $base, $ranked, $offset, $limit, $read);
 
             return ['ranked' => $ranked, 'more' => $offset + $limit < $ordered['total']] + $ordered;
         }

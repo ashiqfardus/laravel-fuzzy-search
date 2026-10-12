@@ -184,11 +184,11 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
         $orders = $this->orders($builder);
         $terms  = $this->terms($builder);
-        $ranked = $this->scorer->rank($terms, IndexManager::indexType($builder->model), $this->columnWeights($builder));
+        $ranked = $this->scorer->rank($terms, IndexManager::indexType($builder->model), $this->columnWeights($builder), $read);
         $query  = $this->constrainedQuery($builder);
 
         if ($ranked !== [] && $orders !== []) {
-            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $terms, $offset, $limit);
+            ['total' => $total, 'keys' => $keys] = $this->orderedPage($builder, $query, $orders, $ranked, $terms, $offset, $limit, $read);
         } else {
             $accepted = $query === null || $ranked === [] ? $ranked : RankedCandidates::accepted($query, $ranked, $terms, IndexManager::indexType($builder->model), $this->columnWeights($builder));
             $total    = count($accepted);
@@ -276,9 +276,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * @param  array<int, array{column: string, direction: string}> $orders
      * @param  array<int|string, float>                             $ranked model_id => score
      * @param  string[]                                             $terms  the terms $ranked was scored for
+     * @param  array{share: float, cut: bool}|null                  $read   what rank() read for $ranked (see Bm25Scorer::rank())
      * @return array{total: int, keys: array<int|string>}
      */
-    private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, array $terms, int $offset, int $limit): array
+    private function orderedPage(Builder $builder, ?EloquentBuilder $query, array $orders, array $ranked, array $terms, int $offset, int $limit, ?array $read = null): array
     {
         $model = $builder->model;
 
@@ -287,7 +288,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         // reads that state as withTrashed() too; newQuery()'s SoftDeletes scope dropped the trashed
         // matches that total() counted.
         $query ??= in_array(SoftDeletes::class, class_uses_recursive($model), true) ? $model->newQuery()->withTrashed() : $model->newQuery();
-        $query   = RankedCandidates::matches($query, $ranked, $terms, IndexManager::indexType($model), $this->columnWeights($builder));
+        $query   = RankedCandidates::matches($query, $ranked, $terms, IndexManager::indexType($model), $this->columnWeights($builder), $read);
         $total   = RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {

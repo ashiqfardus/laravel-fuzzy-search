@@ -256,8 +256,9 @@ final class RankedCandidates
      * @param array<int|string, float>                $ranked        model_id => score, as rank() returned it
      * @param array<int, string>|array<string, float> $terms         the terms it was ranked for
      * @param array<string, int|float>                $columnWeights the column weights it was ranked with
+     * @param array{share: float, cut: bool}|null     $read          what that rank() call read (its $read); null for a ranking it did not make
      */
-    public static function matches(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights): Builder
+    public static function matches(Builder $base, array $ranked, array $terms, string $modelType, array $columnWeights, ?array $read = null): Builder
     {
         $base  = self::rows($base);
         $model = $base->getModel();
@@ -268,8 +269,7 @@ final class RankedCandidates
         // rank() reads one row per document and term, best first, up to max_postings_per_term: the
         // ranking holds every match unless its read reached the cap (TF-9: its documents times the
         // terms, typo and prefix expansions and synonyms included, reached it from a sixth of the cap
-        // for a word with five neighbours). That bound stands in for a ranking rank() did not just make.
-        $read  = app(Bm25Scorer::class)->lastRead($terms, $modelType, $columnWeights);
+        // for a word with five neighbours). That bound stands in for a ranking whose read is not given.
         $whole = $read === null ? count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
@@ -510,7 +510,7 @@ final class RankedCandidates
 
     /**
      * The largest share of the model's documents (fuzzy_index_meta.total_docs) the words' postings
-     * may reach (Bm25Scorer::lastRead()) for an ordered read with no constraint to be joined to them
+     * may reach (Bm25Scorer::rank()'s read) for an ordered read with no constraint to be joined to them
      * (whereMatches(); R11-M4, ruling ER-162). Measured on the COUNT and a page of 20 by an indexed
      * column, at 200k and 1M rows:
      *  - MySQL 9.6: the join read a word in 5 to 10% of the rows 6 to 14 times faster than the
