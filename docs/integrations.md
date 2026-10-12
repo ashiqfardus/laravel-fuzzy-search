@@ -227,13 +227,13 @@ TextColumn::make('name')->searchable(query: FuzzySearch::tableSearch(['name']));
 // the per-column form above on every column you want searched fuzzily:
 $table->searchUsing(FuzzySearch::tableSearch(['name', 'email']));
 
-// With no columns, it falls back to the model's Searchable::getSearchableColumns()
-// (a model without the trait, or with no searchable column, matches nothing for a typed
+// With no columns, it falls back to the model's Searchable::getSearchableColumns(), less
+// its relation columns (a model without the trait, or with no searchable column, matches nothing for a typed
 // search; a blank search adds nothing):
 $table->searchUsing(FuzzySearch::tableSearch());
 ```
 
-`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` (v3, v4, v5) and `Table::searchUsing()` (**Filament v4+ only** — the method does not exist in v3) expect. The columns are SQL columns of the table being queried: each one is qualified with the table name so the predicate survives a join, which means `author.name` becomes `author`.`name` and not a `whereHas` — keep Filament's built-in `searchable()` for relation columns. Called with no columns it searches the model's `$searchable` columns, declared or auto-detected; when there are none, a typed search matches nothing. The typed term is trimmed and capped at `query.max_term_length` before it reaches a driver. Like the `whereFuzzy` macros, it is a constraint helper that `min_search_length` does not govern: a one-character term filters the table. Its columns share one budget of 2,000 bound values, so a table-wide search over many columns stays within SQL Server's 2,100-parameter limit: each column gets an equal share of LIKE patterns, keeping its plain contains pattern, and too many columns for even one pattern each throws `QuerySyntaxException`.
+`tableSearch()` returns the `(Builder $query, string $search): Builder` closure Filament's `Column::searchable(query: ...)` (v3, v4, v5) and `Table::searchUsing()` (**Filament v4+ only** — the method does not exist in v3) expect. The columns are SQL columns of the table being queried: each one is qualified with the table name so the predicate survives a join, which means `author.name` becomes `author`.`name` and not a `whereHas` — keep Filament's built-in `searchable()` for relation columns. Called with no columns it searches the model's `$searchable` columns, declared or auto-detected, except its relation columns (`author.name`, `tags.name`): those are not columns of the table, so they are left to Filament's `searchable()`. When no column is left, a typed search matches nothing. The typed term is trimmed and capped at `query.max_term_length` before it reaches a driver. Like the `whereFuzzy` macros, it is a constraint helper that `min_search_length` does not govern: a one-character term filters the table. Its columns share one budget of 2,000 bound values, so a table-wide search over many columns stays within SQL Server's 2,100-parameter limit: each column gets an equal share of LIKE patterns, keeping its plain contains pattern, and too many columns for even one pattern each throws `QuerySyntaxException`.
 
 ### Versions
 
