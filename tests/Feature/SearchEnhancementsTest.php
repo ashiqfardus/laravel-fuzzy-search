@@ -93,7 +93,7 @@ class SearchEnhancementsTest extends TestCase
         // didYouMean() only offers the searched model's terms
         foreach (['john' => 50, 'jones' => 20, 'jane' => 30] as $term => $docCount) {
             $termId = $this->app['db']->table('fuzzy_index_terms')->insertGetId(['term' => $term, 'doc_count' => $docCount, 'term_length' => mb_strlen($term)]);
-            $this->app['db']->table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => User::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name']);
+            $this->insertNamedPostings([['term_id' => $termId, 'model_type' => User::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name']]);
         }
 
         // 'jonh' has Levenshtein distance 1 from 'john'

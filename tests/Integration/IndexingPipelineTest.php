@@ -59,7 +59,7 @@ class IndexingPipelineTest extends TestCase
         // Use a deterministic model type for this test
         $modelType = 'PipelineTestModel';
         // Seed directly with known model type
-        $this->app['db']->table('fuzzy_index_postings')->update(['model_type' => $modelType]);
+        $this->app['db']->table('fuzzy_index_postings')->update(['model_type_id' => $this->modelTypeId($modelType)]);
         $this->app['db']->table('fuzzy_index_documents')->update(['model_type' => $modelType]);
         $this->app['db']->table('fuzzy_index_meta')->update(['model_type' => $modelType]);
 
@@ -86,9 +86,9 @@ class IndexingPipelineTest extends TestCase
         $this->app['db']->table('fuzzy_index_terms')
             ->upsert(['term' => 'laravel', 'doc_count' => 1], ['term'], ['doc_count' => \Illuminate\Support\Facades\DB::raw('fuzzy_index_terms.doc_count + 1')]);
         $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', 'laravel')->value('id');
-        $this->app['db']->table('fuzzy_index_postings')->insert([
-            'term_id' => $termId, 'model_type' => $modelType, 'model_id' => $id, 'frequency' => 1
-        ]);
+        $this->insertNamedPostings([[
+            'term_id' => $termId, 'model_type' => $modelType, 'model_id' => $id, 'frequency' => 1, 'doc_length' => 1,
+        ]]);
         $this->app['db']->table('fuzzy_index_documents')->insert([
             'model_type' => $modelType, 'model_id' => $id, 'doc_length' => 1
         ]);

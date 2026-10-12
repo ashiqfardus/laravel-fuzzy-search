@@ -45,33 +45,38 @@ class Bm25Scorer
         return array_map('strval', array_keys($weights));
     }
 
-    /** Columns whose weight is <= 0 contribute nothing to rank(); count() must skip them too. */
+    /**
+     * The ids (IndexManager::columnIds()) of the columns whose weight is <= 0: they contribute
+     * nothing to rank(), and count() must skip them too. A column without an id has no posting.
+     *
+     * @return list<int>
+     */
     private function excludedColumns(array $columnWeights): array
     {
-        return array_keys(array_filter($columnWeights, fn ($w) => (float) $w <= 0));
+        return array_values(IndexManager::columnIds(array_keys(array_filter($columnWeights, fn ($w) => (float) $w <= 0))));
     }
 
     /**
-     * Weighted frequency per posting row as SQL: SUM(CASE p.column_name WHEN ? THEN p.frequency * w … ELSE p.frequency END).
-     * Weights are inlined as floats (they come from code, never from user strings); column names are bound.
-     * '' (legacy) and unknown columns fall to the ELSE branch (weight 1). Returns [sql, bindings].
+     * Weighted frequency per posting row as SQL: SUM(CASE p.column_id WHEN id THEN p.frequency * w … ELSE p.frequency END).
+     * Weights are inlined as floats (they come from code, never from user strings), and the columns' ids
+     * (IndexManager::columnIds()) as integers. '' (legacy) and unknown columns fall to the ELSE branch
+     * (weight 1); a column without an id has no posting.
      */
-    private function weightedFrequencySql(array $columnWeights): array
+    private function weightedFrequencySql(array $columnWeights): string
     {
         // The builder writes the alias p with the connection's table prefix: pfx_p.
         $frequency = DbDialect::rawIdentifier('p.frequency');
+        $ids       = IndexManager::columnIds(array_keys($columnWeights));
         $cases     = '';
-        $bindings  = [];
         foreach ($columnWeights as $column => $weight) {
             $w = (float) $weight;
-            if ($w <= 0 || $w == 1.0) {
-                continue; // excluded by whereNotIn() / default branch
+            if ($w <= 0 || $w == 1.0 || !isset($ids[(string) $column])) {
+                continue; // excluded by whereNotIn() / default branch / no posting
             }
-            $cases     .= " WHEN ? THEN {$frequency} * " . sprintf('%.6F', $w);
-            $bindings[] = (string) $column;
+            $cases .= ' WHEN ' . (int) $ids[(string) $column] . " THEN {$frequency} * " . sprintf('%.6F', $w);
         }
 
-        return [$cases === '' ? "SUM({$frequency})" : 'SUM(CASE ' . DbDialect::rawIdentifier('p.column_name') . "{$cases} ELSE {$frequency} END)", $bindings];
+        return $cases === '' ? "SUM({$frequency})" : 'SUM(CASE ' . DbDialect::rawIdentifier('p.column_id') . "{$cases} ELSE {$frequency} END)";
     }
 
     /**
@@ -91,15 +96,16 @@ class Bm25Scorer
         $termIds = DB::table('fuzzy_index_terms')
             ->whereIn('term', $this->termBindings($weights))
             ->pluck('id');
+        $typeId  = IndexManager::modelTypeId($modelType);
 
-        if ($termIds->isEmpty()) {
+        if ($termIds->isEmpty() || $typeId === null) {
             return 0;
         }
 
         return (int) DB::table('fuzzy_index_postings')
-            ->where('model_type', $modelType)
+            ->where('model_type_id', $typeId)
             ->whereIn('term_id', $termIds)
-            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('column_name', $cols))
+            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('column_id', $cols))
             ->distinct('model_id')
             ->count('model_id');
     }
@@ -117,8 +123,8 @@ class Bm25Scorer
      * default one.
      *
      * On MySQL and MariaDB, given the $model whose key $qualifiedKey names, the read is driven from
-     * the postings (S3): an inner join to the distinct model_ids of the matched terms (a covering read
-     * of postings_unique_idx), as the derived table MATCHES, looked up on the key's index (see
+     * the postings (S3): an inner join to the distinct model_ids of the matched terms (a range of the
+     * postings' primary key per term), as the derived table MATCHES, looked up on the key's index (see
      * keyLookup()), one lookup per match. As an EXISTS per row of the model table, the ordered page
      * and its COUNT read the table whole on both servers (8.7–11 s at 6M rows on MySQL for a word in
      * 1% of them; the join takes 0.2 s). The join also compares the two byte-wise, as the subquery
@@ -156,11 +162,13 @@ class Bm25Scorer
             default                           => "CAST({$key} AS VARCHAR)",
         };
 
+        // 0 when the type has no id: no posting has it (ids start at 1), so nothing matches.
+        $typeId   = IndexManager::modelTypeId($modelType) ?? 0;
         $postings = fn (\Illuminate\Database\Query\Builder $postings) => $postings
             ->from('fuzzy_index_postings as fzr')
-            ->where('fzr.model_type', $modelType)
+            ->where('fzr.model_type_id', $typeId)
             ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
-            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_name', $cols));
+            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('fzr.column_id', $cols));
 
         $lookup = $model !== null && DbDialect::isMySqlFamily($driver) ? self::keyLookup($query, $model) : null;
 
@@ -302,7 +310,7 @@ class Bm25Scorer
      *
      * BM25F-lite: for each (document, term), sums columnWeight × frequency across that
      * term's column postings, then applies the BM25 saturation once. With no weights this
-     * equals the merged frequency, so unweighted calls and legacy ('' column_name) postings
+     * equals the merged frequency, so unweighted calls and legacy (column '') postings
      * score exactly as before column weights existed.
      *
      * @param  array<int, string>|array<string, float> $terms         Processed terms, or term => weight
@@ -325,8 +333,13 @@ class Bm25Scorer
             return [];
         }
 
-        $N     = (float) $meta->total_docs;
-        $avgdl = (float) $meta->avg_doc_length ?: 1.0;
+        $N      = (float) $meta->total_docs;
+        $avgdl  = (float) $meta->avg_doc_length ?: 1.0;
+        $typeId = IndexManager::modelTypeId($modelType);
+
+        if ($typeId === null) {
+            return [];
+        }
 
         $termData = DB::table('fuzzy_index_terms')
             ->whereIn('term', $this->termBindings($weights))
@@ -344,11 +357,11 @@ class Bm25Scorer
         // doc_count spans every model, so a word another model used more often than this one
         // has rows gave a negative idf and ranked the best match last. DISTINCT model_id: a
         // document has one posting per column it holds the term in. Chunked under SQL Server's
-        // 2,100 bindings; postings_unique_idx (term_id, model_type, model_id, …) covers it.
+        // 2,100 bindings; the primary key (term_id, model_type_id, model_id, …) covers it.
         $df = [];
         foreach (array_chunk($termIds, 1000) as $chunk) {
             $df += DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
+                ->where('model_type_id', $typeId)
                 ->whereIn('term_id', $chunk)
                 ->groupBy('term_id')
                 ->selectRaw('term_id, COUNT(DISTINCT model_id) as df')
@@ -357,7 +370,9 @@ class Bm25Scorer
         }
 
 
-        // Join postings directly with documents table — eliminates the full-table GROUP BY scan.
+        // One range of the postings' primary key per term (S2, S8): a term's postings are
+        // contiguous, and each carries its document's length, so no other table is read; a
+        // document's postings of a term all carry the same length, MAX() takes it.
         // One row per (document, term), weighted in SQL, ordered by that weighted frequency DESC
         // and capped at max_postings_per_term so that a high-frequency term (e.g. "john" with 50k
         // hits) cannot pull the entire posting list into PHP. The cap is over (document, term)
@@ -371,19 +386,14 @@ class Bm25Scorer
         // search was served pages cut from different rankings.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
-        [$wf, $wfBindings] = $this->weightedFrequencySql($columnWeights);
-
         $postings = DB::table('fuzzy_index_postings as p')
-            ->join('fuzzy_index_documents as d', function ($join) use ($modelType) {
-                $join->on('p.model_id', '=', 'd.model_id')
-                     ->where('d.model_type', '=', $modelType);
-            })
-            ->where('p.model_type', $modelType)
+            ->where('p.model_type_id', $typeId)
             ->whereIn('p.term_id', $termIds)
-            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('p.column_name', $cols))
-            ->groupBy('p.model_id', 'p.term_id', 'd.doc_length')
-            ->select('p.model_id', 'p.term_id', 'd.doc_length as doc_len')
-            ->selectRaw("{$wf} as wf", $wfBindings)
+            ->when($this->excludedColumns($columnWeights), fn ($q, $cols) => $q->whereNotIn('p.column_id', $cols))
+            ->groupBy('p.model_id', 'p.term_id')
+            ->select('p.model_id', 'p.term_id')
+            ->selectRaw('MAX(' . DbDialect::rawIdentifier('p.doc_length') . ') as doc_len')
+            ->selectRaw($this->weightedFrequencySql($columnWeights) . ' as wf')
             ->orderByDesc('wf')
             ->orderBy('p.model_id')
             ->orderBy('p.term_id')

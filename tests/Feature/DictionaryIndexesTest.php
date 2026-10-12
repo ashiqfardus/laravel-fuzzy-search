@@ -24,6 +24,7 @@ require_once __DIR__ . '/../TestModels.php';
 class DictionaryIndexesTest extends TestCase
 {
     private const MIGRATION    = __DIR__ . '/../../database/migrations/2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes.php';
+    private const COMPACT      = __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
@@ -78,7 +79,8 @@ class DictionaryIndexesTest extends TestCase
         $this->assertNotContains(self::LENGTH, $this->indexes('fuzzy_index_terms'));
         $this->assertNotContains(self::LENGTH_COUNT, $this->indexes('fuzzy_index_terms'));
         $this->assertNotContains(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'));
-        $this->assertContains('postings_unique_idx', $this->indexes('fuzzy_index_postings'));
+        // The compact postings (2026_10_02_000001) have a primary key in its place.
+        $this->assertSame(!Schema::hasColumn('fuzzy_index_postings', 'model_type_id'), in_array('postings_unique_idx', $this->indexes('fuzzy_index_postings'), true));
         $this->assertContains('postings_model_idx', $this->indexes('fuzzy_index_postings'));
     }
 
@@ -113,18 +115,24 @@ class DictionaryIndexesTest extends TestCase
      */
     public function test_the_migration_keeps_an_index_built_before_it_and_runs_twice(): void
     {
+        // The index is built first: the compact postings (2026_10_02_000001) go back to the
+        // earlier layout around this migration, which refuses under them.
+        app(IndexManager::class)->indexBatch(User::all());
+        $count = fn () => [DB::table('fuzzy_index_terms')->count(), DB::table('fuzzy_index_postings')->count(), DB::table('fuzzy_index_documents')->count()];
+        $before = $count();
+        $compact = require self::COMPACT;
+        $compact->down();
+
         $migration = require self::MIGRATION;
         $migration->down();
         $this->assertRolledBack();
         $this->assertSame([], $this->ddl(fn () => $migration->down()));
-
-        app(IndexManager::class)->indexBatch(User::all());
-        $count = fn () => [DB::table('fuzzy_index_terms')->count(), DB::table('fuzzy_index_postings')->count(), DB::table('fuzzy_index_documents')->count()];
-        $before = $count();
+        $this->assertSame($before, $count());
 
         $migration->up();
         $this->assertMigrated();
         $this->assertSame([], $this->ddl(fn () => $migration->up()));
+        $compact->up();
         $this->assertSame($before, $count());
         $this->assertSame(['John Doe'], User::search('jonh doe')->useInvertedIndex()->get()->pluck('name')->take(1)->all());
         $this->assertContains('john', array_column(User::search('jonh')->didYouMean(5), 'term'));
@@ -138,6 +146,7 @@ class DictionaryIndexesTest extends TestCase
     public function test_an_install_with_the_earlier_two_column_index_gets_the_three_column_one(): void
     {
         $migration = require self::MIGRATION;
+        (require self::COMPACT)->down(); // this migration refuses under the compact postings
         $earlier   = function () use ($migration) {
             $migration->down();
             Schema::table('fuzzy_index_terms', fn ($table) => $table->index(['term_length', 'doc_count'], self::LENGTH_COUNT));
@@ -291,7 +300,7 @@ class DictionaryIndexesTest extends TestCase
         }
         $words = DB::table('fuzzy_index_terms')->get(['id', 'term', 'doc_count'])->all();
         foreach (array_chunk($words, 100) as $chunk) {
-            DB::table('fuzzy_index_postings')->insert(array_map(fn ($word) => ['term_id' => $word->id, 'model_type' => 'App\\Models\\Faq', 'model_id' => (string) $word->id, 'frequency' => 1, 'column_name' => 'body'], $chunk));
+            $this->insertNamedPostings(array_map(fn ($word) => ['term_id' => $word->id, 'model_type' => 'App\\Models\\Faq', 'model_id' => (string) $word->id, 'frequency' => 1, 'column_name' => 'body'], $chunk));
         }
 
         // The words a pool of 10 holds within 7 edits of ggggggg: every length here is in reach.
@@ -342,7 +351,7 @@ class DictionaryIndexesTest extends TestCase
         }
         $ids = DB::table('fuzzy_index_terms')->pluck('id');
         foreach ($ids->chunk(100) as $chunk) {
-            DB::table('fuzzy_index_postings')->insert($chunk->values()->map(fn ($id, $i) => ['term_id' => $id, 'model_type' => User::class, 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name'])->all());
+            $this->insertNamedPostings($chunk->values()->map(fn ($id, $i) => ['term_id' => $id, 'model_type' => User::class, 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name'])->all());
         }
         // The model holds the whole index, so it reads a length at a time (TC-4).
         DB::table('fuzzy_index_meta')->insert(['model_type' => User::class, 'total_docs' => 60, 'total_tokens' => count($ids), 'avg_doc_length' => 7]);

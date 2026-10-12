@@ -233,19 +233,22 @@ final class TermExpander
 
     /**
      * Restrict a fuzzy_index_terms query to terms posted under $modelType: a whereExists
-     * semi-join against fuzzy_index_postings, which postings_unique_idx (term_id, model_type,
-     * model_id, column_name) covers. The dictionary is shared by every indexed model, so an
-     * unscoped lookup offers other models' terms. Null leaves the query unscoped. $visibleOnly: see
-     * candidates(). $probe: see probes().
+     * semi-join against fuzzy_index_postings, whose primary key (term_id, model_type_id, model_id,
+     * column_id) serves it. The dictionary is shared by every indexed model, so an unscoped lookup
+     * offers other models' terms. Null leaves the query unscoped. $visibleOnly: see candidates().
+     * $probe: see probes().
      */
     private function postedUnder(Builder $query, ?string $modelType, bool|string $visibleOnly, bool $probe = false): Builder
     {
         if ($modelType !== null) {
-            $query->whereExists(function ($q) use ($modelType, $visibleOnly, $probe) {
+            // 0 when the type has no id: no posting has it (ids start at 1), so no term is offered.
+            $typeId = IndexManager::modelTypeId($modelType) ?? 0;
+
+            $query->whereExists(function ($q) use ($modelType, $typeId, $visibleOnly, $probe) {
                 $q->selectRaw($probe ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1')
                   ->from('fuzzy_index_postings as sp')
                   ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
-                  ->where('sp.model_type', $modelType);
+                  ->where('sp.model_type_id', $typeId);
 
                 if ($visibleOnly !== false) {
                     $this->visibleColumnsOnly($q, $modelType, $visibleOnly === true ? $modelType : $visibleOnly);
@@ -325,6 +328,9 @@ final class TermExpander
      * searched through its parent's index), the type's postings also hold the other classes' rows,
      * whose columns the searched class may not have or may hide differently: only the columns it
      * declares and shows are offered, legacy '' postings left out.
+     *
+     * The postings name a column by its id (IndexManager::columnIds()); a name without one has no
+     * posting, so it drops out of each list.
      */
     private function visibleColumnsOnly(Builder $postings, string $modelType, string $modelClass): void
     {
@@ -351,20 +357,22 @@ final class TermExpander
             : !self::shows($model, $column);
         $legacyOk = array_filter(array_map('strval', $columns), $isHidden) === [];
 
+        $ids = fn (array $names) => array_values(IndexManager::columnIds($names));
+
         if ($modelClass !== $modelType) {
             $flat = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column));
-            $postings->whereIn('sp.column_name', [...array_values($flat), ...$shownPaths]);
+            $postings->whereIn('sp.column_id', $ids([...array_values($flat), ...$shownPaths]));
 
             return;
         }
 
         if ($visible !== []) {
-            $postings->whereIn('sp.column_name', [...$visible, ...$shownPaths, ...($legacyOk ? [''] : [])]);
+            $postings->whereIn('sp.column_id', $ids([...$visible, ...$shownPaths, ...($legacyOk ? [''] : [])]));
         }
 
-        $excluded = [...$hidden, ...$hiddenPaths, ...($legacyOk ? [] : [''])];
+        $excluded = $ids([...$hidden, ...$hiddenPaths, ...($legacyOk ? [] : [''])]);
         if ($excluded !== []) {
-            $postings->whereNotIn('sp.column_name', $excluded);
+            $postings->whereNotIn('sp.column_id', $excluded);
         }
     }
 

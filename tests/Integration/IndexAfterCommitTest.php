@@ -62,7 +62,7 @@ class IndexAfterCommitTest extends TestCase
 
     private function postings(string $class, $key): int
     {
-        return DB::table('fuzzy_index_postings')->where('model_type', $class)->where('model_id', (string) $key)->count();
+        return $this->namedPostings()->where('model_type', $class)->where('model_id', (string) $key)->count();
     }
 
     public function test_a_create_that_rolls_back_leaves_no_postings(): void

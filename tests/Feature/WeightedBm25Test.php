@@ -67,7 +67,7 @@ class WeightedBm25Test extends TestCase
         // Legacy row: a title hit stored without a column (weight 1) versus a rebuilt description hit (weight 5).
         $legacy = Product::create(['title' => 'Legacy quantum', 'description' => 'nothing here', 'price' => 10]);
         app(IndexManager::class)->indexModel($legacy);
-        DB::table('fuzzy_index_postings')->where('model_type', Product::class)->where('model_id', (string) $legacy->getKey())->update(['column_name' => '']);
+        DB::table('fuzzy_index_postings')->where('model_type_id', $this->modelTypeId(Product::class))->where('model_id', (string) $legacy->getKey())->update(['column_id' => $this->columnId('')]);
 
         $titles = Product::search('quantum')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all();
 

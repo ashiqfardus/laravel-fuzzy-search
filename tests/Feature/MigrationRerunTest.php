@@ -238,9 +238,18 @@ class MigrationRerunTest extends TestCase
         $this->migrate(); // one batch, as an upgrade's migrate
         app(IndexManager::class)->indexBatch(User::all());
         $term = (int) DB::table('fuzzy_index_terms')->min('id');
-        DB::table('fuzzy_index_postings')->insert(['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => '']);
-        $this->assertGreaterThan(0, DB::table('fuzzy_index_postings')->where('column_name', '!=', '')->count());
+        $this->insertNamedPostings([['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => '']]);
+        $this->assertGreaterThan(0, $this->namedPostings()->where('column_name', '!=', '')->count());
 
+        // Under the compact postings it refuses, naming the migration to roll back first, which
+        // copies the postings back into the earlier layout; then it runs alone.
+        try {
+            $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run();
+            $this->fail('the rollback ran under the compact postings');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Roll back 2026_10_02_000001_compact_fuzzy_index_postings_table first', $e->getMessage());
+        }
+        $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . '/2026_10_02_000001_compact_fuzzy_index_postings_table.php'), '--realpath' => true])->run());
         $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run());
 
         $this->assertFalse(DB::table('migrations')->where('migration', $migration)->exists(), 'rolled back');
@@ -275,7 +284,7 @@ class MigrationRerunTest extends TestCase
             app(IndexManager::class)->indexBatch(User::all());
             $terms = DB::table('fuzzy_index_terms')->count();
             $term  = (int) DB::table('fuzzy_index_terms')->min('id');
-            DB::table('fuzzy_index_postings')->insert([
+            $this->insertNamedPostings([
                 ['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '1', 'frequency' => 1, 'column_name' => ''],
                 ['term_id' => $term, 'model_type' => 'App\\Models\\Legacy', 'model_id' => '2', 'frequency' => 1, 'column_name' => ''],
             ]);

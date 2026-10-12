@@ -47,7 +47,7 @@ class IndexModelJobOverlapTest extends TestCase
     private function snapshot(): array
     {
         return [
-            'postings'  => DB::table('fuzzy_index_postings')->where('model_type', User::class)->orderBy('term_id')->orderBy('column_name')->get(['term_id', 'model_id', 'column_name', 'frequency'])->map(fn ($r) => (array) $r)->all(),
+            'postings'  => $this->namedPostings()->where('model_type', User::class)->orderBy('term_id')->orderBy('column_name')->get(['term_id', 'model_id', 'column_name', 'frequency'])->map(fn ($r) => (array) $r)->all(),
             'doc_count' => DB::table('fuzzy_index_terms')->orderBy('term')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->all(),
             'meta'      => (array) DB::table('fuzzy_index_meta')->where('model_type', User::class)->first(['total_docs', 'total_tokens']),
         ];
@@ -355,7 +355,7 @@ class IndexModelJobOverlapTest extends TestCase
 
         $this->assertNull($childError);
         $this->assertNull($parentError);
-        $terms = DB::table('fuzzy_index_postings as p')
+        $terms = $this->namedPostings('p')
             ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', User::class)->where('p.model_id', (string) $john->id)->where('p.column_name', 'name')
             ->orderBy('t.term')->pluck('t.term')->all();
@@ -771,7 +771,7 @@ class IndexModelJobOverlapTest extends TestCase
 
         $this->assertNull($childError);
         $this->assertNull($parentError);
-        $terms = DB::table('fuzzy_index_postings as p')
+        $terms = $this->namedPostings('p')
             ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', User::class)->where('p.model_id', (string) $a)->where('p.column_name', 'name')
             ->orderBy('t.term')->pluck('t.term')->all();

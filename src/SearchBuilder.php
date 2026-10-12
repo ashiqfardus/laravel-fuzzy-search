@@ -4202,7 +4202,7 @@ class SearchBuilder
             $ids = DB::table('fuzzy_index_postings as p')
                 ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
                 ->where('t.term', $alternative['term'])
-                ->where('p.model_type', \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass))
+                ->where('p.model_type_id', \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::modelTypeId(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass)) ?? 0) // 0: no posting
                 ->distinct() // one posting per column: a row holding the term twice took two slots
                 ->orderBy('p.model_id') // which ids fill the cap: the plan chose them, and could change its choice
                 ->limit($maxIds)

@@ -5,11 +5,12 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearchServiceProvider;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ConfiguresDatabaseConnection;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\InspectsPostings;
 use Ashiqfardus\LaravelFuzzySearch\Tests\Concerns\ReportsSourceDeprecations;
 
 abstract class TestCase extends BaseTestCase
 {
-    use ConfiguresDatabaseConnection, ReportsSourceDeprecations;
+    use ConfiguresDatabaseConnection, InspectsPostings, ReportsSourceDeprecations;
 
     protected function getPackageProviders($app): array
     {

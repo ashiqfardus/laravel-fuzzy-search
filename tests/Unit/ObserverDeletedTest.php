@@ -65,7 +65,7 @@ class ObserverDeletedTest extends TestCase
         // Pre-condition: index the model so postings exist
         $manager->indexModel($model);
 
-        $postingsBefore = $this->app['db']->table('fuzzy_index_postings')
+        $postingsBefore = $this->namedPostings()
             ->where('model_type', get_class($model))
             ->where('model_id', $model->id)
             ->count();
@@ -81,7 +81,7 @@ class ObserverDeletedTest extends TestCase
         $observer->deleted($model);
 
         // Assert: postings for this model are gone
-        $postingsAfter = $this->app['db']->table('fuzzy_index_postings')
+        $postingsAfter = $this->namedPostings()
             ->where('model_type', get_class($model))
             ->where('model_id', $model->id)
             ->count();
@@ -135,7 +135,7 @@ class ObserverDeletedTest extends TestCase
         Queue::assertNotPushed(IndexModelJob::class);
 
         // Postings still intact (observer was a no-op)
-        $count = $this->app['db']->table('fuzzy_index_postings')
+        $count = $this->namedPostings()
             ->where('model_type', get_class($model))
             ->where('model_id', $model->id)
             ->count();

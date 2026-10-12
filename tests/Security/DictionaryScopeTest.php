@@ -31,7 +31,7 @@ class DictionaryScopeTest extends TestCase
     private function termsOf(string $modelType): array
     {
         return DB::table('fuzzy_index_terms')
-            ->whereExists(fn ($q) => $q->selectRaw('1')->from('fuzzy_index_postings')
+            ->whereExists(fn ($q) => $q->selectRaw('1')->fromSub($this->namedPostings(), 'fuzzy_index_postings')
                 ->whereColumn('fuzzy_index_postings.term_id', 'fuzzy_index_terms.id')
                 ->where('model_type', $modelType))
             ->pluck('term')->map(fn ($term) => (string) $term)->all();

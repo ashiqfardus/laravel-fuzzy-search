@@ -86,8 +86,8 @@ class HiddenColumnSuggestionTest extends TestCase
         foreach ([HiddenEmailUser::class, User::class] as $class) {
             app(IndexManager::class)->indexBatch($class::all());
             // Postings written before 2.1: one per (term, document), with no column name.
-            DB::table('fuzzy_index_postings')->where('model_type', $class)->where('column_name', '!=', 'name')->delete();
-            DB::table('fuzzy_index_postings')->where('model_type', $class)->update(['column_name' => '']);
+            DB::table('fuzzy_index_postings')->where('model_type_id', $this->modelTypeId($class))->where('column_id', '!=', $this->columnId('name'))->delete();
+            DB::table('fuzzy_index_postings')->where('model_type_id', $this->modelTypeId($class))->update(['column_id' => $this->columnId('')]);
         }
 
         $this->assertNotContains('john', HiddenEmailUser::search('jo')->useInvertedIndex()->suggestFrom('index')->suggest(10));

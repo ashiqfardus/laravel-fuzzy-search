@@ -89,7 +89,7 @@ class IndexManagerFlushTest extends TestCase
             ];
         }
 
-        DB::table('fuzzy_index_postings')->insert($postingRows);
+        $this->insertNamedPostings($postingRows);
         DB::table('fuzzy_index_documents')->insert($documentRows);
         DB::table('fuzzy_index_meta')->insert([
             'model_type'     => self::MODEL_TYPE,
@@ -117,7 +117,7 @@ class IndexManagerFlushTest extends TestCase
         $this->seedIndexData(3);
 
         // ── Assert pre-condition: postings exist ──────────────────────────────
-        $postingsBefore = DB::table('fuzzy_index_postings')     // line 107
+        $postingsBefore = $this->namedPostings()     // line 107
             ->where('model_type', self::MODEL_TYPE)
             ->count();
         $this->assertGreaterThan(0, $postingsBefore,
@@ -131,7 +131,7 @@ class IndexManagerFlushTest extends TestCase
         $this->manager->flush(self::MODEL_TYPE);                // line 117
 
         // ── Assert: postings are gone ─────────────────────────────────────────
-        $postingsAfter = DB::table('fuzzy_index_postings')      // line 120
+        $postingsAfter = $this->namedPostings()      // line 120
             ->where('model_type', self::MODEL_TYPE)
             ->count();
         $this->assertSame(0, $postingsAfter,
@@ -180,12 +180,12 @@ class IndexManagerFlushTest extends TestCase
         DB::table('fuzzy_index_terms')->insert(['term' => 'otherterm', 'doc_count' => 1]);
         $otherTermId = DB::table('fuzzy_index_terms')->where('term', 'otherterm')->value('id');
 
-        DB::table('fuzzy_index_postings')->insert([
+        $this->insertNamedPostings([[
             'term_id'    => $otherTermId,
             'model_type' => self::OTHER_TYPE,
             'model_id'   => 9999,
             'frequency'  => 1,
-        ]);
+        ]]);
         DB::table('fuzzy_index_documents')->insert([
             'model_type' => self::OTHER_TYPE,
             'model_id'   => 9999,
@@ -202,7 +202,7 @@ class IndexManagerFlushTest extends TestCase
         $this->manager->flush(self::MODEL_TYPE);
 
         // ── Assert: other model_type postings survive ─────────────────────────
-        $survivingPostings = DB::table('fuzzy_index_postings')  // line 189
+        $survivingPostings = $this->namedPostings()  // line 189
             ->where('model_type', self::OTHER_TYPE)
             ->count();
         $this->assertSame(1, $survivingPostings,

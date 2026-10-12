@@ -27,7 +27,7 @@ class DictionaryCollationTest extends TestCase
         // columns), so "cafe" living in both `name` and `email` legitimately yields two rows for
         // one term id — the property under test is "both variants are separate dictionary terms
         // and this document is posted under both", which per-column rows don't change.
-        $this->assertSame(2, DB::table('fuzzy_index_postings')
+        $this->assertSame(2, $this->namedPostings()
             ->where('model_type', User::class)
             ->where('model_id', $user->getKey())
             ->whereIn('term_id', $termIds)

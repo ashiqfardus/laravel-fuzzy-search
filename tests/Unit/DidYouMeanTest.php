@@ -22,13 +22,13 @@ class DidYouMeanTest extends TestCase
             ['term'],
             ['doc_count' => $docCount]
         );
-        $this->app['db']->table('fuzzy_index_postings')->insert([
+        $this->insertNamedPostings([[
             'term_id'     => $this->app['db']->table('fuzzy_index_terms')->where('term', $term)->value('id'),
             'model_type'  => User::class,
             'model_id'    => '1',
             'frequency'   => 1,
             'column_name' => 'name',
-        ]);
+        ]]);
     }
 
     private function makeBuilder(string $term): SearchBuilder

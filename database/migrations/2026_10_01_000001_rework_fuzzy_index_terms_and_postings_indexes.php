@@ -67,6 +67,12 @@ return new class extends Migration
 
     public function down(): void
     {
+        // Rolled back on its own (migrate:rollback --path) under 2026_10_02_000001, whose compact
+        // postings no longer have the columns and indexes this down() changes. Refuse first.
+        if (!DB::connection()->pretending() && Schema::hasColumn('fuzzy_index_postings', 'model_type_id')) {
+            throw new \RuntimeException('Roll back 2026_10_02_000001_compact_fuzzy_index_postings_table first: the postings are in its layout.');
+        }
+
         // A table or a column a test removed (as 2026_09_17_000001's down() allows) has no index to
         // restore. `migrate:rollback --pretend` runs no select: the indexes as up() left them.
         $pretending = DB::connection()->pretending();

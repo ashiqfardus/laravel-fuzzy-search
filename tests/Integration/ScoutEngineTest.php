@@ -164,7 +164,7 @@ class ScoutEngineTest extends TestCase
 
         $engine->update(collect([$instance]));
 
-        $before = $this->app['db']->table('fuzzy_index_postings')
+        $before = $this->namedPostings()
             ->where('model_type', $modelType)
             ->where('model_id', $id)
             ->count();
@@ -172,7 +172,7 @@ class ScoutEngineTest extends TestCase
 
         $engine->delete(collect([$instance]));
 
-        $after = $this->app['db']->table('fuzzy_index_postings')
+        $after = $this->namedPostings()
             ->where('model_type', $modelType)
             ->where('model_id', $id)
             ->count();
@@ -202,7 +202,7 @@ class ScoutEngineTest extends TestCase
 
         $engine->update(collect([$instance1, $instance2]));
 
-        $before = $this->app['db']->table('fuzzy_index_postings')
+        $before = $this->namedPostings()
             ->where('model_type', $modelType)
             ->count();
         $this->assertGreaterThan(0, $before, 'Postings must exist for both models before flush().');
@@ -210,7 +210,7 @@ class ScoutEngineTest extends TestCase
         // flush() receives the model instance (engine calls $model::class internally)
         $engine->flush($instance1);
 
-        $after = $this->app['db']->table('fuzzy_index_postings')
+        $after = $this->namedPostings()
             ->where('model_type', $modelType)
             ->count();
         $this->assertSame(0, $after, 'flush() must clear all postings for the entire model class.');
@@ -433,7 +433,7 @@ class ScoutEngineTest extends TestCase
 
         $engine->update(ScoutIndexedUser::all());
         $engine->update(Product::all());
-        $postings = fn (string $class) => $this->app['db']->table('fuzzy_index_postings')->where('model_type', $class)->count();
+        $postings = fn (string $class) => $this->namedPostings()->where('model_type', $class)->count();
         $this->assertGreaterThan(0, $postings(ScoutIndexedUser::class));
         $productPostings = $postings(Product::class);
         $this->assertGreaterThan(0, $productPostings);

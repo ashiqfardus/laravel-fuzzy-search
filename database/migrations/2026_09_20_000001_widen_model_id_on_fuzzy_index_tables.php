@@ -1,6 +1,5 @@
 <?php
 
-use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -43,6 +42,12 @@ return new class extends Migration
 
     public function down(): void
     {
+        // Rolled back on its own (migrate:rollback --path) under 2026_10_02_000001, whose compact
+        // postings no longer have the columns and indexes this down() changes. Refuse first.
+        if (!DB::connection()->pretending() && Schema::hasColumn('fuzzy_index_postings', 'model_type_id')) {
+            throw new \RuntimeException('Roll back 2026_10_02_000001_compact_fuzzy_index_postings_table first: the postings are in its layout.');
+        }
+
         $driver = DB::connection()->getDriverName();
         if ($driver === DbDialect::SQLITE) {
             return;
@@ -66,7 +71,7 @@ return new class extends Migration
                 ->concat(DbDialect::isMySqlFamily($driver) ? $this->collidingKeys() : []);
             foreach ($documents as $document) {
                 $document = (object) $document; // whatever the app's fetch mode
-                app(IndexManager::class)->removeFromIndex($document->model_type, $document->model_id);
+                $this->removeDocument((string) $document->model_type, (string) $document->model_id);
             }
         }
         foreach ($tables as $table) {
@@ -74,6 +79,36 @@ return new class extends Migration
         }
 
         $this->resize(36, $tables);
+    }
+
+    /**
+     * Remove one document from the index as IndexManager::removeFromIndex() did in this layout: its
+     * words' doc_count, its postings, its document row and its share of the meta totals. Not through
+     * IndexManager, which writes the layout of 2026_10_02_000001: this down() runs after that one's
+     * has copied the postings back into this one (or it refuses).
+     */
+    private function removeDocument(string $type, string $id): void
+    {
+        DB::transaction(function () use ($type, $id) {
+            $postings = fn () => DB::table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id);
+            foreach (array_chunk($postings()->distinct()->pluck('term_id')->all(), 1000) as $terms) {
+                DB::table('fuzzy_index_terms')->whereIn('id', $terms)->where('doc_count', '>', 0)->decrement('doc_count');
+            }
+            $postings()->delete();
+
+            $document = fn () => DB::table('fuzzy_index_documents')->where('model_type', $type)->where('model_id', $id);
+            $length   = (int) $document()->value('doc_length'); // 0: a placeholder, never counted
+            $document()->delete();
+
+            if ($length > 0) {
+                $meta = fn () => DB::table('fuzzy_index_meta')->where('model_type', $type);
+                $meta()->update([
+                    'total_docs'   => DB::raw('CASE WHEN total_docs >= 1 THEN total_docs - 1 ELSE 0 END'),
+                    'total_tokens' => DB::raw("CASE WHEN total_tokens >= {$length} THEN total_tokens - {$length} ELSE 0 END"),
+                ]);
+                $meta()->update(['avg_doc_length' => DB::raw('CASE WHEN total_docs > 0 THEN 1.0 * total_tokens / total_docs ELSE 0 END')]);
+            }
+        });
     }
 
     /**
