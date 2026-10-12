@@ -108,7 +108,7 @@ class DictionaryIdsTest extends TestCase
             $this->assertSame(['Tenant Walrus'], User::search('walrus')->useInvertedIndex()->typoTolerance(0)->get()->pluck('name')->all());
             $this->assertSame([Product::class, User::class], DB::table('fuzzy_index_model_types')->orderBy('id')->pluck('model_type')->all());
         } finally {
-            $this->switchSearchPath('public');
+            DB::statement('set search_path to public'); // back, as the tenant switch came: at runtime
             DB::statement("drop schema if exists {$schema} cascade");
         }
 

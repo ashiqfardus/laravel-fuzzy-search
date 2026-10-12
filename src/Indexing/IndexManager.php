@@ -363,6 +363,9 @@ class IndexManager
     /** @var array<string, array<string, int>> SearchableColumns::connectionKey()|table => name => id, of the model types and columns (see dictionaryIds()) */
     private static array $dictionary = [];
 
+    /** @var array<string, true> connection names whose search_path statements forget $dictionary (PostgreSQL, see dictionaryIds()) */
+    private static array $watched = [];
+
     /**
      * Forget the per-process caches: the pipelines, which PostgreSQL index tables have statistics,
      * and the model types' and columns' ids (the migrations that create those tables call this).
@@ -373,6 +376,7 @@ class IndexManager
         self::$analyzed      = [];
         self::$pendingChecks = [];
         self::$dictionary    = [];
+        self::$watched       = [];
     }
 
     /**
@@ -400,12 +404,14 @@ class IndexManager
      * name => id of $names in $table, one of the two dictionaries the postings name their model type
      * and their column through (S8), each name as the column's collation compares it: a
      * case-insensitive one finds Title for title, as the earlier layout's string columns compared
-     * them. Remembered per process, connection and, on PostgreSQL, search_path in effect (each
-     * tenant schema numbers its own, and a runtime SET changes it without the config, VJ-2), since a
-     * row is never deleted and its id never changes; but only outside a transaction, once the one
-     * that read it has committed: a write that rolls back takes the rows it inserted with it, and
-     * under RefreshDatabase or DatabaseTransactions Laravel runs after-commit callbacks inside the
-     * test's own transaction, which it then rolls back (VJ-1).
+     * them. Remembered per process and connection, since a row is never deleted and its id never
+     * changes; but only outside a transaction, once the one that read it has committed: a write that
+     * rolls back takes the rows it inserted with it, and under RefreshDatabase or
+     * DatabaseTransactions Laravel runs after-commit callbacks inside the test's own transaction,
+     * which it then rolls back (VJ-1). On PostgreSQL a statement on the connection that sets
+     * search_path (a runtime SET of schema-per-tenant) forgets them: each tenant schema numbers its
+     * own, and the config, which connectionKey() reads, does not change (VJ-2). Watched rather than
+     * read on every lookup, which added a query to every search.
      *
      * $insert adds the missing names, sorted, so concurrent first writes take them in one order: a
      * write waits for another's uncommitted insert of the same name, then finds it, through a current
@@ -418,11 +424,20 @@ class IndexManager
     private static function dictionaryIds(string $table, string $column, array $names, bool $insert): array
     {
         $connection = DB::connection();
-        // ponytail: one search_path read per call on PostgreSQL; memoise it per request if it shows.
-        $key        = SearchableColumns::connectionKey($connection)
-            . ($connection->getDriverName() === DbDialect::PGSQL ? '|' . $connection->scalar("select current_setting('search_path')") : '')
-            . '|' . $table;
+        $key        = SearchableColumns::connectionKey($connection) . '|' . $table;
         $ids        = [];
+
+        // ponytail: a search_path changed outside Laravel's query events (a raw PDO exec, a
+        // server-side function) is not seen; read current_setting() per lookup if that matters.
+        if ($connection->getDriverName() === DbDialect::PGSQL && !isset(self::$watched[$connection->getName()])) {
+            self::$watched[$connection->getName()] = true;
+            $connection->listen(function (\Illuminate\Database\Events\QueryExecuted $query) use ($connection) {
+                // A SET [SESSION|LOCAL] search_path or set_config('search_path', …), not a read of it.
+                if ($query->connectionName === $connection->getName() && preg_match("/\\bset\\s+(session\\s+|local\\s+)?search_path\\b|set_config\\s*\\(\\s*'search_path'/i", $query->sql) === 1) {
+                    self::$dictionary = [];
+                }
+            });
+        }
         $missing    = []; // name => name
         foreach ($names as $name) {
             $name = (string) $name;
