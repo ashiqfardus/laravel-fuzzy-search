@@ -2591,19 +2591,33 @@ class SearchBuilder
         $keyShown = self::selectsAny($query, [...$names, $keyColumn]);
 
         // A SELECT DISTINCT left unordered (no orderBy(), and no relevance order: see buildQuery())
-        // is read by what it selects (R11-M3): the key when the select holds it, else every plain
-        // column it selects. A distinct row is unique over its selected columns, so either is a total
-        // order: paginate()'s window and its pages past max_candidates (one OFFSET read each) are read
-        // in that one order and partition the matches. Unordered, SQL Server's grammar ordered the
-        // OFFSET by (SELECT 0), which a SELECT DISTINCT rejects (145), and elsewhere the pages could
-        // overlap. A select of raw expressions or aliases only stays unordered. A query builder's key
-        // is "id", when its table has one.
+        // is read by what it selects (R11-M3, UA-5, UF-6): the key when the select holds it; a query
+        // builder's `*` (or `table.*`) over a table with no `id`, every column of the table; else
+        // every column it selects, an aliased one by its alias. A distinct row is unique over its
+        // selected columns, so each is a total order: paginate()'s window and its pages past
+        // max_candidates (one OFFSET read each) are read in that one order and partition the matches.
+        // Unordered, SQL Server's grammar ordered the OFFSET by (SELECT 0), which a SELECT DISTINCT
+        // rejects (145), and elsewhere the pages could overlap. A select of raw expressions only stays
+        // unordered. PostgreSQL's distinct('col') (DISTINCT ON) is ordered by its own columns first,
+        // as PostgreSQL requires (42P10, UA-1): one row each, and the order above picks which.
         if ($distinct && $orders === []) {
-            $byKey = $keyShown && ($query instanceof EloquentBuilder
-                || ($from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from)) !== null
-                && in_array('id', SearchableColumns::onTable($base->getConnection(), $from[0]), true));
+            $from    = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+            $columns = $from === null || $query instanceof EloquentBuilder ? [] : SearchableColumns::onTable($base->getConnection(), $from[0]);
 
-            foreach ($byKey ? [$keyColumn] : self::plainColumns($query) as $column) {
+            if ($keyShown && ($query instanceof EloquentBuilder || in_array('id', $columns, true))) {
+                $columns = [$keyColumn];
+            } elseif ($columns !== [] && self::selectsAny($query, [($from[1] ?? self::lastSegment($from[0])) . '.*'])) {
+                $qualified = $this->qualifiedColumnMap($query);
+                $columns   = array_map(fn (string $column) => ($qualified[$column] ?? '') . $column, $columns);
+            } else {
+                $columns = self::plainColumns($query);
+            }
+
+            if (is_array($base->distinct) && $base->getGrammar() instanceof \Illuminate\Database\Query\Grammars\PostgresGrammar) {
+                $columns = [...$base->distinct, ...array_filter($columns, fn ($column) => !in_array($column, $base->distinct, true))];
+            }
+
+            foreach ($columns as $column) {
                 $query->orderBy($column, 'asc');
             }
 
@@ -2677,16 +2691,21 @@ class SearchBuilder
     }
 
     /**
-     * The columns $query selects as written, each once: no `*`, `table.*`, alias or raw expression.
+     * The columns $query selects, each once, as an ORDER BY names them: a column as written, an
+     * aliased one (`name as label`) by its alias. No `*`, `table.*` or raw expression.
      *
      * @return string[]
      */
     private static function plainColumns(Builder|EloquentBuilder $query): array
     {
-        return array_values(array_unique(array_filter(
-            ($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? [],
-            fn ($column) => is_string($column) && !str_ends_with($column, '*') && preg_match('/\s+as\s+/i', $column) !== 1
-        )));
+        $columns = [];
+        foreach (($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? [] as $column) {
+            if (is_string($column) && !str_ends_with($column, '*')) {
+                $columns[] = preg_split('/\s+as\s+/i', $column)[1] ?? $column;
+            }
+        }
+
+        return array_values(array_unique($columns));
     }
 
     /**
