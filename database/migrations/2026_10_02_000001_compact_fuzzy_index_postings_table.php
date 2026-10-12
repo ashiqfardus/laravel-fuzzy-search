@@ -127,8 +127,13 @@ return new class extends Migration
         // PostgreSQL: statistics (a never-analyzed table is planned as if it held a few rows, ruling
         // ER-106), and the visibility map that lets the ranking's index-only read skip the heap.
         // Unprepared: VACUUM runs only as a statement of its own.
+        // Best-effort, as the package's own ANALYZE: autovacuum gets there too.
         if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
-            DB::unprepared('VACUUM (ANALYZE) ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings'));
+            try {
+                DB::unprepared('VACUUM (ANALYZE) ' . DB::getQueryGrammar()->wrapTable('fuzzy_index_postings'));
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
 
         IndexManager::resetPipelineCache(); // the dictionaries' ids
@@ -292,15 +297,19 @@ return new class extends Migration
             return;
         }
 
+        // Prefixed as Laravel prefixes its own index names (prefix_indexes): SQL Server names a
+        // primary key once per schema, so two prefixes in one database collided on it (VJ-5).
+        $primary = (DB::connection()->getConfig('prefix_indexes') ? DB::connection()->getTablePrefix() : '') . self::PRIMARY;
+
         if ($driver === DbDialect::PGSQL) {
             DB::statement("create table {$table} (term_id bigint not null, model_type_id smallint not null, model_id varchar(191) not null,"
                 . ' column_id smallint not null, frequency integer not null, doc_length integer not null,'
-                . ' constraint ' . self::PRIMARY . ' primary key (term_id, model_type_id, model_id, column_id) include (frequency, doc_length))');
+                . " constraint {$primary} primary key (term_id, model_type_id, model_id, column_id) include (frequency, doc_length))");
 
             return;
         }
 
-        Schema::create(self::COMPACT, function (Blueprint $table) use ($driver) {
+        Schema::create(self::COMPACT, function (Blueprint $table) use ($driver, $primary) {
             $table->unsignedBigInteger('term_id');
             $table->unsignedSmallInteger('model_type_id');
             $id = $table->string('model_id', 191);
@@ -310,7 +319,7 @@ return new class extends Migration
             $table->unsignedSmallInteger('column_id');
             $table->unsignedInteger('frequency');
             $table->unsignedInteger('doc_length');
-            $table->primary(['term_id', 'model_type_id', 'model_id', 'column_id'], self::PRIMARY);
+            $table->primary(['term_id', 'model_type_id', 'model_id', 'column_id'], $primary);
         });
     }
 

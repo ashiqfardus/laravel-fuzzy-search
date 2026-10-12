@@ -163,10 +163,9 @@ class CompactPostingsMigrationTest extends TestCase
             DB::table('fuzzy_index_postings')->insert(['term_id' => $term, 'model_type' => $type, 'model_id' => $id, 'frequency' => $frequency]);
         }
         DB::table('fuzzy_index_postings')->insert(['term_id' => $terms['plum'], 'model_type' => MigratedNote::class, 'model_id' => '999', 'frequency' => 1]); // no document row
-        DB::table('fuzzy_index_meta')->insert([
-            ['model_type' => MigratedNote::class, 'total_docs' => 2, 'total_tokens' => 8, 'avg_doc_length' => 4],
-            ['model_type' => MigratedCode::class, 'total_docs' => 2, 'total_tokens' => 3, 'avg_doc_length' => 1.5],
-        ]);
+        // One row a statement: SQL Server types a batch's column from its first row (4 then 1.5).
+        DB::table('fuzzy_index_meta')->insert(['model_type' => MigratedNote::class, 'total_docs' => 2, 'total_tokens' => 8, 'avg_doc_length' => 4]);
+        DB::table('fuzzy_index_meta')->insert(['model_type' => MigratedCode::class, 'total_docs' => 2, 'total_tokens' => 3, 'avg_doc_length' => 1.5]);
         if ($this->dbDriver === 'sqlsrv' && $arrays) {
             // The 'arrays' case also runs as an install whose dictionary collation migration did not run.
             DB::table('migrations')->insert(['migration' => '2026_09_30_000001_binary_collation_on_fuzzy_index_terms_term_on_sqlsrv', 'batch' => 1]);
@@ -315,6 +314,31 @@ class CompactPostingsMigrationTest extends TestCase
 
         $this->assertSame($fresh, $this->convergedSchema());
         $this->assertSame($before, $this->searches());
+    }
+
+    /**
+     * VJ-5. A second install in the same database under another table prefix, with prefix_indexes
+     * on as Laravel's config ships it, migrates: the primary key's name carries the prefix, as
+     * Laravel's own index and constraint names do. SQL Server names a primary key once per schema.
+     */
+    public function test_a_second_table_prefix_in_the_same_database_migrates(): void
+    {
+        if (in_array($this->dbDriver, ['pgsql', 'sqlite'], true)) {
+            $this->markTestSkipped('PostgreSQL and SQLite name an index once per schema or database file, whatever the prefix (a documented limit); the CI MySQL, MariaDB and SQL Server jobs run this.');
+        }
+
+        $default = config('database.default');
+        config(['database.connections.second_prefix' => ['prefix' => 'sp_', 'prefix_indexes' => true] + config("database.connections.{$default}")]);
+        $options = ['--database' => 'second_prefix', '--path' => realpath(self::PATH), '--realpath' => true];
+
+        try {
+            $this->assertSame(0, $this->artisan('migrate', $options)->run());
+            $this->assertTrue(Schema::connection('second_prefix')->hasColumn('fuzzy_index_postings', 'model_type_id'));
+        } finally {
+            $this->artisan('migrate:rollback', $options)->run();
+            DB::purge('second_prefix');
+        }
+        $this->assertFalse(Schema::connection('second_prefix')->hasTable('fuzzy_index_postings'));
     }
 
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */

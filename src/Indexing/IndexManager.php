@@ -400,9 +400,12 @@ class IndexManager
      * name => id of $names in $table, one of the two dictionaries the postings name their model type
      * and their column through (S8), each name as the column's collation compares it: a
      * case-insensitive one finds Title for title, as the earlier layout's string columns compared
-     * them. Remembered per process and connection, since a row is never deleted and its id never
-     * changes; but only once the transaction that read it commits, as a write that rolls back takes
-     * the rows it inserted with it.
+     * them. Remembered per process, connection and, on PostgreSQL, search_path in effect (each
+     * tenant schema numbers its own, and a runtime SET changes it without the config, VJ-2), since a
+     * row is never deleted and its id never changes; but only outside a transaction, once the one
+     * that read it has committed: a write that rolls back takes the rows it inserted with it, and
+     * under RefreshDatabase or DatabaseTransactions Laravel runs after-commit callbacks inside the
+     * test's own transaction, which it then rolls back (VJ-1).
      *
      * $insert adds the missing names, sorted, so concurrent first writes take them in one order: a
      * write waits for another's uncommitted insert of the same name, then finds it, through a current
@@ -415,7 +418,10 @@ class IndexManager
     private static function dictionaryIds(string $table, string $column, array $names, bool $insert): array
     {
         $connection = DB::connection();
-        $key        = SearchableColumns::connectionKey($connection) . '|' . $table;
+        // ponytail: one search_path read per call on PostgreSQL; memoise it per request if it shows.
+        $key        = SearchableColumns::connectionKey($connection)
+            . ($connection->getDriverName() === DbDialect::PGSQL ? '|' . $connection->scalar("select current_setting('search_path')") : '')
+            . '|' . $table;
         $ids        = [];
         $missing    = []; // name => name
         foreach ($names as $name) {
@@ -442,8 +448,10 @@ class IndexManager
             }
         }
 
-        $remember = function () use ($key, $found) {
-            self::$dictionary[$key] = $found + (self::$dictionary[$key] ?? []);
+        $remember = function () use ($connection, $key, $found) {
+            if ($connection->transactionLevel() === 0) {
+                self::$dictionary[$key] = $found + (self::$dictionary[$key] ?? []);
+            }
         };
         $connection->transactionLevel() > 0 ? $connection->afterCommit($remember) : $remember();
 
@@ -452,8 +460,10 @@ class IndexManager
 
     /**
      * name => id of the rows of $table whose $column the database finds equal to one of $names: by
-     * the stored name itself, or, when the read found a row under another spelling (letter case,
-     * trailing spaces), one name at a time. $current reads past MySQL's snapshot.
+     * the stored name itself, or, for a name not stored as it is spelt (letter case, trailing
+     * spaces) when the read found anything, one name at a time: two spellings in one call find the
+     * one row a case-insensitive collation keeps for both (VJ-6). $current reads past MySQL's
+     * snapshot.
      *
      * @param  array<string, string> $names name => name
      * @return array<string, int>
@@ -471,7 +481,7 @@ class IndexManager
         }
 
         $found = array_intersect_key($stored, $names);
-        if (count($found) < count($stored)) {
+        if ($stored !== [] && count($found) < count($names)) {
             foreach (array_diff_key($names, $found) as $name) {
                 $id = $read()->where($column, $name)->value('id');
                 if ($id !== null) {
@@ -537,7 +547,7 @@ class IndexManager
      * rolled back the whole rebuilt index. A lost connection there is thrown: the caller's
      * transaction went with it, and the rollback to the savepoint fails too.
      */
-    public function analyzeIndex(bool $whenStale = false): void
+    public function analyzeIndex(bool $whenStale = false, bool $vacuum = false): void
     {
         $connection = DB::connection();
 
@@ -545,7 +555,7 @@ class IndexManager
             return;
         }
 
-        $analyze = function () use ($connection, $whenStale) {
+        $analyze = function () use ($connection, $whenStale, $vacuum) {
             if ($whenStale && !$this->statisticsStale($connection)) {
                 return;
             }
@@ -563,11 +573,13 @@ class IndexManager
 
             $tables = array_map(fn (string $table) => $grammar->wrapTable($table), ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']);
 
-            // A rebuild's end and an async rebuild's finally() VACUUM the postings too, outside any
-            // transaction (VACUUM cannot run in one): the visibility map lets the ranking's
-            // index-only read of the postings' primary key skip the heap (S8). Unprepared: VACUUM
-            // runs only as a statement of its own.
-            if (!$whenStale && $connection->transactionLevel() === 0) {
+            // $vacuum (a synchronous rebuild's end): VACUUM the postings too, outside any
+            // transaction (VACUUM cannot run in one), so the visibility map lets the ranking's
+            // index-only read of the postings' primary key skip the heap (S8). Not an async
+            // rebuild's finally(): it runs inside the last job, and the VACUUM of a large index
+            // outran the job timeout (VJ-4); autovacuum sets the map there. Unprepared: VACUUM runs
+            // only as a statement of its own.
+            if ($vacuum && $connection->transactionLevel() === 0) {
                 $connection->unprepared('VACUUM (ANALYZE) ' . array_shift($tables));
             }
 
