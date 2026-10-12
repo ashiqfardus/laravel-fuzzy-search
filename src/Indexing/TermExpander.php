@@ -318,7 +318,8 @@ final class TermExpander
      * A relation column (author.email, indexed through searchableText()) is posted under its dotted
      * name, which the model never lists: it is judged by pathShown() instead, so a column the
      * related model hides, or a relation the model hides, gives no word either (SF-5), and one
-     * they show is offered, a non-empty $visible on the model notwithstanding.
+     * they show is offered, a non-empty $visible on the model notwithstanding. A dotted name the
+     * model does not declare in $searchable['columns'] gives no word at all (R12-L5).
      *
      * The columns are judged on $modelClass, the searched class, not on the type its rows are posted
      * under (TA-1). Where the two differ (searchIndexType(): a single-table-inheritance child
@@ -376,6 +377,11 @@ final class TermExpander
         if ($excluded !== []) {
             $postings->whereNotIn('sp.column_name', $excluded);
         }
+
+        // A dotted name only the searchableText() hook gives (a morphTo path, a relation key the
+        // model never declares) has no relation walk to judge it by, and the model never hides a
+        // dotted name: it is withheld, as only a declared, shown path is offered (R12-L5).
+        $postings->where(fn (Builder $q) => $q->where('sp.column_name', 'not like', '%.%')->orWhereIn('sp.column_name', $shownPaths));
     }
 
     /**
