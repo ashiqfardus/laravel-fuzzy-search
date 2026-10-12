@@ -490,6 +490,9 @@ class IndexManagerTest extends TestCase
             // sweep), and another connection deletes it right after the write re-reads its ids.
             DB::table('fuzzy_index_terms')->insert(['term' => 'alpha', 'doc_count' => 0, 'term_length' => 5]);
             config(['database.connections.sweep' => config('database.connections.' . config('database.default'))]);
+            // R12-L9: a regression makes the delete wait on this write's own transaction, in this
+            // process, which PostgreSQL cannot see as a deadlock: fail after 5 s instead of hanging.
+            DB::connection('sweep')->statement("set lock_timeout = '5s'");
             $swept = false;
             $this->app['db']->listen(function ($query) use (&$swept) {
                 if (!$swept && preg_match('/^\s*select\b.*fuzzy_index_terms\W+where\W+term\W+in\b/is', $query->sql) && $query->bindings === ['beta']) {
