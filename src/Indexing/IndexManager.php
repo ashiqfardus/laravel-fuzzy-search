@@ -1081,7 +1081,24 @@ class IndexManager
                 $query->withoutGlobalScopes();
             }
 
-            foreach ($query->whereKey($chunk)->get() as $model) {
+            // Every read of the model's connection from the write side while the chunk loads: a
+            // morphTo eager load runs a fresh query per type, which never sees the relation's
+            // useWritePdo() above, and indexed the replica's old parent (UF-1). The app's own
+            // setting comes back after it.
+            $connection = $query->getQuery()->getConnection();
+            $previous   = $connection instanceof \Illuminate\Database\Connection ? (fn () => $this->readOnWriteConnection)->call($connection) : null;
+            if ($previous !== null) {
+                $connection->useWriteConnectionWhenReading();
+            }
+            try {
+                $models = $query->whereKey($chunk)->get();
+            } finally {
+                if ($previous !== null) {
+                    $connection->useWriteConnectionWhenReading($previous);
+                }
+            }
+
+            foreach ($models as $model) {
                 if ($keepTrashed || !(method_exists($model, 'trashed') && $model->trashed())) {
                     $rows[(string) $model->getKey()] = $model;
                 }
