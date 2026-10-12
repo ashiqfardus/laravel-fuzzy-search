@@ -125,6 +125,57 @@ class StiScoutChild extends StiScoutParent
     }
 }
 
+/** A subclass that is no kind of the hierarchy: its own query reads rows of the parent's kind as itself. */
+class StiAlphaView extends StiParent
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('alpha', fn ($query) => $query->where('title', 'like', 'alpha%'));
+    }
+}
+
+/** The untyped hierarchy on the Scout driver: each class indexed under its own class. */
+class StiScoutUntypedParent extends Model
+{
+    use \Laravel\Scout\Searchable, Searchable {
+        Searchable::search insteadof \Laravel\Scout\Searchable;
+        \Laravel\Scout\Searchable::search as scoutSearch;
+        Searchable::bootSearchable insteadof \Laravel\Scout\Searchable;
+        \Laravel\Scout\Searchable::bootSearchable as bootScoutSearchable;
+    }
+
+    protected $table    = 'sti_items';
+    protected $guarded  = [];
+    public $timestamps  = false;
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    protected static function booted(): void
+    {
+        static::bootScoutSearchable();
+    }
+
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $attributes = (array) $attributes;
+        $class      = ($attributes['kind'] ?? '') === 'child' ? StiScoutUntypedChild::class : static::class;
+        $model      = (new $class)->newInstance([], true);
+        $model->setRawAttributes($attributes, true);
+        $model->setConnection($connection ?: $this->getConnectionName());
+
+        return $model;
+    }
+}
+
+class StiScoutUntypedChild extends StiScoutUntypedParent
+{
+    protected static function booted(): void
+    {
+        parent::booted();
+        static::addGlobalScope('child', fn ($query) => $query->where('kind', 'child'));
+    }
+}
+
 /** An abstract base on the same table: no concrete parent, so the children name one of them (R11-L1). */
 abstract class StiVehicle extends Model
 {
@@ -336,6 +387,18 @@ class SingleTableInheritanceRebuildTest extends TestCase
     private function documents(): array
     {
         return DB::table('fuzzy_index_documents')->pluck('model_type')->countBy()->sortKeys()->all();
+    }
+
+    /** @return array<string, int> model_type => total_docs, the BM25 totals */
+    private function totals(): array
+    {
+        return DB::table('fuzzy_index_meta')->pluck('total_docs', 'model_type')->map(fn ($n) => (int) $n)->sortKeys()->all();
+    }
+
+    /** The number of indexed rows holding $term, across every index type. */
+    private function docCount(string $term): int
+    {
+        return (int) DB::table('fuzzy_index_terms')->where('term', $term)->value('doc_count');
     }
 
     /** @return list<int> the ids indexed under $type */
@@ -726,5 +789,159 @@ class SingleTableInheritanceRebuildTest extends TestCase
         $this->assertCount(1, $reported);
         $this->assertStringContainsString($message, $reported[0]->getMessage());
         $this->assertSame([], $this->documents(), 'the post with the same id is not indexed in its place');
+    }
+
+    public static function observerModes(): array
+    {
+        return ['in-process' => [false], 'queued' => [true]];
+    }
+
+    /**
+     * UB-1, UD-4 (R12-M2 b, c). Without the hook each class has an index of its own, and a row is
+     * filed under the class it hydrates as (R11-M1). A save named the index by the instance's class:
+     * a child demoted through its own instance left the child's index (its scoped re-read no longer
+     * found it) and joined none, and a change of the type column alone reindexed nothing, so the row
+     * stayed under its old class and was missing from its new one's. A row is now filed by the class
+     * its attributes hydrate as, and leaves every other type of its hierarchy.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('observerModes')]
+    public function test_a_type_change_moves_the_row_to_the_index_of_the_class_it_now_hydrates_as(bool $async): void
+    {
+        $this->rebuild(StiParent::class);
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => $async]);
+
+        StiChild::query()->find(1)->update(['kind' => 'parent']);                         // demoted, the type column alone
+        StiChild::query()->find(3)->update(['kind' => 'parent', 'title' => 'alpha trois']); // demoted, with its title
+        StiParent::query()->find(2)->update(['kind' => 'child']);                         // promoted through a parent instance
+
+        $this->assertSame([2], $this->indexedIds(StiChild::class));
+        $this->assertSame([1, 3, 4, 5], $this->indexedIds(StiParent::class));
+        $this->assertSame(['alpha five', 'alpha four', 'alpha one', 'alpha trois'], $this->indexTitles(StiParent::class, 'alpha'));
+        $this->assertSame(4, StiParent::search('alpha')->useInvertedIndex()->typoTolerance(0)->count());
+        $this->assertSame(['alpha two'], $this->indexTitles(StiChild::class, 'alpha'));
+        $this->assertSame([StiChild::class => 1, StiParent::class => 4], $this->totals());
+        $this->assertSame(5, $this->docCount('alpha'), 'each row counted once');
+        $this->assertSame(0, $this->docCount('three'), 'the old title of a demoted row is gone');
+
+        // Promoted through a parent instance, then demoted through a child instance read afresh.
+        $row = StiParent::create(['title' => 'promo six', 'kind' => 'parent']);
+        $row->update(['kind' => 'child']);
+        $this->assertSame(['promo six'], $this->indexTitles(StiChild::class, 'promo'));
+        StiChild::query()->find($row->getKey())->update(['kind' => 'parent']);
+        $this->assertSame(['promo six'], $this->indexTitles(StiParent::class, 'promo'));
+        $this->assertSame([], $this->indexTitles(StiChild::class, 'promo'));
+        $this->assertSame([StiChild::class => 1, StiParent::class => 5], $this->totals());
+    }
+
+    /**
+     * UD-3 (R12-M2 a). A row saved through a parent instance is filed under its child class (R11-M1),
+     * but deleting that instance named the parent's index, where the row was not: the child's index
+     * kept the deleted row, its words were still suggested, and its BM25 totals counted it.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('observerModes')]
+    public function test_a_row_deleted_through_a_parent_instance_leaves_its_childs_index(bool $async): void
+    {
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => $async]);
+
+        $row = StiParent::create(['title' => 'zulu yankee', 'kind' => 'child']);
+        $this->assertSame([$row->getKey()], $this->indexedIds(StiChild::class));
+        $row->delete();
+
+        $this->assertSame([], $this->documents());
+        $this->assertSame([StiChild::class => 0], $this->totals());
+        $this->assertSame(0, $this->docCount('zulu'));
+        $this->assertSame(0, StiChild::search('zulu')->useInvertedIndex()->typoTolerance(0)->count());
+        $this->assertSame([], StiChild::search('zul')->suggestFrom('index')->suggest());
+        $this->assertSame([], StiChild::search('zulo')->didYouMean());
+
+        // A child instance demoted, then deleted: the row was filed under the parent by then.
+        $row = StiChild::create(['title' => 'xray whiskey', 'kind' => 'child']);
+        $row->update(['kind' => 'parent']);
+        $this->assertSame([$row->getKey()], $this->indexedIds(StiParent::class));
+        $row->delete();
+        $this->assertSame([], $this->documents());
+        $this->assertSame(0, $this->docCount('xray'));
+    }
+
+    /**
+     * UB-1. A plain rebuild of the parent, the documented repair, wrote each row under the class it
+     * hydrates as and left any entry it had under another type of the hierarchy: a row whose type
+     * changed outside the app was then in both indexes. The rebuild now removes it from the others.
+     */
+    public function test_a_plain_rebuild_removes_a_row_from_the_type_it_was_filed_under_before(): void
+    {
+        $this->rebuild(StiParent::class);
+        DB::table('sti_items')->where('id', 1)->update(['kind' => 'parent']); // no model event
+        DB::table('sti_items')->where('id', 2)->update(['kind' => 'child']);
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => StiParent::class])->assertExitCode(0);
+
+        $this->assertSame([2, 3], $this->indexedIds(StiChild::class));
+        $this->assertSame([1, 4, 5], $this->indexedIds(StiParent::class));
+        $this->assertSame([StiChild::class => 2, StiParent::class => 3], $this->totals());
+        $this->assertSame(5, $this->docCount('alpha'));
+        $this->assertSame(['alpha five', 'alpha four', 'alpha one'], $this->indexTitles(StiParent::class, 'alpha'));
+    }
+
+    /**
+     * A subclass that is no kind of the hierarchy (its own query reads rows of the parent's kind as
+     * itself) keeps the index of its own: a save through it writes that index, and the row's kind's.
+     */
+    public function test_a_subclass_that_is_no_kind_of_the_hierarchy_keeps_its_own_index(): void
+    {
+        $this->rebuild(StiParent::class);
+        $this->rebuild(StiAlphaView::class);
+        $this->assertSame([StiAlphaView::class => 3, StiChild::class => 2, StiParent::class => 3], $this->documents());
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+
+        StiAlphaView::query()->find(2)->update(['title' => 'alpha deux']);
+        $created = StiAlphaView::create(['title' => 'alpha view', 'kind' => 'parent']);
+
+        $this->assertSame(['alpha deux'], $this->indexTitles(StiAlphaView::class, 'deux'));
+        $this->assertSame(['alpha deux'], $this->indexTitles(StiParent::class, 'deux'), 'the row\'s kind is written too');
+        $this->assertSame(['alpha view'], $this->indexTitles(StiAlphaView::class, 'view'));
+        $this->assertSame([2, 4, 5, $created->getKey()], $this->indexedIds(StiAlphaView::class));
+        $this->assertSame([2, 4, 5, $created->getKey()], $this->indexedIds(StiParent::class));
+    }
+
+    public static function scoutQueues(): array
+    {
+        return ['sync' => [false], 'queued' => [true]];
+    }
+
+    /**
+     * UD-3, UB-1 on the Scout engine. Its delete() named the instance's class: a row created through
+     * the parent class as a child stayed in the child's index when that instance was deleted, and a
+     * queued delete, which knows only the key, could not tell where the row was. A queued update
+     * restores the row as its new class, which cannot tell the type it was filed under before. The
+     * engine now removes a row from every type of its hierarchy that holds it but the one it is
+     * filed under.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('scoutQueues')]
+    public function test_the_scout_engine_files_and_removes_a_row_by_the_class_it_hydrates_as(bool $queue): void
+    {
+        config(['scout.driver' => 'fuzzy-search', 'scout.queue' => $queue, 'scout.after_commit' => false]);
+
+        $row = StiScoutUntypedParent::create(['title' => 'zulu yankee', 'kind' => 'child']);
+        $this->assertSame([$row->getKey()], $this->indexedIds(StiScoutUntypedChild::class));
+        $row->delete();
+        $this->assertSame([], $this->documents(), 'deleted through the parent instance it was created as');
+        $this->assertSame(0, $this->docCount('zulu'));
+
+        $this->app->make(\Laravel\Scout\EngineManager::class)->engine('fuzzy-search')->update(StiScoutUntypedParent::query()->get()); // the import; Scout queues no mixed collection
+        StiScoutUntypedChild::query()->find(1)->update(['kind' => 'parent']); // demoted through its own instance
+        StiScoutUntypedParent::query()->find(2)->update(['kind' => 'child']); // promoted through a parent instance
+        $this->assertSame([2, 3], $this->indexedIds(StiScoutUntypedChild::class));
+        $this->assertSame([1, 4, 5], $this->indexedIds(StiScoutUntypedParent::class));
+        $this->assertSame(5, $this->docCount('alpha'));
+
+        $child = StiScoutUntypedChild::query()->find(3);
+        $child->update(['kind' => 'parent']);
+        $child->delete(); // a queued delete restores only the key, as the child's class
+        $this->assertSame([2], $this->indexedIds(StiScoutUntypedChild::class));
+        $this->assertSame([1, 4, 5], $this->indexedIds(StiScoutUntypedParent::class));
+        $this->assertSame([StiScoutUntypedChild::class => 1, StiScoutUntypedParent::class => 3], $this->totals());
+        $this->assertSame(4, $this->docCount('alpha'));
+        $this->assertSame(['alpha five', 'alpha four', 'alpha one'], StiScoutUntypedParent::scoutSearch('alpha')->get()->pluck('title')->sort()->values()->all());
     }
 }

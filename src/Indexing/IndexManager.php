@@ -106,14 +106,164 @@ class IndexManager
         return self::indexType($parent->getName());
     }
 
-    /** Whether the two model classes read the same table on the same connection. */
+    /** Whether the two model classes read the same table on the same connection (memoized: each builds a model). */
     private static function sameTable(string $class, string $other): bool
     {
-        $make   = fn (string $c) => ($r = new \ReflectionClass($c))->isInstantiable() ? new $c() : $r->newInstanceWithoutConstructor();
-        [$a, $b] = [$make($class), $make($other)];
+        return self::$sameTables[$class . "\0" . $other] ??= (function () use ($class, $other) {
+            $make    = fn (string $c) => ($r = new \ReflectionClass($c))->isInstantiable() ? new $c() : $r->newInstanceWithoutConstructor();
+            [$a, $b] = [$make($class), $make($other)];
 
-        return $a->getTable() === $b->getTable()
-            && ($a->getConnectionName() ?? config('database.default')) === ($b->getConnectionName() ?? config('database.default'));
+            return $a->getTable() === $b->getTable()
+                && ($a->getConnectionName() ?? config('database.default')) === ($b->getConnectionName() ?? config('database.default'));
+        })();
+    }
+
+    /** @var array<string, bool> "class\0other class" => sameTable() */
+    private static array $sameTables = [];
+
+    /**
+     * The class a row with $model's attributes (or $attributes) hydrates as: its kind, as the
+     * hierarchy's parent reads it. A single-table-inheritance parent's newFromBuilder()
+     * (tightenco/parental and the like) builds each row as its kind's class, whichever instance
+     * holds it, and a write files a re-read row under that class's type (R11-M1), so a row is filed
+     * by this class, not the instance's. Asked of a child instance, newFromBuilder() builds a row of
+     * the parent's kind as the child (its `new static`). A class that does not override
+     * newFromBuilder() hydrates every row as itself. Built without model events.
+     */
+    public static function rowClass(Model $model, ?array $attributes = null): string
+    {
+        if (!self::hydratesOtherClasses($model::class)) {
+            return $model::class;
+        }
+
+        $parent = self::hierarchyRoot($model::class, concrete: true);
+
+        return Model::withoutEvents(fn () => (new $parent())->newFromBuilder($attributes ?? $model->getAttributes(), $model->getConnectionName())::class);
+    }
+
+    /**
+     * The index types a save or delete of $model writes: the type of the row's kind (rowClass())
+     * now and before the save, so a type change files the row under its new kind and takes it out
+     * of its old one, and the type of the instance's own class unless that is the hierarchy's
+     * parent, a class whose own query can also read the row (a subclass that is no kind of it, or
+     * the kind the row has just left). Each write re-reads the row through its type's query, so it
+     * files the row there only if that query reads it as one of the type's own (UB-1, UD-3, UD-4).
+     * Without single-table inheritance, the instance's type alone.
+     *
+     * @return list<string>
+     */
+    public static function rowTypes(Model $model): array
+    {
+        if (!self::hydratesOtherClasses($model::class)) {
+            return [self::indexType($model)];
+        }
+
+        $original = $model->getRawOriginal();
+        $classes  = [self::rowClass($model), ...($original === [] ? [] : [self::rowClass($model, $original)])];
+        if ($model::class !== self::hierarchyRoot($model::class, concrete: true)) {
+            $classes[] = $model::class;
+        }
+
+        return array_values(array_unique(array_map(fn (string $class) => self::indexType($class), $classes)));
+    }
+
+    /** Whether $class's query can build a row as another class: it overrides newFromBuilder() (single-table inheritance). */
+    private static function hydratesOtherClasses(string $class): bool
+    {
+        return self::$hydrates[$class] ??= (new \ReflectionMethod($class, 'newFromBuilder'))->getDeclaringClass()->getName() !== Model::class;
+    }
+
+    /** @var array<string, bool> class => hydratesOtherClasses() */
+    private static array $hydrates = [];
+
+    /** The topmost model class $class extends that reads its table on its connection, or the topmost concrete one (memoized). */
+    private static function hierarchyRoot(string $class, bool $concrete = false): string
+    {
+        $key = ($concrete ? 'concrete ' : '') . $class;
+        if (!isset(self::$roots[$key])) {
+            $root = $class;
+            while (($parent = get_parent_class($root)) !== false && $parent !== Model::class && is_subclass_of($parent, Model::class)
+                && !($concrete && (new \ReflectionClass($parent))->isAbstract()) && self::sameTable($parent, $class)) {
+                $root = $parent;
+            }
+            self::$roots[$key] = $root;
+        }
+
+        return self::$roots[$key];
+    }
+
+    /** @var array<string, string> class => hierarchyRoot() */
+    private static array $roots = [];
+
+    /**
+     * The index types of $class's single-table-inheritance hierarchy that hold each of $keys: every
+     * indexed type whose class extends the topmost model $class extends on its table and connection,
+     * so the parent's, a sibling's and a subclass's index alike. A key-only model (Scout's queued
+     * delete) and a row re-read as its new kind cannot tell the type it was filed under before. A
+     * class whose query hydrates every row as itself files them under its own type only: that type
+     * is returned with every key, unread.
+     *
+     * @param  list<int|string> $keys
+     * @return array<string, list<int|string>> index type => the keys it holds
+     */
+    public function filedUnder(string $class, array $keys): array
+    {
+        if (!self::hydratesOtherClasses($class)) {
+            return $keys === [] ? [] : [self::indexType($class) => $keys];
+        }
+
+        $root  = self::hierarchyRoot($class);
+        $types = DB::table('fuzzy_index_meta')->useWritePdo()->pluck('model_type')
+            ->map(fn ($type) => (string) $type)
+            ->filter(fn (string $type) => class_exists($type) && is_a($type, $root, true) && self::sameTable($type, $root))
+            ->values()->all();
+
+        $filed = [];
+        foreach ($types === [] ? [] : array_chunk(array_map('strval', $keys), 1000) as $chunk) {
+            $rows = DB::table('fuzzy_index_documents')->useWritePdo()
+                ->whereIn('model_type', $types)->whereIn('model_id', $chunk)
+                ->get(['model_type', 'model_id']);
+            foreach ($rows as $row) {
+                $row = (object) $row; // an app-wide array fetch mode returns arrays
+                $filed[$row->model_type][] = (string) $row->model_id;
+            }
+        }
+
+        return $filed;
+    }
+
+    /**
+     * After indexBatch() filed each row under its kind's type, re-sync it under every other type
+     * that may hold it: each type of its hierarchy that does (filedUnder()), and the instance's own
+     * class's type unless that is the hierarchy's parent (see rowTypes()). The write re-reads the row
+     * through that type's query, with its global scopes, so it leaves the type unless that query
+     * reads it as one of the type's own: a kind it has left drops it, a subclass that is no kind
+     * (whose own query reads the row) keeps it. A type change through Scout's update, whose queued
+     * job re-reads the row as its new kind, or one made outside the app that a rebuild catches up,
+     * left the row filed under its old kind too (UB-1).
+     *
+     * @param array<string, array<int|string, string>> $filed instance class => key => the type it is filed under
+     */
+    private function unfileElsewhere(array $filed): void
+    {
+        foreach ($filed as $class => $current) {
+            if (!self::hydratesOtherClasses($class)) {
+                continue;
+            }
+
+            $byType = $this->filedUnder($class, array_keys($current));
+            if ($class !== self::hierarchyRoot($class, concrete: true)) {
+                $own          = self::indexType($class);
+                $byType[$own] = array_values(array_unique([...($byType[$own] ?? []), ...array_map('strval', array_keys($current))]));
+            }
+
+            foreach ($byType as $type => $keys) {
+                $stale = array_values(array_filter($keys, fn ($key) => ($current[$key] ?? null) !== $type));
+                if ($stale !== []) {
+                    $this->write($type, $stale, [], refile: false);
+                }
+            }
+        }
     }
 
     /**
@@ -646,6 +796,10 @@ class IndexManager
      * query, one write per type: a single-table-inheritance parent's query hydrates child instances,
      * so a chunk can mix classes. Under the first model's class, a chunk that began with a child was
      * indexed under the child, and the child's global scope dropped the chunk's parent rows (RC-3).
+     * A saved model's type is that of its row's kind (rowClass()), and the row is re-synced under
+     * the other types that may hold it (unfileElsewhere()): Scout's update of a parent instance
+     * holding a child row, a row Scout's queued job re-reads as its new kind after a type change,
+     * and a rebuild that finds a row's type changed outside the app.
      *
      * @param  iterable<Model> $models
      * @return int the number of models indexed
@@ -653,13 +807,19 @@ class IndexManager
     public function indexBatch(iterable $models, bool $scout = false): int
     {
         $byType = []; // index type => ['keys' => key => key, 'unsaved' => key => model]
+        $filed  = []; // class => key => the type it is filed under
 
         foreach ($models as $model) {
-            $type = self::indexType($model);
             if ($model->exists) {
+                // Under its row's kind: an instance of the parent can hold a child row. The
+                // instance's own type is resolved first, so a hook that names no valid type throws
+                // before anything is written (R11-L1).
+                self::indexType($model);
+                $type = self::indexType(self::rowClass($model));
                 $byType[$type]['keys'][(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
+                $filed[$model::class][(string) $model->getKey()] = $type;
             } else {
-                $byType[$type]['unsaved'][(string) $model->getKey()] = $model;
+                $byType[self::indexType($model)]['unsaved'][(string) $model->getKey()] = $model;
             }
         }
 
@@ -667,6 +827,8 @@ class IndexManager
         foreach ($byType as $type => $group) {
             $indexed += $this->write($type, array_values($group['keys'] ?? []), $group['unsaved'] ?? [], $scout);
         }
+
+        $this->unfileElsewhere($filed);
 
         return $indexed;
     }
