@@ -362,4 +362,38 @@ class AccentInsensitiveMatchScoringTest extends TestCase
             $this->assertLessThanOrEqual(10 * strlen('столица') + 20 * 2, \Ashiqfardus\LaravelFuzzySearch\Support\Accents::$decomposedBytes, $label);
         }
     }
+
+    /**
+     * R13-L2. An ASCII value has nothing to fold, yet each of its matches was mapped back through the
+     * folded text: highlighting ASCII on an accent-insensitive collation cost 1.3-1.4 times the
+     * unfolded highlighting, 2.5 times for a value that repeats the term. With no anchors the folded
+     * search is findMatchOffsets()'s own, and a value whose characters all fold to themselves
+     * (Cyrillic, CJK) is not rewritten. PHP time only: the best of several rounds, each side in turn.
+     */
+    public function test_a_value_with_nothing_to_fold_is_highlighted_at_the_unfolded_cost(): void
+    {
+        $builder = AccentScoredPerson::search('x');
+        $folded  = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder::class, 'foldedMatchOffsets');
+        $raw     = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder::class, 'findMatchOffsets');
+        $text    = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder::class, 'foldedText');
+        $value   = str_repeat('The search index and the search box. ', 1800); // 66 KB, 3,600 matches
+
+        $this->assertSame($raw->invoke($builder, $value, 'search', 0), $folded->invoke($builder, $value, 'search', 0));
+        $best = [INF, INF];
+        for ($round = 0; $round < 9; $round++) {
+            foreach ([$folded, $raw] as $side => $method) {
+                $started = hrtime(true);
+                for ($i = 0; $i < 8; $i++) {
+                    $method->invoke($builder, $value, 'search', 0);
+                }
+                $best[$side] = min($best[$side], hrtime(true) - $started);
+            }
+        }
+        $this->assertLessThan(1.6, $best[0] / $best[1], sprintf('folded %.1f ms against %.1f ms', $best[0] / 1e6, $best[1] / 1e6));
+
+        $memo = [];
+        foreach (['Москва — столица России.', '東京は日本の首都です。'] as $plain) {
+            $this->assertSame([$plain, []], $text->invokeArgs($builder, [$plain, &$memo]));
+        }
+    }
 }

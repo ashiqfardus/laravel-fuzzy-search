@@ -3742,7 +3742,8 @@ class SearchBuilder
      * folded text back to $value: one per character whose fold is not one character of its own byte
      * length ("é" → "e", "ß" → "ss", a combining mark → ""), as [its first byte in the folded text,
      * its fold's length, its first and last byte in $value]. Between anchors the two texts run byte
-     * for byte. A value with no byte past ASCII, or one that is not valid UTF-8, is itself.
+     * for byte. A value with no byte past ASCII, one that is not valid UTF-8, or one with no character
+     * the fold changes (most Cyrillic or CJK text) is itself, with no anchors.
      *
      * @param  array<string, string> $memo
      * @return array{0: string, 1: array<int, array{int, int, int, int}>}
@@ -3753,14 +3754,22 @@ class SearchBuilder
             return [$value, []];
         }
 
-        preg_match_all('/[^\x00-\x7F]/u', $value, $chars);
+        // Only the characters the fold changes are replaced (R13-L2: a scan and a strtr() that
+        // changed nothing cost Cyrillic and CJK highlighting).
         $forms   = [];
         $resized = [];
-        foreach (array_unique($chars[0]) as $char) {
-            $forms[$char] = $memo[$char] ??= self::sqlFold($char);
-            if (strlen($forms[$char]) !== strlen($char) || mb_strlen($forms[$char], 'UTF-8') !== 1) {
-                $resized[$char] = $forms[$char];
+        foreach (array_keys(array_flip(mb_str_split((string) preg_replace('/[\x00-\x7F]+/', '', $value), 1, 'UTF-8'))) as $char) {
+            $form = $memo[$char] ??= self::sqlFold($char);
+            if ($form === $char) {
+                continue;
             }
+            $forms[$char] = $form;
+            if (strlen($form) !== strlen($char) || mb_strlen($form, 'UTF-8') !== 1) {
+                $resized[$char] = $form;
+            }
+        }
+        if ($forms === []) {
+            return [$value, []];
         }
 
         $anchors = [];
@@ -3781,7 +3790,8 @@ class SearchBuilder
      * the bytes of the characters it covers in $value, so "muller" marks "Müller" and "strasse"
      * marks "Straße". A combining mark, which folds to nothing, stays inside the range of the letter
      * it follows; two matches that meet inside one letter folded to two (ß) become one range. A
-     * value with no byte past ASCII, or one that is not valid UTF-8, is searched as it is. $text is
+     * value with no anchors (no byte past ASCII, not valid UTF-8, or no letter whose fold resizes it)
+     * runs byte for byte with its fold, so its matches are findMatchOffsets()'s own. $text is
      * $value's foldedText(), when the caller has it.
      *
      * @param array{0: string, 1: array<int, array{int, int, int, int}>}|null $text
@@ -3791,6 +3801,9 @@ class SearchBuilder
         $memo              = [];
         [$folded, $anchors] = $text ?? $this->foldedText($value, $memo);
         $needle            = self::sqlFold($term);
+        if ($anchors === []) {
+            return $this->findMatchOffsets($folded, $needle, $max); // R13-L2: no mapping to pay for
+        }
 
         // The index of the last anchor at or before folded byte $at (-1: none), and $at's byte in $value.
         $locate = function (int $at, bool $end) use ($anchors): array {
