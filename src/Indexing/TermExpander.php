@@ -351,7 +351,7 @@ final class TermExpander
             : !self::shows($model, $column);
         $legacyOk = array_filter(array_map('strval', $columns), $isHidden) === [];
 
-        if ($modelClass !== $modelType) {
+        if ($model::class !== $modelType) { // as PHP names it: a leading backslash or another case is the class itself (R12-L3)
             $flat = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column));
             $postings->whereIn('sp.column_name', [...array_values($flat), ...$shownPaths]);
 
