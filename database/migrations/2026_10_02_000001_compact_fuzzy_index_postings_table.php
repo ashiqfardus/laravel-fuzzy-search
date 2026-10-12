@@ -14,7 +14,8 @@ use Illuminate\Support\Facades\Schema;
  * postings are one range of it, and each posting carries its document's length (doc_length), so the
  * ranking reads no other table. A common word was read through postings_unique_idx, one random
  * lookup of the row per posting, then joined to fuzzy_index_documents: 22 s for a word in 7% of 6M
- * rows on MySQL, 0.5 s on this layout, and the table is about half the size.
+ * rows on MySQL, 0.5 s on this layout, and the table takes a third of the space on MySQL, two
+ * thirds on PostgreSQL.
  *
  * The model type and the column name become small ids, from two dictionaries: fuzzy_index_model_types
  * and fuzzy_index_columns (one for every model: column names repeat across models; the legacy '' of
@@ -28,8 +29,8 @@ use Illuminate\Support\Facades\Schema;
  * database's own collation elsewhere, so an ORDER BY model_id, the rank cut's tiebreak, reads as before.
  *
  * The postings are copied into fuzzy_index_postings_compact one range of term ids at a time, each
- * range one INSERT … SELECT committed on its own, so no transaction covers the whole table: about a
- * minute per million indexed rows on MySQL. A range covers about CHUNK documents by the words'
+ * range one INSERT … SELECT committed on its own, so no transaction covers the whole table: 49 s for
+ * 300,000 indexed rows on MySQL, 86 s on PostgreSQL (a loaded laptop). A range covers about CHUNK documents by the words'
  * doc_count. A posting whose document row is missing (an index left inconsistent) has no length, and
  * is dropped: the count, taken a range at a time, is logged. Then the old table is dropped, the new one takes its name, and the
  * secondary index and the foreign keys are added with their final names: term_id cascades from
