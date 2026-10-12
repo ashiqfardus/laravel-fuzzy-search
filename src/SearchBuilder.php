@@ -1268,6 +1268,8 @@ class SearchBuilder
         $keys   = $results->map(fn ($row) => $row instanceof Model ? $row->getKey() : null)->all();
         $base   = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
         $models = match (true) {
+            // An empty page of models: the hit serves the model's empty collection, as the miss did.
+            $results->isEmpty()                 => $results instanceof \Illuminate\Database\Eloquent\Collection ? 'attributes' : false,
             !$results->first() instanceof Model => false,
             !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys)
                 && empty($base->joins) && empty($base->unions) && $base->from === $results->first()->getTable() => 'key',
@@ -1864,10 +1866,13 @@ class SearchBuilder
             return $item;
         };
 
-        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
-        return $scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
+        // arsort() is stable: rows the hooks left tied keep their BM25 rank. In the models' own
+        // collection (the query's newCollection(), as the LIKE path and a cache hit serve them):
+        // Eloquent's map() to the scores made it a base collection, without load() and with
+        // another only(), find() and contains() (VC-4).
+        return $models::make($scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
             ->union($scores->slice($rerank)->map(fn (float $raw, $i) => $attach($raw, $i, $floor)))
-            ->values();
+            ->values()->all());
     }
 
     /**
@@ -1889,7 +1894,7 @@ class SearchBuilder
         $total = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
-            return ['total' => $total, 'page' => collect()];
+            return ['total' => $total, 'page' => $base->getModel()->newCollection()];
         }
 
         $this->applyExplicitOrder($query, true);
@@ -2360,7 +2365,7 @@ class SearchBuilder
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
-            return ['ranked' => [], 'total' => 0, 'more' => false, 'page' => collect()];
+            return ['ranked' => [], 'total' => 0, 'more' => false, 'page' => $base->getModel()->newCollection()];
         }
 
         if ($this->sortBy !== []) {
@@ -2372,7 +2377,7 @@ class SearchBuilder
         $accepted  = $this->hasIndexedConstraints($base)
             ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass))
             : $ranked;
-        $page      = collect();
+        $page      = $base->getModel()->newCollection();
         $more      = false;
 
         // Only the page's own rows are read, however deep the page, except the scoring hooks' window
