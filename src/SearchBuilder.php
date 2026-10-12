@@ -1275,10 +1275,10 @@ class SearchBuilder
 
     /**
      * A cached result for this request (rulings ER-58, ER-83, ER-92): rows that are not models as
-     * the miss served them, stdClass or arrays; models re-read by key, in the cached order, through the current query — its
-     * global scopes, and its eager loads with their constraint closures plus the relation paths
-     * searchIn() reads — so a row deleted since is dropped and retrieved listeners run for this
-     * viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
+     * the miss served them, stdClass or arrays (UA-3); models re-read by key, in the cached order,
+     * through the current query — its global scopes, and its eager loads with their constraint
+     * closures plus the relation paths searchIn() reads — so a row deleted since is dropped and
+     * retrieved listeners run for this viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
      * retrieved listeners run, then the same eager loads — and served as cached, a row deleted
      * since included, until the entry expires. Then highlighted and debugged as a live get() would
      * (decorate()). Costs the keyed read and the eager loads on a hit.

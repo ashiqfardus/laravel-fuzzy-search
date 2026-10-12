@@ -514,7 +514,7 @@ User::search('joh')->searchIn(['name'])->suggest(5);
 // Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
 ```
 
-The scan reads at most `limit × 3` matching rows, the shortest values of the first column it searches first (then by value), so the shortest completions in the table are among them; it sorts every row that starts with the term to find them. A base query with an order, a `distinct()` or a `groupBy()` of its own is read in that order instead.
+The scan reads at most `limit × 3` matching rows: those whose first searched column holds the shortest values (then by value), so long values do not crowd the short completions out; to find them, the database sorts every matching row. A base query with an order, a `distinct()` or a `groupBy()` of its own is read in its own order instead.
 
 **What scopes a suggestion.** `filter()` and `filterIn()` never do: they belong to the search itself, which `suggest()` and `didYouMean()` deliberately do not run. The constraints you put on the builder's base query — `where()`, `join()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes — are honoured as follows. What counts as a constraint is a WHERE, a JOIN, a HAVING or a GROUP BY clause, a union or a FROM subquery (`fromSub()`); an aliased table (`from('users as u')`) alone is not one.
 

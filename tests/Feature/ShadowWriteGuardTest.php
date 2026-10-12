@@ -324,6 +324,9 @@ class ShadowWriteGuardTest extends TestCase
             $table->string('meta_metaphone')->nullable();
         });
         \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+        if (\Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::typesOn(DB::connection(), 'json_shadow_docs') === []) {
+            $this->markTestSkipped('Laravel 10 before Schema::getColumns(): the column types cannot be read, so every column is guarded, as documented.');
+        }
 
         $json = '{"name":"Anna Stefan"}';
         $doc  = JsonShadowDoc::create(['meta' => $json]);
