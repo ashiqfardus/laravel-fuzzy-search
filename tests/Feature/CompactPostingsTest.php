@@ -219,7 +219,8 @@ class CompactPostingsTest extends TestCase
         DB::statement('ANALYZE TABLE ' . implode(', ', array_map(fn ($t) => DB::getQueryGrammar()->wrapTable($t), ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents'])));
 
         [[$sql, $bindings]] = $this->rankReads(['walnut']);
-        $plan               = array_map(fn ($row) => (array) $row, DB::select('explain ' . $sql, $bindings));
+        $explain            = $this->dbDriver === 'mysql' ? 'explain format=traditional ' : 'explain '; // MySQL 9 may default to the tree format
+        $plan               = array_map(fn ($row) => (array) $row, DB::select($explain . $sql, $bindings));
         $tables             = array_column($plan, 'table');
 
         $this->assertNotContains(DB::connection()->getTablePrefix() . 'd', $tables, 'no document rows');
