@@ -44,7 +44,7 @@ class RelationIndexingTest extends TestCase
 
     private function termsFor(Model $model): array
     {
-        return DB::table('fuzzy_index_postings as p')
+        return $this->namedPostings('p')
             ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', $model::class)->where('p.model_id', $model->getKey())
             ->distinct()

@@ -20,7 +20,7 @@ class IndexLatestRowTest extends TestCase
 {
     private function terms(string $class, $id): array
     {
-        return DB::table('fuzzy_index_postings as p')
+        return $this->namedPostings('p')
             ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', $class)
             ->where('p.model_id', (string) $id)

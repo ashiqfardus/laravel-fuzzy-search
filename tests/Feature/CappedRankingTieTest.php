@@ -88,7 +88,7 @@ class CappedRankingTieTest extends TestCase
      */
     private function expected(string $class, array $terms, int $cap): array
     {
-        $rows = DB::table('fuzzy_index_postings as p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+        $rows = $this->namedPostings('p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', $class)->whereIn('t.term', $terms)
             ->get(['p.model_id', 'p.term_id'])
             ->map(fn ($row) => [(string) $row->model_id, (int) $row->term_id])->all();

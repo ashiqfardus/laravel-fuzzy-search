@@ -244,7 +244,7 @@ class ZeroConfigSearchableTest extends TestCase
         // so the accessor never runs: both columns are indexed and the save does not throw.
         $user = ZeroConfigAccessorUser::create(['name' => 'Ada', 'email' => 'ada@example.com']);
 
-        $indexed = DB::table('fuzzy_index_postings')
+        $indexed = $this->namedPostings()
             ->where('model_id', $user->getKey())
             ->pluck('column_name')
             ->unique()
@@ -260,7 +260,7 @@ class ZeroConfigSearchableTest extends TestCase
         $copy = (new ZeroConfigAccessorUser())->setRawAttributes(['id' => $user->getKey(), 'name' => new \stdClass, 'email' => 'ada@example.com']);
         app(IndexManager::class)->indexModel($copy);
 
-        $this->assertSame(['email'], DB::table('fuzzy_index_postings')->where('model_id', $user->getKey())->distinct()->pluck('column_name')->all());
+        $this->assertSame(['email'], $this->namedPostings()->where('model_id', $user->getKey())->distinct()->pluck('column_name')->all());
     }
 
     public function test_an_empty_detection_is_not_cached(): void

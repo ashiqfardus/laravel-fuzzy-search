@@ -80,9 +80,9 @@ class SuggestBaseQueryTest extends TestCase
         $termId = $this->app['db']->table('fuzzy_index_terms')->insertGetId(
             ['term' => 'john', 'doc_count' => 50, 'term_length' => 4]
         );
-        $this->app['db']->table('fuzzy_index_postings')->insert(
+        $this->insertNamedPostings([
             ['term_id' => $termId, 'model_type' => User::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name']
-        );
+        ]);
 
         $builder = User::search('jonh')->searchIn(['name']);
 

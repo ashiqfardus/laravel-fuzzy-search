@@ -2,14 +2,16 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
  * The legacy-postings query at the end of handle() is a full table scan by design: there is no
- * index on column_name, and this is an admin command run by hand, not on a request path. It took
+ * index on column_id, and this is an admin command run by hand, not on a request path. It took
  * 100 s, or a statement timeout, at 6M rows on MySQL (S4), so past LEGACY_SCAN_TOKENS indexed
- * tokens it runs only under --legacy.
+ * tokens it runs only under --legacy. Postings from before column weighting are those under the
+ * column '' (fuzzy_index_columns); an index that never had one has none to look for.
  */
 class StatusCommand extends Command
 {
@@ -51,10 +53,13 @@ class StatusCommand extends Command
             return self::SUCCESS;
         }
 
-        $legacy = DB::table('fuzzy_index_postings')
-            ->where('column_name', '')
-            ->groupBy('model_type')
-            ->selectRaw('model_type, COUNT(*) as cnt')
+        $column = IndexManager::columnIds([''])[''] ?? null;
+        $legacy = $column === null ? [] : DB::table('fuzzy_index_postings as p')
+            ->join('fuzzy_index_model_types as t', 't.id', '=', 'p.model_type_id')
+            ->where('p.column_id', $column)
+            ->groupBy('t.model_type')
+            ->select('t.model_type')
+            ->selectRaw('COUNT(*) as cnt')
             ->pluck('cnt', 'model_type');
 
         foreach ($legacy as $modelType => $cnt) {

@@ -69,10 +69,10 @@ class TermExpanderTest extends TestCase
 
         // Scoped: sitten is not posted under the model, so the pool reaches one word further (kitt).
         foreach (['zzzzzz', 'yyyyyy', 'bitten', 'kittens', 'kitt', 'kittened', 'mitten', 'kitted'] as $i => $term) {
-            DB::table('fuzzy_index_postings')->insert([
+            $this->insertNamedPostings([[
                 'term_id' => DB::table('fuzzy_index_terms')->where('term', $term)->value('id'),
                 'model_type' => 'App\\Models\\Pet', 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name',
-            ]);
+            ]]);
         }
         $this->assertSame(['bitten' => 75, 'kittens' => 70, 'kitt' => 60], $terms((new TermExpander)->candidates('kitten', 2, 5, 'App\\Models\\Pet')));
 
@@ -187,13 +187,13 @@ class TermExpanderTest extends TestCase
     public function test_prefix_can_be_scoped_to_a_model(): void
     {
         $johnId = DB::table('fuzzy_index_terms')->where('term', 'john')->value('id');
-        DB::table('fuzzy_index_postings')->insert([
+        $this->insertNamedPostings([[
             'term_id' => $johnId, 'model_type' => 'App\\Models\\User', 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name',
-        ]);
+        ]]);
         $jonId = DB::table('fuzzy_index_terms')->where('term', 'jon')->value('id');
-        DB::table('fuzzy_index_postings')->insert([
+        $this->insertNamedPostings([[
             'term_id' => $jonId, 'model_type' => 'App\\Models\\Product', 'model_id' => '1', 'frequency' => 1, 'column_name' => 'name',
-        ]);
+        ]]);
 
         $scoped = (new TermExpander)->prefix('jo', 10, 'App\\Models\\User');
 

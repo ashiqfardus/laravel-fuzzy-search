@@ -194,7 +194,7 @@ Each search algorithm is implemented as a driver extending `BaseDriver`:
 - `like`: Alias for SimpleDriver
 
 #### Indexing (BM25)
-`IndexManager` tokenizes, stems, and persists an inverted index to four tables (`fuzzy_index_terms`, `fuzzy_index_documents`, `fuzzy_index_postings`, `fuzzy_index_meta`). `Bm25Scorer` builds the scoring SQL from those tables.
+`IndexManager` tokenizes, stems, and persists an inverted index to six tables (`fuzzy_index_terms`, `fuzzy_index_documents`, `fuzzy_index_postings`, `fuzzy_index_meta`, and the `fuzzy_index_model_types` and `fuzzy_index_columns` dictionaries). `Bm25Scorer` builds the scoring SQL from those tables.
 
 #### Query (Extended Syntax)
 `Lexer` tokenizes the query string, `ExtendedQueryParser` builds an AST, and `AstCompiler` converts it to SQL WHERE clauses. Supports operators: `=`, `^`, `$`, `!`, `'`, `|`, `( )`, `"..."`.

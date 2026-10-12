@@ -59,14 +59,14 @@ class RebuildIndexJobTest extends TestCase
         $job->handle($manager);
 
         // Both models must have postings written
-        $this->assertDatabaseHas('fuzzy_index_postings', [
+        $this->assertTrue($this->namedPostings()->where([
             'model_type' => $this->modelClass,
             'model_id'   => $user1->id,
-        ]);
-        $this->assertDatabaseHas('fuzzy_index_postings', [
+        ])->exists());
+        $this->assertTrue($this->namedPostings()->where([
             'model_type' => $this->modelClass,
             'model_id'   => $user2->id,
-        ]);
+        ])->exists());
     }
 
     /**
@@ -101,9 +101,9 @@ class RebuildIndexJobTest extends TestCase
         $this->assertSame(2, $reads, 'the job must read its rows twice, not once per row.');
 
         // The hook constrained the query to names starting with "hooked", proving it was applied.
-        $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id]);
-        $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked2->id]);
-        $this->assertDatabaseMissing('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id]);
+        $this->assertTrue($this->namedPostings()->where(['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id])->exists());
+        $this->assertTrue($this->namedPostings()->where(['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked2->id])->exists());
+        $this->assertFalse($this->namedPostings()->where(['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id])->exists());
     }
 
     public function test_rebuild_command_applies_the_hook_on_the_sync_path(): void
@@ -115,8 +115,8 @@ class RebuildIndexJobTest extends TestCase
         $this->artisan('fuzzy-search:rebuild', ['model' => RebuildHookTestUser::class])->assertExitCode(0);
 
         $this->assertGreaterThanOrEqual(1, RebuildHookTestUser::$hookCalls);
-        $this->assertDatabaseHas('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id]);
-        $this->assertDatabaseMissing('fuzzy_index_postings', ['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id]);
+        $this->assertTrue($this->namedPostings()->where(['model_type' => RebuildHookTestUser::class, 'model_id' => $hooked->id])->exists());
+        $this->assertFalse($this->namedPostings()->where(['model_type' => RebuildHookTestUser::class, 'model_id' => $plain->id])->exists());
     }
 
     public function test_rebuild_command_applies_the_hook_when_dispatching_async_batches(): void

@@ -28,7 +28,8 @@ class PostgresIndexStatisticsTest extends TestCase
             $this->markTestSkipped('pg_class.reltuples and this ANALYZE are PostgreSQL\'s; the CI PostgreSQL jobs run this.');
         }
 
-        $rows = array_map(fn ($i) => ['name' => "Zebra {$i}", 'email' => "z{$i}@example.test"], range(1, 300));
+        // 600 zebras: past the 16 pages of compact postings under which nothing is analyzed (ER-112).
+        $rows = array_map(fn ($i) => ['name' => "Zebra {$i}", 'email' => "z{$i}@example.test"], range(1, 600));
         foreach (array_chunk($rows, 100) as $chunk) {
             DB::table('users')->insert($chunk);
         }
@@ -107,10 +108,37 @@ class PostgresIndexStatisticsTest extends TestCase
             $this->assertLessThanOrEqual(0, $this->reltuples('fuzzy_index_postings'), 'unanalyzed at ' . $this->postingsPages() . ' pages');
         }
 
-        $this->assertGreaterThanOrEqual(16, $this->postingsPages(), 'the 300 zebras take the table past the minimum');
+        $this->assertGreaterThanOrEqual(16, $this->postingsPages(), 'the 600 zebras take the table past the minimum');
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'));
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_terms'));
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_documents'));
+    }
+
+    /**
+     * VJ-4. A synchronous rebuild ends with VACUUM (ANALYZE) of the postings (its visibility map lets
+     * the ranking read the primary key's index alone, S8). An async rebuild's finally() runs inside
+     * the last job, where the VACUUM of a large index outran the job timeout: it analyzes only.
+     */
+    public function test_only_a_synchronous_rebuild_vacuums_the_postings(): void
+    {
+        $vacuums = function (\Closure $run): array {
+            $statements = [];
+            DB::listen(function ($query) use (&$statements) {
+                if (stripos(ltrim($query->sql), 'vacuum') === 0) {
+                    $statements[] = $query->sql;
+                }
+            });
+            try {
+                $run();
+            } finally {
+                DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+            }
+
+            return $statements;
+        };
+
+        $this->assertCount(1, $vacuums(fn () => $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0)), 'the synchronous rebuild');
+        $this->assertSame([], $vacuums(fn () => app(IndexManager::class)->analyzeIndex()), 'an async rebuild\'s finally()');
     }
 
     /** Index past 10,000 postings, then the check that finds them described and caches it (ER-110). */
@@ -172,13 +200,13 @@ class PostgresIndexStatisticsTest extends TestCase
             $table->timestamps();
             $table->timestamp('deleted_at')->nullable();
         });
-        DB::table('users')->insert(array_map(fn ($i) => ['name' => "Okapi {$i}", 'email' => "o{$i}@example.test"], range(1, 300)));
+        DB::table('users')->insert(array_map(fn ($i) => ['name' => "Okapi {$i}", 'email' => "o{$i}@example.test"], range(1, 600)));
 
         foreach (User::query()->orderBy('id')->get()->chunk(100) as $users) {
             app(IndexManager::class)->indexBatch($users);
         }
 
-        $this->assertSame(300, DB::table('fuzzy_index_documents')->count(), 'the tenant\'s own index tables');
+        $this->assertSame(600, DB::table('fuzzy_index_documents')->count(), 'the tenant\'s own index tables');
         $this->assertGreaterThan(0, $this->reltuples('fuzzy_index_postings'), 'the tenant\'s postings were analyzed');
     }
 

@@ -58,7 +58,7 @@ class Bm25TieOrderTest extends TestCase
             DB::table('fuzzy_index_meta')->insert(['model_type' => $type, 'total_docs' => 3, 'total_tokens' => 3, 'avg_doc_length' => 1]);
             foreach ($order as $id) {
                 DB::table('fuzzy_index_documents')->insert(['model_type' => $type, 'model_id' => $id, 'doc_length' => 1]);
-                DB::table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => $type, 'model_id' => $id, 'column_name' => '', 'frequency' => 1]);
+                $this->insertNamedPostings([['term_id' => $termId, 'model_type' => $type, 'model_id' => $id, 'column_name' => '', 'frequency' => 1]]);
             }
 
             $this->assertSame([9, 10, '5x'], array_keys(app(Bm25Scorer::class)->rank(['tiebreak'], $type)), implode(',', $order));

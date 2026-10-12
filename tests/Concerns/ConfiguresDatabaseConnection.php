@@ -33,9 +33,12 @@ trait ConfiguresDatabaseConnection
     {
         return [
             'fuzzy_search_logs',
+            'fuzzy_index_postings_compact', // a compact postings migration that stopped part way
             'fuzzy_index_postings',
             'fuzzy_index_documents',
             'fuzzy_index_meta',
+            'fuzzy_index_model_types',
+            'fuzzy_index_columns',
             'fuzzy_index_terms',
         ];
     }

@@ -31,7 +31,8 @@ return [
     | match with BM25 instead. There, a model that overrides getSearchScore()
     | has its first max_candidates matches re-ranked by it (deeper pages keep
     | the BM25 order), and an orderBy() on a model whose connection is not the
-    | index's is ordered over its top max_candidates matches.
+    | index's is ordered over its top max_candidates matches (at least
+    | bm25.candidate_chunk).
     |
     | Also the largest page size on every path (paginate/simplePaginate clamp
     | perPage to it) and the most rows one model contributes to a federated search.

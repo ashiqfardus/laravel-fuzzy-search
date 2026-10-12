@@ -114,9 +114,13 @@ class LongStringKeyTest extends TestCase
         app(IndexManager::class)->indexBatch(LongKeyNote::all());
         $this->assertSame(2, (int) DB::table('fuzzy_index_terms')->where('term', 'shared')->value('doc_count'));
 
+        // Under the compact postings it refuses: they go back to the earlier layout around it.
+        $compact   = require __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
         $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $compact->down();
         $migration->down();
         $migration->up();
+        $compact->up();
 
         $meta = DB::table('fuzzy_index_meta')->where('model_type', LongKeyNote::class)->first();
         if ($this->dbDriver === 'sqlite') { // no narrowing on SQLite, so nothing is dropped
@@ -150,9 +154,11 @@ class LongStringKeyTest extends TestCase
         // Run the migration's own down() and up(): a migrate:rollback --step would leave the rest
         // of the batch recorded for the test teardown's rollback, which only undoes the last batch.
         $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        $compact   = require __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php'; // under the compact postings it refuses: the earlier layout around it
         $long      = ['model_type' => 'App\\Models\\Long', 'model_id' => $this->key('c'), 'doc_length' => 1];
 
         DB::table('fuzzy_index_documents')->insert($long);
+        $compact->down();
         $migration->down();
 
         if ($this->dbDriver !== 'sqlite') { // SQLite stores any length in a varchar column: down() leaves it be
@@ -167,16 +173,17 @@ class LongStringKeyTest extends TestCase
         }
 
         $migration->up();
+        $compact->up();
 
         DB::table('fuzzy_index_documents')->where('model_id', $long['model_id'])->delete();
         DB::table('fuzzy_index_documents')->insert($long);
-        DB::table('fuzzy_index_postings')->insert([
+        $this->insertNamedPostings([[
             'term_id'     => DB::table('fuzzy_index_terms')->insertGetId(['term' => 'widget', 'doc_count' => 1, 'term_length' => 6]),
             'model_type'  => $long['model_type'],
             'model_id'    => $long['model_id'],
             'column_name' => 'body',
             'frequency'   => 1,
-        ]);
+        ]]);
         $this->assertSame(1, DB::table('fuzzy_index_postings')->where('model_id', $long['model_id'])->count());
     }
 }

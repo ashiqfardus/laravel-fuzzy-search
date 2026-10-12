@@ -184,7 +184,7 @@ class IndexWalkBoundTest extends TestCase
             foreach ($walks as $walk) {
                 if ($subquery) {
                     $this->assertStringContainsString('fuzzy_index_postings', $walk['query'], $ranking);
-                    $this->assertSame(['%@tenant-b.test', User::class, 'zebra'], $walk['bindings'], $ranking);
+                    $this->assertSame(['%@tenant-b.test', IndexManager::modelTypeId(User::class), 'zebra'], $walk['bindings'], $ranking);
                 } else {
                     $this->assertStringNotContainsString('fuzzy_index_postings', $walk['query'], $ranking);
                     $this->assertSame(['%@tenant-b.test'], $walk['bindings'], $ranking);

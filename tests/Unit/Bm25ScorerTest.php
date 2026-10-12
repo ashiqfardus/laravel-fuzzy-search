@@ -36,10 +36,10 @@ class Bm25ScorerTest extends TestCase
                 ->upsert(['term' => $term, 'doc_count' => 1], ['term'], ['doc_count' => \DB::raw('fuzzy_index_terms.doc_count + 1')]);
             $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', $term)->value('id');
             $freq   = substr_count(strtolower($name), $term);
-            $this->app['db']->table('fuzzy_index_postings')->insert([
+            $this->insertNamedPostings([[
                 'term_id' => $termId, 'model_type' => $this->modelType,
-                'model_id' => $id, 'frequency' => max(1, $freq),
-            ]);
+                'model_id' => $id, 'frequency' => max(1, $freq), 'doc_length' => count($terms),
+            ]]);
         }
 
         $termCount = count($terms);

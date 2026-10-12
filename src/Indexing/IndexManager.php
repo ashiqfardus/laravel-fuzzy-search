@@ -16,9 +16,9 @@ class IndexManager
 {
     /**
      * Rows per upsert, so no statement passes SQL Server's 2,100 bindings: a posting row binds
-     * five values (2,000 a statement), a dictionary or document row three (1,500).
+     * six values (1,800 a statement), a dictionary or document row three (1,500).
      */
-    private const POSTING_ROWS_PER_UPSERT = 400;
+    private const POSTING_ROWS_PER_UPSERT = 300;
     private const ROWS_PER_UPSERT         = 500;
 
     /**
@@ -299,11 +299,12 @@ class IndexManager
         DB::transaction(function () use ($modelType, $modelId) {
             // Waits for a write to this row in flight; empty = it was not indexed.
             $old    = $this->claimDocuments($modelType, [$modelId]);
-            $posted = $this->postedTerms($modelType, [$modelId]);
+            $typeId = self::modelTypeId($modelType);
+            $posted = $this->postedTerms($typeId, [$modelId]);
 
             $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
             if ($posted !== []) { // see write()
-                $this->deletePostings($modelType, [$modelId]);
+                $this->deletePostings($typeId, [$modelId]);
             }
 
             // The document row, or the placeholder the claim just inserted.
@@ -388,17 +389,18 @@ class IndexManager
     /**
      * The dictionary terms the models' postings hold: term => [term id, how many of the models
      * hold it], COUNT(DISTINCT model_id) since a document has one posting per column a term is in.
+     * None for a model type without an id (modelTypeId()): nothing is posted under it.
      *
      * @param  array<int|string>              $modelIds
      * @return array<string, array{int, int}>
      */
-    private function postedTerms(string $modelType, array $modelIds): array
+    private function postedTerms(?int $typeId, array $modelIds): array
     {
         $posted = [];
-        foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
+        foreach ($typeId === null ? [] : array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
             $rows = DB::table('fuzzy_index_postings as p')
                 ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
-                ->where('p.model_type', $modelType)
+                ->where('p.model_type_id', $typeId)
                 ->whereIn('p.model_id', $chunk)
                 ->groupBy('t.id', 't.term')
                 ->select('t.id', 't.term')
@@ -406,6 +408,7 @@ class IndexManager
                 ->get();
 
             foreach ($rows as $row) {
+                $row = (object) $row; // an app-wide array fetch mode returns arrays (UC-1)
                 $posted[(string) $row->term] = [(int) $row->id, ($posted[(string) $row->term][1] ?? 0) + (int) $row->cnt];
             }
         }
@@ -418,11 +421,11 @@ class IndexManager
      *
      * @param array<int|string> $modelIds
      */
-    private function deletePostings(string $modelType, array $modelIds): void
+    private function deletePostings(int $typeId, array $modelIds): void
     {
         foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
             DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelType)
+                ->where('model_type_id', $typeId)
                 ->whereIn('model_id', $chunk)
                 ->delete();
         }
@@ -455,6 +458,7 @@ class IndexManager
     /**
      * Flush (delete) the index of every model: `fuzzy-search:clear --all`. Table by table rather
      * than a truncate, so the foreign keys are respected and only the package's tables are touched.
+     * The model types and columns stay: their ids never change (see dictionaryIds()).
      */
     public function flushAll(): void
     {
@@ -472,17 +476,22 @@ class IndexManager
     public function flush(string $modelClass): void
     {
         $this->flushing(function () use ($modelClass) {
-            // Give back this model's share of every term's doc_count first. A term another model
-            // still uses survives the orphan sweep below, and it kept counting this model's
-            // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
-            DB::table('fuzzy_index_postings')
-                ->where('model_type', $modelClass)
-                ->groupBy('term_id')
-                ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
-                ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
+            // None: nothing is posted under the type. Its row stays (see dictionaryIds()).
+            $typeId = self::modelTypeId($modelClass);
 
-            // Bulk delete index data for this model type — DB-side, no PHP memory load.
-            DB::table('fuzzy_index_postings')->where('model_type', $modelClass)->delete();
+            if ($typeId !== null) {
+                // Give back this model's share of every term's doc_count first. A term another model
+                // still uses survives the orphan sweep below, and it kept counting this model's
+                // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
+                DB::table('fuzzy_index_postings')
+                    ->where('model_type_id', $typeId)
+                    ->groupBy('term_id')
+                    ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
+                    ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
+
+                // Bulk delete index data for this model type — DB-side, no PHP memory load.
+                DB::table('fuzzy_index_postings')->where('model_type_id', $typeId)->delete();
+            }
             DB::table('fuzzy_index_documents')->where('model_type', $modelClass)->delete();
             DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->delete();
 
@@ -496,7 +505,7 @@ class IndexManager
                 DB::statement(
                     "DELETE t FROM {$terms} t " .
                     "LEFT JOIN {$postings} p ON t.id = p.term_id " .
-                    'WHERE p.id IS NULL'
+                    'WHERE p.term_id IS NULL'
                 );
             } elseif ($driver === 'pgsql') {
                 DB::statement(
@@ -524,12 +533,178 @@ class IndexManager
     /** @var array<string, true> SearchableColumns::connectionKey() => a check waits for the transaction's commit */
     private static array $pendingChecks = [];
 
-    /** Forget the per-process caches: the pipelines, and which PostgreSQL index tables have statistics. */
+    /** @var array<string, array<string, int>> SearchableColumns::connectionKey()|table => name => id, of the model types and columns (see dictionaryIds()) */
+    private static array $dictionary = [];
+
+    /** @var array<string, true> connection names whose search_path statements forget $dictionary (PostgreSQL, see dictionaryIds()) */
+    private static array $watched = [];
+
+    /**
+     * Forget the per-process caches: the pipelines, which PostgreSQL index tables have statistics,
+     * and the model types' and columns' ids (the migrations that create those tables call this).
+     */
     public static function resetPipelineCache(): void
     {
         self::$pipelines     = [];
         self::$analyzed      = [];
         self::$pendingChecks = [];
+        self::$dictionary    = [];
+        self::$watched       = [];
+    }
+
+    /**
+     * The id of $modelType in fuzzy_index_model_types, which its postings are written under; null
+     * when it has none, so nothing is posted under it. $insert adds the row on first need (write()).
+     */
+    public static function modelTypeId(string $modelType, bool $insert = false): ?int
+    {
+        return self::dictionaryIds('fuzzy_index_model_types', 'model_type', [$modelType], $insert)[$modelType] ?? null;
+    }
+
+    /**
+     * name => id of the column names $names in fuzzy_index_columns, for those that have one: a
+     * column without one has no posting. $insert adds the missing ones (write()).
+     *
+     * @param  array<int|string>  $names
+     * @return array<string, int>
+     */
+    public static function columnIds(array $names, bool $insert = false): array
+    {
+        return self::dictionaryIds('fuzzy_index_columns', 'name', $names, $insert);
+    }
+
+    /**
+     * name => id of $names in $table, one of the two dictionaries the postings name their model type
+     * and their column through (S8), each name as the column's collation compares it: a
+     * case-insensitive one finds Title for title, as the earlier layout's string columns compared
+     * them. Remembered per process and connection, since a row is never deleted and its id never
+     * changes; but only outside a transaction, once the one that read it has committed: a write that
+     * rolls back takes the rows it inserted with it, and under RefreshDatabase or
+     * DatabaseTransactions Laravel runs after-commit callbacks inside the test's own transaction,
+     * which it then rolls back (VJ-1). On PostgreSQL a statement on the connection that sets
+     * search_path (a runtime SET of schema-per-tenant) forgets them: each tenant schema numbers its
+     * own, and the config, which connectionKey() reads, does not change (VJ-2). Watched rather than
+     * read on every lookup, which added a query to every search.
+     *
+     * $insert adds the missing names, sorted, so concurrent first writes take them in one order: a
+     * write waits for another's uncommitted insert of the same name, then finds it, through a current
+     * read on MySQL/MariaDB, whose snapshot may predate it. write() calls this before it locks any
+     * word, so a write waiting here holds no lock another write needs (ER-71's order).
+     *
+     * @param  array<int|string>  $names
+     * @return array<string, int>
+     */
+    private static function dictionaryIds(string $table, string $column, array $names, bool $insert): array
+    {
+        $connection = DB::connection();
+        $key        = SearchableColumns::connectionKey($connection) . '|' . $table;
+        $ids        = [];
+
+        // ponytail: a search_path changed outside Laravel's query events (a raw PDO exec, a
+        // server-side function) is not seen; read current_setting() per lookup if that matters.
+        if ($connection->getDriverName() === DbDialect::PGSQL && !isset(self::$watched[$connection->getName()])) {
+            self::$watched[$connection->getName()] = true;
+            $connection->listen(function (\Illuminate\Database\Events\QueryExecuted $query) use ($connection) {
+                // A SET [SESSION|LOCAL] search_path or set_config('search_path', …), not a read of it.
+                if ($query->connectionName === $connection->getName() && preg_match("/\\bset\\s+(session\\s+|local\\s+)?search_path\\b|set_config\\s*\\(\\s*'search_path'/i", $query->sql) === 1) {
+                    self::$dictionary = [];
+                }
+            });
+        }
+        $missing    = []; // name => name
+        foreach ($names as $name) {
+            $name = (string) $name;
+            if (isset(self::$dictionary[$key][$name])) {
+                $ids[$name] = self::$dictionary[$key][$name];
+            } else {
+                $missing[$name] = $name;
+            }
+        }
+
+        if ($missing === []) {
+            return $ids;
+        }
+
+        $found = self::readDictionary($table, $column, $missing, current: false);
+        if ($insert && count($found) < count($missing)) {
+            self::insertDictionary($table, $column, array_diff_key($missing, $found));
+            $found = self::readDictionary($table, $column, $missing, current: true);
+
+            // MySQL's INSERT IGNORE stores a name too long for the column cut short.
+            if (count($found) < count($missing)) {
+                throw new \RuntimeException(sprintf('fuzzy-search: %s could not record [%s]: is it longer than %s.%s allows?', self::class, implode('], [', array_diff_key($missing, $found)), $table, $column));
+            }
+        }
+
+        $remember = function () use ($connection, $key, $found) {
+            if ($connection->transactionLevel() === 0) {
+                self::$dictionary[$key] = $found + (self::$dictionary[$key] ?? []);
+            }
+        };
+        $connection->transactionLevel() > 0 ? $connection->afterCommit($remember) : $remember();
+
+        return $ids + $found;
+    }
+
+    /**
+     * name => id of the rows of $table whose $column the database finds equal to one of $names: by
+     * the stored name itself, or, for a name not stored as it is spelt (letter case, trailing
+     * spaces) when the read found anything, one name at a time: two spellings in one call find the
+     * one row a case-insensitive collation keeps for both (VJ-6). $current reads past MySQL's
+     * snapshot.
+     *
+     * @param  array<string, string> $names name => name
+     * @return array<string, int>
+     */
+    private static function readDictionary(string $table, string $column, array $names, bool $current): array
+    {
+        $lock   = $current && DbDialect::isMySqlFamily(DB::connection()->getDriverName());
+        $read   = fn () => DB::table($table)->when($lock, fn ($query) => $query->sharedLock());
+        $stored = [];
+        foreach (array_chunk(array_values($names), 1000) as $chunk) {
+            foreach ($read()->whereIn($column, $chunk)->get(['id', $column]) as $row) {
+                $row = (object) $row; // an app-wide array fetch mode returns arrays
+                $stored[(string) $row->{$column}] = (int) $row->id;
+            }
+        }
+
+        $found = array_intersect_key($stored, $names);
+        if ($stored !== [] && count($found) < count($names)) {
+            foreach (array_diff_key($names, $found) as $name) {
+                $id = $read()->where($column, $name)->value('id');
+                if ($id !== null) {
+                    $found[$name] = (int) $id;
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /** Insert $names into $table, sorted; a name another write inserted first is left as it is. */
+    private static function insertDictionary(string $table, string $column, array $names): void
+    {
+        $names = array_map('strval', array_values($names));
+        sort($names, SORT_STRING);
+        $rows = array_map(fn (string $name) => [$column => $name], $names);
+
+        if (DB::connection()->getDriverName() !== DbDialect::SQLSRV) {
+            DB::table($table)->insertOrIgnore($rows);
+
+            return;
+        }
+
+        // SQL Server has no INSERT IGNORE: a name another write inserted first fails its own
+        // statement only (duplicateKey()), so one name a statement.
+        foreach ($rows as $row) {
+            try {
+                DB::table($table)->insert($row);
+            } catch (\Illuminate\Database\QueryException $e) {
+                if (!self::duplicateKey($e)) {
+                    throw $e;
+                }
+            }
+        }
     }
 
     /**
@@ -560,7 +735,7 @@ class IndexManager
      * rolled back the whole rebuilt index. A lost connection there is thrown: the caller's
      * transaction went with it, and the rollback to the savepoint fails too.
      */
-    public function analyzeIndex(bool $whenStale = false): void
+    public function analyzeIndex(bool $whenStale = false, bool $vacuum = false): void
     {
         $connection = DB::connection();
 
@@ -568,7 +743,7 @@ class IndexManager
             return;
         }
 
-        $analyze = function () use ($connection, $whenStale) {
+        $analyze = function () use ($connection, $whenStale, $vacuum) {
             if ($whenStale && !$this->statisticsStale($connection)) {
                 return;
             }
@@ -584,10 +759,19 @@ class IndexManager
                 return;
             }
 
-            $connection->statement('ANALYZE ' . implode(', ', array_map(
-                fn (string $table) => $grammar->wrapTable($table),
-                ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']
-            )));
+            $tables = array_map(fn (string $table) => $grammar->wrapTable($table), ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']);
+
+            // $vacuum (a synchronous rebuild's end): VACUUM the postings too, outside any
+            // transaction (VACUUM cannot run in one), so the visibility map lets the ranking's
+            // index-only read of the postings' primary key skip the heap (S8). Not an async
+            // rebuild's finally(): it runs inside the last job, and the VACUUM of a large index
+            // outran the job timeout (VJ-4); autovacuum sets the map there. Unprepared: VACUUM runs
+            // only as a statement of its own.
+            if ($vacuum && $connection->transactionLevel() === 0) {
+                $connection->unprepared('VACUUM (ANALYZE) ' . array_shift($tables));
+            }
+
+            $connection->statement('ANALYZE ' . implode(', ', $tables));
         };
 
         $level = $connection->transactionLevel();
@@ -896,12 +1080,23 @@ class IndexManager
                 }
             }
 
+            // The model type's id, inserted with its first posting, and the columns', each inserted
+            // with its first posting, before any word is locked (see dictionaryIds()).
+            $typeId  = self::modelTypeId($modelType, insert: $byModel !== []);
+            $columns = [];
+            foreach ($byModel as $byColumn) {
+                foreach (array_keys($byColumn) as $column) {
+                    $columns[(string) $column] = true;
+                }
+            }
+            $columnIds = self::columnIds(array_keys($columns), insert: true);
+
             // Every doc_count change to a term the dictionary already holds (the old terms given
             // back, the new ones raised) goes out as one UPDATE per 1,000 terms in id order, so a
             // write takes its locks on existing terms in the order every other write takes them
             // (ER-71): giving back old terms, then raising new ones in a second statement, let two
             // writes whose terms cross each hold a row the other needed.
-            $posted   = $this->postedTerms($modelType, $ids);
+            $posted   = $this->postedTerms($typeId, $ids);
             $existing = $this->termIds(array_map('strval', array_keys($counts)));
             $driver   = DB::connection()->getDriverName();
 
@@ -951,7 +1146,7 @@ class IndexManager
             // posting of these rows (the term foreign key cascades), and under the claim only a
             // flush (ER-69) can change them.
             if ($posted !== []) {
-                $this->deletePostings($modelType, $ids);
+                $this->deletePostings($typeId, $ids);
             }
 
             // Rows leaving the index (gone, soft-deleted, no text left) lose their document row,
@@ -1019,12 +1214,13 @@ class IndexManager
             // it waits on none.
             $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
 
-            // One posting per (term, column); a term missing from $termIds means a pre-migration
-            // collation collapsed it into a variant: MySQL/MariaDB *_ci (B25), SQL Server's default.
+            // One posting per (term, column), with the document's length; a term missing from
+            // $termIds means a pre-migration collation collapsed it into a variant: MySQL/MariaDB
+            // *_ci (B25), SQL Server's default.
             $postingRows  = [];
             $documentRows = [];
             foreach ($byModel as $id => $byColumn) {
-                foreach ($this->postingRows($byColumn, $termIds, $modelType, $id) as $row) {
+                foreach ($this->postingRows($byColumn, $termIds, $typeId, $columnIds, $id, $lengths[$id]) as $row) {
                     $postingRows[] = $row;
                 }
                 $documentRows[] = ['model_type' => $modelType, 'model_id' => (string) $id, 'doc_length' => $lengths[$id]];
@@ -1032,7 +1228,7 @@ class IndexManager
 
             // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing (C9).
             foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
-                DB::table('fuzzy_index_postings')->upsert($chunk, ['term_id', 'model_type', 'model_id', 'column_name'], ['frequency']);
+                DB::table('fuzzy_index_postings')->upsert($chunk, ['term_id', 'model_type_id', 'model_id', 'column_id'], ['frequency', 'doc_length']);
             }
             foreach (array_chunk($documentRows, self::ROWS_PER_UPSERT) as $chunk) {
                 DB::table('fuzzy_index_documents')->upsert($chunk, ['model_type', 'model_id'], ['doc_length']);
@@ -1085,7 +1281,24 @@ class IndexManager
                 $query->withoutGlobalScopes();
             }
 
-            foreach ($query->whereKey($chunk)->get() as $model) {
+            // Every read of the model's connection from the write side while the chunk loads: a
+            // morphTo eager load runs a fresh query per type, which never sees the relation's
+            // useWritePdo() above, and indexed the replica's old parent (UF-1). The app's own
+            // setting comes back after it.
+            $connection = $query->getQuery()->getConnection();
+            $previous   = $connection instanceof \Illuminate\Database\Connection ? (fn () => $this->readOnWriteConnection)->call($connection) : null;
+            if ($previous !== null) {
+                $connection->useWriteConnectionWhenReading();
+            }
+            try {
+                $models = $query->whereKey($chunk)->get();
+            } finally {
+                if ($previous !== null) {
+                    $connection->useWriteConnectionWhenReading($previous);
+                }
+            }
+
+            foreach ($models as $model) {
                 if ($keepTrashed || !(method_exists($model, 'trashed') && $model->trashed())) {
                     $rows[(string) $model->getKey()] = $model;
                 }
@@ -1272,11 +1485,13 @@ class IndexManager
     }
 
     /**
-     * One posting row per (term, column). Terms missing from $termIds are skipped (B25: an
-     * un-migrated *_ci dictionary, or SQL Server's before 2026_09_30_000001, collapsed them into a
-     * variant).
+     * One posting row per (term, column), each with the document's length, so the ranking reads no
+     * document row (S8). Terms missing from $termIds are skipped (B25: an un-migrated *_ci
+     * dictionary, or SQL Server's before 2026_09_30_000001, collapsed them into a variant).
+     *
+     * @param array<string, int> $columnIds column name => id (columnIds())
      */
-    private function postingRows(array $byColumn, $termIds, string $modelType, int|string $modelId): array
+    private function postingRows(array $byColumn, $termIds, int $typeId, array $columnIds, int|string $modelId, int $length): array
     {
         $rows = [];
         foreach ($byColumn as $column => $terms) {
@@ -1285,11 +1500,12 @@ class IndexManager
                     continue;
                 }
                 $rows[] = [
-                    'term_id'     => $termIds[$term],
-                    'model_type'  => $modelType,
-                    'model_id'    => (string) $modelId,
-                    'column_name' => (string) $column,
-                    'frequency'   => $frequency,
+                    'term_id'       => $termIds[$term],
+                    'model_type_id' => $typeId,
+                    'model_id'      => (string) $modelId,
+                    'column_id'     => $columnIds[(string) $column],
+                    'frequency'     => $frequency,
+                    'doc_length'    => $length,
                 ];
             }
         }
@@ -1347,15 +1563,19 @@ class IndexManager
      */
     private function upsertShared(string $table, array $rows, array $uniqueBy, array $update): void
     {
-        retry(
-            self::ATTEMPTS,
-            fn () => DB::table($table)->upsert($rows, $uniqueBy, $update),
-            0,
-            fn (\Throwable $e) => $e instanceof \Illuminate\Database\QueryException
-                && in_array($e->errorInfo[1] ?? null, [2601, 2627], true)
-                && DB::connection()->getDriverName() === 'sqlsrv'
-                && (int) DB::selectOne('select @@options & 16384 as xa')->xa === 0,
-        );
+        retry(self::ATTEMPTS, fn () => DB::table($table)->upsert($rows, $uniqueBy, $update), 0, fn (\Throwable $e) => self::duplicateKey($e));
+    }
+
+    /**
+     * SQL Server: whether $e is a duplicate key (2601/2627) that failed its own statement only, as
+     * it does while XACT_ABORT is off (see upsertShared()).
+     */
+    private static function duplicateKey(\Throwable $e): bool
+    {
+        return $e instanceof \Illuminate\Database\QueryException
+            && in_array($e->errorInfo[1] ?? null, [2601, 2627], true)
+            && DB::connection()->getDriverName() === 'sqlsrv'
+            && (int) DB::scalar('select @@options & 16384') === 0;
     }
 
     /**

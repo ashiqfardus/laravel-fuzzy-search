@@ -107,10 +107,14 @@ class CaseSensitiveModelIdTest extends TestCase
         CaseKeyItem::insert(['code' => 'xyz', 'name' => 'apple cherry']);
         app(IndexManager::class)->indexBatch(CaseKeyItem::all());
 
+        // Under the compact postings it refuses: they go back to the earlier layout around it.
+        $compact   = require __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
         $migration = require self::MIGRATION;
+        $compact->down();
         $migration->down();
         $documents = DB::table('fuzzy_index_documents')->where('model_type', CaseKeyItem::class)->pluck('model_id')->all();
         $migration->up();
+        $compact->up();
 
         if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
             $this->assertSame(['xyz'], $documents);

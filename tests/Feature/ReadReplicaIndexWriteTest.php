@@ -112,7 +112,7 @@ class ReadReplicaIndexWriteTest extends TestCase
     /** @return list<int> the ids whose postings hold $term */
     private function holders(string $term): array
     {
-        return DB::table('fuzzy_index_postings as p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+        return $this->namedPostings('p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
             ->where('p.model_type', ReplicaDoc::class)->where('t.term', $term)
             ->pluck('p.model_id')->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
     }

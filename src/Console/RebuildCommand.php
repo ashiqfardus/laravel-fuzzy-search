@@ -86,7 +86,7 @@ class RebuildCommand extends Command
         $this->newLine();
 
         // Statistics for the rebuilt index (PostgreSQL; see IndexManager::analyzeIndex()).
-        $indexManager->analyzeIndex();
+        $indexManager->analyzeIndex(vacuum: true);
 
         // "Done." on an index that stayed empty reads like success. Say what happened and why.
         if ($indexed === 0) {

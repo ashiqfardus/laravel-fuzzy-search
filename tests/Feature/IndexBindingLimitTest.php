@@ -50,6 +50,6 @@ class IndexBindingLimitTest extends TestCase
 
         $this->assertLessThanOrEqual(2100, $this->most);
         $this->assertSame(2, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
-        $this->assertSame(2 * (1100 + 3), DB::table('fuzzy_index_postings')->where('model_type', User::class)->count());
+        $this->assertSame(2 * (1100 + 3), $this->namedPostings()->where('model_type', User::class)->count());
     }
 }

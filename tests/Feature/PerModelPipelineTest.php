@@ -63,7 +63,7 @@ class PerModelPipelineTest extends TestCase
         app(IndexManager::class)->indexModel($doc);
         app(IndexManager::class)->indexBatch(User::all());
 
-        $terms = DB::table('fuzzy_index_terms')->join('fuzzy_index_postings', 'fuzzy_index_terms.id', '=', 'fuzzy_index_postings.term_id')
+        $terms = DB::table('fuzzy_index_terms')->joinSub($this->namedPostings(), 'fuzzy_index_postings', 'fuzzy_index_terms.id', '=', 'fuzzy_index_postings.term_id')
             ->where('model_type', CjkDoc::class)->pluck('term')->sort()->values()->all();
         $this->assertSame(['tour', 'タワ', 'ワー', '京タ', '東京'], $terms);
 
@@ -71,7 +71,7 @@ class PerModelPipelineTest extends TestCase
         $this->assertSame([], CjkDoc::search('大阪')->useInvertedIndex()->get()->pluck('id')->all());
 
         // Users still tokenize on whitespace: "John Doe" is two whole words, not bigrams.
-        $userTerms = DB::table('fuzzy_index_terms')->join('fuzzy_index_postings', 'fuzzy_index_terms.id', '=', 'fuzzy_index_postings.term_id')
+        $userTerms = DB::table('fuzzy_index_terms')->joinSub($this->namedPostings(), 'fuzzy_index_postings', 'fuzzy_index_terms.id', '=', 'fuzzy_index_postings.term_id')
             ->where('model_type', User::class)->pluck('term')->all();
         $this->assertContains('john', $userTerms);
         $this->assertNotContains('jo', $userTerms);
@@ -82,7 +82,7 @@ class PerModelPipelineTest extends TestCase
         $doc = FrenchDoc::create(['title' => 'les chevaux mangent']);
         app(IndexManager::class)->indexModel($doc);
 
-        $terms = DB::table('fuzzy_index_terms')->join('fuzzy_index_postings', 'fuzzy_index_terms.id', '=', 'fuzzy_index_postings.term_id')
+        $terms = DB::table('fuzzy_index_terms')->joinSub($this->namedPostings(), 'fuzzy_index_postings', 'fuzzy_index_terms.id', '=', 'fuzzy_index_postings.term_id')
             ->where('model_type', FrenchDoc::class)->pluck('term')->sort()->values()->all();
 
         $this->assertNotContains('les', $terms);                 // fr stop word

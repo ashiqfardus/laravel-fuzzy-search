@@ -32,7 +32,7 @@ class TablePrefixTest extends TestCase
 
     private function postings(): int
     {
-        return DB::table('fuzzy_index_postings')->where('model_type', User::class)->count();
+        return $this->namedPostings()->where('model_type', User::class)->count();
     }
 
     public function test_migrate_and_rollback_run_on_a_prefixed_connection(): void
@@ -131,7 +131,7 @@ class TablePrefixTest extends TestCase
         $john = User::where('name', 'John Doe')->first();
         $john->delete();
 
-        $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_type', User::class)->where('model_id', (string) $john->getKey())->count());
+        $this->assertSame(0, $this->namedPostings()->where('model_type', User::class)->where('model_id', (string) $john->getKey())->count());
         $this->assertSame(0, (int) DB::table('fuzzy_index_terms')->where('term', 'john')->value('doc_count'));
     }
 

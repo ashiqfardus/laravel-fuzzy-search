@@ -142,7 +142,7 @@ class StringKeyIndexingTest extends TestCase
         $gone = $class::where('body', 'alpha widget')->first();
         app(IndexManager::class)->removeFromIndex($class, $gone->getKey());
 
-        $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_type', $class)->where('model_id', $gone->getKey())->count());
+        $this->assertSame(0, $this->namedPostings()->where('model_type', $class)->where('model_id', $gone->getKey())->count());
         $this->assertCount(1, $class::search('widget')->useInvertedIndex()->typoTolerance(0)->get());
 
         $keep = $class::where('body', 'beta widget')->first();
@@ -161,7 +161,7 @@ class StringKeyIndexingTest extends TestCase
     #[DataProvider('keyedModels')]
     public function test_rebuild_command_chunks_by_the_string_key(string $class): void
     {
-        DB::table('fuzzy_index_postings')->where('model_type', $class)->delete();
+        DB::table('fuzzy_index_postings')->where('model_type_id', $this->modelTypeId($class))->delete();
         DB::table('fuzzy_index_documents')->where('model_type', $class)->delete();
 
         config(['fuzzy-search.indexing.chunk_size' => 2]);

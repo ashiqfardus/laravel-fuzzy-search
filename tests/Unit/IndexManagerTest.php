@@ -24,9 +24,11 @@ class IndexManagerTest extends TestCase
     {
         $this->assertTrue(Schema::hasTable('fuzzy_index_postings'));
         $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'term_id'));
-        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type'));
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type_id'));
         $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_id'));
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'column_id'));
         $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'frequency'));
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'doc_length'));
     }
 
     public function test_fuzzy_index_meta_table_exists(): void
@@ -170,7 +172,7 @@ class IndexManagerTest extends TestCase
         $manager->indexModel($model);
         $manager->removeFromIndex(get_class($model), $model->id);
 
-        $count = $this->app['db']->table('fuzzy_index_postings')
+        $count = $this->namedPostings()
             ->where('model_type', get_class($model))
             ->where('model_id', $model->id)
             ->count();
@@ -186,7 +188,7 @@ class IndexManagerTest extends TestCase
         $manager->indexModel($model);
         $manager->indexModel($model);
 
-        $count = $this->app['db']->table('fuzzy_index_postings')
+        $count = $this->namedPostings()
             ->where('model_type', get_class($model))
             ->where('model_id', $model->id)
             ->count();
@@ -207,7 +209,7 @@ class IndexManagerTest extends TestCase
         $manager->indexModel($model);
 
         // With cap=3, only 3 postings should be created
-        $count = $this->app['db']->table('fuzzy_index_postings')
+        $count = $this->namedPostings()
             ->where('model_type', get_class($model))
             ->where('model_id', $model->id)
             ->count();
@@ -234,7 +236,7 @@ class IndexManagerTest extends TestCase
         $this->assertDatabaseHas('fuzzy_index_terms', ['term' => 'job']);
         $termId = $this->app['db']->table('fuzzy_index_terms')->where('term', 'job')->value('id');
         $this->assertNotNull($termId);
-        $count = $this->app['db']->table('fuzzy_index_postings')
+        $count = $this->namedPostings()
             ->where('model_type', $modelClass)
             ->where('model_id', $modelId)
             ->where('term_id', $termId)
@@ -259,10 +261,10 @@ class IndexManagerTest extends TestCase
                 'model_type' => get_class($model),
                 'model_id'   => $model->id,
             ]);
-            $this->assertDatabaseHas('fuzzy_index_postings', [
+            $this->assertTrue($this->namedPostings()->where([
                 'model_type' => get_class($model),
                 'model_id'   => $model->id,
-            ]);
+            ])->exists());
         }
     }
 
@@ -348,7 +350,7 @@ class IndexManagerTest extends TestCase
         app(IndexManager::class)->indexModel($user);
 
         $john = DB::table('fuzzy_index_terms')->where('term', 'john')->first();
-        $rows = DB::table('fuzzy_index_postings')
+        $rows = $this->namedPostings()
             ->where('model_type', User::class)->where('model_id', (string) $user->getKey())
             ->where('term_id', $john->id)->orderBy('column_name')->get();
 
@@ -381,9 +383,9 @@ class IndexManagerTest extends TestCase
     public function test_legacy_posting_rows_default_to_an_empty_column_name(): void
     {
         $termId = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'legacy', 'doc_count' => 1, 'term_length' => 6]);
-        DB::table('fuzzy_index_postings')->insert(['term_id' => $termId, 'model_type' => User::class, 'model_id' => '999', 'frequency' => 1]);
+        $this->insertNamedPostings([['term_id' => $termId, 'model_type' => User::class, 'model_id' => '999', 'frequency' => 1]]);
 
-        $this->assertSame('', DB::table('fuzzy_index_postings')->where('term_id', $termId)->value('column_name'));
+        $this->assertSame('', $this->namedPostings()->where('term_id', $termId)->value('column_name'));
     }
 
     public function test_meta_does_not_inflate_on_reindex(): void
@@ -488,6 +490,9 @@ class IndexManagerTest extends TestCase
             // sweep), and another connection deletes it right after the write re-reads its ids.
             DB::table('fuzzy_index_terms')->insert(['term' => 'alpha', 'doc_count' => 0, 'term_length' => 5]);
             config(['database.connections.sweep' => config('database.connections.' . config('database.default'))]);
+            // R12-L9: a regression makes the delete wait on this write's own transaction, in this
+            // process, which PostgreSQL cannot see as a deadlock: fail after 5 s instead of hanging.
+            DB::connection('sweep')->statement("set lock_timeout = '5s'");
             $swept = false;
             $this->app['db']->listen(function ($query) use (&$swept) {
                 if (!$swept && preg_match('/^\s*select\b.*fuzzy_index_terms\W+where\W+term\W+in\b/is', $query->sql) && $query->bindings === ['beta']) {
@@ -602,7 +607,9 @@ class IndexManagerTest extends TestCase
 
         $manager->indexModel($model);
 
-        $sql = strtolower(implode("\n", $queries));
+        // The meta row's statements: the model type and column dictionaries take insertOrIgnore()
+        // everywhere but on SQL Server, which inserts them one at a time instead.
+        $sql = strtolower(implode("\n", preg_grep('/fuzzy_index_meta/', $queries)));
 
         $this->assertStringNotContainsString('insert or ignore', $sql);
         $this->assertStringNotContainsString('insert ignore', $sql);

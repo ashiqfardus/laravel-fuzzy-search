@@ -145,7 +145,7 @@ class AutoDetectedColumnSourceTest extends TestCase
             DB::table('fuzzy_index_terms')->whereIn('term', ['diabetes', 'insulin'])->exists(),
             'the accessor-decrypted plaintext of an auto-detected column reached fuzzy_index_terms'
         );
-        $this->assertTrue(DB::table('fuzzy_index_postings')->where('column_name', 'bio')->exists(), 'the stored value is still indexed');
+        $this->assertTrue($this->namedPostings()->where('column_name', 'bio')->exists(), 'the stored value is still indexed');
     }
 
     #[DataProvider('accessorModels')]
@@ -307,7 +307,7 @@ class AutoDetectedColumnSourceTest extends TestCase
 
         app(IndexManager::class)->indexModel($thing);
 
-        $this->assertSame(2, DB::table('fuzzy_index_postings')->where('column_name', 'full_name')->count());
+        $this->assertSame(2, $this->namedPostings()->where('column_name', 'full_name')->count());
         $this->assertSame(2, DB::table('fuzzy_index_terms')->whereIn('term', ['grace', 'hopper'])->count());
     }
 
