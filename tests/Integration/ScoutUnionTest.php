@@ -151,6 +151,24 @@ class ScoutUnionTest extends TestCase
     }
 
     /**
+     * TE-7's side effect: a query() callback that aliases the FROM (`users as u`, or a fromSub()) left
+     * Scout's restriction of the page to its ids on "users"."id", a name the aliased FROM hides, so
+     * map() threw "no such column: users.id". The restriction names the key as the FROM does now.
+     */
+    public function test_a_callback_that_aliases_the_from_serves_its_matches(): void
+    {
+        $aliased = fn () => ScoutUnionUser::scoutSearch('doe')->query(fn ($query) => $query->from('users as u'));
+        $sub     = fn () => ScoutUnionUser::scoutSearch('doe')->query(fn ($query) => $query->fromSub(ScoutUnionUser::query()->where('email', 'jane@example.com'), 'u'));
+
+        $this->assertSame(['Jane Doe'], ScoutUnionUser::scoutSearch('doe')->query(fn ($query) => $query->from('users as u')->where('u.email', 'jane@example.com'))->get()->pluck('name')->all(), 'get, a where on the alias');
+        $this->assertSame(['Jane Doe', 'John Doe'], $aliased()->orderBy('name')->get()->pluck('name')->all(), 'orderBy get');
+        $this->assertSame([2, ['John Doe']], [($page = $aliased()->orderBy('name')->paginate(1, 'page', 2))->total(), $page->pluck('name')->all()], 'orderBy paginate page 2');
+        $this->assertSame([false, ['John Doe']], [($page = $aliased()->orderBy('name')->simplePaginate(1, 'page', 2))->hasMorePages(), $page->pluck('name')->all()], 'orderBy simplePaginate page 2');
+        $this->assertSame(['Jane Doe'], $sub()->get()->pluck('name')->all(), 'fromSub get');
+        $this->assertSame([1, ['Jane Doe']], [($page = $sub()->paginate(5))->total(), $page->pluck('name')->all()], 'fromSub paginate');
+    }
+
+    /**
      * SD-1: on Scout 10.0, paginate() hands the engine the caller's Builder, then counts through its
      * query() callback itself. The engine replaces that callback once with one that groups the
      * callback's or and reads a union as one table, as its own reads do: a second paginate() does not
