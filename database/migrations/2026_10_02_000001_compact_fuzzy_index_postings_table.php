@@ -49,6 +49,7 @@ return new class extends Migration
     public $withinTransaction = false;
 
     private const COMPACT = 'fuzzy_index_postings_compact';
+    private const PROGRESS = 'fuzzy_index_postings_copied';
     private const PRIMARY = 'postings_primary';
     private const BY_MODEL = 'postings_model_idx';
     private const UNIQUE  = 'postings_unique_idx';
@@ -56,8 +57,11 @@ return new class extends Migration
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // 2026_10_01_000001's before round 12
 
-    /** The documents one copy statement covers, by the words' doc_count (a word in several of a document's columns has a posting for each). */
-    private const CHUNK = 100000;
+    /**
+     * The span of one copy statement: up() copies the earlier table's ids ($chunk of them), down()
+     * the compact table's words, by doc_count ($chunk documents).
+     */
+    public int $chunk = 1000000;
 
     public function up(): void
     {
@@ -79,29 +83,25 @@ return new class extends Migration
                 });
             }
 
-            // Every model type and column the postings name, but those an earlier run recorded.
-            foreach (['fuzzy_index_model_types' => ['model_type', 'model_type'], 'fuzzy_index_columns' => ['name', 'column_name']] as $table => [$column, $source]) {
-                DB::table($table)->insertUsing([$column], DB::table('fuzzy_index_postings as p')->distinct()->select("p.{$source}")
-                    ->whereNotExists(fn ($query) => $query->selectRaw('1')->from("{$table} as d")->whereColumn("d.{$column}", "p.{$source}")));
-            }
+            // Every model type with a document row, read through the documents' key (a posting
+            // without one is not copied), but those an earlier run recorded. The column names are
+            // recorded a range at a time below, from the range's own postings.
+            DB::table('fuzzy_index_model_types')->insertUsing(['model_type'], DB::table('fuzzy_index_documents as d')->distinct()->select('d.model_type')
+                ->whereNotExists(fn ($query) => $query->selectRaw('1')->from('fuzzy_index_model_types as t')->whereColumn('t.model_type', 'd.model_type')));
 
             if ($pretending || !Schema::hasTable(self::COMPACT)) {
                 $this->createCompact();
             }
 
-            $dropped = $this->copy($pretending, self::COMPACT, fn (int $from, ?int $to) => DB::table('fuzzy_index_postings as p')
-                ->join('fuzzy_index_documents as d', fn ($join) => $join->on('d.model_type', '=', 'p.model_type')->on('d.model_id', '=', 'p.model_id'))
-                ->join('fuzzy_index_model_types as mt', 'mt.model_type', '=', 'p.model_type')
-                ->join('fuzzy_index_columns as c', 'c.name', '=', 'p.column_name')
-                ->where('p.term_id', '>', $from)
-                ->when($to !== null, fn ($query) => $query->where('p.term_id', '<=', $to))
-                ->select('p.term_id', 'mt.id as model_type_id', 'p.model_id', 'c.id as column_id', 'p.frequency', 'd.doc_length'),
-                ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
-                fn (int $from, ?int $to) => DB::table('fuzzy_index_postings')->where('term_id', '>', $from)->when($to !== null, fn ($query) => $query->where('term_id', '<=', $to))->count()
-            );
+            if ($pretending || !Schema::hasTable(self::PROGRESS)) {
+                Schema::create(self::PROGRESS, fn (Blueprint $table) => $table->unsignedBigInteger('copied_id'));
+                DB::table(self::PROGRESS)->insert(['copied_id' => 0]);
+            }
+
+            $dropped = $pretending ? 0 : $this->copyUp();
 
             if ($dropped > 0) {
-                Log::warning("fuzzy-search: the compact postings migration dropped {$dropped} posting(s) whose document row was missing (an inconsistent index). Rebuild a model whose search should find them: php artisan fuzzy-search:rebuild \"App\\Models\\YourModel\" --fresh");
+                Log::warning("fuzzy-search: the compact postings migration dropped {$dropped} posting(s) whose document row was missing (an inconsistent index), or written again while it ran. Rebuild a model whose search should find them: php artisan fuzzy-search:rebuild \"App\\Models\\YourModel\" --fresh");
             }
 
             Schema::drop('fuzzy_index_postings');
@@ -111,6 +111,7 @@ return new class extends Migration
         if (!$old) {
             Schema::rename(self::COMPACT, 'fuzzy_index_postings');
         }
+        Schema::dropIfExists(self::PROGRESS);
 
         // The secondary index, then the foreign keys (MySQL's on model_type_id needs that index).
         if ($pretending || !in_array(self::BY_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
@@ -153,14 +154,19 @@ return new class extends Migration
                 $this->createEarlier();
             }
 
-            $this->copy($pretending, 'fuzzy_index_postings', fn (int $from, ?int $to) => DB::table(self::COMPACT . ' as p')
-                ->join('fuzzy_index_model_types as mt', 'mt.id', '=', 'p.model_type_id')
-                ->join('fuzzy_index_columns as c', 'c.id', '=', 'p.column_id')
-                ->where('p.term_id', '>', $from)
-                ->when($to !== null, fn ($query) => $query->where('p.term_id', '<=', $to))
-                ->select('p.term_id', 'mt.model_type', 'p.model_id', 'c.name as column_name', 'p.frequency'),
-                ['term_id', 'model_type', 'model_id', 'column_name', 'frequency']
-            );
+            $types   = $pretending ? [] : array_flip($this->dictionary('fuzzy_index_model_types', 'model_type'));
+            $columns = $pretending ? [] : array_flip($this->dictionary('fuzzy_index_columns', 'name'));
+
+            $this->copy($pretending, 'fuzzy_index_postings', function (int $from, ?int $to) use ($types, $columns) {
+                $ids = DB::table(self::COMPACT)->where('term_id', '>', $from)->when($to !== null, fn ($query) => $query->where('term_id', '<=', $to))->distinct()->pluck('column_id')->all();
+
+                return $ids === [] ? null : $this->copyStatement(
+                    self::COMPACT, 'fuzzy_index_postings',
+                    ['term_id', 'model_type', 'model_id', 'column_name', 'frequency'],
+                    ['p.term_id', $this->mapped('p.model_type_id', $types), 'p.model_id', $this->mapped('p.column_id', array_intersect_key($columns, array_flip($ids))), 'p.frequency'],
+                    'term_id', $from, $to
+                );
+            });
 
             Schema::drop(self::COMPACT);
         }
@@ -180,6 +186,7 @@ return new class extends Migration
 
         Schema::dropIfExists('fuzzy_index_model_types');
         Schema::dropIfExists('fuzzy_index_columns');
+        Schema::dropIfExists(self::PROGRESS); // an up() that stopped part way
 
         IndexManager::resetPipelineCache();
     }
@@ -220,31 +227,191 @@ return new class extends Migration
     }
 
     /**
-     * Copy $select's rows into $to, one range of term ids at a time, each an INSERT … SELECT that
-     * commits on its own. A run that stopped part way left whole ranges only, so the copy goes on
-     * after the highest term id $to holds: the terms between it and the end of its range had no
-     * posting. With $source, the count of a range's source rows, it returns how many rows the copy
-     * left out, counted a range at a time while the range is in memory (two counts of the whole
-     * tables took minutes at 383M postings on PostgreSQL); a range an earlier run copied is not
-     * counted again.
+     * down(): copy into $to one range of term ids at a time (the compact table is clustered by
+     * term, so a range is one sequential read), each an INSERT … SELECT ($statement) that commits
+     * on its own. A run that stopped part way left whole ranges only, so the copy goes on after the
+     * highest term id $to holds: the terms between it and the end of its range had no posting.
+     * With $source, the count of a range's source rows, it returns how many rows the copy left out.
+     * Under --pretend, which runs no select, nothing: each statement maps the names its range
+     * holds, which only the data can tell.
      *
-     * @param \Closure(int, ?int): \Illuminate\Database\Query\Builder $select the rows of term ids in ($from, $to]
-     * @param list<string>                                             $columns
-     * @param (\Closure(int, ?int): int)|null                          $source the count of the source's rows in ($from, $to]
+     * @param \Closure(int, ?int): (array{string, list<mixed>}|null) $statement the copy of the term ids in ($from, $to] and its bindings; null for a range with no posting
+     * @param (\Closure(int, ?int): int)|null                        $source    the count of the source's rows in ($from, $to]
      */
-    private function copy(bool $pretending, string $to, \Closure $select, array $columns, ?\Closure $source = null): int
+    private function copy(bool $pretending, string $to, \Closure $statement, ?\Closure $source = null): int
     {
         $start  = $pretending ? 0 : (int) DB::table($to)->max('term_id');
         $missed = 0;
 
-        foreach ($this->ranges($pretending, $start) as [$low, $high]) {
-            $copied = DB::table($to)->insertUsing($columns, $select($low, $high));
-            if ($source !== null && !$pretending) {
+        foreach ($pretending ? [] : $this->ranges($pretending, $start) as [$low, $high]) {
+            $insert = $statement($low, $high);
+            if ($insert === null) {
+                continue;
+            }
+
+            $copied = DB::affectingStatement(...$insert);
+            if ($source !== null) {
                 $missed += $source($low, $high) - $copied;
             }
         }
 
         return $missed;
+    }
+
+    /**
+     * up(): copy the earlier postings into the compact table, $chunk ids at a time (ER-179a): a
+     * range of its primary key, read in order. A range of words was read through
+     * postings_unique_idx, which does not hold frequency, so every posting was a lookup of its row,
+     * and one word's postings span the whole table: 7 to 9 hours at 96M postings on MySQL, where id
+     * ranges copy them in about 11 minutes. Each range is one INSERT … SELECT, joined to the
+     * documents for the length, with the model type and the column mapped through CASE (mapped()),
+     * no join to the dictionaries. Its names are recorded first, from one grouped read of the range
+     * that also counts its postings.
+     *
+     * Each range commits with the mark of the ids it copied (PROGRESS), in one transaction, so a run
+     * that stopped part way goes on after the mark. A write the old code made while the copy ran
+     * can re-insert, past the mark, a posting the copy already has: the insert skips a key it holds
+     * (insertIgnoringKey()), and only that.
+     *
+     * @return int the postings the copy left out: those without a document row, or written twice
+     */
+    private function copyUp(): int
+    {
+        $postings = DB::table('fuzzy_index_postings');
+        $done     = (int) DB::table(self::PROGRESS)->value('copied_id');
+        $first    = (clone $postings)->where('id', '>', $done)->min('id'); // past a mark an earlier run committed
+        $max      = (int) (clone $postings)->max('id');
+        $types    = $this->dictionary('fuzzy_index_model_types', 'model_type');
+        $columns  = $this->dictionary('fuzzy_index_columns', 'name');
+        $missed   = 0;
+
+        for ($low = $first === null ? $max : (int) $first - 1; $low < $max; $low += $this->chunk) {
+            $high   = min($low + $this->chunk, $max);
+            $counts = [];
+            foreach ((clone $postings)->where('id', '>', $low)->where('id', '<=', $high)->groupBy('column_name')->selectRaw('column_name, count(*) as n')->get() as $row) {
+                $row                                 = (object) $row; // whatever the app's fetch mode
+                $counts[(string) $row->column_name] = (int) $row->n;
+                $columns[(string) $row->column_name] ??= $this->recordColumn((string) $row->column_name);
+            }
+
+            // No type with a document row: the range's postings have none to join (an empty CASE is no SQL).
+            [$sql, $bindings] = $counts === [] || $types === [] ? [null, []] : $this->copyStatement(
+                'fuzzy_index_postings', self::COMPACT,
+                ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
+                ['p.term_id', $this->mapped('p.model_type', $types), 'p.model_id', $this->mapped('p.column_name', array_intersect_key($columns, $counts)), 'p.frequency', 'd.doc_length'],
+                'id', $low, $high
+            );
+
+            $copied = DB::transaction(function () use ($sql, $bindings, $high) {
+                $copied = $sql === null ? 0 : DB::affectingStatement($sql, $bindings);
+                DB::table(self::PROGRESS)->update(['copied_id' => $high]);
+
+                return $copied;
+            });
+            $missed += array_sum($counts) - $copied;
+        }
+
+        return $missed;
+    }
+
+    /**
+     * INSERT INTO $to ($columns) SELECT $select FROM $from p [JOIN the documents d] WHERE $key in
+     * ($low, $high], and its bindings: the source drives the read, one range of its primary key
+     * (up(): the earlier table's id; down(): the compact table's leading term_id). No join to the
+     * dictionaries, whose one row of a type MySQL read first, then walked postings_model_idx for
+     * every posting of the type (ER-179): the names map through CASE expressions (mapped()). The
+     * documents give the length, on the copy into the compact table only, which skips a key it
+     * holds already (insertIgnoringKey()).
+     *
+     * @param  list<string|array{string, list<mixed>}> $select a column, or [SQL, bindings]
+     * @return array{string, list<mixed>}
+     */
+    private function copyStatement(string $from, string $to, array $columns, array $select, string $key, int $low, ?int $high): array
+    {
+        $grammar  = DB::getQueryGrammar();
+        $bindings = [];
+        $list     = [];
+        foreach ($select as $i => $expression) {
+            if (is_array($expression)) {
+                [$expression, $bound] = $expression;
+                array_push($bindings, ...$bound);
+            }
+            $list[] = "{$expression} as {$columns[$i]}"; // named: SQL Server's derived table needs every column's
+        }
+
+        $join  = $to === self::COMPACT ? ' inner join ' . $grammar->wrapTable('fuzzy_index_documents') . ' d on d.model_type = p.model_type and d.model_id = p.model_id' : '';
+        $read  = 'select ' . implode(', ', $list) . ' from ' . $grammar->wrapTable($from) . " p{$join} where p.{$key} > ?" . ($high === null ? '' : " and p.{$key} <= ?");
+        $bound = [...$bindings, $low, ...($high === null ? [] : [$high])];
+
+        return $to === self::COMPACT
+            ? [$this->insertIgnoringKey($grammar->wrapTable($to), $columns, $read), $bound]
+            : ['insert into ' . $grammar->wrapTable($to) . ' (' . implode(', ', $columns) . ') ' . $read, $bound];
+    }
+
+    /**
+     * INSERT INTO the compact table ($columns) $read, skipping a row whose primary key the table
+     * holds, and nothing else: a NOT NULL violation (a name no CASE maps) still fails it. MySQL and
+     * MariaDB update the key to itself on a duplicate (INSERT IGNORE would store 0 for a NULL);
+     * PostgreSQL and SQLite do nothing on the conflict (SQLite's INSERT OR IGNORE would drop the
+     * NULL row too; its WHERE keeps the upsert's ON from reading as a join's); SQL Server, with no
+     * such clause, reads past a key the table holds.
+     *
+     * @param list<string> $columns
+     */
+    private function insertIgnoringKey(string $table, array $columns, string $read): string
+    {
+        $list = implode(', ', $columns);
+
+        return match (DB::connection()->getDriverName()) {
+            DbDialect::SQLSRV => "insert into {$table} ({$list}) select s.* from ({$read}) s where not exists (select 1 from {$table} c"
+                . ' where c.term_id = s.term_id and c.model_type_id = s.model_type_id and c.model_id = s.model_id and c.column_id = s.column_id)',
+            DbDialect::PGSQL, DbDialect::SQLITE => "insert into {$table} ({$list}) {$read} on conflict do nothing",
+            default => "insert into {$table} ({$list}) {$read} on duplicate key update {$table}.term_id = {$table}.term_id",
+        };
+    }
+
+    /**
+     * CASE $column WHEN … THEN … END over $map: a name to its id (an id column's ids to their names
+     * when $column is one), the names bound, the ids inlined as integers (they come from the
+     * database; bound, PostgreSQL types the CASE as text). A name is compared in $column's own
+     * collation (on MySQL/MariaDB and SQL Server a case-insensitive one matches every spelling the
+     * dictionary keeps for it). A value $map lacks gives NULL, which the NOT NULL column refuses: a
+     * range's names are recorded before its copy.
+     *
+     * @param  array<int|string, int|string> $map
+     * @return array{string, list<mixed>}
+     */
+    private function mapped(string $column, array $map): array
+    {
+        $ids      = str_ends_with($column, '_id');
+        $sql      = 'case ' . $column;
+        $bindings = [];
+        foreach ($map as $value => $mapped) {
+            $sql       .= $ids ? ' when ' . (int) $value . ' then ?' : ' when ? then ' . (int) $mapped;
+            $bindings[] = (string) ($ids ? $mapped : $value);
+        }
+
+        return [$sql . ' end', $bindings];
+    }
+
+    /** @return array<string, int>|array<int, string> value => id of $table's $column, every row (a dictionary of a few names) */
+    private function dictionary(string $table, string $column): array
+    {
+        $map = [];
+        foreach (DB::table($table)->get(['id', $column]) as $row) {
+            $row = (object) $row; // whatever the app's fetch mode
+            $map[(string) $row->{$column}] = (int) $row->id;
+        }
+
+        return $map;
+    }
+
+    /** The id of column name $name, recorded if the dictionary has no row the column's collation finds equal to it. */
+    private function recordColumn(string $name): int
+    {
+        $id = DB::table('fuzzy_index_columns')->where('name', $name)->value('id');
+
+        return (int) ($id ?? DB::table('fuzzy_index_columns')->insertGetId(['name' => $name]));
     }
 
     /**
@@ -270,7 +437,7 @@ return new class extends Migration
                 $term = (object) $term; // whatever the app's fetch mode
                 $last = (int) $term->id;
                 $sum += max(1, (int) $term->doc_count);
-                if ($sum >= self::CHUNK) {
+                if ($sum >= $this->chunk) {
                     yield [$low, $last];
                     $low = $last;
                     $sum = 0;
@@ -377,9 +544,9 @@ return new class extends Migration
     }
 
     /**
-     * MySQL/MariaDB: the character set and collation of the earlier table's model_type and
-     * column_name, which the dictionaries take, so the copy compares them without a collation
-     * conflict whatever the connection's collation is now. Under --pretend, the connection's. Empty
+     * MySQL/MariaDB: the character set and collation of the documents' model_type and the earlier
+     * postings' column_name, which the dictionaries take, so their fills compare them without a
+     * collation conflict whatever the connection's collation is now. Under --pretend, the connection's. Empty
      * elsewhere: the database's default, as the earlier table has.
      *
      * @return array<string, array{string, string}>
@@ -396,8 +563,8 @@ return new class extends Migration
                ['name' => 'column_name', 'charset' => $connection->getConfig('charset'), 'collation' => $connection->getConfig('collation')]]
             : $connection->select(
                 'select column_name as name, character_set_name as charset, collation_name as collation from information_schema.columns'
-                . " where table_schema = database() and table_name = ? and column_name in ('model_type', 'column_name')",
-                [$connection->getTablePrefix() . 'fuzzy_index_postings']
+                . " where table_schema = database() and ((table_name = ? and column_name = 'column_name') or (table_name = ? and column_name = 'model_type'))",
+                [$connection->getTablePrefix() . 'fuzzy_index_postings', $connection->getTablePrefix() . 'fuzzy_index_documents']
             );
 
         $out = [];
