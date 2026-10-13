@@ -388,7 +388,7 @@ class SearchBuilder
 
     /**
      * The targets a search matches: every searchIn() column but one weighted 0 or less, which the
-     * index search leaves out too (Bm25Scorer::excludedColumns()). A weight of 0 takes a column out of
+     * index search leaves out too (Bm25Scorer::readColumns()). A weight of 0 takes a column out of
      * the search on every path, its matching and counting, suggest()'s table scan and an extended()
      * field scope included, not only out of _score (TE-8).
      *
@@ -1268,6 +1268,8 @@ class SearchBuilder
         $keys   = $results->map(fn ($row) => $row instanceof Model ? $row->getKey() : null)->all();
         $base   = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
         $models = match (true) {
+            // An empty page of models: the hit serves the model's empty collection, as the miss did.
+            $results->isEmpty()                 => $results instanceof \Illuminate\Database\Eloquent\Collection ? 'attributes' : false,
             !$results->first() instanceof Model => false,
             !in_array(null, $keys, true) && count(array_unique($keys)) === count($keys)
                 && empty($base->joins) && empty($base->unions) && $base->from === $results->first()->getTable() => 'key',
@@ -1855,7 +1857,7 @@ class SearchBuilder
         $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
         $window = $rerank > 0 ? $scores->take($rerank) : $scores;
         $top    = max($anchor ?? 0.0, (float) ($window->max() ?? 0));
-        $score  = fn (float $raw) => $top > 0 ? round(round($raw, 6) / $top, 6) : round($raw, 6);
+        $score  = fn (float $raw) => $top > 0 ? round($raw / $top, 6) : round($raw, 6); // unrounded: the top row scores exactly 1 (VC-3)
         $floor  = $rerank > 0 && $window->isNotEmpty() ? $score((float) $window->min()) : INF;
         $attach = function (float $raw, $i, float $cap) use ($models, $score) {
             $item             = $models[$i];
@@ -1864,10 +1866,13 @@ class SearchBuilder
             return $item;
         };
 
-        // arsort() is stable: rows the hooks left tied keep their BM25 rank.
-        return $scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
+        // arsort() is stable: rows the hooks left tied keep their BM25 rank. In the models' own
+        // collection (the query's newCollection(), as the LIKE path and a cache hit serve them):
+        // Eloquent's map() to the scores made it a base collection, without load() and with
+        // another only(), find() and contains() (VC-4).
+        return $models::make($scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
             ->union($scores->slice($rerank)->map(fn (float $raw, $i) => $attach($raw, $i, $floor)))
-            ->values();
+            ->values()->all());
     }
 
     /**
@@ -1889,7 +1894,7 @@ class SearchBuilder
         $total = \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::countModels($query);
 
         if ($offset >= $total || $limit < 1) {
-            return ['total' => $total, 'page' => collect()];
+            return ['total' => $total, 'page' => $base->getModel()->newCollection()];
         }
 
         $this->applyExplicitOrder($query, true);
@@ -2360,7 +2365,7 @@ class SearchBuilder
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {
-            return ['ranked' => [], 'total' => 0, 'more' => false, 'page' => collect()];
+            return ['ranked' => [], 'total' => 0, 'more' => false, 'page' => $base->getModel()->newCollection()];
         }
 
         if ($this->sortBy !== []) {
@@ -2372,7 +2377,7 @@ class SearchBuilder
         $accepted  = $this->hasIndexedConstraints($base)
             ? \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::accepted($base, $ranked, $this->indexedTermWeights, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass))
             : $ranked;
-        $page      = collect();
+        $page      = $base->getModel()->newCollection();
         $more      = false;
 
         // Only the page's own rows are read, however deep the page, except the scoring hooks' window
@@ -4293,13 +4298,15 @@ class SearchBuilder
      * column it reads come first, then by value (TE-9), so the shortest completions are in them,
      * whatever plan the database takes (rowid, heap or index order; on PostgreSQL an UPDATE that
      * changed no value changed the suggestions). The database sorts every matching row for it. Not
-     * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression.
+     * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression,
+     * a global scope's included: read from the scoped query (toBase()), or a scope's distinct() got
+     * the order, which PostgreSQL and SQL Server reject (VC-2).
      *
      * @param array<string, array{relation: ?string, column: string}> $targets suggestTargets()
      */
     private function shortestFirst(Builder|EloquentBuilder $query, array $targets): Builder|EloquentBuilder
     {
-        $base   = $query instanceof EloquentBuilder ? $query->getQuery() : $query;
+        $base   = $query instanceof EloquentBuilder ? $query->toBase() : $query;
         $direct = array_values(array_filter($targets, fn (array $t) => $t['relation'] === null));
 
         if ($direct !== [] && empty($base->orders) && !$base->distinct && empty($base->groups) && empty($base->havings)) {

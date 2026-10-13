@@ -53,6 +53,8 @@ class RebuildCommand extends Command
         if ($this->option('fresh')) {
             $this->info("Flushing existing index for [{$modelClass}]...");
             $indexManager->flush($modelClass);
+            // Single-table inheritance: a deleted row leaves the other kinds' indexes too (R13-L5).
+            $indexManager->unfileGone($modelClass);
         }
 
         $chunkSize = (int) config('fuzzy-search.indexing.chunk_size', 500);

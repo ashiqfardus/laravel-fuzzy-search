@@ -7,7 +7,38 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
+use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use ReflectionMethod;
+
+class SuggestPlainUser extends Model
+{
+    use Searchable;
+
+    protected $table = 'users';
+
+    protected array $searchable = ['columns' => ['name' => 10, 'email' => 5]];
+}
+
+/** A global scope that keeps a one-to-many join from repeating rows, as a visibility scope does. */
+class SuggestDistinctScopedUser extends SuggestPlainUser
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('distinct', fn ($query) => $query->select('users.*')->distinct());
+    }
+}
+
+class SuggestJoinDistinctScopedUser extends SuggestPlainUser
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('team', fn ($query) => $query->join('suggest_teams', 'suggest_teams.user_id', '=', 'users.id')
+            ->where('suggest_teams.team', '<', 3)->select('users.*')->distinct());
+    }
+}
 
 /**
  * suggest() and didYouMean() answer "what else could you have typed", so they must run beside
@@ -111,5 +142,42 @@ class SuggestBaseQueryTest extends TestCase
 
         $this->assertSame(['Quo', 'Quy', 'Qual', 'Quin'], array_slice(User::search('qu')->searchIn(['name'])->suggestFrom('table')->suggest(5), 0, 4));
         $this->assertSame(['Quo', 'Quy', 'Qual', 'Quin'], array_slice(User::search('qu')->searchIn(['name', 'email'])->suggestFrom('table')->suggest(5), 0, 4));
+    }
+
+    public static function distinctScopes(): array
+    {
+        return [
+            'a distinct() global scope'           => [SuggestDistinctScopedUser::class],
+            'a join and distinct() global scope' => [SuggestJoinDistinctScopedUser::class],
+        ];
+    }
+
+    /**
+     * VC-2. TE-9's length order is left out where a DISTINCT would reject it, but the check read
+     * the Eloquent builder's query before its global scopes applied: a scope's distinct() got
+     * `ORDER BY LENGTH(name)`, which PostgreSQL (42P10) and SQL Server (145) reject under SELECT
+     * DISTINCT, so every suggest() of such a model threw there.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('distinctScopes')]
+    public function test_a_global_scopes_distinct_leaves_the_table_scan_unordered(string $model): void
+    {
+        Schema::dropIfExists('suggest_teams');
+        Schema::create('suggest_teams', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->integer('team');
+        });
+        foreach (DB::table('users')->pluck('id') as $id) {
+            DB::table('suggest_teams')->insert([['user_id' => $id, 'team' => 1], ['user_id' => $id, 'team' => 2]]);
+        }
+
+        try {
+            $expected = SuggestPlainUser::search('jo')->suggestFrom('table')->suggest(5);
+            $this->assertNotEmpty($expected);
+            $this->assertSame($expected, $model::search('jo')->suggestFrom('table')->suggest(5));
+            $this->assertSame($expected, $model::search('jo')->suggest(5), 'auto: the table scan, the index being empty or the base query joined');
+        } finally {
+            Schema::dropIfExists('suggest_teams');
+        }
     }
 }

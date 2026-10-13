@@ -247,9 +247,18 @@ final class SearchableColumns
      * accessor may decrypt it into the dictionary that suggest() serves.
      * The flip side: a masking accessor is bypassed too, and so is anything that swaps the raw
      * attributes in memory (a decrypt-on-retrieved package) — the docs say to $hidden such columns.
+     *
+     * A column qualified with the model's own table (`posts.title`, whose first segment is no method
+     * of the model: a table-qualified column, as the LIKE path reads it) is the attribute `title`.
+     * Read as an attribute named `posts.title`, which no model has, it was never indexed (VC-5).
      */
     public static function value(Model $model, string $column): mixed
     {
+        $table = $model->getTable() . '.';
+        if (str_starts_with($column, $table) && !str_contains($bare = substr($column, strlen($table)), '.') && !method_exists($model, explode('.', $column)[0])) {
+            $column = $bare;
+        }
+
         return self::declared($model) ? $model->getAttribute($column) : $model->getAttributes()[$column] ?? null;
     }
 

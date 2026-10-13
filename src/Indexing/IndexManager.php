@@ -176,13 +176,21 @@ class IndexManager
     /** @var array<string, bool> class => hydratesOtherClasses() */
     private static array $hydrates = [];
 
-    /** The topmost model class $class extends that reads its table on its connection, or the topmost concrete one (memoized). */
+    /**
+     * The topmost model class $class extends that dispatches the kinds (hydratesOtherClasses()) and
+     * reads its table on its connection, or the topmost concrete one (memoized). A parent whose
+     * newFromBuilder() is Eloquent's builds every row as itself: Laravel's default User extends
+     * Illuminate\Foundation\Auth\User, concrete and on `users`, which read every row's kind as the
+     * framework class, so a rebuild wrote each chunk under it and a save of a child row through
+     * the parent filed it nowhere (VD-5).
+     */
     private static function hierarchyRoot(string $class, bool $concrete = false): string
     {
         $key = ($concrete ? 'concrete ' : '') . $class;
         if (!isset(self::$roots[$key])) {
             $root = $class;
             while (($parent = get_parent_class($root)) !== false && $parent !== Model::class && is_subclass_of($parent, Model::class)
+                && self::hydratesOtherClasses($parent)
                 && !($concrete && (new \ReflectionClass($parent))->isAbstract()) && self::sameTable($parent, $class)) {
                 $root = $parent;
             }
@@ -197,8 +205,9 @@ class IndexManager
 
     /**
      * The index types of $class's single-table-inheritance hierarchy that hold each of $keys: every
-     * indexed type whose class extends the topmost model $class extends on its table and connection,
-     * so the parent's, a sibling's and a subclass's index alike. A key-only model (Scout's queued
+     * indexed type whose class extends the hierarchy's root (hierarchyRoot(): the topmost model $class
+     * extends that dispatches the kinds on its table and connection), so the parent's, a sibling's
+     * and a subclass's index alike. A key-only model (Scout's queued
      * delete) and a row re-read as its new kind cannot tell the type it was filed under before. A
      * class whose query hydrates every row as itself files them under its own type only: that type
      * is returned with every key, unread.
@@ -212,12 +221,7 @@ class IndexManager
             return $keys === [] ? [] : [self::indexType($class) => $keys];
         }
 
-        $root  = self::hierarchyRoot($class);
-        $types = DB::table('fuzzy_index_meta')->useWritePdo()->pluck('model_type')
-            ->map(fn ($type) => (string) $type)
-            ->filter(fn (string $type) => class_exists($type) && is_a($type, $root, true) && self::sameTable($type, $root))
-            ->values()->all();
-
+        $types = self::hierarchyTypes($class);
         $filed = [];
         foreach ($types === [] ? [] : array_chunk(array_map('strval', $keys), 1000) as $chunk) {
             $rows = DB::table('fuzzy_index_documents')->useWritePdo()
@@ -230,6 +234,49 @@ class IndexManager
         }
 
         return $filed;
+    }
+
+    /** @return list<string> the indexed types of $class's hierarchy (see filedUnder()) */
+    private static function hierarchyTypes(string $class): array
+    {
+        $root = self::hierarchyRoot($class);
+
+        return DB::table('fuzzy_index_meta')->useWritePdo()->pluck('model_type')
+            ->map(fn ($type) => (string) $type)
+            ->filter(fn (string $type) => class_exists($type) && is_a($type, $root, true) && self::sameTable($type, $root))
+            ->values()->all();
+    }
+
+    /**
+     * Take the rows that are gone from the table out of every index type of $class's
+     * single-table-inheritance hierarchy but $class's own: `rebuild --fresh` flushes that type
+     * alone and indexes the rows its query reads, so a child row deleted without model events (a
+     * query-builder delete()) stayed in the child's index after a fresh rebuild of the parent
+     * (R13-L5). One keyed read of the table per 1,000 documents of each other type. A class whose
+     * query hydrates every row as itself has no other type: nothing is read.
+     */
+    public function unfileGone(string $class): void
+    {
+        if (!self::hydratesOtherClasses($class)) {
+            return;
+        }
+
+        $root = self::hierarchyRoot($class, concrete: true);
+        $own  = self::indexType($class);
+        foreach (self::hierarchyTypes($class) as $type) {
+            if ($type === $own) {
+                continue;
+            }
+            DB::table('fuzzy_index_documents')->useWritePdo()->where('model_type', $type)->select('model_id')
+                ->chunkById(1000, function ($rows) use ($root, $type) {
+                    $ids  = $rows->map(fn ($row) => (string) ((object) $row)->model_id)->all(); // an app-wide array fetch mode returns arrays
+                    $live = Model::withoutEvents(fn () => (new $root())->newModelQuery()->useWritePdo()->whereKey($ids)->pluck((new $root())->getKeyName()));
+                    $gone = array_values(array_diff($ids, $live->map(fn ($key) => (string) $key)->all()));
+                    if ($gone !== []) {
+                        $this->write($type, $gone, [], refile: false); // the type's re-read finds none: they leave
+                    }
+                }, 'model_id');
+        }
     }
 
     /**
@@ -591,12 +638,14 @@ class IndexManager
     /** @var array<string, array<string, int>> SearchableColumns::connectionKey()|table => name => id, of the model types and columns (see dictionaryIds()) */
     private static array $dictionary = [];
 
-    /** @var array<string, true> connection names whose search_path statements forget $dictionary (PostgreSQL, see dictionaryIds()) */
+    /** @var array<string, true> connection names whose statements are watched to forget $dictionary (see dictionaryIds()) */
     private static array $watched = [];
 
     /**
      * Forget the per-process caches: the pipelines, which PostgreSQL index tables have statistics,
-     * and the model types' and columns' ids (the migrations that create those tables call this).
+     * and the model types' and columns' ids. The migrations that create those tables call this, and
+     * so does the service provider for each new application (each test of an app's suite) and after
+     * migrations or a schema dump ran in the process.
      */
     public static function resetPipelineCache(): void
     {
@@ -638,8 +687,11 @@ class IndexManager
      * DatabaseTransactions Laravel runs after-commit callbacks inside the test's own transaction,
      * which it then rolls back (VJ-1). On PostgreSQL a statement on the connection that sets
      * search_path (a runtime SET of schema-per-tenant) forgets them: each tenant schema numbers its
-     * own, and the config, which connectionKey() reads, does not change (VJ-2). Watched rather than
-     * read on every lookup, which added a query to every search.
+     * own, and the config, which connectionKey() reads, does not change (VJ-2). So does a truncate
+     * or delete of either dictionary, on any connection: a test that empties the index tables
+     * between two writes numbers the names again from 1, and a remembered id then named another
+     * model's type or column, whose search served the first model's rows (VC-1, VD-6). Watched
+     * rather than read on every lookup, which added a query to every search.
      *
      * $insert adds the missing names, sorted, so concurrent first writes take them in one order: a
      * write waits for another's uncommitted insert of the same name, then finds it, through a current
@@ -655,13 +707,23 @@ class IndexManager
         $key        = SearchableColumns::connectionKey($connection) . '|' . $table;
         $ids        = [];
 
-        // ponytail: a search_path changed outside Laravel's query events (a raw PDO exec, a
-        // server-side function) is not seen; read current_setting() per lookup if that matters.
-        if ($connection->getDriverName() === DbDialect::PGSQL && !isset(self::$watched[$connection->getName()])) {
+        // ponytail: a search_path changed, or a dictionary emptied, outside Laravel's query events
+        // (a raw PDO exec, a server-side function, a restore, DatabaseTruncation, which unsets the
+        // dispatcher: the provider's reset per application covers that one) is not seen; read
+        // current_setting() per lookup if that matters.
+        if (!isset(self::$watched[$connection->getName()])) {
             self::$watched[$connection->getName()] = true;
-            $connection->listen(function (\Illuminate\Database\Events\QueryExecuted $query) use ($connection) {
+            $pgsql = $connection->getDriverName() === DbDialect::PGSQL;
+            $connection->listen(function (\Illuminate\Database\Events\QueryExecuted $query) use ($connection, $pgsql) {
+                // Runs for every query: two stripos() before any regex. Laravel's truncate() is a
+                // `truncate [table]` on the servers, a `delete from` on SQLite; a prefix and a schema
+                // may come before the name.
+                if ((stripos($query->sql, 'fuzzy_index_model_types') !== false || stripos($query->sql, 'fuzzy_index_columns') !== false)
+                    && preg_match('/^\s*(?:truncate|delete\s+from)\s+(?:table\s+)?(?:\S+\.)?["`\[]?\w*fuzzy_index_(?:model_types|columns)\b/i', $query->sql) === 1) {
+                    self::$dictionary = [];
+                }
                 // A SET [SESSION|LOCAL] search_path or set_config('search_path', …), not a read of it.
-                if ($query->connectionName === $connection->getName() && preg_match("/\\bset\\s+(session\\s+|local\\s+)?search_path\\b|set_config\\s*\\(\\s*'search_path'/i", $query->sql) === 1) {
+                if ($pgsql && $query->connectionName === $connection->getName() && preg_match("/\\bset\\s+(session\\s+|local\\s+)?search_path\\b|set_config\\s*\\(\\s*'search_path'/i", $query->sql) === 1) {
                     self::$dictionary = [];
                 }
             });
@@ -1107,7 +1169,36 @@ class IndexManager
 
             $byModel   = []; // id => [column => [term => frequency]]
             $elsewhere = []; // index type => keys of the rows hydrated as a class indexed under it
-            foreach ($this->reload($modelType, $keys, $scout) + $unsaved as $id => $model) {
+            $reloaded  = $this->reload($modelType, $keys, $scout);
+
+            // A key the type's own re-read missed, under single-table inheritance: the caller named
+            // the type from an instance, not the row (a stale child instance saved or deleted after
+            // another request moved the row to another kind, a delete through a parent instance
+            // loaded without the type column, IndexModelJob named with the parent or the child after
+            // a query-builder write). Read through the hierarchy's root without global scopes, a
+            // live row goes to its kind's type, and a gone one leaves every other type that holds it
+            // (filedUnder()), both through the refile below, whose write re-reads with that type's
+            // scopes (VB-1, R13-L5). A write that does not refile (the refile's own, unfileElsewhere()'s)
+            // drops what this finds.
+            if (count($reloaded) < count($keys) && self::hydratesOtherClasses($modelType)) {
+                $missed = array_values(array_diff(array_map('strval', $keys), array_map('strval', array_keys($reloaded))));
+                $root   = self::hierarchyRoot($modelType, concrete: true);
+                $live   = [];
+                foreach (Model::withoutEvents(fn () => (new $root())->newModelQuery()->useWritePdo()->whereKey($missed)->get()) as $row) {
+                    $live[(string) $row->getKey()] = true;
+                    if (($type = self::indexType($row)) !== $modelType) {
+                        $elsewhere[$type][] = $row->getKey();
+                    }
+                }
+                $gone = array_values(array_filter($missed, fn (string $key) => !isset($live[$key])));
+                foreach ($gone === [] ? [] : $this->filedUnder($modelType, $gone) as $type => $typeKeys) {
+                    if ($type !== $modelType) {
+                        $elsewhere[$type] = [...($elsewhere[$type] ?? []), ...$typeKeys];
+                    }
+                }
+            }
+
+            foreach ($reloaded + $unsaved as $id => $model) {
                 // indexBatch() groups the unsaved instances by type, so only a re-read row can differ.
                 if (($type = self::indexType($model)) !== $modelType) {
                     $elsewhere[$type][] = $model->getKey();

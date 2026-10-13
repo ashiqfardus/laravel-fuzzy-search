@@ -37,7 +37,9 @@ class CaseKeyedNote extends Model
  *    DatabaseTransactions, Laravel runs after-commit callbacks inside the test's own transaction,
  *    which it then rolls back, and the next test's write used an id with no row behind it (VJ-1);
  *  - on PostgreSQL, per search_path in effect: each tenant schema numbers its own (VJ-2);
- *  - a name is found as the column's collation compares it, two spellings in one write too (VJ-6).
+ *  - a name is found as the column's collation compares it, two spellings in one write too (VJ-6);
+ *  - forgotten when the dictionaries are emptied under the process: a truncate (VC-1), a new
+ *    application, migrations or a schema dump (VD-6).
  */
 class DictionaryIdsTest extends TestCase
 {
@@ -131,5 +133,102 @@ class DictionaryIdsTest extends TestCase
 
         $this->assertSame(['copper kettle'], CaseKeyedNote::search('teapot')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all());
         $this->assertSame(['copper kettle'], CaseKeyedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('title')->all());
+    }
+
+    /**
+     * Empty every index table as a test suite that truncates between tests does: Laravel's
+     * truncate(), foreign keys off. SQL Server cannot truncate a table a foreign key references, so
+     * there the rows are deleted and the ids reseeded, which numbers them from 1 again the same way.
+     */
+    private function emptyIndexTables(): void
+    {
+        Schema::withoutForeignKeyConstraints(function () {
+            foreach (['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_terms', 'fuzzy_index_model_types', 'fuzzy_index_columns'] as $table) {
+                if (DB::connection()->getDriverName() !== 'sqlsrv') {
+                    DB::table($table)->truncate();
+                    continue;
+                }
+                DB::table($table)->delete();
+                if (in_array($table, ['fuzzy_index_terms', 'fuzzy_index_model_types', 'fuzzy_index_columns'], true)) {
+                    DB::statement("DBCC CHECKIDENT ('" . DB::getTablePrefix() . $table . "', RESEED, 0)");
+                }
+            }
+        });
+    }
+
+    /** @return array<string, list<string>> each model's index search for a word only the other model holds, and for its own */
+    private function searches(): array
+    {
+        $titles = fn (string $model, string $term, string $column) => $model::search($term)->useInvertedIndex()->typoTolerance(0)->get()->pluck($column)->sort()->values()->all();
+
+        return [
+            'users john'     => $titles(User::class, 'john', 'name'),
+            'products john'  => $titles(Product::class, 'john', 'title'),
+            'products apple' => $titles(Product::class, 'apple', 'title'),
+            'users apple'    => $titles(User::class, 'apple', 'name'),
+        ];
+    }
+
+    public static function emptyings(): array
+    {
+        return [
+            'a truncate in the process'                       => ['truncate'],
+            'DatabaseTruncation, then the next test\'s app'   => ['next application'],
+            'migrations ran in the process'                   => ['migrations'],
+            'a schema dump loaded in the process'             => ['schema'],
+        ];
+    }
+
+    /**
+     * VC-1, VD-6. The ids are remembered per process. Emptied under it (a truncate between two
+     * tests, a migrate:fresh that loads a schema dump), the dictionaries numbered the names again
+     * from 1, and a remembered name kept its old id: the users' postings went under the id the
+     * products had just been given, so the products' index search served users' words, or, a user
+     * indexed first, the write failed on the foreign key and the save went unindexed.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('emptyings')]
+    public function test_the_ids_are_forgotten_when_the_dictionaries_are_emptied_under_the_process(string $how): void
+    {
+        $index    = app(IndexManager::class);
+        $index->indexBatch(User::query()->get());
+        $index->indexBatch(Product::query()->get());
+        $expected = $this->searches();
+        $this->assertNotSame([], $expected['users john']);
+        $this->assertSame([], $expected['products john']);
+        $this->assertNotSame([], $expected['products apple']);
+
+        $empty = function () use ($how) {
+            if ($how === 'truncate') {
+                $this->emptyIndexTables();
+
+                return;
+            }
+
+            // As DatabaseTruncation does: no query event reaches a listener while it truncates.
+            $dispatcher = DB::connection()->getEventDispatcher();
+            DB::connection()->unsetEventDispatcher();
+            $this->emptyIndexTables();
+            DB::connection()->setEventDispatcher($dispatcher);
+
+            match ($how) {
+                'next application' => (new \Ashiqfardus\LaravelFuzzySearch\FuzzySearchServiceProvider($this->app))->register(),
+                'migrations'       => event(new \Illuminate\Database\Events\MigrationsEnded('up')),
+                'schema'           => event(new \Illuminate\Database\Events\SchemaLoaded(DB::connection(), 'database/schema/testing-schema.sql')),
+            };
+        };
+
+        // A user first: its remembered type id has no row behind it.
+        $empty();
+        $index->indexBatch(User::query()->get());
+        $this->assertSame($expected['users john'], $this->searches()['users john'], 'indexed after the tables were emptied');
+
+        // A product first, then a user: the product takes id 1 again.
+        $empty();
+        $index->indexBatch(Product::query()->get());
+        $index->indexBatch(User::query()->get());
+        $this->assertSame($expected, $this->searches());
+        $this->assertSame(2, DB::table('fuzzy_index_model_types')->count());
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->whereNotIn('model_type_id', DB::table('fuzzy_index_model_types')->select('id'))->count());
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->whereNotIn('column_id', DB::table('fuzzy_index_columns')->select('id'))->count());
     }
 }
