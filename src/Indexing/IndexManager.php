@@ -348,12 +348,13 @@ class IndexManager
             // Waits for a write to this row in flight; empty = it was not indexed.
             $old    = $this->claimDocuments($modelType, [$modelId]);
             $typeId = self::modelTypeId($modelType);
-            $posted = self::holders($this->currentPostings($typeId, [$modelId], $old));
+            $current = $this->currentPostings($typeId, [$modelId], $old);
+            $posted  = self::holders($current);
 
             $words = $this->adjustDocCounts(array_map(fn (int $holders) => -$holders, $posted));
-            if ($posted !== []) { // see write()
+            if ($posted !== []) {
                 $this->adjustModelTerms($typeId, self::termDeltas($posted, [], [], $words));
-                $this->deletePostings($typeId, [$modelId]);
+                $this->deletePostings($typeId, $current);
             }
 
             // The document row, or the placeholder the claim just inserted.
@@ -621,18 +622,69 @@ class IndexManager
     }
 
     /**
-     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts() and
-     * adjustModelTerms().
+     * Delete postings by their whole primary key (term_id, model_type_id, model_id, column_id),
+     * given as currentPostings() returns them. Their doc_count share goes back through
+     * adjustDocCounts() and adjustModelTerms().
      *
-     * @param array<int|string> $modelIds
+     * Not by model: on MySQL/MariaDB at REPEATABLE READ a DELETE through postings_model_idx (or the
+     * scan of the clustered key MySQL and MariaDB chose for it while the table was small) takes
+     * next-key locks, the gaps beside the rows' entries included. A neighbouring row's write inserts
+     * its new postings into such a gap, and its own DELETE held the gap that write's insert went
+     * into: each write's insert waited on the other's, and one of two single writes in transactions
+     * of yours was the deadlock victim (P6-B1). One point per posting locks that posting only, a
+     * row only this write's claim reaches. MySQL/MariaDB are told to read the primary key
+     * (FORCE INDEX): their plan otherwise followed postings_model_idx, or scanned. A statement holds
+     * up to 1,000 postings, grouped by row and column (MySQL's range optimizer abandons a range of
+     * more points than it can hold, for a scan), and up to 500 rows (SQL Server's 2,100 bindings).
+     *
+     * @param array<int|string, array<int, array<int, mixed>>> $postings model id => term id => column id => …
      */
-    private function deletePostings(int $typeId, array $modelIds): void
+    private function deletePostings(int $typeId, array $postings): void
     {
-        foreach (array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
-            DB::table('fuzzy_index_postings')
-                ->where('model_type_id', $typeId)
-                ->whereIn('model_id', $chunk)
-                ->delete();
+        $groups = []; // [model id, column id, term ids]
+        foreach ($postings as $id => $terms) {
+            $byColumn = [];
+            foreach ($terms as $termId => $columns) {
+                foreach (array_keys($columns) as $columnId) {
+                    $byColumn[(int) $columnId][] = (int) $termId;
+                }
+            }
+            foreach ($byColumn as $columnId => $termIds) {
+                foreach (array_chunk($termIds, 1000) as $chunk) {
+                    $groups[] = [(string) $id, $columnId, $chunk];
+                }
+            }
+        }
+
+        $table  = DbDialect::rawIdentifier('fuzzy_index_postings');
+        $delete = DbDialect::isMySqlFamily(DB::connection()->getDriverName())
+            ? "delete p from {$table} as p force index (primary)"
+            : "delete from {$table}";
+        $send   = function (array $statement) use ($typeId, $delete): void {
+            $ids    = array_values(array_unique(array_column($statement, 0)));
+            $points = implode(' or ', array_map(
+                fn (array $group) => "(model_id = ? and column_id = {$group[1]} and term_id in (" . implode(',', $group[2]) . '))',
+                $statement
+            ));
+            // The IN list of rows lets PostgreSQL, SQLite and SQL Server read postings_model_idx.
+            DB::delete(
+                "{$delete} where model_type_id = {$typeId} and model_id in (" . implode(',', array_fill(0, count($ids), '?')) . ") and ({$points})",
+                [...$ids, ...array_column($statement, 0)]
+            );
+        };
+
+        $statement = [];
+        $size      = 0;
+        foreach ($groups as $group) {
+            if ($statement !== [] && ($size + count($group[2]) > 1000 || count($statement) === 500)) {
+                $send($statement);
+                [$statement, $size] = [[], 0];
+            }
+            $statement[] = $group;
+            $size       += count($group[2]);
+        }
+        if ($statement !== []) {
+            $send($statement);
         }
     }
 
@@ -1392,10 +1444,11 @@ class IndexManager
      *  2. reload the saved rows (reload()): the text indexed is the row as committed now, so
      *     whichever write commits last leaves the latest save indexed (ruling ER-68);
      *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
-     *     terms, in id order (giving back the old terms, C12; raising the new ones), and delete
-     *     the old postings;
+     *     terms, in id order (giving back the old terms, read by currentPostings(), C12; raising
+     *     the new ones);
      *  4. insert the terms the dictionary lacks, sorted; apply the same changes to the model
-     *     type's own counts (adjustModelTerms(), ER-197); then the postings, document rows and
+     *     type's own counts (adjustModelTerms(), ER-197); then the postings (those the rows no
+     *     longer hold deleted by key, the changed and new ones upserted), document rows and
      *     meta (C11) of the rows with text.
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
@@ -1494,7 +1547,8 @@ class IndexManager
             // write takes its locks on existing terms in the order every other write takes them
             // (ER-71): giving back old terms, then raising new ones in a second statement, let two
             // writes whose terms cross each hold a row the other needed.
-            $posted   = self::holders($this->currentPostings($typeId, $ids, $old)); // term id => rows holding it
+            $current  = $this->currentPostings($typeId, $ids, $old);
+            $posted   = self::holders($current); // term id => rows holding it
             $existing = $this->termIds(array_map('strval', array_keys($counts)));
             $driver   = DB::connection()->getDriverName();
 
@@ -1533,16 +1587,6 @@ class IndexManager
             // re-indexing dropped it can be. It is inserted again below, as a missing one (ER-75).
             $words    = $this->adjustDocCounts($deltas);
             $existing = array_filter($existing, fn ($id) => isset($words[$id]));
-
-            // No DELETE when nothing is posted: on MySQL/MariaDB one that matches nothing still
-            // gap-locks the end of postings_model_idx, where another first index's postings
-            // insert then waits while that write waits on a new word this one inserted first: a
-            // deadlock on every pair of first indexes sharing a new word. $posted is every
-            // posting of these rows (the term foreign key cascades), and under the claim only a
-            // flush (ER-69) can change them.
-            if ($posted !== []) {
-                $this->deletePostings($typeId, $ids);
-            }
 
             // Rows leaving the index (gone, soft-deleted, no text left) lose their document row,
             // and rows never indexed lose the placeholder the claim inserted.
@@ -1618,13 +1662,23 @@ class IndexManager
             // One posting per (term, column), with the document's length; a term missing from
             // $termIds means a pre-migration collation collapsed it into a variant: MySQL/MariaDB
             // *_ci (B25), SQL Server's default.
+            // Only the postings that change are written: a posting the row still holds at the same
+            // frequency and document length is left as it is. What is left in $current, the
+            // postings the rows no longer hold, is deleted by its primary key first (deletePostings()).
             $postingRows  = [];
             $documentRows = [];
             foreach ($byModel as $id => $byColumn) {
                 foreach ($this->postingRows($byColumn, $termIds, $typeId, $columnIds, $id, $lengths[$id]) as $row) {
-                    $postingRows[] = $row;
+                    [$termId, $columnId] = [(int) $row['term_id'], (int) $row['column_id']];
+                    if (($current[$id][$termId][$columnId] ?? null) !== [$row['frequency'], $row['doc_length']]) {
+                        $postingRows[] = $row;
+                    }
+                    unset($current[$id][$termId][$columnId]);
                 }
                 $documentRows[] = ['model_type' => $modelType, 'model_id' => (string) $id, 'doc_length' => $lengths[$id]];
+            }
+            if ($posted !== []) {
+                $this->deletePostings($typeId, $current);
             }
 
             // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing (C9).
