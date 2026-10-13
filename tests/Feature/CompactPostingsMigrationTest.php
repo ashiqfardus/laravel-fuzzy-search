@@ -631,16 +631,72 @@ class CompactPostingsMigrationTest extends TestCase
         Log::shouldNotHaveReceived('warning');
     }
 
-    /** 2.0.1's re-index of a row whose index stays the same size: its postings deleted and inserted again (new ids), its first word replaced by a new one. */
-    private function oldRewrite(string $type, string $id): void
+    /** 2.0.1's re-index of a row whose index stays the same size, on $db: its postings deleted and inserted again (new ids), its first word replaced by $word. */
+    private function oldRewrite(string $type, string $id, string $word = 'zzresumed', ?\Illuminate\Database\Connection $db = null): void
     {
-        $old  = fn () => DB::table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id);
+        $db ??= DB::connection();
+        $old  = fn () => $db->table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id);
         $rows = $old()->orderBy('id')->get(['term_id', 'column_name', 'frequency'])->map(fn ($row) => (array) $row)->all();
         $old()->delete();
-        $word = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzresumed', 'doc_count' => 1, 'term_length' => 9]);
-        foreach ([...array_slice($rows, 1), ['term_id' => $word, 'column_name' => (string) $rows[0]['column_name'], 'frequency' => 1]] as $row) {
-            DB::table('fuzzy_index_postings')->insert(['model_type' => $type, 'model_id' => $id] + $row);
+        $term = $db->table('fuzzy_index_terms')->insertGetId(['term' => $word, 'doc_count' => 1, 'term_length' => mb_strlen($word)]);
+        foreach ([...array_slice($rows, 1), ['term_id' => $term, 'column_name' => (string) $rows[0]['column_name'], 'frequency' => 1]] as $row) {
+            $db->table('fuzzy_index_postings')->insert(['model_type' => $type, 'model_id' => $id] + $row);
         }
+    }
+
+    /**
+     * VA-5. Ids are taken at insert and committed out of order: an old-code write whose transaction
+     * took its ids before another write committed is not seen when the tail reads its boundary,
+     * and commits below the boundary the next round reads past, so its row keeps the postings the
+     * ranges copied. Code k-2's edit keeps its size, so the meta tells nothing either: the
+     * migration names every model with a posting past the ids its ranges read. (Under MySQL's
+     * REPEATABLE READ the in-flight write's deletes and duplicate checks lock gaps of the earlier
+     * layout's indexes, and the committed write must insert into none of them, or it would wait
+     * on it, here in one process: code k-2 keeps its last word, `towel`, followed by `wire`, while
+     * a write of k-1 would lock the gap past `wire`, the last word, where note 4's new word goes.)
+     */
+    public function test_a_write_in_flight_when_the_tail_reads_its_boundary_is_named(): void
+    {
+        if (in_array($this->dbDriver, ['sqlite', 'sqlsrv'], true)) {
+            $this->markTestSkipped('SQLite has one writer, and SQL Server\'s locking READ COMMITTED makes the tail\'s read wait for the write instead of reading past it (the test would wait on itself); the CI MySQL, MariaDB and PostgreSQL jobs run this.');
+        }
+
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $default = config('database.default');
+        config(['database.connections.second_writer' => config("database.connections.{$default}")]);
+        $writer = DB::connection('second_writer');
+        $last   = (int) DB::table('fuzzy_index_postings')->max('id');
+
+        $armed = false;
+        DB::listen(function (QueryExecuted $query) use (&$armed, $writer) {
+            if ($armed && $query->connectionName !== 'second_writer' && preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                $armed = false;
+                $writer->commit(); // the write in flight commits while the tail copies the other one
+            }
+        });
+
+        Log::spy();
+        try {
+            $this->migrateWithWrites(3, function (int $high) use ($last, $writer, &$armed) {
+                if ($high < $last) {
+                    return;
+                }
+                $writer->beginTransaction();
+                $this->oldRewrite(MigratedCode::class, 'k-2', 'zzinflight', $writer); // its ids taken, not committed
+                $this->oldRewrite(MigratedNote::class, '4', 'zzcommitted');             // committed, with higher ids
+                $armed = true;
+            });
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+            if ($writer->transactionLevel() > 0) {
+                $writer->rollBack();
+            }
+            DB::purge('second_writer');
+        }
+
+        $this->assertFalse($armed, 'the write in flight committed during the tail');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
     }
 
     /** 2.0.1's removal of a row from the index: its postings, its document row and its share of the meta totals. */

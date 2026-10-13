@@ -317,13 +317,16 @@ return new class extends Migration
      * again past the ids the copy read. Once the ranges are done, the documents with postings past
      * them are copied again whole, from their current postings, read by document
      * (postings_model_idx), after their copied postings are deleted: both a row the copy had
-     * copied and one it had not end exact. The copy follows such writes TAIL_ROUNDS times.
+     * copied and one it had not end exact. The copy follows such writes TAIL_ROUNDS times. Ids are
+     * taken at insert and committed out of order (VA-5): a write in flight when a round reads its
+     * boundary commits below it, and its row keeps what the ranges copied. So every model type
+     * with a posting past the ids the ranges read is named, whether or not a round copied it.
      *
      * @return array{int, array<string, true>, bool} the postings the copy left out (without a
      *                                               document row, or written twice), the model
-     *                                               types of the rows copied again or written
-     *                                               past the last round, and whether writes went
-     *                                               on past it
+     *                                               types with postings written past the ids the
+     *                                               ranges read, and whether writes went on past
+     *                                               the last round
      */
     private function copyUp(): array
     {
@@ -365,6 +368,7 @@ return new class extends Migration
             }
         }
 
+        $read      = $max; // the ids the ranges read
         $rewritten = [];
         for ($round = 0; $round < self::TAIL_ROUNDS && ($last = (int) (clone $postings)->max('id')) > $max; $round++) {
             $written = []; // model type => model ids
@@ -382,12 +386,12 @@ return new class extends Migration
             $max = $last;
         }
 
-        $late = (clone $postings)->where('id', '>', $max)->distinct()->pluck('model_type')->all(); // past the last round: named, not copied
-        foreach ($late as $type) {
+        $unfinished = (int) (clone $postings)->max('id') > $max; // past the last round: named, not copied
+        foreach ((clone $postings)->where('id', '>', $read)->distinct()->pluck('model_type') as $type) { // one range of the key
             $rewritten[(string) $type] = true;
         }
 
-        return [$missed, $rewritten, $late !== []];
+        return [$missed, $rewritten, $unfinished];
     }
 
     /**
