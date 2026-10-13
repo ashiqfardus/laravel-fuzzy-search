@@ -566,42 +566,53 @@ class IndexManager
 
     /**
      * Flush (delete) the index of every model: `fuzzy-search:clear --all`. The model types and
-     * columns stay: their ids never change (see dictionaryIds()).
+     * columns stay: their ids never change (see dictionaryIds()). Returns false when it deleted the
+     * big tables row by row (the command says so: on a large index that is slow).
      *
-     * The big tables are truncated (ruling ER-187): a DELETE per table in one transaction logged
-     * every row, and on a large index filled the log (SQL Server: from 1 GB to 5.4 GB in two
-     * minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against index writes
-     * on each path (TB-1, see flushing()):
-     * - PostgreSQL: one TRUNCATE of the four tables in flushing()'s transaction, after its lock. Its
-     *   ACCESS EXCLUSIVE holds index searches off to the commit too (they read the old rows during
-     *   the DELETEs). No CASCADE: a table of the app's with a foreign key to one of them makes it
-     *   fail and the DELETEs run, rather than emptying that table. No RESTART IDENTITY.
+     * The big tables are truncated where that takes no waiting (ruling ER-187): a DELETE per table in
+     * one transaction logged every row, and on a large index filled the log (SQL Server: from 1 GB
+     * to 5.4 GB in two minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against
+     * index writes on each path (TB-1, see flushing()):
+     * - PostgreSQL: in flushing()'s transaction, after its lock, in a savepoint, LOCK TABLE the four
+     *   … NOWAIT, then one TRUNCATE of them. Its ACCESS EXCLUSIVE holds index searches off to the
+     *   commit too (they read the old rows during the DELETEs). No CASCADE: a table of the app's
+     *   with a foreign key to one of them makes it fail and the DELETEs run, rather than emptying
+     *   that table. No RESTART IDENTITY.
      * - SQL Server: after flushing()'s index write lock, TRUNCATE the postings and documents, which
      *   no foreign key references, in its transaction. Their schema locks hold searches off to the
-     *   commit.
-     * - MySQL/MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the
-     *   four holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES,
-     *   and a session may truncate a table it has write-locked (MySQL also read-locks the model
-     *   types the postings reference; writers still read them).
-     * SQL Server and MySQL/MariaDB then delete the meta rows (one per model) and the terms: MySQL
+     *   commit. A reader holds no lock there past its statement.
+     * - MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the four
+     *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
+     *   session may truncate a table it has write-locked. Laravel 10 connects to it as mysql.
+     * - MySQL: the DELETEs, as 2.0 did (R13-M3, ruling ER-194). Its LOCK TABLES cannot be told not
+     *   to wait (no NOWAIT; lock_wait_timeout is a second at least).
+     * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
      * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). SQLite: DELETE
      * without WHERE is its truncate.
      *
-     * The DELETEs run instead inside a transaction of the caller's on MySQL/MariaDB (TRUNCATE and
-     * LOCK TABLES would commit it), and wherever TRUNCATE is refused, for whatever reason: a
-     * database user without the privilege it needs beyond DELETE (DROP, and LOCK TABLES, on
-     * MySQL/MariaDB; TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign
-     * key to one of these tables. If the DELETEs fail too, their error is thrown. On PostgreSQL a
-     * refusal rolls back to a savepoint (the transaction would be aborted otherwise); SQL Server
-     * rolls back the whole transaction on one, so it checks both first.
+     * The exclusive table locks are taken with NOWAIT, never waited for (R13-M3): an app's
+     * transaction that had read one index table (a search) held its shared lock to its end, the
+     * clear waited for it holding the tables it had already locked, and the app's next statement on
+     * one of those (a search, a sync IndexModelJob) closed the cycle. MySQL and MariaDB killed the
+     * app's transaction (1213), its own rows with it; PostgreSQL the app's or the clear's (40P01,
+     * which Laravel's savepoint handler turned into a DeadlockException past the fallback). Searches
+     * hold their locks for a moment, so a refusal is tried again (withoutWaiting()).
      *
-     * ponytail: on MySQL/MariaDB each TRUNCATE commits on its own, under the table locks: no
-     * other session sees the index half cleared, but a clear interrupted part way leaves it so
-     * until it is run again. A crash-atomic cheap clear there would swap in empty copies of the
-     * tables (RENAME TABLE), at the cost of rebuilding their foreign keys.
+     * The DELETEs run instead on MySQL, inside a transaction of the caller's on MariaDB (TRUNCATE and
+     * LOCK TABLES would commit it), while the tables stay busy, and wherever TRUNCATE is refused: a
+     * database user without the privilege it needs beyond DELETE (DROP, and LOCK TABLES, on MariaDB;
+     * TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign key to one of these
+     * tables. A reader does not hold them off. If the DELETEs fail too, their error is thrown. On
+     * PostgreSQL a refusal rolls back to a savepoint (the transaction would be aborted otherwise);
+     * SQL Server rolls back the whole transaction on one, so it checks both first.
+     *
+     * ponytail: on MariaDB each TRUNCATE commits on its own, under the table locks: no other session
+     * sees the index half cleared, but a clear interrupted part way leaves it so until it is run
+     * again. A crash-atomic cheap clear there, and a cheap one on MySQL, would swap in empty copies
+     * of the tables (RENAME TABLE), at the cost of rebuilding their foreign keys.
      */
-    public function flushAll(): void
+    public function flushAll(): bool
     {
         $connection = DB::connection();
         $driver     = $connection->getDriverName();
@@ -613,32 +624,33 @@ class IndexManager
             }
         };
 
-        if (DbDialect::isMySqlFamily($driver) && DB::transactionLevel() === 0) {
-            try {
-                $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)));
-                try {
-                    foreach ($big as $table) {
-                        DB::table($table)->truncate();
-                    }
-                    $deletes($big);
-                } finally {
-                    $connection->unprepared('UNLOCK TABLES');
-                }
+        // Laravel 10 connects to MariaDB as mysql; the server tells them apart, without a query.
+        $mariadb = $driver === DbDialect::MARIADB
+            || ($driver === DbDialect::MYSQL && stripos((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), 'mariadb') !== false);
 
-                return;
-            } catch (\Illuminate\Database\QueryException) {
-                // Refused: the DELETEs below, which leave the index empty whatever ran before.
+        if ($mariadb && DB::transactionLevel() === 0 && $this->withoutWaiting(function () use ($connection, $tables, $big, $deletes) {
+            $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)) . ' NOWAIT');
+            try {
+                foreach ($big as $table) {
+                    DB::table($table)->truncate();
+                }
+                $deletes($big);
+            } finally {
+                $connection->unprepared('UNLOCK TABLES');
             }
+        })) {
+            return true;
         }
 
-        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes) {
-            $truncated = [];
+        $truncated = [];
+        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes, &$truncated) {
             if ($driver === DbDialect::PGSQL) {
-                try {
-                    DB::transaction(fn () => DB::statement('TRUNCATE TABLE ' . implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $tables)))); // a savepoint
+                $list = implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $tables));
+                if ($this->withoutWaiting(fn () => DB::transaction(function () use ($list) { // a savepoint
+                    DB::statement("LOCK TABLE {$list} IN ACCESS EXCLUSIVE MODE NOWAIT");
+                    DB::statement("TRUNCATE TABLE {$list}");
+                }))) {
                     $truncated = $tables;
-                } catch (\Illuminate\Database\QueryException) {
-                    // Refused (see above): rolled back to the savepoint.
                 }
             } elseif ($driver === DbDialect::SQLSRV) {
                 // A refused TRUNCATE rolls the whole transaction back there, the index write lock
@@ -654,6 +666,36 @@ class IndexManager
 
             $deletes($truncated);
         });
+
+        return $truncated !== [] || $driver === DbDialect::SQLITE;
+    }
+
+    /**
+     * Run $truncate, whose table locks are taken with NOWAIT, and tell whether it ran. Refused
+     * because the tables are busy (PostgreSQL's 55P03, MariaDB's 1205), it is tried again: a search
+     * holds its shared lock only while it runs, so under traffic one try mostly meets one. Any other
+     * refusal (a privilege, a foreign key) is final. Between tries MariaDB holds no lock; PostgreSQL
+     * holds flushing()'s lock, so index writes wait those moments too, as they wait for the clear.
+     * Anything else goes up, a DeadlockException too: Laravel rolls back no savepoint for one, so
+     * flushing()'s transaction rolls back whole and the index stays as it was.
+     *
+     * ponytail: 5 tries 200 ms apart, then the DELETEs; make them configurable if an index under
+     * constant load keeps deleting row by row.
+     */
+    private function withoutWaiting(\Closure $truncate): bool
+    {
+        for ($try = 1; ; $try++) {
+            try {
+                $truncate();
+
+                return true;
+            } catch (\Illuminate\Database\QueryException $e) {
+                if ($try === 5 || ($e->getCode() !== '55P03' && ($e->errorInfo[1] ?? null) !== 1205)) {
+                    return false;
+                }
+                usleep(200_000);
+            }
+        }
     }
 
     /**
