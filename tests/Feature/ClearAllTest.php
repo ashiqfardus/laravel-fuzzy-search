@@ -216,7 +216,7 @@ class ClearAllTest extends TestCase
                 DB::unprepared("CREATE USER '{$user}'@'%' IDENTIFIED BY '{$password}'");
                 DB::unprepared("GRANT SELECT, INSERT, UPDATE, DELETE" . ($lockTables ? ', LOCK TABLES' : '') . " ON `{$database}`.* TO '{$user}'@'%'");
             } elseif ($this->dbDriver === 'sqlsrv') {
-                DB::unprepared("IF USER_ID('{$user}') IS NOT NULL DROP USER [{$user}]; IF SUSER_ID('{$user}') IS NOT NULL DROP LOGIN [{$user}]");
+                $this->dropSqlsrvLogin($user);
                 DB::unprepared("CREATE LOGIN [{$user}] WITH PASSWORD = '{$password}', CHECK_POLICY = OFF; CREATE USER [{$user}] FOR LOGIN [{$user}]; GRANT SELECT, INSERT, UPDATE, DELETE TO [{$user}]");
             } else {
                 DB::unprepared("DROP ROLE IF EXISTS {$user}");
@@ -237,7 +237,7 @@ class ClearAllTest extends TestCase
             if ($mysql) {
                 DB::unprepared("DROP USER IF EXISTS '{$user}'@'%'");
             } elseif ($this->dbDriver === 'sqlsrv') {
-                DB::unprepared("DROP USER [{$user}]; DROP LOGIN [{$user}]");
+                $this->dropSqlsrvLogin($user);
             } else {
                 DB::unprepared("DROP OWNED BY {$user}");
                 DB::unprepared("DROP ROLE IF EXISTS {$user}");
@@ -248,5 +248,16 @@ class ClearAllTest extends TestCase
         // The refused statement is not logged (no QueryExecuted); the DELETEs that followed are.
         $this->assertContains('delete from fuzzy_index_postings', $statements);
         $this->assertSame($lockTables, in_array('unlock tables', $statements, true));
+    }
+
+    /**
+     * Drop SQL Server login $user and its database user. Microsoft's ODBC driver on Linux keeps a
+     * purged connection pooled, so the login still has a session ("Could not drop login … as the
+     * user is currently logged in"): end its sessions first.
+     */
+    private function dropSqlsrvLogin(string $user): void
+    {
+        DB::unprepared("DECLARE @kill nvarchar(max) = N''; SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{$user}'; EXEC (@kill);"
+            . " IF USER_ID('{$user}') IS NOT NULL DROP USER [{$user}]; IF SUSER_ID('{$user}') IS NOT NULL DROP LOGIN [{$user}]");
     }
 }
