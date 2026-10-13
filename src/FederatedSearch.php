@@ -351,6 +351,14 @@ class FederatedSearch
         }
 
         if ($query instanceof SearchBuilder) {
+            // Without relevance fetchRanked() orders by key, so a model must hand over its first
+            // rows by key. On the index it handed over its best ranked ones, a set that changed as
+            // the limit grew with the page: page 2 repeated page 1, and some rows were never served
+            // (P6C-1). The LIKE path's stableRanking() reads them by key there already.
+            if ($this->useInvertedIndex && !$this->withRelevance) {
+                $query->orderBy((new $modelClass())->getKeyName());
+            }
+
             return $query->withRelevance($this->withRelevance)
                 ->stableRanking()
                 ->limit($limit)

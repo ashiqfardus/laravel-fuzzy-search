@@ -124,6 +124,33 @@ class FederatedInvertedIndexTest extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * Without relevance the federated order is the across() order, then each model's key, and on the
+     * index each model hands over its rows in that order: it handed over its best ranked ones, a set
+     * that changed as the limit grew with the page, so page 2 repeated page 1 and some rows were never
+     * served (P6C-1).
+     */
+    public function test_without_relevance_the_index_serves_the_rows_in_key_order_page_after_page(): void
+    {
+        $make = fn () => FederatedSearch::across([FiiBook::class, FiiAuthor::class])->search('laravel')->withRelevance(false)->useInvertedIndex();
+        $tag  = fn ($row) => class_basename($row) . ':' . $row->getKey();
+        $want = ['FiiBook:1', 'FiiBook:2', 'FiiBook:3', 'FiiBook:4', 'FiiBook:5', 'FiiBook:6', 'FiiAuthor:1', 'FiiAuthor:2', 'FiiAuthor:3', 'FiiAuthor:4'];
+
+        $this->assertSame($want, $make()->limit(50)->get()->map($tag)->all());
+        $this->assertSame(array_slice($want, 0, 2), $make()->limit(2)->get()->map($tag)->all());
+
+        $paged  = [];
+        $simple = [];
+        for ($page = 1; $page <= 4; $page++) {
+            $paginator = $make()->paginate(3, 'page', $page);
+            $this->assertSame(10, $paginator->total());
+            $paged  = [...$paged, ...$paginator->getCollection()->map($tag)->all()];
+            $simple = [...$simple, ...collect($make()->simplePaginate(3, 'page', $page)->items())->map($tag)->all()];
+        }
+        $this->assertSame($want, $paged);
+        $this->assertSame($want, $simple);
+    }
+
     public function test_every_terminal_equals_each_models_own_index_search(): void
     {
         $federated = fn () => FederatedSearch::across([FiiBook::class, FiiAuthor::class])->search('laravel')->useInvertedIndex();
