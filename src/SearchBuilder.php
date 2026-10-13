@@ -2865,7 +2865,7 @@ class SearchBuilder
      * table's columns (they cannot be listed), a type UNORDERED_TYPES names, nor, $afterKey, the
      * FROM table's own columns: the key decides them. [] without a join.
      *
-     * @return string[]
+     * @return array<string, string> the ORDER BY name => the column it names (its alias's column)
      */
     private function joinedRowColumns(Builder|EloquentBuilder $query, bool $afterKey): array
     {
@@ -2917,30 +2917,38 @@ class SearchBuilder
             $columns[]      = $ordered && $qualifier !== $own ? [$alias ?? $name, $name] : null;
         }
 
-        $count = array_count_values($names);
+        $count   = array_count_values($names);
+        $ordered = [];
+        foreach (array_filter($columns) as [$column, $named]) {
+            $ordered[($count[$column] ?? 1) > 1 ? $named : $column] ??= $named;
+        }
 
-        return array_values(array_unique(array_map(fn (array $column) => ($count[$column[0]] ?? 1) > 1 ? $column[1] : $column[0], array_filter($columns))));
+        return $ordered;
     }
 
     /**
-     * The columns of $columns that name none of $taken, nor one before them (ruling ER-52: SQL
-     * Server rejects a column named twice in ORDER BY). A bare name and a dotted one name the same
-     * column when their last segments match.
+     * The ORDER BY names of $columns (joinedRowColumns()) whose column none of $taken names, nor one
+     * before them, by its name or, for an alias, its column (ruling ER-52: SQL Server rejects a
+     * column named twice in ORDER BY, under an alias too). A bare name and a dotted one name the
+     * same column when their last segments match.
      *
      * @param string[] $taken
-     * @param string[] $columns
+     * @param array<string, string> $columns
      * @return string[]
      */
     private static function notNamedIn(array $taken, array $columns): array
     {
         $added = [];
-        foreach ($columns as $column) {
-            foreach ([...$taken, ...$added] as $name) {
-                if ($name === $column || (!str_contains($name, '.') || !str_contains($column, '.')) && self::lastSegment($name) === self::lastSegment($column)) {
-                    continue 2;
+        foreach ($columns as $column => $named) {
+            foreach ($taken as $name) {
+                foreach ([(string) $column, $named] as $mine) {
+                    if ($name === $mine || (!str_contains($name, '.') || !str_contains($mine, '.')) && self::lastSegment($name) === self::lastSegment($mine)) {
+                        continue 3;
+                    }
                 }
             }
-            $added[] = $column;
+            $added[] = (string) $column;
+            array_push($taken, (string) $column, $named);
         }
 
         return $added;

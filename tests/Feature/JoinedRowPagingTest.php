@@ -86,22 +86,24 @@ class JoinedRowPagingTest extends TestCase
         $join   = fn ($query) => $query->join($N, "{$N}.item_id", '=', "{$I}.id");
         $model  = fn () => $join(JoinedRowPagingItem::search('alpha'));
         $shapes = [
-            // name => [the search, the ORDER BY it must hold]
+            // name => [the search, the end of its ORDER BY]
             'stableRanking()'       => [fn () => $model()->select("{$I}.*", "{$N}.label")->stableRanking(), "\"{$I}\".\"id\" asc, \"{$N}\".\"label\" asc"],
             'extended()'            => [fn () => $join(JoinedRowPagingItem::search('')->extended('alpha'))->select("{$I}.*", "{$N}.label")->stableRanking(), "\"{$I}\".\"id\" asc, \"{$N}\".\"label\" asc"],
             'orderBy(name)'         => [fn () => $model()->select("{$I}.*", "{$N}.label")->orderBy("{$I}.name")->stableRanking(), "order by \"{$I}\".\"name\" asc, \"{$I}\".\"id\" asc, \"{$N}\".\"label\" asc"],
-            'select *'              => [fn () => $model()->stableRanking(), "\"{$I}\".\"id\" asc, \"{$N}\".\"id\" asc"],
+            'select *'              => [fn () => $model()->stableRanking(), "\"{$I}\".\"id\" asc, \"{$N}\".\"id\" asc, \"{$N}\".\"item_id\" asc, \"{$N}\".\"label\" asc"],
+            // the alias names the ordered column again: not twice (SQL Server rejects that, 169)
+            'orderBy(notes.label)'  => [fn () => $model()->select("{$I}.*", "{$N}.label as note")->orderBy("{$N}.label")->stableRanking(), "order by \"{$N}\".\"label\" asc, \"{$I}\".\"id\" asc"],
             'query builder'         => [fn () => $join((new SearchBuilder(DB::table($I)->select("{$I}.*", "{$N}.label"), app(FuzzySearch::class)))
                 ->search('alpha')->searchIn(['name' => 10, 'body' => 5]))->stableRanking(), "\"{$I}\".\"id\" asc, \"{$N}\".\"label\" asc"],
             'distinct()'            => [fn () => $model()->select("{$I}.*", "{$N}.label")->distinct(), "order by \"{$I}\".\"id\" asc, \"{$N}\".\"label\" asc"],
-            'distinct() notes.*'    => [fn () => $model()->select("{$N}.*")->distinct(), "order by \"{$N}\".\"id\" asc"],
+            'distinct() notes.*'    => [fn () => $model()->select("{$N}.*")->distinct(), "order by \"{$N}\".\"id\" asc, \"{$N}\".\"item_id\" asc, \"{$N}\".\"label\" asc"],
         ];
 
         $expected = DB::table($N)->get()->map(fn ($row) => $row->item_id . '/' . $row->label)->sort()->values()->all();
         $this->assertCount(94, $expected);
 
         foreach ($shapes as $label => [$make, $order]) {
-            $this->assertStringContainsString($order, str_replace(['`', '[', ']'], '"', $make()->toSql()), "{$label} toSql");
+            $this->assertStringEndsWith($order, str_replace(['`', '[', ']'], '"', $make()->toSql()), "{$label} toSql");
 
             $first  = $make()->paginate(5);
             $served = [];
@@ -126,6 +128,6 @@ class JoinedRowPagingTest extends TestCase
     /** @return string[] each row as "item key/label" */
     private static function rows(array $items): array
     {
-        return array_map(fn ($row) => ($row->item_id ?? $row->id) . '/' . $row->label, $items);
+        return array_map(fn ($row) => ($row->item_id ?? $row->id) . '/' . ($row->label ?? $row->note), $items);
     }
 }
