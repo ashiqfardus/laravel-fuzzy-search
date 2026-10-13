@@ -510,7 +510,7 @@ class CompactPostingsMigrationTest extends TestCase
             'fuzzy_index_postings', 'fuzzy_index_postings_compact',
             ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
             ['p.term_id', $this->mapped('p.model_type', [MigratedNote::class => $type]), 'p.model_id', $this->mapped('p.column_name', ['title' => 1]), 'p.frequency', 'd.doc_length'],
-            'id', 0, null
+            'p.id > ?', [0]
         ))->call($migration);
 
         try {
@@ -523,6 +523,112 @@ class CompactPostingsMigrationTest extends TestCase
             Schema::dropIfExists('fuzzy_index_model_types');
             $this->artisanOk('migrate');
         }
+    }
+
+    /** The migration run directly, ids copied $chunk at a time, $afterRange called after each committed range (an old-code write in between). */
+    private function migrateWithWrites(int $chunk, \Closure $afterRange): void
+    {
+        $migration             = require self::PATH . '/' . self::MIGRATION . '.php';
+        $migration->chunk      = $chunk;
+        $migration->afterRange = $afterRange;
+        $migration->up();
+        DB::table('migrations')->insert(['migration' => self::MIGRATION, 'batch' => (int) DB::table('migrations')->max('batch') + 1]);
+    }
+
+    /** @return list<array{string, string, int, int}> $model's postings in the compact table: term, column, frequency, doc_length */
+    private function compactPostingsOf(string $type, string $id): array
+    {
+        return $this->namedPostings('p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+            ->where('p.model_type', $type)->where('p.model_id', $id)->orderBy('t.term')->orderBy('p.column_name')
+            ->get(['t.term', 'p.column_name', 'p.frequency', 'p.doc_length'])
+            ->map(fn ($row) => [(string) $row->term, (string) $row->column_name, (int) $row->frequency, (int) $row->doc_length])->all();
+    }
+
+    /**
+     * An old-code index write while the copy runs (ER-183): it deletes the row's postings and
+     * inserts them again past the ids the copy read. Note 1, whose postings the first range copied,
+     * gains a word; note 4, whose postings no range had copied yet, is written as it was. The copy
+     * then re-reads the documents written past its last id and copies them whole: both end exact,
+     * and the migration warns, naming the model and `rebuild --fresh`.
+     */
+    public function test_a_write_while_the_copy_runs_ends_exact_and_warns(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $old       = fn (string $id) => DB::table('fuzzy_index_postings')->where('model_type', MigratedNote::class)->where('model_id', $id);
+        $expected4 = (clone $old('4'))->orderBy('term_id')->get(['term_id', 'column_name', 'frequency'])->map(fn ($row) => (array) $row)->all();
+        $length4   = (int) DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '4')->value('doc_length');
+
+        Log::spy();
+        $written = false;
+        $this->migrateWithWrites(3, function (int $high) use (&$written, $old, $expected4) {
+            if ($written) {
+                return;
+            }
+            $written = true;
+            $this->assertLessThanOrEqual($high, (int) (clone $old('1'))->min('id'), 'note 1 is in the first range');
+            $this->assertGreaterThan($high, (int) (clone $old('4'))->min('id'), 'note 4 is past it');
+
+            // Note 1: its postings again, and one more word (the old write path's delete and insert).
+            $rows = (clone $old('1'))->get(['term_id', 'column_name', 'frequency'])->map(fn ($row) => (array) $row)->all();
+            (clone $old('1'))->delete();
+            $word = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzmidcopy', 'doc_count' => 1, 'term_length' => 9]);
+            foreach ([...$rows, ['term_id' => $word, 'column_name' => 'body', 'frequency' => 1]] as $row) {
+                DB::table('fuzzy_index_postings')->insert(['model_type' => MigratedNote::class, 'model_id' => '1'] + $row);
+            }
+            DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '1')->increment('doc_length');
+            DB::table('fuzzy_index_meta')->where('model_type', MigratedNote::class)->increment('total_tokens');
+
+            // Note 4: written again as it was.
+            (clone $old('4'))->delete();
+            foreach ($expected4 as $row) {
+                DB::table('fuzzy_index_postings')->insert(['model_type' => MigratedNote::class, 'model_id' => '4'] + $row);
+            }
+        });
+
+        $length1 = (int) DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '1')->value('doc_length');
+        $note1   = $this->compactPostingsOf(MigratedNote::class, '1');
+        $this->assertContains(['zzmidcopy', 'body', 1, $length1], $note1);
+        $this->assertSame([$length1], array_values(array_unique(array_column($note1, 3))), 'every posting of note 1 carries its new length');
+        $this->assertCount(count($expected4), $this->compactPostingsOf(MigratedNote::class, '4'));
+        $this->assertSame([$length4], array_values(array_unique(array_column($this->compactPostingsOf(MigratedNote::class, '4'), 3))));
+        $this->assertSame([1], MigratedNote::search('zzmidcopy')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, MigratedNote::class) && str_contains($message, '--fresh'));
+    }
+
+    /** ER-183. A row an old-code write removed from the index while the copy ran leaves no id behind: the meta totals changed, and the migration warns. */
+    public function test_a_removal_while_the_copy_runs_warns(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+
+        Log::spy();
+        $done = false;
+        $this->migrateWithWrites(3, function () use (&$done) {
+            if ($done) {
+                return;
+            }
+            $done   = true;
+            $length = (int) DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '1')->value('doc_length');
+            DB::table('fuzzy_index_postings')->where('model_type', MigratedNote::class)->where('model_id', '1')->delete();
+            DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '1')->delete();
+            DB::table('fuzzy_index_meta')->where('model_type', MigratedNote::class)->update(['total_docs' => DB::raw('total_docs - 1'), 'total_tokens' => DB::raw("total_tokens - {$length}")]);
+        });
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, MigratedNote::class) && str_contains($message, 'rebuild') && str_contains($message, '--fresh'));
+    }
+
+    /** ER-183. With no write while it runs, the copy warns of nothing. */
+    public function test_a_copy_with_no_write_while_it_runs_does_not_warn(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+
+        Log::spy();
+        $this->migrateWithWrites(3, function () {
+        });
+
+        Log::shouldNotHaveReceived('warning');
     }
 
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */

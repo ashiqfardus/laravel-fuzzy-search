@@ -63,6 +63,12 @@ return new class extends Migration
      */
     public int $chunk = 1000000;
 
+    /** Called with the last id of each range up() commits (tests write the earlier layout in between, as old code would). */
+    public ?\Closure $afterRange = null;
+
+    /** How many times up() follows the postings old code wrote past the ids it read (ER-183). */
+    private const TAIL_ROUNDS = 5;
+
     public function up(): void
     {
         $pretending = DB::connection()->pretending();
@@ -98,10 +104,23 @@ return new class extends Migration
                 DB::table(self::PROGRESS)->insert(['copied_id' => 0]);
             }
 
-            $dropped = $pretending ? 0 : $this->copyUp();
+            $meta = $pretending ? [] : $this->meta();
+            [$dropped, $rewritten, $unfinished] = $pretending ? [0, [], false] : $this->copyUp();
 
             if ($dropped > 0) {
                 Log::warning("fuzzy-search: the compact postings migration dropped {$dropped} posting(s) whose document row was missing (an inconsistent index), or written again while it ran. Rebuild a model whose search should find them: php artisan fuzzy-search:rebuild \"App\\Models\\YourModel\" --fresh");
+            }
+
+            // ER-183: the index written while the copy ran (old code: a queue worker, a request).
+            // A write is copied whole when its postings landed past the ids the copy read
+            // (copyUp()), but a removal leaves no id, and doc_count follows whichever code wrote
+            // it: the meta totals tell. Rebuilding the models named makes them exact.
+            if (!$pretending) {
+                $changed = array_keys(array_diff_assoc($meta, $this->meta()) + array_diff_assoc($this->meta(), $meta) + $rewritten);
+                if ($changed !== [] || $unfinished) {
+                    $this->warn('fuzzy-search: the index was written while the compact postings migration ran' . ($unfinished ? ', and was still being written when it stopped following the writes' : '')
+                        . '. Rebuild each model it names: ' . implode('; ', array_map(fn (string $type) => "php artisan fuzzy-search:rebuild \"{$type}\" --fresh", $changed)));
+                }
             }
 
             Schema::drop('fuzzy_index_postings');
@@ -164,7 +183,7 @@ return new class extends Migration
                     self::COMPACT, 'fuzzy_index_postings',
                     ['term_id', 'model_type', 'model_id', 'column_name', 'frequency'],
                     ['p.term_id', $this->mapped('p.model_type_id', $types), 'p.model_id', $this->mapped('p.column_id', array_intersect_key($columns, array_flip($ids))), 'p.frequency'],
-                    'term_id', $from, $to
+                    'p.term_id > ?' . ($to === null ? '' : ' and p.term_id <= ?'), [$from, ...($to === null ? [] : [$to])]
                 );
             });
 
@@ -273,9 +292,19 @@ return new class extends Migration
      * can re-insert, past the mark, a posting the copy already has: the insert skips a key it holds
      * (insertIgnoringKey()), and only that.
      *
-     * @return int the postings the copy left out: those without a document row, or written twice
+     * Old code that writes while the copy runs (ER-183) deletes a row's postings and inserts them
+     * again past the ids the copy read. Once the ranges are done, the documents with postings past
+     * them are copied again whole, from their current postings, read by document
+     * (postings_model_idx), after their copied postings are deleted: both a row the copy had
+     * copied and one it had not end exact. The copy follows such writes TAIL_ROUNDS times.
+     *
+     * @return array{int, array<string, true>, bool} the postings the copy left out (without a
+     *                                               document row, or written twice), the model
+     *                                               types of the rows copied again or written
+     *                                               past the last round, and whether writes went
+     *                                               on past it
      */
-    private function copyUp(): int
+    private function copyUp(): array
     {
         $postings = DB::table('fuzzy_index_postings');
         $done     = (int) DB::table(self::PROGRESS)->value('copied_id');
@@ -291,7 +320,7 @@ return new class extends Migration
             foreach ((clone $postings)->where('id', '>', $low)->where('id', '<=', $high)->groupBy('column_name')->selectRaw('column_name, count(*) as n')->get() as $row) {
                 $row                                 = (object) $row; // whatever the app's fetch mode
                 $counts[(string) $row->column_name] = (int) $row->n;
-                $columns[(string) $row->column_name] ??= $this->recordColumn((string) $row->column_name);
+                $columns[(string) $row->column_name] ??= $this->record('fuzzy_index_columns', 'name', (string) $row->column_name);
             }
 
             // No type with a document row: the range's postings have none to join (an empty CASE is no SQL).
@@ -299,7 +328,7 @@ return new class extends Migration
                 'fuzzy_index_postings', self::COMPACT,
                 ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
                 ['p.term_id', $this->mapped('p.model_type', $types), 'p.model_id', $this->mapped('p.column_name', array_intersect_key($columns, $counts)), 'p.frequency', 'd.doc_length'],
-                'id', $low, $high
+                'p.id > ? and p.id <= ?', [$low, $high]
             );
 
             $copied = DB::transaction(function () use ($sql, $bindings, $high) {
@@ -309,15 +338,91 @@ return new class extends Migration
                 return $copied;
             });
             $missed += array_sum($counts) - $copied;
+
+            if ($this->afterRange !== null) {
+                ($this->afterRange)($high);
+            }
         }
 
-        return $missed;
+        $rewritten = [];
+        for ($round = 0; $round < self::TAIL_ROUNDS && ($last = (int) (clone $postings)->max('id')) > $max; $round++) {
+            $written = []; // model type => model ids
+            foreach ((clone $postings)->where('id', '>', $max)->where('id', '<=', $last)->distinct()->get(['model_type', 'model_id']) as $row) {
+                $row                                                  = (object) $row;
+                $written[(string) $row->model_type][(string) $row->model_id] = (string) $row->model_id;
+            }
+            foreach ($written as $type => $ids) {
+                $types[$type] ??= $this->record('fuzzy_index_model_types', 'model_type', $type); // a type first indexed meanwhile
+                $rewritten[$type] = true;
+                foreach (array_chunk(array_values($ids), 500) as $chunk) {
+                    $this->copyDocuments($type, $chunk, $types[$type], $columns);
+                }
+            }
+            $max = $last;
+        }
+
+        $late = (clone $postings)->where('id', '>', $max)->distinct()->pluck('model_type')->all(); // past the last round: named, not copied
+        foreach ($late as $type) {
+            $rewritten[(string) $type] = true;
+        }
+
+        return [$missed, $rewritten, $late !== []];
     }
 
     /**
-     * INSERT INTO $to ($columns) SELECT $select FROM $from p [JOIN the documents d] WHERE $key in
-     * ($low, $high], and its bindings: the source drives the read, one range of its primary key
-     * (up(): the earlier table's id; down(): the compact table's leading term_id). No join to the
+     * Copy model type $type's documents $ids again, whole, from their current postings, in place of
+     * what the compact table holds for them (ER-183), in one transaction.
+     *
+     * @param list<string>       $ids
+     * @param array<string, int> $columns name => id, recorded as needed
+     */
+    private function copyDocuments(string $type, array $ids, int $typeId, array &$columns): void
+    {
+        $names = array_map('strval', DB::table('fuzzy_index_postings')->where('model_type', $type)->whereIn('model_id', $ids)->distinct()->pluck('column_name')->all());
+        foreach ($names as $name) {
+            $columns[$name] ??= $this->record('fuzzy_index_columns', 'name', $name);
+        }
+
+        DB::transaction(function () use ($type, $ids, $typeId, $columns, $names) {
+            DB::table(self::COMPACT)->where('model_type_id', $typeId)->whereIn('model_id', $ids)->delete();
+            if ($names === []) {
+                return; // their postings are gone: removed from the index
+            }
+
+            DB::affectingStatement(...$this->copyStatement(
+                'fuzzy_index_postings', self::COMPACT,
+                ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
+                ['p.term_id', $this->mapped('p.model_type', [$type => $typeId]), 'p.model_id', $this->mapped('p.column_name', array_intersect_key($columns, array_flip($names))), 'p.frequency', 'd.doc_length'],
+                'p.model_type = ? and p.model_id in (' . implode(', ', array_fill(0, count($ids), '?')) . ')', [$type, ...$ids]
+            ));
+        });
+    }
+
+    /** @return array<string, string> model type => its meta totals, to compare before and after the copy */
+    private function meta(): array
+    {
+        $out = [];
+        foreach (DB::table('fuzzy_index_meta')->get(['model_type', 'total_docs', 'total_tokens']) as $row) {
+            $row                             = (object) $row;
+            $out[(string) $row->model_type] = (int) $row->total_docs . '|' . (int) $row->total_tokens;
+        }
+
+        return $out;
+    }
+
+    /** Log $message, and print it under `php artisan migrate` (not in a test run). */
+    private function warn(string $message): void
+    {
+        Log::warning($message);
+        if (app()->runningInConsole() && !app()->runningUnitTests()) {
+            fwrite(STDERR, "  WARN  {$message}" . PHP_EOL);
+        }
+    }
+
+    /**
+     * INSERT INTO $to ($columns) SELECT $select FROM $from p [JOIN the documents d] WHERE $where, and
+     * its bindings: the source drives the read, one range of its primary key (up(): the earlier
+     * table's id; down(): the compact table's leading term_id), or a few documents by key (ER-183). No join to the
      * dictionaries, whose one row of a type MySQL read first, then walked postings_model_idx for
      * every posting of the type (ER-179): the names map through CASE expressions (mapped()). The
      * documents give the length, on the copy into the compact table only, which skips a key it
@@ -326,7 +431,7 @@ return new class extends Migration
      * @param  list<string|array{string, list<mixed>}> $select a column, or [SQL, bindings]
      * @return array{string, list<mixed>}
      */
-    private function copyStatement(string $from, string $to, array $columns, array $select, string $key, int $low, ?int $high): array
+    private function copyStatement(string $from, string $to, array $columns, array $select, string $where, array $whereBindings): array
     {
         $grammar  = DB::getQueryGrammar();
         $bindings = [];
@@ -340,8 +445,8 @@ return new class extends Migration
         }
 
         $join  = $to === self::COMPACT ? ' inner join ' . $grammar->wrapTable('fuzzy_index_documents') . ' d on d.model_type = p.model_type and d.model_id = p.model_id' : '';
-        $read  = 'select ' . implode(', ', $list) . ' from ' . $grammar->wrapTable($from) . " p{$join} where p.{$key} > ?" . ($high === null ? '' : " and p.{$key} <= ?");
-        $bound = [...$bindings, $low, ...($high === null ? [] : [$high])];
+        $read  = 'select ' . implode(', ', $list) . ' from ' . $grammar->wrapTable($from) . " p{$join} where {$where}";
+        $bound = [...$bindings, ...$whereBindings];
 
         return $to === self::COMPACT
             ? [$this->insertIgnoringKey($grammar->wrapTable($to), $columns, $read), $bound]
@@ -406,12 +511,12 @@ return new class extends Migration
         return $map;
     }
 
-    /** The id of column name $name, recorded if the dictionary has no row the column's collation finds equal to it. */
-    private function recordColumn(string $name): int
+    /** The id of $name in dictionary $table, recorded if it has no row its column's collation finds equal to it. */
+    private function record(string $table, string $column, string $name): int
     {
-        $id = DB::table('fuzzy_index_columns')->where('name', $name)->value('id');
+        $id = DB::table($table)->where($column, $name)->value('id');
 
-        return (int) ($id ?? DB::table('fuzzy_index_columns')->insertGetId(['name' => $name]));
+        return (int) ($id ?? DB::table($table)->insertGetId([$column => $name]));
     }
 
     /**
