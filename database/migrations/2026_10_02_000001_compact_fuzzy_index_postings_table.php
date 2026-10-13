@@ -52,6 +52,7 @@ return new class extends Migration
     private const PROGRESS = 'fuzzy_index_postings_copied';
     private const PRIMARY = 'postings_primary';
     private const BY_MODEL = 'postings_model_idx';
+    private const BY_DOCUMENT = 'postings_compact_model_idx'; // BY_MODEL's columns on the compact table, for the tail (VA-6)
     private const UNIQUE  = 'postings_unique_idx';
 
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
@@ -151,7 +152,18 @@ return new class extends Migration
         Schema::dropIfExists(self::PROGRESS);
 
         // The secondary index, then the foreign keys (MySQL's on model_type_id needs that index).
-        if ($pretending || !in_array(self::BY_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
+        // The tail built it already, under a name of its own while the earlier table's held this
+        // one (an index name is unique per schema on PostgreSQL, per database on SQLite): renamed
+        // now, but on SQLite, which renames no index, dropped and built again.
+        $indexes = $pretending ? [] : $this->indexes('fuzzy_index_postings');
+        if (in_array(self::BY_DOCUMENT, $indexes, true)) {
+            $rename = !in_array(self::BY_MODEL, $indexes, true) && DB::connection()->getDriverName() !== DbDialect::SQLITE;
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $rename
+                ? $table->renameIndex(self::BY_DOCUMENT, self::BY_MODEL)
+                : $table->dropIndex(self::BY_DOCUMENT));
+            $indexes[] = $rename ? self::BY_MODEL : '';
+        }
+        if ($pretending || !in_array(self::BY_MODEL, $indexes, true)) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_MODEL));
         }
         if ($orphans) {
@@ -371,6 +383,12 @@ return new class extends Migration
         $read      = $max; // the ids the ranges read
         $rewritten = [];
         for ($round = 0; $round < self::TAIL_ROUNDS && ($last = (int) (clone $postings)->max('id')) > $max; $round++) {
+            // VA-6: each re-copy deletes by document, which scanned the whole compact table. BY_MODEL's
+            // index is built here instead, before the first round, and kept by the swap (renamed);
+            // a copy no write followed builds it after the swap, as before.
+            if ($round === 0 && !in_array(self::BY_DOCUMENT, $this->indexes(self::COMPACT), true)) {
+                Schema::table(self::COMPACT, fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_DOCUMENT));
+            }
             $written = []; // model type => model ids
             foreach ((clone $postings)->where('id', '>', $max)->where('id', '<=', $last)->distinct()->get(['model_type', 'model_id']) as $row) {
                 $row                                                  = (object) $row;
@@ -541,11 +559,15 @@ return new class extends Migration
 
     /**
      * CASE $column WHEN … THEN … END over $map: a name to its id (an id column's ids to their names
-     * when $column is one), the names bound, the ids inlined as integers (they come from the
-     * database; bound, PostgreSQL types the CASE as text). A name is compared in $column's own
-     * collation (on MySQL/MariaDB and SQL Server a case-insensitive one matches every spelling the
-     * dictionary keeps for it). A value $map lacks gives NULL, which the NOT NULL column refuses: a
-     * range's names are recorded before its copy.
+     * when $column is one), the names bound (quoted on SQL Server, below), the ids inlined as
+     * integers (they come from the database; bound, PostgreSQL types the CASE as text). A name is
+     * compared in $column's own collation (on MySQL/MariaDB and SQL Server a case-insensitive one
+     * matches every spelling the dictionary keeps for it). A value $map lacks gives NULL, which the
+     * NOT NULL column refuses: a range's names are recorded before its copy.
+     *
+     * SQL Server takes 2,100 parameters a statement, and a range can hold more names (VA-7: a
+     * searchableText() keyed per attribute, locale or custom field): there the names are nvarchar
+     * literals, quoted by the driver, as a bound name is sent.
      *
      * @param  array<int|string, int|string> $map
      * @return array{string, list<mixed>}
@@ -553,11 +575,19 @@ return new class extends Migration
     private function mapped(string $column, array $map): array
     {
         $ids      = str_ends_with($column, '_id');
+        $pdo      = DB::connection()->getDriverName() === DbDialect::SQLSRV ? DB::connection()->getPdo() : null;
         $sql      = 'case ' . $column;
         $bindings = [];
         foreach ($map as $value => $mapped) {
-            $sql       .= $ids ? ' when ' . (int) $value . ' then ?' : ' when ? then ' . (int) $mapped;
-            $bindings[] = (string) ($ids ? $mapped : $value);
+            $name = (string) ($ids ? $mapped : $value);
+            if ($pdo === null) {
+                $bindings[] = $name;
+                $name       = '?';
+            } else {
+                $name = $pdo->quote($name);
+                $name = str_starts_with($name, 'N') ? $name : 'N' . $name; // the driver's own N'…' or not, by its encoding
+            }
+            $sql .= $ids ? ' when ' . (int) $value . " then {$name}" : " when {$name} then " . (int) $mapped;
         }
 
         return [$sql . ' end', $bindings];

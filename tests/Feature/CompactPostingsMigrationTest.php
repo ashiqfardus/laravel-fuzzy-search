@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\StatementPrepared;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
@@ -618,17 +619,28 @@ class CompactPostingsMigrationTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, MigratedNote::class) && str_contains($message, 'rebuild') && str_contains($message, '--fresh'));
     }
 
-    /** ER-183. With no write while it runs, the copy warns of nothing. */
+    /** ER-183. With no write while it runs, the copy warns of nothing, and builds no index for a tail (VA-6). */
     public function test_a_copy_with_no_write_while_it_runs_does_not_warn(): void
     {
         $this->index();
         $this->artisanOk('migrate:rollback', ['--step' => 1]);
 
         Log::spy();
-        $this->migrateWithWrites(3, function () {
+        $tailIndex = [];
+        DB::listen(function (QueryExecuted $query) use (&$tailIndex) {
+            if (str_contains($query->sql, 'postings_compact_model_idx')) {
+                $tailIndex[] = $query->sql;
+            }
         });
+        try {
+            $this->migrateWithWrites(3, function () {
+            });
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
 
         Log::shouldNotHaveReceived('warning');
+        $this->assertSame([], $tailIndex);
     }
 
     /** 2.0.1's re-index of a row whose index stays the same size, on $db: its postings deleted and inserted again (new ids), its first word replaced by $word. */
@@ -859,6 +871,195 @@ class CompactPostingsMigrationTest extends TestCase
         $this->assertSame(0, $this->orphanPostings());
         $this->assertTrue(DB::table('migrations')->where('migration', self::MIGRATION)->exists());
         $this->assertSame([1], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
+    /** The migration run directly, a quarter of the postings' ids a range, killed in its third range (a stopped deploy). */
+    private function stopInTheThirdRange(): void
+    {
+        $migration        = require self::PATH . '/' . self::MIGRATION . '.php';
+        $migration->chunk = (int) ceil(DB::table('fuzzy_index_postings')->count() / 4);
+        $copies           = 0;
+        DB::listen(function (QueryExecuted $query) use (&$copies) {
+            if (preg_match('/^\s*insert\s+into\s+\S*fuzzy_index_postings_compact/i', $query->sql) && ++$copies === 3) {
+                throw new \RuntimeException('killed');
+            }
+        });
+        try {
+            $migration->up();
+            $this->fail('the run was not killed');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('killed', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertGreaterThan(0, DB::table('fuzzy_index_postings_compact')->count(), 'two ranges committed');
+    }
+
+    /** Exactly one warning came: the resumed run's, naming both models. */
+    private function assertWarnedResumed(): void
+    {
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message) => str_contains($message, 'resumed after an interrupted run')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedNote::class . '" --fresh')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
+    }
+
+    /**
+     * VA-2, UPGRADE's own large-index route after a stopped upgrade: 2.1's `fuzzy-search:clear
+     * --all` empties the earlier tables, the dictionary included, but not the compact table, which
+     * keeps what the stopped run copied. The next `migrate` finds nothing to copy and the meta empty
+     * before and after: PostgreSQL and SQL Server refused the term foreign key, on every run, and
+     * MySQL and MariaDB kept postings of words that are gone. The stopped run's progress mark makes
+     * it a resumed run: it deletes them, warns, and the rebuilds the route prescribes follow.
+     */
+    public function test_a_stopped_upgrade_then_clear_all_then_migrate_finishes(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->stopInTheThirdRange();
+
+        $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true]));
+        $this->assertSame(0, DB::table('fuzzy_index_terms')->count());
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->count(), 'the cleared index keeps none of the copied postings');
+        $this->assertWarnedResumed();
+        foreach ([MigratedNote::class, MigratedCode::class] as $model) {
+            $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => $model, '--fresh' => true]));
+        }
+        $this->assertSame([1], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
+    public static function deployRollbacks(): array
+    {
+        return ['one step' => [false], 'back to the 2.0.1 schema' => [true]];
+    }
+
+    /**
+     * VA-1 (d). A deploy whose `migrate` stopped in the copy, then rolled back: the compact migration
+     * was never recorded, so no down() removes what it made (the compact table, its progress mark,
+     * the dictionaries). The old release indexes a row again, and the next `migrate` goes on after
+     * the stale mark, keeping the row's copied postings: a resumed run, which warns naming every
+     * model, and a rebuild --fresh of each makes the index exact.
+     */
+    #[DataProvider('deployRollbacks')]
+    public function test_a_stopped_upgrade_rolled_back_by_the_deploy_then_migrated_again_warns(bool $to201): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->stopInTheThirdRange();
+        $this->artisanOk('migrate:rollback', ['--step' => $to201 ? $this->stepsFrom('2026_09') - 1 : 1]); // the recorded ones
+        $this->assertTrue(Schema::hasTable('fuzzy_index_postings_copied'), 'the stopped run\'s tables stay');
+
+        // The old release indexes note 1 again, as one word.
+        DB::table('migrated_notes')->where('id', 1)->update(['title' => 'zzafter', 'body' => null]);
+        DB::table('fuzzy_index_postings')->where('model_type', MigratedNote::class)->where('model_id', '1')->delete();
+        $word = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzafter', 'doc_count' => 1] + (Schema::hasColumn('fuzzy_index_terms', 'term_length') ? ['term_length' => 7] : []));
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $word, 'model_type' => MigratedNote::class, 'model_id' => '1', 'frequency' => 1]
+            + (Schema::hasColumn('fuzzy_index_postings', 'column_name') ? ['column_name' => 'title'] : []));
+        DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '1')->update(['doc_length' => 1]);
+
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        $this->assertWarnedResumed();
+        $this->assertSame(0, $this->orphanPostings());
+        foreach ([MigratedNote::class, MigratedCode::class] as $model) {
+            $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => $model, '--fresh' => true]));
+        }
+        $this->assertSame([], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->all());
+        $this->assertSame([1], MigratedNote::search('zzafter')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
+    /**
+     * VA-6. The tail's re-copy deletes each written document's compact postings by (model_type_id,
+     * model_id), and the compact table had no index on them until after the swap: every 500
+     * documents the old code wrote cost a scan of everything copied (about 30 s at 96M postings,
+     * while the new code's searches fail). The tail indexes them first, under a name of its own,
+     * which becomes postings_model_idx after the swap; a copy with no write builds that after the
+     * swap, as before.
+     */
+    public function test_the_tail_deletes_by_document_through_an_index(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $last = (int) DB::table('fuzzy_index_postings')->max('id');
+
+        // The plan is read where EXPLAIN reads one simply (MySQL, MariaDB, PostgreSQL); SQLite and
+        // SQL Server build and rename the same index.
+        $explained  = in_array($this->dbDriver, ['mysql', 'mariadb', 'pgsql'], true);
+        $plans      = [];
+        $explaining = false;
+        DB::listen(function (QueryExecuted $query) use (&$plans, &$explaining, $explained) {
+            if (!$explained || $explaining || !preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                return;
+            }
+            $explaining = true;
+            try {
+                if ($this->dbDriver === 'pgsql') {
+                    DB::statement('set local enable_seqscan = off'); // a few rows: ask which index the delete can read
+                    $plans[] = implode(' ', array_map(fn ($row) => (string) ((array) $row)['QUERY PLAN'], DB::select('explain ' . $query->sql, $query->bindings)));
+                    DB::statement('set local enable_seqscan = on');
+                } else {
+                    $explain = $this->dbDriver === 'mysql' ? 'explain format=traditional ' : 'explain '; // MySQL 9 may default to the tree format
+                    $plans[] = implode(' ', array_map(fn ($row) => (string) ((array) $row)['key'], DB::select($explain . $query->sql, $query->bindings)));
+                }
+            } finally {
+                $explaining = false;
+            }
+        });
+        try {
+            $this->migrateWithWrites(3, function (int $high) use ($last) {
+                if ($high >= $last) {
+                    $this->oldRewrite(MigratedNote::class, '1', 'zztail'); // after the last range: the tail copies it again
+                }
+            });
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+
+        $this->assertSame($explained, $plans !== [], 'the tail ran');
+        foreach ($plans as $plan) {
+            $this->assertStringContainsString('postings_compact_model_idx', $plan);
+        }
+        $table   = DB::connection()->getTablePrefix() . 'fuzzy_index_postings';
+        $indexes = array_map(fn ($row) => strtolower((string) ((array) $row)['name']), match ($this->dbDriver) {
+            'sqlite' => DB::select("select name from sqlite_master where type = 'index' and tbl_name = ?", [$table]),
+            'pgsql'  => DB::select('select c.relname as name from pg_index i join pg_class c on c.oid = i.indexrelid where i.indrelid = to_regclass(quote_ident(?))', [$table]),
+            'sqlsrv' => DB::select('select name from sys.indexes where object_id = object_id(?) and name is not null', [$table]),
+            default  => DB::select('select distinct index_name as name from information_schema.statistics where table_schema = database() and table_name = ?', [$table]),
+        });
+        $this->assertContains('postings_model_idx', $indexes);
+        $this->assertSame([1], MigratedNote::search('zztail')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all(), 'the tail copied the row again');
+        $this->assertNotContains('postings_compact_model_idx', $indexes, 'renamed after the swap');
+    }
+
+    /**
+     * VA-7. SQL Server takes 2,100 parameters a statement, and the copy bound each column name of a
+     * range in its CASE: an index whose searchableText() is keyed per attribute, locale or custom
+     * field (VC-6's shape) stopped the upgrade in its first range, and every rerun. There the names
+     * are quoted literals, in the copy back too. One document, one word, 2,500 columns.
+     */
+    public function test_a_range_with_more_column_names_than_sql_server_takes_parameters_migrates_both_ways(): void
+    {
+        $names = 2500;
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzmany', 'doc_count' => 1, 'term_length' => 6]);
+        DB::table('fuzzy_index_documents')->insert(['model_type' => MigratedNote::class, 'model_id' => '1', 'doc_length' => $names]);
+        foreach (array_chunk(range(1, $names), 400) as $chunk) { // 2,000 bindings a statement
+            DB::table('fuzzy_index_postings')->insert(array_map(fn (int $i) => ['term_id' => $term, 'model_type' => MigratedNote::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => "attr_{$i}"], $chunk));
+        }
+
+        $this->artisanOk('migrate');
+        $this->assertSame($names, $this->namedPostings()->where('column_name', 'like', 'attr_%')->count());
+        $this->assertSame(1, $this->namedPostings()->where('column_name', 'attr_2500')->where('model_type', MigratedNote::class)->count());
+
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->assertSame($names, DB::table('fuzzy_index_postings')->where('column_name', 'like', 'attr_%')->count());
+        $this->assertSame(1, DB::table('fuzzy_index_postings')->where('column_name', 'attr_2500')->where('model_type', MigratedNote::class)->count());
+
+        $this->artisanOk('migrate');
+        $this->assertSame($names, $this->namedPostings()->where('column_name', 'like', 'attr_%')->count());
     }
 
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
