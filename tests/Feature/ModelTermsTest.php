@@ -136,6 +136,47 @@ class ModelTermsTest extends TestCase
         $this->assertModelTermsMirrorPostings('clear <model>');
     }
 
+    /**
+     * P6-B2: a write's changes to a model's counts go out as one upsert per 300 words, in term id
+     * order, whatever the changes are, raised and lowered alike. One upsert per distinct change sent
+     * 97 to 100 of them for a 500-row rebuild batch, where 20 carry its words.
+     */
+    public function test_a_writes_changes_to_the_models_counts_go_out_as_one_upsert_per_300_words(): void
+    {
+        $words = ['quartz', 'harbor', 'lantern', 'meadow', 'falcon', 'ember', 'willow', 'cobalt', 'sierra', 'tundra', 'pebble', 'orchid'];
+        Schema::dropIfExists('model_terms_codes');
+        Schema::create('model_terms_codes', function ($table) {
+            $table->id();
+            $table->string('code');
+        });
+        // Row i holds the first i words, so word j is in 13 - j rows: twelve different counts. Then
+        // 320 rows of a word each, all at 1: 332 words.
+        foreach (range(1, 12) as $i) {
+            DB::table('model_terms_codes')->insert(['code' => implode(' ', array_slice($words, 0, $i))]);
+        }
+        foreach (array_chunk(range(13, 332), 100) as $chunk) {
+            DB::table('model_terms_codes')->insert(array_map(fn (int $i) => ['code' => sprintf('w%05d', $i)], $chunk));
+        }
+        $upserts = '/^\s*(insert|merge)\b.*\bfuzzy_index_model_terms\b/is';
+        $manager = app(IndexManager::class);
+        $codes   = fn () => ModelTermsCode::query()->orderBy('id')->get();
+
+        $this->assertCount(2, $this->reads($upserts, fn () => $manager->indexBatch($codes())), 'the first index');
+        $this->assertModelTermsMirrorPostings('the first index');
+
+        // Row i now holds the last i words, so word j is in j rows: changes of -11, -9, ... +11.
+        foreach (range(1, 12) as $i) {
+            DB::table('model_terms_codes')->where('id', ModelTermsCode::query()->orderBy('id')->skip($i - 1)->value('id'))->update(['code' => implode(' ', array_slice($words, 12 - $i))]);
+        }
+        $this->assertCount(1, $this->reads($upserts, fn () => $manager->indexBatch($codes()->take(12))), 'a re-index');
+        $this->assertModelTermsMirrorPostings('the re-index');
+
+        $this->assertCount(1, $this->reads($upserts, fn () => $manager->removeFromIndex(ModelTermsCode::class, (string) $codes()->last()->id)), 'a removal');
+        $this->assertModelTermsMirrorPostings('the removal');
+
+        Schema::dropIfExists('model_terms_codes');
+    }
+
     /** @return list<string> the SQL of the reads $run sends that match $pattern */
     private function reads(string $pattern, \Closure $run): array
     {

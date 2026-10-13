@@ -2027,8 +2027,13 @@ class IndexManager
      * Apply a write's changes to its model type's rows in fuzzy_index_model_terms (ruling ER-197),
      * as adjustDocCounts() applies them to the dictionary's doc_count: a new row for a word the type
      * did not hold, a change to one it did (floored at 0), and a row that reaches 0 deleted. One
-     * upsert per distinct change and 300 rows (a row binds five values), the change inlined as an
-     * int, as the dictionary's own upserts raise their words on MySQL/MariaDB; then one DELETE per
+     * upsert per 300 words in term id order (a row binds five values), whatever the changes: the
+     * conflict branch picks each row's change by its term_id, `CASE term_id WHEN 7 THEN doc_count + 3
+     * WHEN 9 THEN (floored doc_count - 2) … END`, ids and changes inlined as ints, as adjustDocCounts()
+     * does. It reads only the existing row, so it needs no reference to the inserted one, which
+     * MySQL/MariaDB cannot name alike (see the dictionary's upsert in write()). An upsert per
+     * distinct change sent 97 to 100 of them for a 500-row rebuild batch, a fifth of its database
+     * time (P6-B2). The inserted row carries the change, or 0 for a decrease; then one DELETE per
      * 1,000 words of the rows a decrease brought to 0.
      *
      * Called once the write holds the dictionary row of every word in $deltas (adjustDocCounts()'s
@@ -2043,27 +2048,24 @@ class IndexManager
     private function adjustModelTerms(int $typeId, array $deltas): void
     {
         ksort($deltas);
-        $runs    = []; // change => term id => word
-        $lowered = [];
-        foreach ($deltas as $termId => [$term, $delta]) {
-            if ($delta !== 0) {
-                $runs[$delta][$termId] = $term;
-            }
-            if ($delta < 0) {
-                $lowered[] = (int) $termId;
-            }
-        }
+        $deltas  = array_filter($deltas, fn (array $change) => $change[1] !== 0);
+        $lowered = array_keys(array_filter($deltas, fn (array $change) => $change[1] < 0));
 
-        $count = DbDialect::rawIdentifier('fuzzy_index_model_terms.doc_count'); // qualified: see the dictionary's upsert in write()
-        foreach ($runs as $delta => $terms) {
-            $raise = $delta >= 0 ? "{$count} + {$delta}" : "CASE WHEN {$count} >= " . -$delta . " THEN {$count} - " . -$delta . ' ELSE 0 END';
-            foreach (array_chunk($terms, self::POSTING_ROWS_PER_UPSERT, true) as $chunk) {
-                $rows = [];
-                foreach ($chunk as $termId => $term) {
-                    $rows[] = ['model_type_id' => $typeId, 'term_id' => (int) $termId, 'term' => $term, 'term_length' => mb_strlen($term), 'doc_count' => max($delta, 0)];
-                }
-                DB::table('fuzzy_index_model_terms')->upsert($rows, ['model_type_id', 'term_id'], ['doc_count' => DB::raw($raise)]);
+        // Qualified: see the dictionary's upsert in write().
+        $count = DbDialect::rawIdentifier('fuzzy_index_model_terms.doc_count');
+        $word  = DbDialect::rawIdentifier('fuzzy_index_model_terms.term_id');
+        foreach (array_chunk($deltas, self::POSTING_ROWS_PER_UPSERT, true) as $chunk) {
+            $rows  = [];
+            $cases = '';
+            foreach ($chunk as $termId => [$term, $delta]) {
+                $termId = (int) $termId;
+                $delta  = (int) $delta;
+                $rows[] = ['model_type_id' => $typeId, 'term_id' => $termId, 'term' => $term, 'term_length' => mb_strlen($term), 'doc_count' => max($delta, 0)];
+                $cases .= $delta > 0
+                    ? " WHEN {$termId} THEN {$count} + {$delta}"
+                    : " WHEN {$termId} THEN CASE WHEN {$count} >= " . -$delta . " THEN {$count} - " . -$delta . ' ELSE 0 END';
             }
+            DB::table('fuzzy_index_model_terms')->upsert($rows, ['model_type_id', 'term_id'], ['doc_count' => DB::raw("CASE {$word}{$cases} ELSE {$count} END")]);
         }
 
         foreach (array_chunk($lowered, 1000) as $chunk) {
