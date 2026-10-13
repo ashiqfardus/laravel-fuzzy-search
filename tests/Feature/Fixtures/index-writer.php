@@ -7,6 +7,7 @@
  * the steps, each [action, model class, ids]:
  *  - index: one indexBatch() of the rows (a rebuild chunk);
  *  - save:  a save of each row, its index written synchronously by the package's observer;
+ *  - delete: a delete of each row, its index entries removed the same way;
  *  - update-then-index: an app's transaction that updates the first row, then indexes it before
  *    its commit (Scout with after_commit off), 1.5 s later;
  *  - index-after-update: once that update is in, a write of the first row (IndexModelJob's);
@@ -60,6 +61,10 @@ foreach ($job['steps'] as [$action, $class, $ids]) {
         } elseif ($action === 'save') {
             foreach ($ids as $i => $id) {
                 $class::findOrFail($id)->update(['name' => $job['names'][$i % count($job['names'])]]);
+            }
+        } elseif ($action === 'delete') {
+            foreach ($ids as $id) {
+                $class::findOrFail($id)->delete();
             }
         } elseif ($action === 'update-then-index') {
             DB::transaction(function () use ($class, $ids, $job) {

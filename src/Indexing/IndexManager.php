@@ -1442,7 +1442,8 @@ class IndexManager
      *  1. claim the models' document rows (claimDocuments()), so a concurrent write for one of
      *     them waits for this one, or this one for it;
      *  2. reload the saved rows (reload()): the text indexed is the row as committed now, so
-     *     whichever write commits last leaves the latest save indexed (ruling ER-68);
+     *     whichever write commits last leaves the latest save indexed (ruling ER-68); on
+     *     MySQL/MariaDB inside a transaction of yours, with a locking read before step 1 (ER-202);
      *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
      *     terms, in id order (giving back the old terms, read by currentPostings(), C12; raising
      *     the new ones);
@@ -1470,11 +1471,24 @@ class IndexManager
     {
         [$indexed, $elsewhere] = self::yieldingDeadlocks(fn () => DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
-            $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
+
+            // MySQL/MariaDB inside a transaction of yours: the rows are re-read before the claim, with
+            // a locking read (ER-202, P6-S2). A plain read there sees your transaction's REPEATABLE
+            // READ snapshot, which starts at its first plain read: a row another process deleted
+            // since went back into the index, and one it saved and indexed since went back to its
+            // older text. A locking read reads the rows as they are now, and its shared locks hold
+            // every other change to them off until your transaction ends, so a later save is indexed
+            // after it. Before the claim, so the write never holds a claim while it waits for another
+            // transaction's lock on your row. A write in a transaction of its own reads after its
+            // claim (its snapshot starts there) and locks none of your rows. The rows' connection is
+            // the model's, which may not be the index's: this write's own transaction is on the index's.
+            $source = (new $modelType())->getConnection();
+            $lock   = DbDialect::isMySqlFamily($source->getDriverName()) && $source->transactionLevel() > ($source === DB::connection() ? 1 : 0);
+            $old    = $lock ? null : $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
             $byModel   = []; // id => [column => [term => frequency]]
             $elsewhere = []; // index type => keys of the rows hydrated as a class indexed under it
-            $reloaded  = $this->reload($modelType, $keys, $scout);
+            $reloaded  = $this->reload($modelType, $keys, $scout, $lock);
 
             // A key the type's own re-read missed, under single-table inheritance: the caller named
             // the type from an instance, not the row (a stale child instance saved or deleted after
@@ -1489,7 +1503,7 @@ class IndexManager
                 $missed = array_values(array_diff(array_map('strval', $keys), array_map('strval', array_keys($reloaded))));
                 $root   = self::hierarchyRoot($modelType, concrete: true);
                 $live   = [];
-                foreach (Model::withoutEvents(fn () => (new $root())->newModelQuery()->useWritePdo()->whereKey($missed)->get()) as $row) {
+                foreach (Model::withoutEvents(fn () => (new $root())->newModelQuery()->useWritePdo()->when($lock, fn ($query) => $query->sharedLock())->whereKey($missed)->get()) as $row) {
                     $live[(string) $row->getKey()] = true;
                     if (($type = self::indexType($row)) !== $modelType) {
                         $elsewhere[$type][] = $row->getKey();
@@ -1502,6 +1516,8 @@ class IndexManager
                     }
                 }
             }
+
+            $old ??= $this->claimDocuments($modelType, $ids);
 
             foreach ($reloaded + $unsaved as $id => $model) {
                 // indexBatch() groups the unsaved instances by type, so only a re-read row can differ.
@@ -1715,10 +1731,15 @@ class IndexManager
      * row is left out, unless $scout: then no global scope applies, as in Scout's own jobs, and
      * a trashed row is kept while scout.soft_delete is on (ER-72).
      *
+     * $lock reads the rows, and the relations it eager loads, with shared locks (LOCK IN SHARE
+     * MODE): the rows as they are now, not the transaction's snapshot (write(), ER-202). A morphTo
+     * relation's query for each type it finds is Laravel's own, which keeps no lock: those related
+     * rows are read without one.
+     *
      * @param  list<int|string>    $keys
      * @return array<string, Model>
      */
-    private function reload(string $modelType, array $keys, bool $scout): array
+    private function reload(string $modelType, array $keys, bool $scout, bool $lock = false): array
     {
         $keepTrashed = $scout && config('scout.soft_delete', false);
         $rows        = [];
@@ -1728,9 +1749,9 @@ class IndexManager
             // under a read/write split this read went to the replica outside a transaction on the
             // model's connection (a queue worker; in-process without `sticky`), and a replica behind
             // the commit gave a deleted row back, or the old text, which this write then indexed.
-            $query = IndexQuery::for($modelType)->useWritePdo();
-            $query->setEagerLoads(array_map(fn (\Closure $constraints) => function ($relation) use ($constraints) {
-                $constraints($relation->useWritePdo());
+            $query = IndexQuery::for($modelType)->useWritePdo()->when($lock, fn ($query) => $query->sharedLock());
+            $query->setEagerLoads(array_map(fn (\Closure $constraints) => function ($relation) use ($constraints, $lock) {
+                $constraints($relation->useWritePdo()->when($lock, fn ($query) => $query->sharedLock()));
             }, $query->getEagerLoads()));
             if ($scout) {
                 $query->withoutGlobalScopes();
