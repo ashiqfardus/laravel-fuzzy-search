@@ -255,9 +255,9 @@ return [
          * fuzzy: typo-tolerant BM25. Each query term of at least
          * typo_tolerance.min_word_length characters is expanded with up to max_expansions
          * dictionary terms within typoTolerance() edits, closest first, chosen from the
-         * candidate_pool most common terms of a similar length, equal counts newest first (a
-         * term outside that window is never reached — raise the pool for catalogs of rare
-         * terms). With damping on, an
+         * candidate_pool most common of the searched model's own terms of a similar length, by
+         * its own document count, equal counts newest first (a term outside that window is never
+         * reached — raise the pool for catalogs of rare terms). With damping on, an
          * expansion contributes 1 - distance / length of what the exact term would; it always
          * counts for less, but BM25 weighs rarity (idf), so a rare expansion can still outscore
          * a common exact term.
@@ -268,8 +268,8 @@ return [
             'damping'        => true,
         ],
         /*
-         * prefix: asYouType() expands the last query token with the most common dictionary
-         * terms that start with it, capped at max_expansions.
+         * prefix: asYouType() expands the last query token with the searched model's most
+         * common terms that start with it, by its own document count, capped at max_expansions.
          */
         'prefix' => [
             'max_expansions' => 10,

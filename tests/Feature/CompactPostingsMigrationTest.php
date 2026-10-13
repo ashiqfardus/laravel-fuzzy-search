@@ -406,6 +406,7 @@ class CompactPostingsMigrationTest extends TestCase
             DB::getEventDispatcher()->forget(QueryExecuted::class);
         }
         DB::table('migrations')->insert(['migration' => self::MIGRATION, 'batch' => (int) DB::table('migrations')->max('batch') + 1]);
+        $this->artisanOk('migrate'); // the later ones: the per-model term statistics (ER-197)
     }
 
     /**
@@ -542,6 +543,7 @@ class CompactPostingsMigrationTest extends TestCase
         $migration->afterRange = $afterRange;
         $migration->up();
         DB::table('migrations')->insert(['migration' => self::MIGRATION, 'batch' => (int) DB::table('migrations')->max('batch') + 1]);
+        $this->artisanOk('migrate'); // the later ones: the per-model term statistics (ER-197)
     }
 
     /** @return list<array{string, string, int, int}> $model's postings in the compact table: term, column, frequency, doc_length */

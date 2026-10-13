@@ -67,14 +67,17 @@ class TermExpanderTest extends TestCase
         );
         $this->assertSame([1, 1, 1, 2, 2, 1, 1], array_column((new TermExpander)->candidates('kitten', 2, 500), 'distance'));
 
-        // Scoped: sitten is not posted under the model, so the pool reaches one word further (kitt).
-        foreach (['zzzzzz', 'yyyyyy', 'bitten', 'kittens', 'kitt', 'kittened', 'mitten', 'kitted'] as $i => $term) {
-            $this->insertNamedPostings([[
-                'term_id' => DB::table('fuzzy_index_terms')->where('term', $term)->value('id'),
-                'model_type' => 'App\\Models\\Pet', 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name',
-            ]]);
+        // Scoped (ER-197): the model's own words by its own document count, not the dictionary's.
+        // sitten is not posted under it; of its words, the 5 most common in the window are zzzzzz
+        // (5 documents), yyyyyy (4), kitted (3), and kitt and mitten (2: the newer word first);
+        // bitten, kittens and kittened (1) are left out by the pool.
+        foreach (['zzzzzz' => 5, 'yyyyyy' => 4, 'bitten' => 1, 'kittens' => 1, 'kitt' => 2, 'kittened' => 1, 'mitten' => 2, 'kitted' => 3] as $term => $documents) {
+            $id = DB::table('fuzzy_index_terms')->where('term', $term)->value('id');
+            $this->insertNamedPostings(array_map(fn (int $document) => [
+                'term_id' => $id, 'model_type' => 'App\\Models\\Pet', 'model_id' => (string) $document, 'frequency' => 1, 'column_name' => 'name',
+            ], range(1, $documents)));
         }
-        $this->assertSame(['bitten' => 75, 'kittens' => 70, 'kitt' => 60], $terms((new TermExpander)->candidates('kitten', 2, 5, 'App\\Models\\Pet')));
+        $this->assertSame(['kitted' => 3, 'kitt' => 2, 'mitten' => 2], $terms((new TermExpander)->candidates('kitten', 2, 5, 'App\\Models\\Pet')));
 
         // The expansion still takes the closest first, then the most common.
         $this->assertSame(

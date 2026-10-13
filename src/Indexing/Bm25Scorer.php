@@ -350,17 +350,18 @@ class Bm25Scorer
 
         // Document frequency within $modelType, the population N counts. The dictionary's
         // doc_count spans every model, so a word another model used more often than this one
-        // has rows gave a negative idf and ranked the best match last. DISTINCT model_id: a
-        // document has one posting per column it holds the term in. Chunked under SQL Server's
-        // 2,100 bindings; the primary key (term_id, model_type_id, model_id, …) covers it.
+        // has rows gave a negative idf and ranked the best match last. The type's own count of its
+        // documents holding the word (fuzzy_index_model_terms, ruling ER-197), which every index
+        // write keeps with the postings in its transaction and a rebuild derives again: the
+        // COUNT(DISTINCT model_id) of the word's postings read every one of them (554 ms for a word
+        // in 1M rows on MySQL). Read by its primary key, chunked under SQL Server's 2,100
+        // bindings; a word the type has no row for has no posting of it either: 0.
         $df = [];
         foreach (array_chunk($termIds, 1000) as $chunk) {
-            $df += DB::table('fuzzy_index_postings')
+            $df += DB::table('fuzzy_index_model_terms')
                 ->where('model_type_id', $typeId)
                 ->whereIn('term_id', $chunk)
-                ->groupBy('term_id')
-                ->selectRaw('term_id, COUNT(DISTINCT model_id) as df')
-                ->pluck('df', 'term_id')
+                ->pluck('doc_count', 'term_id')
                 ->all();
         }
 

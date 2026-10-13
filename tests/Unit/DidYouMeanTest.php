@@ -14,7 +14,10 @@ class DidYouMeanTest extends TestCase
 {
     use FakesDriverConnections;
 
-    /** A dictionary term posted under User: didYouMean() only offers the searched model's terms. */
+    /**
+     * A dictionary term posted under User in $docCount documents: didYouMean() only offers the
+     * searched model's terms, the most common by its own document count (ER-197).
+     */
     private function seedTerm(string $term, int $docCount = 10): void
     {
         $this->app['db']->table('fuzzy_index_terms')->upsert(
@@ -22,13 +25,14 @@ class DidYouMeanTest extends TestCase
             ['term'],
             ['doc_count' => $docCount]
         );
-        $this->insertNamedPostings([[
-            'term_id'     => $this->app['db']->table('fuzzy_index_terms')->where('term', $term)->value('id'),
+        $id = $this->app['db']->table('fuzzy_index_terms')->where('term', $term)->value('id');
+        $this->insertNamedPostings(array_map(fn (int $document) => [
+            'term_id'     => $id,
             'model_type'  => User::class,
-            'model_id'    => '1',
+            'model_id'    => (string) $document,
             'frequency'   => 1,
             'column_name' => 'name',
-        ]]);
+        ], range(1, $docCount)));
     }
 
     private function makeBuilder(string $term): SearchBuilder
@@ -133,13 +137,14 @@ class DidYouMeanTest extends TestCase
         $this->app['db']->disableQueryLog();
 
         $this->assertSame(['john'], $terms);
-        $termQuery = collect($log)->last(fn ($q) => str_contains($q['query'], 'fuzzy_index_terms'));
+        $termQuery = collect($log)->last(fn ($q) => str_contains($q['query'], 'fuzzy_index_model_terms'));
         $this->assertStringContainsString('term_length', $termQuery['query']);
         $this->assertStringNotContainsString('LENGTH(', strtoupper($termQuery['query']));
     }
 
     public function test_did_you_mean_returns_empty_when_the_dictionary_table_is_missing(): void
     {
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_model_terms'); // it references the terms
         $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_postings');
         $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_terms');
 

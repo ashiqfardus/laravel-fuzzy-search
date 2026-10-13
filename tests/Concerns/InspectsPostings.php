@@ -58,6 +58,35 @@ trait InspectsPostings
         foreach (array_chunk($rows, 300) as $chunk) {
             DB::table('fuzzy_index_postings')->insert($chunk);
         }
+
+        $pairs = [];
+        foreach ($rows as $row) {
+            $pairs[$row['model_type_id']][$row['term_id']] = (int) $row['term_id'];
+        }
+        $this->countModelTerms($pairs);
+    }
+
+    /**
+     * Count the model types' words again from the postings, as the index writes keep them (ER-197):
+     * for postings a test inserts or changes itself.
+     *
+     * @param array<int, array<int, int>> $pairs model type id => its term ids
+     */
+    protected function countModelTerms(array $pairs): void
+    {
+        foreach ($pairs as $typeId => $termIds) {
+            foreach (array_chunk(array_values($termIds), 1000) as $chunk) {
+                DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $chunk)->delete();
+                DB::table('fuzzy_index_model_terms')->insertUsing(
+                    ['model_type_id', 'term_id', 'term', 'term_length', 'doc_count'],
+                    DB::table('fuzzy_index_postings as p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+                        ->where('p.model_type_id', $typeId)->whereIn('p.term_id', $chunk)
+                        ->groupBy('p.model_type_id', 'p.term_id', 't.term', 't.term_length')
+                        ->select('p.model_type_id', 'p.term_id', 't.term', 't.term_length')
+                        ->selectRaw('count(distinct ' . DB::getQueryGrammar()->wrap('p.model_id') . ')')
+                );
+            }
+        }
     }
 
     /**
