@@ -102,7 +102,8 @@ return new class extends Migration
             }
 
             if ($pretending || !Schema::hasTable(self::PROGRESS)) {
-                Schema::create(self::PROGRESS, fn (Blueprint $table) => $table->unsignedBigInteger('copied_id'));
+                // A primary key, as every table needs under MySQL's sql_require_primary_key (VA-3); its one row is updated in place.
+                Schema::create(self::PROGRESS, fn (Blueprint $table) => $table->unsignedBigInteger('copied_id')->primary());
                 DB::table(self::PROGRESS)->insert(['copied_id' => 0]);
             }
 

@@ -652,6 +652,48 @@ class CompactPostingsMigrationTest extends TestCase
         }
     }
 
+    public static function requirePrimaryKeyRuns(): array
+    {
+        return ['a fresh install' => [true], 'the upgrade of an index with data' => [false]];
+    }
+
+    /**
+     * VA-3. MySQL 8.0.13+ with sql_require_primary_key on (DigitalOcean's managed MySQL default)
+     * refuses a table without a primary key: the progress table had none, so a fresh install and
+     * the upgrade both stopped at it, and so did every rerun.
+     */
+    #[DataProvider('requirePrimaryKeyRuns')]
+    public function test_a_server_that_requires_a_primary_key_migrates(bool $fresh): void
+    {
+        if ($this->dbDriver !== 'mysql') {
+            $this->markTestSkipped('MySQL 8.0.13+ only: MariaDB has no session sql_require_primary_key (its innodb_force_primary_key is global, so a test cannot set it for itself); the CI MySQL job runs this.');
+        }
+
+        $before = null;
+        if (!$fresh) {
+            $this->index();
+            $before = $this->searches();
+        }
+        $this->artisanOk('migrate:rollback', ['--step' => $fresh ? $this->stepsFrom('') : 1]);
+
+        try {
+            DB::statement('SET SESSION sql_require_primary_key = 1');
+        } catch (\Illuminate\Database\QueryException) {
+            $this->artisanOk('migrate');
+            $this->markTestSkipped('MySQL before 8.0.13 has no sql_require_primary_key.');
+        }
+        try {
+            $this->artisanOk('migrate');
+        } finally {
+            DB::statement('SET SESSION sql_require_primary_key = 0');
+        }
+
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type_id'));
+        if (!$fresh) {
+            $this->assertSame($before, $this->searches());
+        }
+    }
+
     public static function interruptions(): array
     {
         return [
