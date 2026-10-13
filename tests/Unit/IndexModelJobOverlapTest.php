@@ -861,15 +861,15 @@ class IndexModelJobOverlapTest extends TestCase
     }
 
     /**
-     * ER-187. `clear --all` truncates the big tables: on MySQL/MariaDB each TRUNCATE commits on
-     * its own, under LOCK TABLES; on PostgreSQL one TRUNCATE takes all four; on SQL Server the
-     * index write lock comes first. A write for a new row arriving after the documents TRUNCATE
-     * still lands after the whole clear, with its meta totals (TB-1's guarantee, above).
+     * ER-187. `clear --all` truncates the big tables: on MariaDB each TRUNCATE commits on its own,
+     * under LOCK TABLES; on PostgreSQL one TRUNCATE takes all four; on SQL Server the index write
+     * lock comes first. A write for a new row arriving after the documents TRUNCATE still lands
+     * after the whole clear, with its meta totals (TB-1's guarantee, above).
      */
     public function test_a_write_during_clear_all_s_truncate_lands_after_it_with_its_meta_totals(): void
     {
-        if ($this->dbDriver === 'sqlite') {
-            $this->markTestSkipped('SQLite clears with its DELETEs: the test above.');
+        if (in_array($this->dbDriver, ['sqlite', 'mysql'], true)) {
+            $this->markTestSkipped('SQLite and MySQL clear with their DELETEs: the test above.');
         }
         app(IndexManager::class)->indexBatch(User::all());
         $id = DB::table('users')->insertGetId(['name' => 'Quokka Wombat', 'email' => 'numbat@quoll.test', 'created_at' => now(), 'updated_at' => now()]);
