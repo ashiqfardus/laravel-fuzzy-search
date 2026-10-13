@@ -619,17 +619,28 @@ class CompactPostingsMigrationTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, MigratedNote::class) && str_contains($message, 'rebuild') && str_contains($message, '--fresh'));
     }
 
-    /** ER-183. With no write while it runs, the copy warns of nothing. */
+    /** ER-183. With no write while it runs, the copy warns of nothing, and builds no index for a tail (VA-6). */
     public function test_a_copy_with_no_write_while_it_runs_does_not_warn(): void
     {
         $this->index();
         $this->artisanOk('migrate:rollback', ['--step' => 1]);
 
         Log::spy();
-        $this->migrateWithWrites(3, function () {
+        $tailIndex = [];
+        DB::listen(function (QueryExecuted $query) use (&$tailIndex) {
+            if (str_contains($query->sql, 'postings_compact_model_idx')) {
+                $tailIndex[] = $query->sql;
+            }
         });
+        try {
+            $this->migrateWithWrites(3, function () {
+            });
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
 
         Log::shouldNotHaveReceived('warning');
+        $this->assertSame([], $tailIndex);
     }
 
     /** 2.0.1's re-index of a row whose index stays the same size, on $db: its postings deleted and inserted again (new ids), its first word replaced by $word. */
@@ -958,6 +969,69 @@ class CompactPostingsMigrationTest extends TestCase
         }
         $this->assertSame([], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->all());
         $this->assertSame([1], MigratedNote::search('zzafter')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
+    /**
+     * VA-6. The tail's re-copy deletes each written document's compact postings by (model_type_id,
+     * model_id), and the compact table had no index on them until after the swap: every 500
+     * documents the old code wrote cost a scan of everything copied (about 30 s at 96M postings,
+     * while the new code's searches fail). The tail indexes them first, under a name of its own,
+     * which becomes postings_model_idx after the swap; a copy with no write builds that after the
+     * swap, as before.
+     */
+    public function test_the_tail_deletes_by_document_through_an_index(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $last = (int) DB::table('fuzzy_index_postings')->max('id');
+
+        // The plan is read where EXPLAIN reads one simply (MySQL, MariaDB, PostgreSQL); SQLite and
+        // SQL Server build and rename the same index.
+        $explained  = in_array($this->dbDriver, ['mysql', 'mariadb', 'pgsql'], true);
+        $plans      = [];
+        $explaining = false;
+        DB::listen(function (QueryExecuted $query) use (&$plans, &$explaining, $explained) {
+            if (!$explained || $explaining || !preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                return;
+            }
+            $explaining = true;
+            try {
+                if ($this->dbDriver === 'pgsql') {
+                    DB::statement('set local enable_seqscan = off'); // a few rows: ask which index the delete can read
+                    $plans[] = implode(' ', array_map(fn ($row) => (string) ((array) $row)['QUERY PLAN'], DB::select('explain ' . $query->sql, $query->bindings)));
+                    DB::statement('set local enable_seqscan = on');
+                } else {
+                    $explain = $this->dbDriver === 'mysql' ? 'explain format=traditional ' : 'explain '; // MySQL 9 may default to the tree format
+                    $plans[] = implode(' ', array_map(fn ($row) => (string) ((array) $row)['key'], DB::select($explain . $query->sql, $query->bindings)));
+                }
+            } finally {
+                $explaining = false;
+            }
+        });
+        try {
+            $this->migrateWithWrites(3, function (int $high) use ($last) {
+                if ($high >= $last) {
+                    $this->oldRewrite(MigratedNote::class, '1', 'zztail'); // after the last range: the tail copies it again
+                }
+            });
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+
+        $this->assertSame($explained, $plans !== [], 'the tail ran');
+        foreach ($plans as $plan) {
+            $this->assertStringContainsString('postings_compact_model_idx', $plan);
+        }
+        $table   = DB::connection()->getTablePrefix() . 'fuzzy_index_postings';
+        $indexes = array_map(fn ($row) => strtolower((string) ((array) $row)['name']), match ($this->dbDriver) {
+            'sqlite' => DB::select("select name from sqlite_master where type = 'index' and tbl_name = ?", [$table]),
+            'pgsql'  => DB::select('select c.relname as name from pg_index i join pg_class c on c.oid = i.indexrelid where i.indrelid = to_regclass(quote_ident(?))', [$table]),
+            'sqlsrv' => DB::select('select name from sys.indexes where object_id = object_id(?) and name is not null', [$table]),
+            default  => DB::select('select distinct index_name as name from information_schema.statistics where table_schema = database() and table_name = ?', [$table]),
+        });
+        $this->assertContains('postings_model_idx', $indexes);
+        $this->assertSame([1], MigratedNote::search('zztail')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all(), 'the tail copied the row again');
+        $this->assertNotContains('postings_compact_model_idx', $indexes, 'renamed after the swap');
     }
 
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */

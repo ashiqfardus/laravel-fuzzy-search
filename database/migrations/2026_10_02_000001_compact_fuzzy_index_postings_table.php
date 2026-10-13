@@ -52,6 +52,7 @@ return new class extends Migration
     private const PROGRESS = 'fuzzy_index_postings_copied';
     private const PRIMARY = 'postings_primary';
     private const BY_MODEL = 'postings_model_idx';
+    private const BY_DOCUMENT = 'postings_compact_model_idx'; // BY_MODEL's columns on the compact table, for the tail (VA-6)
     private const UNIQUE  = 'postings_unique_idx';
 
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
@@ -151,7 +152,18 @@ return new class extends Migration
         Schema::dropIfExists(self::PROGRESS);
 
         // The secondary index, then the foreign keys (MySQL's on model_type_id needs that index).
-        if ($pretending || !in_array(self::BY_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
+        // The tail built it already, under a name of its own while the earlier table's held this
+        // one (an index name is unique per schema on PostgreSQL, per database on SQLite): renamed
+        // now, but on SQLite, which renames no index, dropped and built again.
+        $indexes = $pretending ? [] : $this->indexes('fuzzy_index_postings');
+        if (in_array(self::BY_DOCUMENT, $indexes, true)) {
+            $rename = !in_array(self::BY_MODEL, $indexes, true) && DB::connection()->getDriverName() !== DbDialect::SQLITE;
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $rename
+                ? $table->renameIndex(self::BY_DOCUMENT, self::BY_MODEL)
+                : $table->dropIndex(self::BY_DOCUMENT));
+            $indexes[] = $rename ? self::BY_MODEL : '';
+        }
+        if ($pretending || !in_array(self::BY_MODEL, $indexes, true)) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_MODEL));
         }
         if ($orphans) {
@@ -371,6 +383,12 @@ return new class extends Migration
         $read      = $max; // the ids the ranges read
         $rewritten = [];
         for ($round = 0; $round < self::TAIL_ROUNDS && ($last = (int) (clone $postings)->max('id')) > $max; $round++) {
+            // VA-6: each re-copy deletes by document, which scanned the whole compact table. BY_MODEL's
+            // index is built here instead, before the first round, and kept by the swap (renamed);
+            // a copy no write followed builds it after the swap, as before.
+            if ($round === 0 && !in_array(self::BY_DOCUMENT, $this->indexes(self::COMPACT), true)) {
+                Schema::table(self::COMPACT, fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_DOCUMENT));
+            }
             $written = []; // model type => model ids
             foreach ((clone $postings)->where('id', '>', $max)->where('id', '<=', $last)->distinct()->get(['model_type', 'model_id']) as $row) {
                 $row                                                  = (object) $row;
