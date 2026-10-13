@@ -249,6 +249,14 @@ class MigrationRerunTest extends TestCase
         } catch (\RuntimeException $e) {
             $this->assertStringContainsString('Roll back 2026_10_02_000001_compact_fuzzy_index_postings_table first', $e->getMessage());
         }
+        // So does the compact postings' own under the per-model term statistics, which reference its model types.
+        try {
+            $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . '/2026_10_02_000001_compact_fuzzy_index_postings_table.php'), '--realpath' => true])->run();
+            $this->fail('the compact rollback ran under the per-model term statistics');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Roll back 2026_10_13_000001_create_fuzzy_index_model_terms_table first', $e->getMessage());
+        }
+        $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . '/2026_10_13_000001_create_fuzzy_index_model_terms_table.php'), '--realpath' => true])->run());
         $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . '/2026_10_02_000001_compact_fuzzy_index_postings_table.php'), '--realpath' => true])->run());
         $this->assertSame(0, $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true])->run());
 

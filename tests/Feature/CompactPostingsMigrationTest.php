@@ -248,7 +248,7 @@ class CompactPostingsMigrationTest extends TestCase
         $this->assertNotEmpty($before['legacy']);
         $postings = $before['count'];
 
-        $this->fetching($arrays, fn () => $this->artisanOk('migrate:rollback', ['--step' => 1]));
+        $this->fetching($arrays, fn () => $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]));
         $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type'), 'the earlier layout');
         $this->assertFalse(Schema::hasColumn('fuzzy_index_postings', 'doc_length'));
         $this->assertFalse(Schema::hasTable('fuzzy_index_model_types'));
@@ -301,7 +301,7 @@ class CompactPostingsMigrationTest extends TestCase
         $before = $this->searches();
 
         // 83c12c7's schema, in the earlier postings layout.
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
             foreach (['fuzzy_index_postings', 'fuzzy_index_documents'] as $table) {
                 DB::statement('ALTER TABLE ' . DB::getQueryGrammar()->wrapTable($table) . ' MODIFY model_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL');
@@ -372,7 +372,7 @@ class CompactPostingsMigrationTest extends TestCase
     {
         $this->index();
 
-        foreach (['down' => fn () => $this->artisanOk('migrate:rollback', ['--step' => 1]), 'up' => fn () => $this->artisanOk('migrate')] as $direction => $run) {
+        foreach (['down' => fn () => $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]), 'up' => fn () => $this->artisanOk('migrate')] as $direction => $run) {
             $copies = $this->insertsInto($direction === 'up' ? 'fuzzy_index_postings_compact' : 'fuzzy_index_postings', $run);
 
             $this->assertNotEmpty($copies, $direction);
@@ -407,7 +407,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_column_name_first_seen_in_a_later_range_is_copied(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
 
         // The last posting, under a column no earlier posting has.
         $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zymurgy', 'doc_count' => 1, 'term_length' => 7]);
@@ -432,7 +432,7 @@ class CompactPostingsMigrationTest extends TestCase
     {
         $this->index();
         $before = $this->searches();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $ids   = DB::table('fuzzy_index_postings')->orderBy('id')->pluck('id')->all();
         $chunk = intdiv(count($ids), 3) ?: 1;
 
@@ -467,7 +467,7 @@ class CompactPostingsMigrationTest extends TestCase
     {
         $this->index();
         $before = $this->searches();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $last = (object) DB::table('fuzzy_index_postings')->orderByDesc('id')->first();
         $ids  = DB::table('fuzzy_index_postings')->count();
 
@@ -500,7 +500,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_copy_with_an_unmapped_column_name_fails_instead_of_storing_a_wrong_id(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
 
         $migration = require self::PATH . '/' . self::MIGRATION . '.php';
         Schema::create('fuzzy_index_model_types', fn (Blueprint $table) => [$table->smallIncrements('id'), $table->string('model_type', 191)->unique()]);
@@ -555,7 +555,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_write_while_the_copy_runs_ends_exact_and_warns(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $old       = fn (string $id) => DB::table('fuzzy_index_postings')->where('model_type', MigratedNote::class)->where('model_id', $id);
         $expected4 = (clone $old('4'))->orderBy('term_id')->get(['term_id', 'column_name', 'frequency'])->map(fn ($row) => (array) $row)->all();
         $length4   = (int) DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '4')->value('doc_length');
@@ -601,7 +601,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_removal_while_the_copy_runs_warns(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
 
         Log::spy();
         $done = false;
@@ -623,7 +623,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_copy_with_no_write_while_it_runs_does_not_warn(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
 
         Log::spy();
         $tailIndex = [];
@@ -674,7 +674,7 @@ class CompactPostingsMigrationTest extends TestCase
         }
 
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $default = config('database.default');
         config(['database.connections.second_writer' => config("database.connections.{$default}")]);
         $writer = DB::connection('second_writer');
@@ -742,7 +742,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_run_resumed_after_an_interrupted_one_names_every_indexed_model(string $when): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $first = (object) DB::table('fuzzy_index_postings')->orderBy('id')->first(); // in the first range
         if ($when === 'dropped') {
             DB::table('fuzzy_index_postings')->where('id', $first->id)->update(['model_id' => '999']); // no document row
@@ -829,7 +829,7 @@ class CompactPostingsMigrationTest extends TestCase
         $this->index();
         $codes = fn () => array_filter($this->searches(), fn ($key) => str_starts_with($key, 'codes '), ARRAY_FILTER_USE_KEY);
         $before = $codes();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
 
         // The notes, indexed first: the words only they use leave gaps among the dictionary's ids.
         Log::spy();
@@ -849,7 +849,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_rerun_after_a_flush_and_a_stop_before_the_foreign_keys_finishes(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
 
         DB::listen(function (QueryExecuted $query) {
             if (preg_match('/^(?=.*rename)(?=.*fuzzy_index_postings_compact)/i', $query->sql)) {
@@ -914,7 +914,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_stopped_upgrade_then_clear_all_then_migrate_finishes(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $this->stopInTheThirdRange();
 
         $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true]));
@@ -946,9 +946,9 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_stopped_upgrade_rolled_back_by_the_deploy_then_migrated_again_warns(bool $to201): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $this->stopInTheThirdRange();
-        $this->artisanOk('migrate:rollback', ['--step' => $to201 ? $this->stepsFrom('2026_09') - 1 : 1]); // the recorded ones
+        $this->artisanOk('migrate:rollback', ['--step' => $to201 ? $this->stepsFrom('2026_09') - $this->stepsFrom(self::MIGRATION) : 1]); // the recorded ones
         $this->assertTrue(Schema::hasTable('fuzzy_index_postings_copied'), 'the stopped run\'s tables stay');
 
         // The old release indexes note 1 again, as one word.
@@ -982,7 +982,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_the_tail_deletes_by_document_through_an_index(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $last = (int) DB::table('fuzzy_index_postings')->max('id');
 
         // The plan is read where EXPLAIN reads one simply (MySQL, MariaDB, PostgreSQL); SQLite and
@@ -1043,7 +1043,7 @@ class CompactPostingsMigrationTest extends TestCase
     public function test_a_range_with_more_column_names_than_sql_server_takes_parameters_migrates_both_ways(): void
     {
         $names = 2500;
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzmany', 'doc_count' => 1, 'term_length' => 6]);
         DB::table('fuzzy_index_documents')->insert(['model_type' => MigratedNote::class, 'model_id' => '1', 'doc_length' => $names]);
         foreach (array_chunk(range(1, $names), 400) as $chunk) { // 2,000 bindings a statement
@@ -1054,7 +1054,7 @@ class CompactPostingsMigrationTest extends TestCase
         $this->assertSame($names, $this->namedPostings()->where('column_name', 'like', 'attr_%')->count());
         $this->assertSame(1, $this->namedPostings()->where('column_name', 'attr_2500')->where('model_type', MigratedNote::class)->count());
 
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         $this->assertSame($names, DB::table('fuzzy_index_postings')->where('column_name', 'like', 'attr_%')->count());
         $this->assertSame(1, DB::table('fuzzy_index_postings')->where('column_name', 'attr_2500')->where('model_type', MigratedNote::class)->count());
 
@@ -1105,7 +1105,7 @@ class CompactPostingsMigrationTest extends TestCase
             $this->index();
             $before = $this->searches();
         }
-        $this->artisanOk('migrate:rollback', ['--step' => $fresh ? $this->stepsFrom('') : 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $fresh ? $this->stepsFrom('') : $this->stepsFrom(self::MIGRATION)]);
 
         try {
             DB::statement('SET SESSION sql_require_primary_key = 1');
@@ -1141,7 +1141,7 @@ class CompactPostingsMigrationTest extends TestCase
         $this->index();
         $before = $this->searches();
 
-        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
         // The first word's count past a chunk: the copy takes it alone, then the rest.
         DB::table('fuzzy_index_terms')->where('id', DB::table('fuzzy_index_terms')->min('id'))->update(['doc_count' => 1_000_000]);
         $before['terms'][DB::table('fuzzy_index_terms')->where('id', DB::table('fuzzy_index_terms')->min('id'))->value('term')] = 1_000_000;

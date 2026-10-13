@@ -25,6 +25,7 @@ class DictionaryIndexesTest extends TestCase
 {
     private const MIGRATION    = __DIR__ . '/../../database/migrations/2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes.php';
     private const COMPACT      = __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
+    private const MODEL_TERMS  = __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php';
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
@@ -121,6 +122,7 @@ class DictionaryIndexesTest extends TestCase
         $count = fn () => [DB::table('fuzzy_index_terms')->count(), DB::table('fuzzy_index_postings')->count(), DB::table('fuzzy_index_documents')->count()];
         $before = $count();
         $compact = require self::COMPACT;
+        (require self::MODEL_TERMS)->down(); // the compact postings' down() refuses under it
         $compact->down();
 
         $migration = require self::MIGRATION;
@@ -133,6 +135,7 @@ class DictionaryIndexesTest extends TestCase
         $this->assertMigrated();
         $this->assertSame([], $this->ddl(fn () => $migration->up()));
         $compact->up();
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->up();
         $this->assertSame($before, $count());
         $this->assertSame(['John Doe'], User::search('jonh doe')->useInvertedIndex()->get()->pluck('name')->take(1)->all());
         $this->assertContains('john', array_column(User::search('jonh')->didYouMean(5), 'term'));
@@ -146,6 +149,7 @@ class DictionaryIndexesTest extends TestCase
     public function test_an_install_with_the_earlier_two_column_index_gets_the_three_column_one(): void
     {
         $migration = require self::MIGRATION;
+        (require self::MODEL_TERMS)->down(); // the compact postings' down() refuses under it
         (require self::COMPACT)->down(); // this migration refuses under the compact postings
         $earlier   = function () use ($migration) {
             $migration->down();
@@ -182,6 +186,7 @@ class DictionaryIndexesTest extends TestCase
         $id   = (int) DB::table('fuzzy_index_terms')->min('id');
         $path = realpath(self::MIGRATION);
         // The compact postings first: this migration refuses under them.
+        $this->artisan('migrate:rollback', ['--path' => realpath(self::MODEL_TERMS), '--realpath' => true])->assertExitCode(0);
         $this->artisan('migrate:rollback', ['--path' => realpath(self::COMPACT), '--realpath' => true])->assertExitCode(0);
         $this->artisan('migrate:rollback', ['--path' => $path, '--realpath' => true])->assertExitCode(0);
 

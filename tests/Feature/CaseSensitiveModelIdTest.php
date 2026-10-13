@@ -110,11 +110,13 @@ class CaseSensitiveModelIdTest extends TestCase
         // Under the compact postings it refuses: they go back to the earlier layout around it.
         $compact   = require __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
         $migration = require self::MIGRATION;
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->down(); // the compact postings' down() refuses under it
         $compact->down();
         $migration->down();
         $documents = DB::table('fuzzy_index_documents')->where('model_type', CaseKeyItem::class)->pluck('model_id')->all();
         $migration->up();
         $compact->up();
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->up();
 
         if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
             $this->assertSame(['xyz'], $documents);
