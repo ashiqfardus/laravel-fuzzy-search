@@ -73,6 +73,7 @@ return new class extends Migration
     {
         $pretending = DB::connection()->pretending();
         $old        = $pretending || Schema::hasTable('fuzzy_index_postings');
+        $orphans    = !$pretending; // VA-2: the earlier table is gone, so an earlier run copied it (and may have warned)
 
         if ($old && ($pretending || !Schema::hasColumn('fuzzy_index_postings', 'model_type_id'))) {
             $collations = $this->collations($pretending);
@@ -137,6 +138,7 @@ return new class extends Migration
                         : 'the index was written while the compact postings migration ran' . ($unfinished ? ', and was still being written when it stopped following the writes' : ''))
                         . '. Rebuild each model it names: ' . implode('; ', array_map(fn (string $type) => "php artisan fuzzy-search:rebuild \"{$type}\" --fresh", $changed)));
                 }
+                $orphans = $changed !== [] || $resumed;
             }
 
             Schema::drop('fuzzy_index_postings');
@@ -151,6 +153,9 @@ return new class extends Migration
         // The secondary index, then the foreign keys (MySQL's on model_type_id needs that index).
         if ($pretending || !in_array(self::BY_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_MODEL));
+        }
+        if ($orphans) {
+            $this->deleteOrphans();
         }
         $this->addForeignKeys($pretending, [
             'term_id'       => ['fuzzy_index_terms', true],
@@ -412,6 +417,45 @@ return new class extends Migration
                 'p.model_type = ? and p.model_id in (' . implode(', ', array_fill(0, count($ids), '?')) . ')', [$type, ...$ids]
             ));
         });
+    }
+
+    /**
+     * VA-2: delete the postings whose word the dictionary no longer has. The compact table has no
+     * term foreign key while the copy runs, and an old-code flush meanwhile (2.0.1's `flush`,
+     * `clear`, `rebuild --fresh`) deletes the words it leaves without a posting in the earlier
+     * table, so the compact table kept the postings it had copied of them: PostgreSQL and SQL
+     * Server then refused the foreign key, once the earlier table was dropped, on every run, and
+     * MySQL and MariaDB kept them. Only the dictionary is read whole, its ids in order: each gap
+     * in them is one range of the postings' leading term_id, so no posting outside a gap is read,
+     * and a word inserted into a gap meanwhile keeps its postings (NOT EXISTS).
+     */
+    private function deleteOrphans(): void
+    {
+        $delete = fn (array $gaps) => DB::table('fuzzy_index_postings')
+            ->where(function ($query) use ($gaps) {
+                foreach ($gaps as [$low, $high]) {
+                    $high === null ? $query->orWhere('term_id', '>=', $low) : $query->orWhereBetween('term_id', [$low, $high]);
+                }
+            })
+            ->whereNotExists(fn ($query) => $query->selectRaw('1')->from('fuzzy_index_terms as t')->whereColumn('t.id', 'fuzzy_index_postings.term_id'))
+            ->delete();
+
+        $last = 0;
+        do {
+            $ids  = DB::table('fuzzy_index_terms')->where('id', '>', $last)->orderBy('id')->limit(10000)->pluck('id')->all();
+            $gaps = [];
+            foreach ($ids as $id) {
+                if ((int) $id > $last + 1) {
+                    $gaps[] = [$last + 1, (int) $id - 1];
+                }
+                $last = (int) $id;
+            }
+            foreach (array_chunk($gaps, 250) as $chunk) { // 500 bindings: under every database's limit
+                $delete($chunk);
+            }
+        } while ($ids !== []);
+
+        $delete([[$last + 1, null]]); // past the last word
     }
 
     /** @return array<string, string> model type => its meta totals, to compare before and after the copy */

@@ -726,6 +726,85 @@ class CompactPostingsMigrationTest extends TestCase
             && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
     }
 
+    /** 2.0.1's flush of $type after the copy's last range (every posting copied): its postings, documents and meta, then every word left without a posting in the earlier table. */
+    private function flushAfterTheLastRange(string $type): \Closure
+    {
+        $last = (int) DB::table('fuzzy_index_postings')->max('id');
+        $done = false;
+
+        return function (int $high) use ($type, $last, &$done) {
+            if ($done || $high < $last) {
+                return;
+            }
+            $done = true;
+            DB::table('fuzzy_index_postings')->where('model_type', $type)->delete();
+            DB::table('fuzzy_index_documents')->where('model_type', $type)->delete();
+            DB::table('fuzzy_index_meta')->where('model_type', $type)->delete();
+            DB::table('fuzzy_index_terms')->whereNotExists(fn ($query) => $query->selectRaw('1')->from('fuzzy_index_postings')->whereColumn('fuzzy_index_postings.term_id', 'fuzzy_index_terms.id'))->delete();
+        };
+    }
+
+    private function orphanPostings(): int
+    {
+        return DB::table('fuzzy_index_postings as p')->leftJoin('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')->whereNull('t.id')->count();
+    }
+
+    /**
+     * VA-2. The compact table has no term foreign key while the copy runs. An old-code flush
+     * meanwhile deletes the words its postings leave unused in the earlier table, and the compact
+     * table kept their copied postings: PostgreSQL and SQL Server then refused the foreign key after
+     * the earlier table was dropped, and MySQL and MariaDB kept the postings of words that are gone.
+     * The migration finishes without them, and names the flushed model (its meta row went).
+     */
+    public function test_an_old_code_flush_while_the_copy_runs_leaves_no_posting_of_a_deleted_word(): void
+    {
+        $this->index();
+        $codes = fn () => array_filter($this->searches(), fn ($key) => str_starts_with($key, 'codes '), ARRAY_FILTER_USE_KEY);
+        $before = $codes();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+
+        // The notes, indexed first: the words only they use leave gaps among the dictionary's ids.
+        Log::spy();
+        $this->migrateWithWrites(3, $this->flushAfterTheLastRange(MigratedNote::class));
+
+        $this->assertSame(0, $this->orphanPostings());
+        $this->assertSame([], MigratedNote::search('porcelain')->useInvertedIndex()->typoTolerance(0)->get()->all());
+        $this->assertSame($before, $codes());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedNote::class . '" --fresh'));
+    }
+
+    /**
+     * VA-2. A run that stopped once the earlier table was gone, before the foreign keys, left the
+     * postings of the words a flush deleted: the next run deletes them, then adds the keys (on
+     * PostgreSQL and SQL Server every rerun failed on the term foreign key).
+     */
+    public function test_a_rerun_after_a_flush_and_a_stop_before_the_foreign_keys_finishes(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+
+        DB::listen(function (QueryExecuted $query) {
+            if (preg_match('/^(?=.*rename)(?=.*fuzzy_index_postings_compact)/i', $query->sql)) {
+                throw new \RuntimeException('stopped after the swap');
+            }
+        });
+        try {
+            $this->migrateWithWrites(3, $this->flushAfterTheLastRange(MigratedCode::class));
+            $this->fail('the run did not stop');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('stopped after the swap', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type_id'), 'the compact table took the earlier one\'s name');
+
+        $this->artisanOk('migrate');
+
+        $this->assertSame(0, $this->orphanPostings());
+        $this->assertTrue(DB::table('migrations')->where('migration', self::MIGRATION)->exists());
+        $this->assertSame([1], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
     private function migrateFailingAfter(string $after): void
     {
