@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -250,17 +251,19 @@ class ModelTermsBackfillMigrationTest extends TestCase
         return ['one range' => [250000], 'a range a word' => [1]];
     }
 
-    /** The backfill of an index written before it counts each model's documents of each word, then drops its state. */
+    /** The backfill of an index written before it counts each model's documents of each word, as the index writes keep them, then drops its state. */
     #[DataProvider('chunks')]
     public function test_the_backfill_counts_each_models_documents_of_each_word(int $chunk): void
     {
         $this->index();
+        $kept = $this->modelTerms();
         $this->created();
 
         Log::spy();
         $this->backfill($chunk);
 
         $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertSame($kept, $this->modelTerms(), 'what the index writes keep');
         $this->assertSumsMatchTheDictionary();
         $this->assertFalse(Schema::hasTable(self::STATE));
         Log::shouldNotHaveReceived('warning');
@@ -316,7 +319,7 @@ class ModelTermsBackfillMigrationTest extends TestCase
     /**
      * A run stopped after its first range resumes after the end that range committed. Old code
      * wrote the index in between, in that range: the rerun cannot see it, and warns, naming every
-     * indexed model.
+     * indexed model; rebuilding them as it says makes the table exact.
      */
     public function test_a_stopped_run_resumes_and_names_every_model(): void
     {
@@ -324,11 +327,12 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->created();
         $done = $this->stoppedAfterTheFirstRange();
 
-        // Old code: post 3 gains a word of the first range (its posting and the dictionary's count).
+        // Old code: post 3 gains a word of the first range, its posting and the dictionary's count, and no model terms row.
         $post  = IndexManager::modelTypeId(BackfillPost::class);
         $first = (int) DB::table('fuzzy_index_postings')->whereNotIn('term_id', DB::table('fuzzy_index_postings')->where('model_type_id', $post)->where('model_id', '3')->select('term_id'))->min('term_id');
         $this->assertLessThanOrEqual($done, $first);
-        $this->insertNamedPostings([['term_id' => $first, 'model_type' => BackfillPost::class, 'model_id' => '3', 'column_name' => 'title']]);
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $first, 'model_type_id' => $post, 'model_id' => '3', 'column_id' => $this->columnId('title'), 'frequency' => 1,
+            'doc_length' => (int) DB::table('fuzzy_index_postings')->where('model_type_id', $post)->where('model_id', '3')->value('doc_length')]);
         DB::table('fuzzy_index_terms')->where('id', $first)->increment('doc_count');
 
         Log::spy();
@@ -338,6 +342,13 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->assertFalse(Schema::hasTable(self::STATE));
         $past = fn (array $rows) => array_values(array_filter($rows, fn ($row) => $row[1] > $done));
         $this->assertSame($past($this->expected()), $past($this->modelTerms()), 'the words past the resume point');
+        $this->assertNotSame($this->expected(), $this->modelTerms(), 'the old code\'s write is missed');
+
+        foreach (self::MODELS as $model) {
+            $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => $model, '--fresh' => true]), $model);
+        }
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertSumsMatchTheDictionary();
     }
 
     /**
@@ -361,7 +372,7 @@ class ModelTermsBackfillMigrationTest extends TestCase
         Log::shouldHaveReceived('warning')->once()->withArgs($this->warnedNaming('resumed after an interrupted run', self::MODELS));
     }
 
-    /** A write between two ranges changes the meta totals: the run names that model, and only it. */
+    /** A write between two ranges changes the meta totals: the run names that model, and only it, and ends exact. */
     public function test_a_write_while_it_runs_names_the_model(): void
     {
         $this->index();
@@ -378,6 +389,8 @@ class ModelTermsBackfillMigrationTest extends TestCase
 
         Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message) => $this->warnedNaming('written while the model terms backfill ran', [BackfillNote::class])($message)
             && !str_contains($message, BackfillPost::class) && !str_contains($message, 'resumed'));
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertSumsMatchTheDictionary();
     }
 
     /** @return list<string> the statements $run sends that write */
@@ -524,5 +537,7 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->assertTrue($waited, 'the write to a word of the range waited for the range');
         $this->assertSame([1], User::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->map(fn ($id) => (int) $id)->all());
         $this->assertFalse(Schema::hasTable(self::STATE));
+        $this->assertSame($this->expected(), $this->modelTerms(), 'the range and the write, each counted once');
+        $this->assertSumsMatchTheDictionary();
     }
 }

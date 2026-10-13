@@ -243,6 +243,10 @@ class CompactPostingsMigrationTest extends TestCase
         $out['terms']   = DB::table('fuzzy_index_terms')->orderBy('term')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->all();
         $out['legacy']  = $this->namedPostings()->where('column_name', '')->groupBy('model_type')->selectRaw('model_type, COUNT(*) as cnt')->pluck('cnt', 'model_type')->map(fn ($c) => (int) $c)->all();
         $out['count']   = DB::table('fuzzy_index_postings')->count();
+        // ER-197: what the index writes keep, and what 2026_10_13_000002 counts after a rollback past it (by name: down() renumbers the model types).
+        $out['model terms'] = DB::table('fuzzy_index_model_terms as mt')->join('fuzzy_index_model_types as ty', 'ty.id', '=', 'mt.model_type_id')
+            ->orderBy('ty.model_type')->orderBy('mt.term')->get(['ty.model_type', 'mt.term', 'mt.term_length', 'mt.doc_count'])
+            ->map(fn ($row) => "{$row->model_type}|{$row->term}|" . (int) $row->term_length . '|' . (int) $row->doc_count)->all();
 
         return $out;
     }
