@@ -125,6 +125,76 @@ class JoinedRowPagingTest extends TestCase
         }
     }
 
+    /**
+     * ER-189. No ORDER BY takes PostgreSQL's json, so the tiebreak leaves a joined json column out:
+     * which it can tell only from the column types. Where they cannot be read (Laravel 10 before
+     * Schema::getColumns(), simulated through typesOn()'s memo as ShadowWriteGuardTest does),
+     * PostgreSQL and SQL Server keep the key alone, as before VC-7, so the join still reads; the
+     * other databases order every type. A SELECT DISTINCT compares every column it selects anyway,
+     * so its order needs no types.
+     */
+    public function test_a_column_no_order_by_takes_is_left_out_and_unreadable_types_keep_the_key_alone(): void
+    {
+        $I = self::ITEMS;
+        $N = self::NOTES;
+        Schema::table($N, fn (Blueprint $table) => $table->json('meta')->nullable());
+        DB::table($N)->update(['meta' => '{"a":1}']);
+
+        $stable   = fn () => JoinedRowPagingItem::search('alpha')->join($N, "{$N}.item_id", '=', "{$I}.id")->stableRanking();
+        $distinct = fn () => JoinedRowPagingItem::search('alpha')->join($N, "{$N}.item_id", '=', "{$I}.id")->select("{$I}.*", "{$N}.label")->distinct();
+        $sql      = fn ($search) => str_replace(['`', '[', ']'], '"', $search->toSql());
+        $typed    = in_array($this->dbDriver, ['pgsql', 'sqlsrv'], true); // json() is nvarchar(max) on SQL Server, json on PostgreSQL
+
+        try {
+            foreach (['readable', 'unreadable'] as $types) {
+                \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+                if ($types === 'unreadable') {
+                    $key = \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::connectionKey(DB::connection());
+                    (new \ReflectionProperty(\Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::class, 'types'))
+                        ->setValue(null, ["{$key}|{$I}" => [], "{$key}|{$N}" => []]);
+                    $this->assertSame([], \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::typesOn(DB::connection(), $N));
+                }
+
+                $this->assertStringEndsWith(match (true) {
+                    $typed && $types === 'unreadable'          => "\"{$I}\".\"id\" asc",
+                    $this->dbDriver === 'pgsql'                => "\"{$I}\".\"id\" asc, \"{$N}\".\"id\" asc, \"{$N}\".\"item_id\" asc, \"{$N}\".\"label\" asc",
+                    default                                    => "\"{$I}\".\"id\" asc, \"{$N}\".\"id\" asc, \"{$N}\".\"item_id\" asc, \"{$N}\".\"label\" asc, \"{$N}\".\"meta\" asc",
+                }, $sql($stable()), "{$types} types");
+                $this->assertCount(5, $stable()->paginate(5, 'page', 3)->items(), "{$types} types");
+                $this->assertNotEmpty($stable()->get(), "{$types} types");
+
+                $this->assertStringEndsWith("order by \"{$I}\".\"id\" asc, \"{$N}\".\"label\" asc", $sql($distinct()), "{$types} types, distinct()");
+                $this->assertCount(5, $distinct()->paginate(5, 'page', 3)->items(), "{$types} types, distinct()");
+            }
+        } finally {
+            \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+        }
+    }
+
+    /**
+     * ER-189 (UF-6). An unordered distinct() without the key is read by its selected columns, an
+     * aliased one by its alias: an alias with the name of another selected column made that ORDER BY
+     * ambiguous, and PostgreSQL rejected it (42702). Such an alias is read by its column.
+     */
+    public function test_a_distinct_alias_named_like_another_selected_column_is_read_by_its_column(): void
+    {
+        $I = self::ITEMS;
+        $N = self::NOTES;
+        config(['fuzzy-search.max_candidates' => 7]);
+
+        $join   = fn () => JoinedRowPagingItem::search('alpha')->join($N, "{$N}.item_id", '=', "{$I}.id")->distinct();
+        $shapes = [
+            'a column'  => [fn () => $join()->select("{$I}.name", "{$N}.label as name"), "order by \"{$I}\".\"name\" asc, \"{$N}\".\"label\" asc"],
+            'table.*'   => [fn () => $join()->select("{$N}.*", "{$I}.name as label"), "order by \"{$N}\".\"id\" asc, \"{$N}\".\"item_id\" asc, \"{$N}\".\"label\" asc, \"{$I}\".\"name\" asc"],
+        ];
+
+        foreach ($shapes as $label => [$make, $order]) {
+            $this->assertStringEndsWith($order, str_replace(['`', '[', ']'], '"', $make()->toSql()), $label);
+            $this->assertNotEmpty($make()->get(), $label);
+            $this->assertCount(5, $make()->paginate(5, 'page', 3)->items(), "{$label}, past max_candidates");
+        }
+    }
+
     /** @return string[] each row as "item key/label" */
     private static function rows(array $items): array
     {

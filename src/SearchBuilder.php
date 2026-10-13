@@ -2723,11 +2723,12 @@ class SearchBuilder
         // A SELECT DISTINCT left unordered (no orderBy(), and no relevance order: see buildQuery())
         // is read by what it selects (R11-M3, UA-5, UF-6): the key when the select holds it; a query
         // builder's `*` (or `table.*`) over a table with no `id`, every column of the table; else
-        // every column it selects, an aliased one by its alias. A distinct row is unique over its
+        // every column it selects (selectedColumns()), an aliased one by its alias, or by its column
+        // where another selected column has the alias's name (UF-6). A distinct row is unique over its
         // selected columns, so each is a total order: paginate()'s window and its pages past
         // max_candidates (one OFFSET read each) are read in that one order and partition the matches.
         // Under a join, which repeats the key once per joined row, the key is followed by the other
-        // selected columns (joinedRowColumns(), VC-7), and a select of the joined table's `table.*`
+        // selected columns (selectedColumns(), VC-7), and a select of the joined table's `table.*`
         // is read by that table's columns. Unordered, SQL Server's grammar ordered the OFFSET by
         // (SELECT 0), which a SELECT DISTINCT rejects (145), and elsewhere the pages could overlap. A
         // select of raw expressions only stays unordered. PostgreSQL's distinct('col') (DISTINCT ON)
@@ -2743,10 +2744,10 @@ class SearchBuilder
                 $qualified = $this->qualifiedColumnMap($query);
                 $columns   = array_map(fn (string $column) => ($qualified[$column] ?? '') . $column, $columns);
             } else {
-                $columns = self::plainColumns($query);
+                $columns = array_keys($this->selectedColumns($query, false));
             }
 
-            $columns = [...$columns, ...self::notNamedIn($columns, $this->joinedRowColumns($query, $columns === [$keyColumn]))];
+            $columns = [...$columns, ...self::notNamedIn($columns, $this->selectedColumns($query, true, $columns === [$keyColumn]))];
 
             if (is_array($base->distinct) && $base->getGrammar() instanceof \Illuminate\Database\Query\Grammars\PostgresGrammar) {
                 $columns = [...$base->distinct, ...array_filter($columns, fn ($column) => !in_array($column, $base->distinct, true))];
@@ -2775,7 +2776,7 @@ class SearchBuilder
         // Under a join, which repeats the key, then the selected columns (VC-7). Not on the index
         // path: it serves each model once, at its first row by the order (orderedIndexedPage()).
         if (!$endOnKey) {
-            foreach (self::notNamedIn([...$taken, ...($keyed ? [$keyColumn] : [])], $this->joinedRowColumns($query, $keyed)) as $column) {
+            foreach (self::notNamedIn([...$taken, ...($keyed ? [$keyColumn] : [])], $this->selectedColumns($query, true, $keyed)) as $column) {
                 $query->orderBy($column, 'asc');
             }
         }
@@ -2834,58 +2835,46 @@ class SearchBuilder
         return false;
     }
 
-    /**
-     * The columns $query selects, each once, as an ORDER BY names them: a column as written, an
-     * aliased one (`name as label`) by its alias. No `*`, `table.*` or raw expression.
-     *
-     * @return string[]
-     */
-    private static function plainColumns(Builder|EloquentBuilder $query): array
-    {
-        $columns = [];
-        foreach (($query instanceof EloquentBuilder ? $query->getQuery() : $query)->columns ?? [] as $column) {
-            if (is_string($column) && !str_ends_with($column, '*')) {
-                $columns[] = preg_split('/\s+as\s+/i', $column)[1] ?? $column;
-            }
-        }
-
-        return array_values(array_unique($columns));
-    }
-
-    /** Types no ORDER BY takes, by driver: joinedRowColumns() leaves such a column out. */
+    /** Types no ORDER BY takes, by driver: selectedColumns() leaves such a column out. */
     private const UNORDERED_TYPES = ['pgsql' => ['json', 'xml'], 'sqlsrv' => ['text', 'ntext', 'image', 'xml', 'geography', 'geometry']];
 
     /**
-     * Under a join, or a FROM that is not the model's own table (a fromSub(), a union read as one
-     * table), the key repeats once per joined row and leaves those rows tied (VC-7): the columns
-     * that break the tie, each selected column as an ORDER BY names it, an aliased one by its alias
-     * (by its column when another selected column has that name: the alias would be ambiguous), and
-     * every column of each table a `*` or `table.*` select reads (SearchableColumns::onTable()).
-     * Only selected columns, so a SELECT DISTINCT takes them too. Not a raw expression, a derived
-     * table's columns (they cannot be listed), a type UNORDERED_TYPES names, nor, $afterKey, the
-     * FROM table's own columns: the key decides them. [] without a join.
+     * The columns $query selects, as an ORDER BY names them: a column as written, an aliased one by
+     * its alias (by its column when another selected column has that name: the alias would be
+     * ambiguous, UF-6), and every column of each table a `*` or `table.*` select reads
+     * (SearchableColumns::onTable()). Not a raw expression, nor a derived table's columns (they
+     * cannot be listed).
+     *
+     * $joined (VC-7): only under a join, or a FROM that is not the model's own table (a fromSub(),
+     * a union read as one table), where the key repeats once per joined row and leaves those rows
+     * tied: these are the columns that break the tie, [] without a join; $afterKey leaves out the
+     * FROM table's own columns, which the key decides. Outside a SELECT DISTINCT (which compares
+     * every selected column already), PostgreSQL and SQL Server get only a column whose type is
+     * read and one an ORDER BY takes (UNORDERED_TYPES): none where the types cannot be read
+     * (Laravel 10 before Schema::getColumns(), SearchableColumns::typesOn()), nor a derived table's.
      *
      * @return array<string, string> the ORDER BY name => the column it names (its alias's column)
      */
-    private function joinedRowColumns(Builder|EloquentBuilder $query, bool $afterKey): array
+    private function selectedColumns(Builder|EloquentBuilder $query, bool $joined, bool $afterKey = false): array
     {
         $base  = $query instanceof EloquentBuilder ? $query->toBase() : $query;
         $from  = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
         $model = $query instanceof EloquentBuilder ? $query->getModel()->getTable() : null;
 
-        if (empty($base->joins) && $from !== null && ($model === null || $from[0] === $model)) {
+        if ($joined && empty($base->joins) && $from !== null && ($model === null || $from[0] === $model)) {
             return [];
         }
 
         // qualifier => [column => whether an ORDER BY takes it], for each plain table read
         $connection = $base->getConnection();
         $unordered  = self::UNORDERED_TYPES[$connection->getDriverName()] ?? [];
+        $typed      = $unordered !== [] && !self::isDistinct($query);
         $listed     = [];
         foreach ([$base->from, ...array_map(fn ($join) => $join->table, $base->joins ?? [])] as $read) {
             if (($read = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($read)) !== null) {
                 $types = SearchableColumns::typesOn($connection, $read[0]);
                 foreach (SearchableColumns::onTable($connection, $read[0]) as $column) {
-                    $listed[$read[1] ?? self::lastSegment($read[0])][$column] = !in_array($types[$column] ?? '', $unordered, true);
+                    $listed[$read[1] ?? self::lastSegment($read[0])][$column] = !$typed || isset($types[$column]) && !in_array($types[$column], $unordered, true);
                 }
             }
         }
@@ -2912,7 +2901,8 @@ class SearchBuilder
 
             [$name, $alias] = array_pad(preg_split('/\s+as\s+/i', $column), 2, null);
             $qualifier      = str_contains($name, '.') ? substr($name, 0, (int) strrpos($name, '.')) : null;
-            $ordered        = $qualifier === null ? !in_array(false, array_column($listed, $name), true) : $listed[$qualifier][self::lastSegment($name)] ?? true;
+            $found          = $qualifier === null ? array_column($listed, $name) : (isset($listed[$qualifier][self::lastSegment($name)]) ? [$listed[$qualifier][self::lastSegment($name)]] : []);
+            $ordered        = !in_array(false, $found, true) && ($found !== [] || !$typed);
             $names[]        = $alias ?? self::lastSegment($name);
             $columns[]      = $ordered && $qualifier !== $own ? [$alias ?? $name, $name] : null;
         }
@@ -2927,7 +2917,7 @@ class SearchBuilder
     }
 
     /**
-     * The ORDER BY names of $columns (joinedRowColumns()) whose column none of $taken names, nor one
+     * The ORDER BY names of $columns (selectedColumns()) whose column none of $taken names, nor one
      * before them, by its name or, for an alias, its column (ruling ER-52: SQL Server rejects a
      * column named twice in ORDER BY, under an alias too). A bare name and a dotted one name the
      * same column when their last segments match.
