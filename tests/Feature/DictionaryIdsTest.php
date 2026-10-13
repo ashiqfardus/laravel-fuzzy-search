@@ -143,7 +143,7 @@ class DictionaryIdsTest extends TestCase
     private function emptyIndexTables(): void
     {
         Schema::withoutForeignKeyConstraints(function () {
-            foreach (['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_terms', 'fuzzy_index_model_types', 'fuzzy_index_columns'] as $table) {
+            foreach (['fuzzy_index_model_terms', 'fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_terms', 'fuzzy_index_model_types', 'fuzzy_index_columns'] as $table) {
                 if (DB::connection()->getDriverName() !== 'sqlsrv') {
                     DB::table($table)->truncate();
                     continue;
