@@ -29,7 +29,11 @@ use Illuminate\Support\Facades\Schema;
  * The index names carry the table prefix as Laravel prefixes its own (prefix_indexes): PostgreSQL
  * and SQLite name an index once per schema, SQL Server a primary key (VJ-5).
  *
- * This creates the table only; 2026_10_13_000002 fills it from an existing index.
+ * This creates the table only; 2026_10_13_000002 fills it from an existing index. Its state is
+ * BACKFILL, created here, before any index write can add a row to the table: one row, the last
+ * term id the backfill counted (0: none). 2026_10_13_000002 goes on from it, and drops the table
+ * once it has counted every word, so a table without it is complete. The rows index writes add
+ * meanwhile say nothing about how far the backfill got.
  */
 return new class extends Migration
 {
@@ -37,6 +41,7 @@ return new class extends Migration
     private const MT_LENGTH  = 'model_terms_length_idx';
     private const MT_TERM    = 'model_terms_term_idx';
     private const MT_TERM_ID = 'model_terms_term_id_idx';
+    private const BACKFILL   = 'fuzzy_index_model_terms_backfill';
 
     public function up(): void
     {
@@ -47,7 +52,15 @@ return new class extends Migration
         // A run that stopped part way left the table without some of its keys (MySQL runs each
         // statement on its own): it holds no data an index write could not write again, and the
         // backfill after this one counts it afresh.
+        Schema::dropIfExists(self::BACKFILL);
         Schema::dropIfExists('fuzzy_index_model_terms');
+
+        // A primary key, as every table needs under MySQL's sql_require_primary_key (VA-3); its one row is updated in place.
+        Schema::create(self::BACKFILL, function (Blueprint $table) {
+            $table->unsignedTinyInteger('id')->primary();
+            $table->unsignedBigInteger('last_term_id')->default(0);
+        });
+        DB::table(self::BACKFILL)->insert(['id' => 1, 'last_term_id' => 0]);
 
         Schema::create('fuzzy_index_model_terms', function (Blueprint $table) use ($driver, $prefix) {
             $table->unsignedSmallInteger('model_type_id');
@@ -82,6 +95,7 @@ return new class extends Migration
 
     public function down(): void
     {
+        Schema::dropIfExists(self::BACKFILL); // still there after a backfill that stopped part way
         Schema::dropIfExists('fuzzy_index_model_terms');
     }
 };
