@@ -149,6 +149,27 @@ class CompactPostingsTest extends TestCase
         }
     }
 
+    /**
+     * VC-6: column names are shared by every model and never deleted, so a searchableText() keyed per
+     * attribute, locale or custom field can pass a small integer's 32,767 (PostgreSQL) or 65,535
+     * (MySQL): the dictionary's id and the postings' column_id hold a full integer.
+     */
+    public function test_a_column_id_past_a_small_integer_is_stored(): void
+    {
+        $note = CompactNote::create(['title' => 'Copper kettle', 'body' => 'boils water']);
+        app(IndexManager::class)->indexModel($note);
+
+        $posting = (array) DB::table('fuzzy_index_postings')->first();
+        DB::table('fuzzy_index_postings')->where($posting)->update(['column_id' => 70000]);
+        $this->assertSame(1, DB::table('fuzzy_index_postings')->where('column_id', 70000)->count(), 'column_id');
+        DB::table('fuzzy_index_postings')->where('column_id', 70000)->update(['column_id' => $posting['column_id']]); // a rollback maps every column id to its name
+
+        if ($this->dbDriver !== 'sqlsrv') { // SQL Server takes no explicit value in an identity column
+            DB::table('fuzzy_index_columns')->insert(['id' => 70000, 'name' => 'attribute_70000']);
+            $this->assertSame(70000, (int) DB::table('fuzzy_index_columns')->where('name', 'attribute_70000')->value('id'), 'dictionary id');
+        }
+    }
+
     public function test_every_posting_carries_its_documents_length_after_each_write(): void
     {
         config(['fuzzy-search.indexing.enabled' => true]); // index on save and delete
