@@ -437,6 +437,7 @@ class IndexManagerTest extends TestCase
         $migrationsDir     = __DIR__ . '/../../database/migrations/';
         $termsMigration    = require $migrationsDir . '2026_05_02_205327_create_fuzzy_index_terms_table.php';
         $postingsMigration = require $migrationsDir . '2026_05_02_205328_create_fuzzy_index_postings_table.php';
+        (require $migrationsDir . '2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->down(); // it references the terms
         $postingsMigration->down();
         $termsMigration->down();
 

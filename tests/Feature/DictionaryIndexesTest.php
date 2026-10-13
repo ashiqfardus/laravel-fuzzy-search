@@ -25,6 +25,7 @@ class DictionaryIndexesTest extends TestCase
 {
     private const MIGRATION    = __DIR__ . '/../../database/migrations/2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes.php';
     private const COMPACT      = __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
+    private const MODEL_TERMS  = __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php';
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
@@ -121,6 +122,7 @@ class DictionaryIndexesTest extends TestCase
         $count = fn () => [DB::table('fuzzy_index_terms')->count(), DB::table('fuzzy_index_postings')->count(), DB::table('fuzzy_index_documents')->count()];
         $before = $count();
         $compact = require self::COMPACT;
+        (require self::MODEL_TERMS)->down(); // the compact postings' down() refuses under it
         $compact->down();
 
         $migration = require self::MIGRATION;
@@ -133,6 +135,8 @@ class DictionaryIndexesTest extends TestCase
         $this->assertMigrated();
         $this->assertSame([], $this->ddl(fn () => $migration->up()));
         $compact->up();
+        (require self::MODEL_TERMS)->up();
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000002_backfill_fuzzy_index_model_terms_table.php')->up();
         $this->assertSame($before, $count());
         $this->assertSame(['John Doe'], User::search('jonh doe')->useInvertedIndex()->get()->pluck('name')->take(1)->all());
         $this->assertContains('john', array_column(User::search('jonh')->didYouMean(5), 'term'));
@@ -146,6 +150,7 @@ class DictionaryIndexesTest extends TestCase
     public function test_an_install_with_the_earlier_two_column_index_gets_the_three_column_one(): void
     {
         $migration = require self::MIGRATION;
+        (require self::MODEL_TERMS)->down(); // the compact postings' down() refuses under it
         (require self::COMPACT)->down(); // this migration refuses under the compact postings
         $earlier   = function () use ($migration) {
             $migration->down();
@@ -182,6 +187,7 @@ class DictionaryIndexesTest extends TestCase
         $id   = (int) DB::table('fuzzy_index_terms')->min('id');
         $path = realpath(self::MIGRATION);
         // The compact postings first: this migration refuses under them.
+        $this->artisan('migrate:rollback', ['--path' => realpath(self::MODEL_TERMS), '--realpath' => true])->assertExitCode(0);
         $this->artisan('migrate:rollback', ['--path' => realpath(self::COMPACT), '--realpath' => true])->assertExitCode(0);
         $this->artisan('migrate:rollback', ['--path' => $path, '--realpath' => true])->assertExitCode(0);
 
@@ -247,11 +253,12 @@ class DictionaryIndexesTest extends TestCase
     /**
      * S1, MySQL: for a model holding most of the index, MySQL read every posting of the model
      * before each length's read (10–14 s a term at 1M words) instead of probing the postings once
-     * per word, in doc_count order, until the pool is full (20–70 ms): the read carries the
-     * FirstMatch hint. A small model reads the whole window once (TC-4), with MySQL's own plan,
-     * which reads its few postings; probing would walk the whole length for them (3 s at 1M words).
+     * per word, in doc_count order, until the pool is full (20–70 ms). Since ER-197 the reads walk
+     * the model's own words (fuzzy_index_model_terms), nearly all of them hits, so a read that checks
+     * the shown columns (didYouMean()) always probes, whatever the model's share (the cost model on
+     * the meta totals is gone), and the typo expansion reads no postings at all.
      */
-    public function test_mysql_probes_the_postings_for_a_model_that_holds_most_of_the_index(): void
+    public function test_mysql_probes_the_postings_for_the_shown_columns_whatever_the_share(): void
     {
         if ($this->dbDriver !== 'mysql') {
             $this->markTestSkipped('MySQL only: the hint is MySQL syntax, and the other databases plan both shapes well; the CI MySQL job runs this.');
@@ -261,36 +268,40 @@ class DictionaryIndexesTest extends TestCase
             ['model_type' => 'App\\Models\\Product', 'total_docs' => 60000, 'total_tokens' => 1000000, 'avg_doc_length' => 16],
             ['model_type' => 'App\\Models\\Category', 'total_docs' => 30, 'total_tokens' => 300, 'avg_doc_length' => 10],
         ]);
-        $reads = function (string $model): array {
+        $reads = function (string $model, bool $visibleOnly): array {
             $reads = [];
             DB::listen(function ($query) use (&$reads) {
                 if (preg_match('/^\s*select\b/i', $query->sql) && str_contains($query->sql, 'term_length')) {
                     $reads[] = $query->sql;
                 }
             });
-            (new TermExpander)->candidates('kitten', 1, 500, $model, visibleOnly: false);
+            (new TermExpander)->candidates('kitten', 1, 500, $model, $visibleOnly);
             DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
 
             return $reads;
         };
 
-        $this->assertCount(3, $product = $reads('App\\Models\\Product'));
-        foreach ($product as $sql) {
-            $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
+        foreach (['App\\Models\\Product', 'App\\Models\\Category'] as $model) {
+            $this->assertCount(3, $shown = $reads($model, true), $model);
+            foreach ($shown as $sql) {
+                $this->assertStringContainsString('/*+ SEMIJOIN(FIRSTMATCH) */', $sql);
+            }
+            $this->assertCount(3, $typo = $reads($model, false), $model);
+            foreach ($typo as $sql) {
+                $this->assertStringNotContainsString('fuzzy_index_postings', $sql);
+            }
         }
-        $this->assertCount(1, $category = $reads('App\\Models\\Category'));
-        $this->assertStringNotContainsString('SEMIJOIN', $category[0]);
     }
 
     /**
-     * TC-4. Read one length at a time, a model holding a small share of the dictionary was planned
-     * as a full read of its postings and of every word of that length, once per length: at 1M words
-     * 960–1,080 ms a term on SQL Server, where one read of the window took 63–79 ms (and 2–6× on the
-     * other databases). The share, from the meta totals, now picks the read: the window once for a
-     * small share, a length at a time for a large one (always on SQLite). Both find the same words,
-     * cut at the same place in a tie (equal counts across lengths here, newest word first).
+     * TC-4, then ER-197. Read through the shared dictionary, a model holding a small share of it
+     * was planned as a full read of its postings and of every word of a length, once per length, so
+     * the meta totals picked one read of the whole window for it. The reads now walk the model's own
+     * words in fuzzy_index_model_terms, a length at a time, whatever the share: in a single-model
+     * index, where its counts are the dictionary's, they find the words the dictionary's own read
+     * finds, cut at the same place in a tie (equal counts across lengths here, newest word first).
      */
-    public function test_a_model_with_a_small_share_reads_the_window_once_and_finds_the_same_words(): void
+    public function test_a_model_reads_a_length_at_a_time_whatever_its_share_and_finds_the_dictionarys_words(): void
     {
         $rows = [];
         foreach (range(4, 10) as $length) {
@@ -301,14 +312,18 @@ class DictionaryIndexesTest extends TestCase
         foreach (array_chunk($rows, 100) as $chunk) {
             DB::table('fuzzy_index_terms')->insert($chunk);
         }
-        $words = DB::table('fuzzy_index_terms')->get(['id', 'term', 'doc_count'])->all();
-        foreach (array_chunk($words, 100) as $chunk) {
-            $this->insertNamedPostings(array_map(fn ($word) => ['term_id' => $word->id, 'model_type' => 'App\\Models\\Faq', 'model_id' => (string) $word->id, 'frequency' => 1, 'column_name' => 'body'], $chunk));
+        // Each word in as many of the model's documents as its doc_count.
+        $postings = [];
+        foreach (DB::table('fuzzy_index_terms')->get(['id', 'doc_count']) as $word) {
+            foreach (range(1, (int) $word->doc_count) as $document) {
+                $postings[] = ['term_id' => $word->id, 'model_type' => 'App\\Models\\Faq', 'model_id' => (string) $document, 'frequency' => 1, 'column_name' => 'body'];
+            }
         }
+        $this->insertNamedPostings($postings);
 
         // The words a pool of 10 holds within 7 edits of ggggggg: every length here is in reach.
-        usort($words, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
-        $expected = array_values(array_filter(array_map(fn ($word) => (string) $word->term, array_slice($words, 0, 10)), fn (string $term) => TermExpander::distance('ggggggg', $term) <= 7));
+        $expected = array_column((new TermExpander)->candidates('ggggggg', 7, 10), 'term');
+        $this->assertNotSame([], $expected);
 
         $read = function () {
             $reads = 0;
@@ -323,23 +338,24 @@ class DictionaryIndexesTest extends TestCase
             return [$reads, $terms];
         };
 
-        // A small share: another model holds nearly all of the index.
+        // A small share: another model holds nearly all of the index. One read per length, 1 to 14.
         DB::table('fuzzy_index_meta')->insert([
             ['model_type' => 'App\\Models\\Faq', 'total_docs' => 420, 'total_tokens' => 420, 'avg_doc_length' => 1],
             ['model_type' => 'App\\Models\\Product', 'total_docs' => 60000, 'total_tokens' => 10000000, 'avg_doc_length' => 16],
         ]);
-        // SQLite reads a length at a time whatever the share: its window read scans the whole window.
-        $this->assertSame([$this->dbDriver === 'sqlite' ? 14 : 1, $expected], $read());
+        $this->assertSame([14, $expected], $read());
 
-        // The whole index: one read per length, 1 to 14, the same words.
+        // The whole index: the same reads, the same words.
         DB::table('fuzzy_index_meta')->where('model_type', 'App\\Models\\Product')->delete();
         $this->assertSame([14, $expected], $read());
     }
 
     /**
      * S1: candidates() reads one length at a time, each in (term_length, doc_count) order: no
-     * sort of the window, whose size grows with the dictionary. The plan check runs where EXPLAIN
-     * is plain SQL (SQLite, MySQL, MariaDB, PostgreSQL); SQL Server checks the shape only.
+     * sort of the window, whose size grows with the dictionary. A model's words are read through
+     * fuzzy_index_model_terms' (model_type_id, term_length, doc_count, term_id) (ER-197), the
+     * dictionary's through (term_length, doc_count, id). The plan check runs where EXPLAIN is plain
+     * SQL (SQLite, MySQL, MariaDB, PostgreSQL); SQL Server checks the shape only.
      */
     public function test_the_typo_read_takes_each_length_in_index_order(): void
     {
@@ -356,9 +372,8 @@ class DictionaryIndexesTest extends TestCase
         foreach ($ids->chunk(100) as $chunk) {
             $this->insertNamedPostings($chunk->values()->map(fn ($id, $i) => ['term_id' => $id, 'model_type' => User::class, 'model_id' => (string) ($i + 1), 'frequency' => 1, 'column_name' => 'name'])->all());
         }
-        // The model holds the whole index, so it reads a length at a time (TC-4).
         DB::table('fuzzy_index_meta')->insert(['model_type' => User::class, 'total_docs' => 60, 'total_tokens' => count($ids), 'avg_doc_length' => 7]);
-        $tables = DB::connection()->getTablePrefix() . 'fuzzy_index_terms, ' . DB::connection()->getTablePrefix() . 'fuzzy_index_postings';
+        $tables = implode(', ', array_map(fn (string $table) => DB::connection()->getTablePrefix() . $table, ['fuzzy_index_terms', 'fuzzy_index_postings', 'fuzzy_index_model_terms']));
         match ($this->dbDriver) {
             'pgsql'            => DB::statement('analyze ' . $tables),
             'mysql', 'mariadb' => DB::statement('analyze table ' . $tables),
@@ -366,15 +381,24 @@ class DictionaryIndexesTest extends TestCase
             default            => null,
         };
 
-        $reads = [];
-        DB::listen(function ($query) use (&$reads) {
-            if (preg_match('/^\s*select\b/i', $query->sql) && str_contains($query->sql, 'fuzzy_index_terms')) {
-                $reads[] = [$query->sql, $query->bindings];
-            }
-        });
-        (new TermExpander)->candidates('ggggggg', 2, 10, User::class, visibleOnly: false);
+        foreach (['fuzzy_index_model_terms' => [User::class, 'model_terms_length_idx'], 'fuzzy_index_terms' => [null, self::LENGTH_COUNT_ID]] as $table => [$model, $index]) {
+            $reads = [];
+            DB::listen(function ($query) use (&$reads, $table) {
+                if (preg_match('/^\s*select\b/i', $query->sql) && preg_match('/\b\W?\w*' . $table . '\b/', $query->sql)) {
+                    $reads[] = [$query->sql, $query->bindings];
+                }
+            });
+            (new TermExpander)->candidates('ggggggg', 2, 10, $model, visibleOnly: false);
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
 
-        $this->assertCount(5, $reads, 'one read per length, 5 to 9');
+            $this->assertCount(5, $reads, "one read per length, 5 to 9, of {$table}");
+            $this->assertIndexOrder($reads, $index);
+        }
+    }
+
+    /** @param list<array{string, array}> $reads each read's plan takes $index, with no sort */
+    private function assertIndexOrder(array $reads, string $index): void
+    {
         foreach ($reads as [$sql, $bindings]) {
             $this->assertStringNotContainsStringIgnoringCase('between', $sql);
             $plan = match ($this->dbDriver) {
@@ -386,7 +410,7 @@ class DictionaryIndexesTest extends TestCase
             if ($plan === null) {
                 continue;
             }
-            $this->assertStringContainsString(self::LENGTH_COUNT_ID, $plan);
+            $this->assertStringContainsString($index, $plan);
             $this->assertDoesNotMatchRegularExpression('/temp b-tree for order by|filesort|\bsort\b/i', $plan, $plan);
         }
     }
@@ -412,8 +436,9 @@ class DictionaryIndexesTest extends TestCase
         // 20,000 words of 6 to 9 characters, 2 postings each, one under a dotted column.
         DB::statement("insert into {$terms} (term, doc_count, term_length) select t, 1 + g % 97, length(t) from (select g, 'w' || lpad(g::text, 5, '0') || repeat('x', g % 4) as t from generate_series(1, 20000) g) w");
         DB::statement(sprintf("insert into {$posts} (term_id, model_type_id, model_id, column_id, frequency, doc_length) select t.id, %d, (t.id * 4 + k)::text, case when k = 2 then %d else %d end, 1, 6 from {$terms} t cross join generate_series(1, 2) k", $type, $columns['author.name'], $columns['name']));
-        DB::statement("analyze {$posts}, {$terms}"); // as a rebuild's analyzeIndex() did: never the column dictionary
-        // The model holds the whole index, so candidates() reads a length at a time (TC-4).
+        $model = DB::getQueryGrammar()->wrapTable('fuzzy_index_model_terms');
+        DB::statement("insert into {$model} (model_type_id, term_id, term, term_length, doc_count) select {$type}, id, term, term_length, doc_count from {$terms}"); // the model's own counts (ER-197): the dictionary's, as the reads ranked them before
+        DB::statement("analyze {$posts}, {$terms}, {$model}"); // as a rebuild's analyzeIndex() did: never the column dictionary
         DB::table('fuzzy_index_meta')->insert(['model_type' => User::class, 'total_docs' => 40000, 'total_tokens' => 40000, 'avg_doc_length' => 6]);
 
         $reads = [];

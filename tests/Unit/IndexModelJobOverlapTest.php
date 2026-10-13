@@ -7,6 +7,7 @@ require_once __DIR__ . '/../TestModels.php';
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Scout\FuzzySearchEngine;
+use Ashiqfardus\LaravelFuzzySearch\Tests\ListColumnsUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +38,11 @@ class IndexModelJobOverlapTest extends TestCase
 
     protected function tearDown(): void
     {
+        // Writes that overlap, wait and retry, like every write path, keeps each type's word counts with its postings (ER-197).
+        if ($this->status()->isSuccess()) {
+            $this->assertModelTermsMirrorPostings(static::class . '::' . $this->name());
+        }
+
         parent::tearDown();
 
         if ($this->file !== null) {
@@ -436,6 +442,7 @@ class IndexModelJobOverlapTest extends TestCase
             'every word new, index flushed each round'                     => [true, 4, false],
             're-index, no flush'                                           => [false, 4, false],
             'every word new, flushed each round, 16 Scout import chunks' => [true, 16, true],
+            'two model types sharing every word, re-index'               => [false, 4, false, true],
         ];
     }
 
@@ -461,9 +468,12 @@ class IndexModelJobOverlapTest extends TestCase
      *   every write now inserts its missing words first and takes every word in id order. The
      *   16-batch shape writes through the Scout engine's update(), which a queued import's
      *   MakeSearchable job calls.
+     * - ER-197: each model type's own word counts (fuzzy_index_model_terms) follow the dictionary's
+     *   in the same transaction; with two types sharing every word, every batch of either type
+     *   changes the counts of the same words. tearDown() checks them against the postings.
      */
     #[DataProvider('parallelBatchShapes')]
-    public function test_parallel_batches_do_not_lose_all_their_attempts(bool $flush, int $batches, bool $scout): void
+    public function test_parallel_batches_do_not_lose_all_their_attempts(bool $flush, int $batches, bool $scout, bool $twoTypes = false): void
     {
         if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid') || !function_exists('posix_kill')) {
             $this->markTestSkipped('The race needs several processes: pcntl_fork(), pcntl_waitpid() and posix_kill().');
@@ -501,20 +511,27 @@ class IndexModelJobOverlapTest extends TestCase
                 DB::table('users')->where('id', $id)->update(['name' => $words(4), 'email' => $words(2)]);
             }
         };
+        // Each batch's rows under one type: with $twoTypes, every other batch under ListColumnsUser's.
+        $types = $twoTypes ? [User::class, ListColumnsUser::class] : [User::class];
+        $class = fn (int $batch) => $types[$batch % count($types)];
         if (!$flush) {
             $text();
-            app(IndexManager::class)->indexBatch(User::whereKey($ids)->get()); // every round re-indexes
+            foreach (array_chunk($ids, 25) as $i => $batch) {
+                app(IndexManager::class)->indexBatch($class($i)::whereKey($batch)->get()); // every round re-indexes
+            }
         }
 
         $rounds = $batches > 4 ? 20 : 10; // 16 batches over 10 rounds sometimes met no crossing before ER-169
         for ($round = 0; $round < $rounds; $round++) {
             $text();
             if ($flush) {
-                app(IndexManager::class)->flush(User::class); // every word is new again
+                foreach ($types as $type) {
+                    app(IndexManager::class)->flush($type); // every word is new again
+                }
             }
 
             $pids = [];
-            foreach (array_chunk($ids, 25) as $batch) {
+            foreach (array_chunk($ids, 25) as $i => $batch) {
                 $pid = pcntl_fork();
                 if ($pid === -1) {
                     $this->markTestSkipped('pcntl_fork() failed.');
@@ -524,8 +541,8 @@ class IndexModelJobOverlapTest extends TestCase
                         DB::setDefaultConnection('race');
                         \Illuminate\Support\Facades\Event::listen(\Illuminate\Database\Events\TransactionRolledBack::class, fn () => file_put_contents($log, "rollback\n", FILE_APPEND));
                         $scout
-                            ? app(FuzzySearchEngine::class)->update(User::whereKey($batch)->get())
-                            : app(IndexManager::class)->indexBatch(User::whereKey($batch)->get());
+                            ? app(FuzzySearchEngine::class)->update($class($i)::whereKey($batch)->get())
+                            : app(IndexManager::class)->indexBatch($class($i)::whereKey($batch)->get());
                     } catch (\Throwable $e) {
                         file_put_contents($log, 'failed: ' . strtok($e->getMessage(), "\n") . "\n", FILE_APPEND);
                     } finally {
@@ -554,20 +571,22 @@ class IndexModelJobOverlapTest extends TestCase
         if ($this->dbDriver === 'pgsql') {
             $this->assertSame(0, $retried, $report);
         }
-        $this->assertSame($rows, (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'));
+        $this->assertSame($rows, (int) DB::table('fuzzy_index_meta')->whereIn('model_type', $types)->sum('total_docs'));
 
-        // Every term counts the rows posting it, and meta the documents.
+        // Every term counts the documents posting it, and meta the documents.
         $holders = [];
-        foreach (DB::table('fuzzy_index_postings')->get(['term_id', 'model_id']) as $posting) {
-            $holders[(int) $posting->term_id][(string) $posting->model_id] = true;
+        foreach (DB::table('fuzzy_index_postings')->get(['term_id', 'model_type_id', 'model_id']) as $posting) {
+            $holders[(int) $posting->term_id][$posting->model_type_id . ':' . $posting->model_id] = true;
         }
         foreach (DB::table('fuzzy_index_terms')->get(['id', 'term', 'doc_count']) as $term) {
             $this->assertSame(count($holders[(int) $term->id] ?? []), (int) $term->doc_count, "doc_count of {$term->term}; {$report}");
         }
-        $this->assertSame(
-            DB::table('fuzzy_index_documents')->where('model_type', User::class)->count(),
-            (int) DB::table('fuzzy_index_meta')->where('model_type', User::class)->value('total_docs'),
-        );
+        foreach ($types as $type) {
+            $this->assertSame(
+                DB::table('fuzzy_index_documents')->where('model_type', $type)->count(),
+                (int) DB::table('fuzzy_index_meta')->where('model_type', $type)->value('total_docs'),
+            );
+        }
     }
 
     /**

@@ -197,6 +197,12 @@ return new class extends Migration
     {
         $pretending = DB::connection()->pretending();
 
+        // Rolled back on its own (migrate:rollback --path) under the per-model term statistics,
+        // whose foreign key references the model types this drops: refuse first, naming it.
+        if (!$pretending && Schema::hasTable('fuzzy_index_model_terms')) {
+            throw new \RuntimeException('Roll back 2026_10_13_000001_create_fuzzy_index_model_terms_table first: its table references the model types this migration drops.');
+        }
+
         if ($pretending || Schema::hasColumn('fuzzy_index_postings', 'model_type_id')) {
             Schema::rename('fuzzy_index_postings', self::COMPACT);
         }

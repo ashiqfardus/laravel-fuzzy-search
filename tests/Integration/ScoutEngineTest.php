@@ -15,6 +15,16 @@ use Illuminate\Database\Eloquent\Model;
 
 class ScoutEngineTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        // Scout's update() and delete(), like every write path, keeps each type's word counts with its postings (ER-197).
+        if ($this->status()->isSuccess()) {
+            $this->assertModelTermsMirrorPostings(static::class . '::' . $this->name());
+        }
+
+        parent::tearDown();
+    }
+
     public function test_scout_engine_registers_when_scout_is_installed(): void
     {
         if (!class_exists(\Laravel\Scout\EngineManager::class)) {

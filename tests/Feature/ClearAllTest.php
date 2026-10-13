@@ -25,7 +25,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
  */
 class ClearAllTest extends TestCase
 {
-    private const TABLES = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_terms'];
+    private const TABLES = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_model_terms', 'fuzzy_index_terms'];
 
     private function indexBoth(): void
     {
@@ -80,7 +80,7 @@ class ClearAllTest extends TestCase
         $command->assertExitCode(0)->run();
     }
 
-    /** The statements a clear --all sends, without quoting: the four tables', the locks and SQL Server's applock. */
+    /** The statements a clear --all sends, without quoting: the five tables', the locks and SQL Server's applock (no read). */
     private function statements(\Closure $run): array
     {
         $statements = [];
@@ -88,7 +88,7 @@ class ClearAllTest extends TestCase
             $sql = strtolower(preg_replace('/\s+/', ' ', str_replace(['"', '`', '[', ']'], '', $query->sql)));
             if (str_contains($sql, 'sp_getapplock')) {
                 $statements[] = 'sp_getapplock';
-            } elseif (preg_match('/fuzzy_index_(postings|documents|meta|terms)|^(lock|unlock) tables?\b/', $sql)) {
+            } elseif (!str_starts_with($sql, 'select') && preg_match('/fuzzy_index_(postings|documents|meta|model_terms|terms)\b|^(lock|unlock) tables?\b/', $sql)) {
                 $statements[] = trim($sql);
             }
         });
@@ -112,8 +112,9 @@ class ClearAllTest extends TestCase
     }
 
     /**
-     * ER-187: the two big tables (postings, documents) are truncated, not deleted row by row.
-     * PostgreSQL truncates all four in one statement, without CASCADE or RESTART IDENTITY, once it
+     * ER-187: the big tables (postings, documents, and the model terms, ER-197) are truncated, not
+     * deleted row by row, and the model terms are emptied before the terms on every path (a DELETE
+     * of the terms cascades into them row by row). PostgreSQL truncates all five in one statement, without CASCADE or RESTART IDENTITY, once it
      * holds them (LOCK TABLE … NOWAIT); MariaDB under LOCK TABLES … NOWAIT (its TRUNCATE commits);
      * SQL Server behind the index write lock. MySQL deletes (R13-M3: its LOCK TABLES cannot be
      * told not to wait). flushAll() says whether it truncated.
@@ -126,7 +127,7 @@ class ClearAllTest extends TestCase
             $truncated = app(IndexManager::class)->flushAll();
         });
 
-        $tables   = 'fuzzy_index_postings, fuzzy_index_documents, fuzzy_index_meta, fuzzy_index_terms';
+        $tables   = implode(', ', self::TABLES);
         $expected = match ($this->dbDriver) {
             'pgsql' => [
                 'lock table fuzzy_index_documents in share row exclusive mode',
@@ -134,9 +135,10 @@ class ClearAllTest extends TestCase
                 "truncate table {$tables}",
             ],
             'mariadb' => [
-                'lock tables fuzzy_index_postings write, fuzzy_index_documents write, fuzzy_index_meta write, fuzzy_index_terms write nowait',
+                'lock tables fuzzy_index_postings write, fuzzy_index_documents write, fuzzy_index_meta write, fuzzy_index_model_terms write, fuzzy_index_terms write nowait',
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
+                'truncate table fuzzy_index_model_terms',
                 'delete from fuzzy_index_meta',
                 'delete from fuzzy_index_terms',
                 'unlock tables',
@@ -145,6 +147,7 @@ class ClearAllTest extends TestCase
                 'sp_getapplock',
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
+                'truncate table fuzzy_index_model_terms',
                 'delete from fuzzy_index_meta',
                 'delete from fuzzy_index_terms',
             ],

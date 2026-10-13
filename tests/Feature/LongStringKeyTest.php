@@ -117,10 +117,12 @@ class LongStringKeyTest extends TestCase
         // Under the compact postings it refuses: they go back to the earlier layout around it.
         $compact   = require __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
         $migration = require __DIR__ . '/../../database/migrations/2026_09_20_000001_widen_model_id_on_fuzzy_index_tables.php';
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->down(); // the compact postings' down() refuses under it
         $compact->down();
         $migration->down();
         $migration->up();
         $compact->up();
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->up();
 
         $meta = DB::table('fuzzy_index_meta')->where('model_type', LongKeyNote::class)->first();
         if ($this->dbDriver === 'sqlite') { // no narrowing on SQLite, so nothing is dropped
@@ -158,6 +160,7 @@ class LongStringKeyTest extends TestCase
         $long      = ['model_type' => 'App\\Models\\Long', 'model_id' => $this->key('c'), 'doc_length' => 1];
 
         DB::table('fuzzy_index_documents')->insert($long);
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->down(); // the compact postings' down() refuses under it
         $compact->down();
         $migration->down();
 
@@ -174,6 +177,7 @@ class LongStringKeyTest extends TestCase
 
         $migration->up();
         $compact->up();
+        (require __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php')->up();
 
         DB::table('fuzzy_index_documents')->where('model_id', $long['model_id'])->delete();
         DB::table('fuzzy_index_documents')->insert($long);

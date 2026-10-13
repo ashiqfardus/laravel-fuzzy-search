@@ -124,15 +124,18 @@ class IndexWriteLockTest extends TestCase
         $this->assertSame([], $failed, count($failed) . ' failures, ' . array_sum(array_column($results, 'rollbacks')) . ' rollbacks');
     }
 
-    /** The index by name: documents, each word's doc_count, the meta totals and the postings. */
+    /** The index by name: documents, each word's doc_count, each type's (ER-197), the meta totals and the postings. */
     private function snapshot(): array
     {
-        $index = ['documents' => [], 'terms' => [], 'meta' => [], 'postings' => []];
+        $index = ['documents' => [], 'terms' => [], 'model_terms' => [], 'meta' => [], 'postings' => []];
         foreach (DB::table('fuzzy_index_documents')->get() as $row) {
             $index['documents'][$row->model_type . '|' . $row->model_id] = (int) $row->doc_length;
         }
         foreach (DB::table('fuzzy_index_terms')->get() as $row) {
             $index['terms'][(string) $row->term] = (int) $row->doc_count;
+        }
+        foreach (DB::table('fuzzy_index_model_terms as mt')->join('fuzzy_index_model_types as ty', 'ty.id', '=', 'mt.model_type_id')->get(['ty.model_type', 'mt.term', 'mt.doc_count']) as $row) {
+            $index['model_terms'][$row->model_type . '|' . $row->term] = (int) $row->doc_count;
         }
         foreach (DB::table('fuzzy_index_meta')->get() as $row) {
             $index['meta'][$row->model_type] = (int) $row->total_docs . '|' . (int) $row->total_tokens;

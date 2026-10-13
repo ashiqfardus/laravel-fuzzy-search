@@ -7,9 +7,10 @@ use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Expands query terms against the fuzzy_index_terms dictionary: neighbours within an edit
- * distance (typo-tolerant BM25) and prefix matches (as-you-type). The dictionary lives on the
- * default connection — the one IndexManager writes to — so every query here uses DB::table().
+ * Expands query terms against the fuzzy_index_terms dictionary, or a model's own words in
+ * fuzzy_index_model_terms: neighbours within an edit distance (typo-tolerant BM25) and prefix
+ * matches (as-you-type). The dictionary lives on the default connection — the one IndexManager
+ * writes to — so every query here uses DB::table().
  *
  * @internal This class is not part of the public API and may change without notice.
  */
@@ -19,28 +20,10 @@ final class TermExpander
     private ?array $dotted = null;
 
     /**
-     * TC-4: candidates() reads a length at a time (S1) when the model's total_tokens squared passes
-     * this many times the pool times the index's total_tokens, and the whole window once otherwise.
-     * Measured at 1M dictionary words, a pool of 500 and models that hold every k-th word, the two
-     * reads crossed between 1.3 and 2.1 on MySQL, 7.6 and 11 on PostgreSQL, and 19 and 37 on
-     * MariaDB and on SQL Server. SQLite reads a length at a time for every model: its read of the
-     * window scanned the whole window whatever the share (120–230 ms there), never faster.
-     *
-     * ponytail: the same even-spread cost model as probes(), on the meta totals; a model whose words
-     * cluster in a few lengths, or in the dictionary's tail, can sit on the wrong side of it.
-     */
-    private const PER_LENGTH_ABOVE = [
-        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL   => 2.0,
-        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::PGSQL   => 10.0,
-        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::SQLSRV  => 25.0,
-        \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MARIADB => 25.0,
-    ];
-
-    /**
      * Dictionary terms within $maxDistance edits of $term, most common first.
      *
-     * @param  ?string     $modelType   Restrict to terms posted under this model_type (see postedUnder());
-     *                                  null leaves the dictionary unscoped.
+     * @param  ?string     $modelType   Only the words this model_type posts, by its own document count
+     *                                  (see ownTerms()); null: the whole dictionary, by its doc_count.
      * @param  bool|string $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
      *                                  on for didYouMean(), which hands the words back; off for the typo
      *                                  expansion, which only matches. True judges them on $modelType's
@@ -57,48 +40,33 @@ final class TermExpander
         $term   = Pipeline::capTerm($term); // didYouMean() passes the raw search term
         $length = mb_strlen($term);
 
-        // The $pool most common words of the length window, read one length at a time through
-        // (term_length, doc_count, id): each read stops after $pool rows in index order, and the
-        // window's top $pool are among the lengths' own. One read of the whole window sorted every
-        // word in it, a cost that grew with the dictionary (S1). Separate reads, not a UNION of
-        // limited parts, which SQLite and SQL Server do not accept. Equal counts are cut by id, the
-        // newest word first, in each read and in the merge: most words share a small count, so the
-        // cut usually falls inside a tie, and without the id the plan's order (which a statistics
-        // refresh changes) or the merge's length order picked the words a typo search finds.
+        // The $pool most common words of the length window, read one length at a time: each read
+        // stops after $pool rows in index order, and the window's top $pool are among the lengths'
+        // own. One read of the whole window sorted every word in it, a cost that grew with the
+        // dictionary (S1). Separate reads, not a UNION of limited parts, which SQLite and SQL Server
+        // do not accept. Equal counts are cut by id, the newest word first, in each read and in the
+        // merge: most words share a small count, so the cut usually falls inside a tie, and without
+        // the id the plan's order (which a statistics refresh changes) or the merge's length order
+        // picked the words a typo search finds.
         //
-        // That is the read for a model holding a large share of the dictionary. For a small share
-        // each length's read was planned as a full read of the model's postings and of every word of
-        // that length, once per length (TC-4: 0.75–1.6 s a term on SQL Server at 1M words, where one
-        // read of the window took 50 ms): such a model reads the window once, through its own
-        // postings, as before S1 (see PER_LENGTH_ABOVE).
-        //
-        // ponytail: both reads stop after $pool of the model's own words, so in a length where the
-        // model has fewer they read every word of that length, whichever model posted it: another
-        // model's distinct codes crowding a length (1M six-digit SKUs at 3M words: 1.2 s on MySQL)
-        // slow every model's typo search over it, linearly in their number. A model dimension in the
-        // dictionary (per-model term statistics, or a (model, length, doc_count) index) bounds it;
-        // that is a schema change.
-        $from   = max(1, $length - $maxDistance);
-        $to     = $length + $maxDistance;
-        $above  = self::perLengthAbove();
-        $totals = $modelType === null || $above <= 0.0 ? null : $this->totals($modelType);
-        $read   = fn (bool $probe) => $this->postedUnder(DB::table('fuzzy_index_terms'), $modelType, $visibleOnly, $probe)
-            ->select('id', 'term', 'doc_count')
-            ->where('term', '!=', $term)
-            ->orderByDesc('doc_count')
-            ->orderByDesc('id')
-            ->limit($pool);
+        // A model's words, and its own counts, come from fuzzy_index_model_terms through
+        // (model_type_id, term_length, doc_count, term_id) (ruling ER-197): each read stops after
+        // $pool of them, or at the last of its words of that length, so it never reads another
+        // model's. Through the shared dictionary, a length where the model had fewer than $pool words
+        // was read whole, whichever model posted them: 1M product SKU codes of six characters made
+        // a users typo search read all of them (1.2 s on MySQL at 3M words). Unscoped, the
+        // dictionary's (term_length, doc_count, id).
+        $from = max(1, $length - $maxDistance);
+        $to   = $length + $maxDistance;
+        $read = $modelType === null
+            ? fn () => DB::table('fuzzy_index_terms')->select('id', 'term', 'doc_count')->where('term', '!=', $term)->orderByDesc('doc_count')->orderByDesc('id')
+            : fn () => $this->ownTerms($modelType, $visibleOnly)->select('mt.term_id as id', 'mt.term', 'mt.doc_count')->where('mt.term', '!=', $term)->orderByDesc('mt.doc_count')->orderByDesc('mt.term_id');
 
-        if ($totals === null || $totals[0] * $totals[0] > $above * $pool * $totals[1]) {
-            $probe = $this->probes($modelType, $pool, $totals);
-            $rows  = [];
-            for ($l = $from; $l <= $to; $l++) {
-                $rows = [...$rows, ...$read($probe)->where('term_length', $l)->get()->all()];
-            }
-            usort($rows, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
-        } else {
-            $rows = $read(false)->whereBetween('term_length', [$from, $to])->get()->all();
+        $rows = [];
+        for ($l = $from; $l <= $to; $l++) {
+            $rows = [...$rows, ...$read()->where($modelType === null ? 'term_length' : 'mt.term_length', $l)->limit($pool)->get()->all()];
         }
+        usort($rows, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
 
         $out = [];
         foreach (array_slice($rows, 0, $pool) as $row) {
@@ -174,8 +142,15 @@ final class TermExpander
      * fuzzy_index_terms.term also carries a varchar_pattern_ops index; add one there if
      * as-you-type latency matters on a large dictionary.
      *
-     * @param  ?string     $modelType   Restrict to terms posted under this model_type (see postedUnder());
-     *                                  null leaves the dictionary unscoped.
+     * A model's words are read from fuzzy_index_model_terms through (model_type_id, term), most
+     * common by its own document count, so the read is bounded by its words under the prefix: the
+     * dictionary's range was read whole, and every word in it probed for the model's postings,
+     * whichever model posted it (another model's 30,000 codes under "abc" took 90,000 row reads
+     * for a model with one word there, on MySQL; ER-197). On PostgreSQL that key's
+     * varchar_pattern_ops serves the LIKE as a range.
+     *
+     * @param  ?string     $modelType   Only the words this model_type posts (see ownTerms()); null: the
+     *                                  whole dictionary.
      * @param  bool|string $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
      *                                  on for suggest(), which hands the words back; off for asYouType(),
      *                                  which only matches. A class name judges them on that class, as
@@ -195,22 +170,23 @@ final class TermExpander
         $driver      = DB::connection()->getDriverName();
         $byteOrdered = $driver === 'sqlite' || \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::isMySqlFamily($driver);
 
-        $query = DB::table('fuzzy_index_terms')->where('term', '!=', $prefix);
+        $column = $modelType === null ? 'term' : 'mt.term';
+        $query  = ($modelType === null ? DB::table('fuzzy_index_terms') : $this->ownTerms($modelType, $visibleOnly))->where($column, '!=', $prefix);
 
         if ($next === false || !$byteOrdered) {
             // PostgreSQL reads escapeLike()'s backslashes by default (where() keeps its
             // "term"::text cast); everywhere else it escapes with !, under like()'s ESCAPE '!'.
             $pattern = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($prefix, $driver) . '%';
             \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::needsLikeEscape($driver)
-                ? $query->whereRaw(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($query->getGrammar()->wrap('term'), $driver, 'like'), [$pattern])
-                : $query->where('term', 'like', $pattern);
+                ? $query->whereRaw(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($query->getGrammar()->wrap($column), $driver, 'like'), [$pattern])
+                : $query->where($column, 'like', $pattern);
         } else {
-            $query->where('term', '>=', $prefix)
-                  ->where('term', '<', mb_substr($prefix, 0, -1) . $next);
+            $query->where($column, '>=', $prefix)
+                  ->where($column, '<', mb_substr($prefix, 0, -1) . $next);
         }
 
         // Equal counts by id, the newest word first, as candidates() cuts them.
-        $terms = $this->postedUnder($query, $modelType, $visibleOnly, $this->probes($modelType, $max))->orderByDesc('doc_count')->orderByDesc('id')->limit($max)->pluck('term');
+        $terms = $query->orderByDesc($modelType === null ? 'doc_count' : 'mt.doc_count')->orderByDesc($modelType === null ? 'id' : 'mt.term_id')->limit($max)->pluck($column);
 
         $weights = [];
         foreach ($terms as $term) {
@@ -235,89 +211,47 @@ final class TermExpander
             return [];
         }
 
-        return $this->postedUnder(DB::table('fuzzy_index_terms')->whereIn('term', array_map('strval', $terms)), $modelType, $modelClass ?? true, $this->probes($modelType, count($terms)))
-            ->pluck('term')
+        return $this->ownTerms($modelType, $modelClass ?? true)->whereIn('mt.term', array_map('strval', $terms))
+            ->pluck('mt.term')
             ->map(fn ($term) => (string) $term)
             ->all();
     }
 
     /**
-     * Restrict a fuzzy_index_terms query to terms posted under $modelType: a whereExists
-     * semi-join against fuzzy_index_postings, whose primary key (term_id, model_type_id, model_id,
-     * column_id) serves it. The dictionary is shared by every indexed model, so an unscoped lookup
-     * offers other models' terms. Null leaves the query unscoped. $visibleOnly: see candidates().
-     * $probe: see probes().
+     * The words $modelType posts, as the rows of fuzzy_index_model_terms aliased mt (ruling ER-197):
+     * term_id, term, term_length and the type's own doc_count, kept with its postings by every index
+     * write. The table knows no column, so with $visibleOnly (didYouMean(), suggest() and
+     * visible(), which hand the words back) an EXISTS on the type's postings in the columns the
+     * searched class shows (visibleColumnsOnly()) still decides which of them are offered, in the
+     * same read, which stays bounded by the type's own words. Without it (the typo and prefix
+     * expansions, which only match) the table alone.
+     *
+     * MySQL probes the postings once per word, in the read's order, until the read has its rows
+     * (FirstMatch), rather than first read every posting of the type in the shown columns: for a
+     * model holding most of the index that full read took 10–14 s a term at 1M words, where probing
+     * took 20–70 ms (S1). Probing the dictionary walked other models' words too, so a cost model on
+     * the meta totals chose between them; the model's own words are nearly all hits, so it always
+     * probes. MariaDB ignores the hint (it reaches MariaDB on Laravel 10, whose MariaDB connection
+     * is a mysql one); the others plan this read well unhinted.
      */
-    private function postedUnder(Builder $query, ?string $modelType, bool|string $visibleOnly, bool $probe = false): Builder
+    private function ownTerms(string $modelType, bool|string $visibleOnly): Builder
     {
-        if ($modelType !== null) {
-            // 0 when the type has no id: no posting has it (ids start at 1), so no term is offered.
-            $typeId = IndexManager::modelTypeId($modelType) ?? 0;
+        // 0 when the type has no id: it has no row (ids start at 1), so no term is offered.
+        $typeId = IndexManager::modelTypeId($modelType) ?? 0;
+        $query  = DB::table('fuzzy_index_model_terms as mt')->where('mt.model_type_id', $typeId);
 
+        if ($visibleOnly !== false) {
+            $probe = DB::connection()->getDriverName() === \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL;
             $query->whereExists(function ($q) use ($modelType, $typeId, $visibleOnly, $probe) {
                 $q->selectRaw($probe ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1')
                   ->from('fuzzy_index_postings as sp')
-                  ->whereColumn('sp.term_id', 'fuzzy_index_terms.id')
+                  ->whereColumn('sp.term_id', 'mt.term_id')
                   ->where('sp.model_type_id', $typeId);
-
-                if ($visibleOnly !== false) {
-                    $this->visibleColumnsOnly($q, $modelType, $visibleOnly === true ? $modelType : $visibleOnly);
-                }
+                $this->visibleColumnsOnly($q, $modelType, $visibleOnly === true ? $modelType : $visibleOnly);
             });
         }
 
         return $query;
-    }
-
-    /**
-     * MySQL: whether postedUnder() makes the database probe the postings once per dictionary word,
-     * in the read's order, until $rows words of the model turn up (FirstMatch), rather than first
-     * read every posting of the model. MySQL chose the full read for a model holding most of the
-     * index, once per length of candidates(): 10–14 s a term at 1M words, where probing took
-     * 20–70 ms (S1). For a small model the full read is the cheap one, and MySQL picks it: probing
-     * walked the whole length for its few words (3 s at 1M words, where reading them took 6 ms).
-     * Probing reads about $rows × (the index's postings / the model's) words, the full read the
-     * model's postings, and the meta totals stand in for postings (total_tokens counts a model's
-     * word occurrences): probe when the model's total_tokens squared passes $rows times the index's.
-     * MariaDB, PostgreSQL and SQL Server plan a large model's reads well unhinted; MariaDB ignores
-     * the hint, which reaches it on Laravel 10, whose MariaDB connection is a mysql one. A model
-     * below PER_LENGTH_ABOVE reads the window once, unhinted (see candidates()).
-     *
-     * ponytail: a cost model on the meta totals that assumes a model's words spread evenly over the
-     * dictionary, so a model whose words are all rare can still probe long; replace it if MySQL
-     * learns to cost a semi-join under a LIMIT.
-     */
-    private function probes(?string $modelType, int $rows, ?array $totals = null): bool
-    {
-        if ($modelType === null || DB::connection()->getDriverName() !== \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL) {
-            return false;
-        }
-
-        [$own, $total] = $totals ?? $this->totals($modelType);
-
-        return $own * $own > $rows * $total;
-    }
-
-    /** @return array{float, float} $modelType's total_tokens and the whole index's, from fuzzy_index_meta */
-    private function totals(string $modelType): array
-    {
-        $tokens = DB::table('fuzzy_index_meta')->pluck('total_tokens', 'model_type');
-
-        return [(float) ($tokens[$modelType] ?? 0), (float) $tokens->sum()];
-    }
-
-    /** PER_LENGTH_ABOVE for this connection; 0 reads a length at a time whatever the share (SQLite). */
-    private static function perLengthAbove(): float
-    {
-        $connection = DB::connection();
-        $driver     = $connection->getDriverName();
-        // Laravel 10 connects to MariaDB as mysql; the server tells them apart, without a query.
-        if ($driver === \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MYSQL
-            && stripos((string) $connection->getReadPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), 'mariadb') !== false) {
-            $driver = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::MARIADB;
-        }
-
-        return self::PER_LENGTH_ABOVE[$driver] ?? 0.0;
     }
 
     /**
