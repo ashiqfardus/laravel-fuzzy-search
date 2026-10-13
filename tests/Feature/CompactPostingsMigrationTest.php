@@ -631,6 +631,236 @@ class CompactPostingsMigrationTest extends TestCase
         Log::shouldNotHaveReceived('warning');
     }
 
+    /** 2.0.1's re-index of a row whose index stays the same size, on $db: its postings deleted and inserted again (new ids), its first word replaced by $word. */
+    private function oldRewrite(string $type, string $id, string $word = 'zzresumed', ?\Illuminate\Database\Connection $db = null): void
+    {
+        $db ??= DB::connection();
+        $old  = fn () => $db->table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id);
+        $rows = $old()->orderBy('id')->get(['term_id', 'column_name', 'frequency'])->map(fn ($row) => (array) $row)->all();
+        $old()->delete();
+        $term = $db->table('fuzzy_index_terms')->insertGetId(['term' => $word, 'doc_count' => 1, 'term_length' => mb_strlen($word)]);
+        foreach ([...array_slice($rows, 1), ['term_id' => $term, 'column_name' => (string) $rows[0]['column_name'], 'frequency' => 1]] as $row) {
+            $db->table('fuzzy_index_postings')->insert(['model_type' => $type, 'model_id' => $id] + $row);
+        }
+    }
+
+    /**
+     * VA-5. Ids are taken at insert and committed out of order: an old-code write whose transaction
+     * took its ids before another write committed is not seen when the tail reads its boundary,
+     * and commits below the boundary the next round reads past, so its row keeps the postings the
+     * ranges copied. Code k-2's edit keeps its size, so the meta tells nothing either: the
+     * migration names every model with a posting past the ids its ranges read. (Under MySQL's
+     * REPEATABLE READ the in-flight write's deletes and duplicate checks lock gaps of the earlier
+     * layout's indexes, and the committed write must insert into none of them, or it would wait
+     * on it, here in one process: code k-2 keeps its last word, `towel`, followed by `wire`, while
+     * a write of k-1 would lock the gap past `wire`, the last word, where note 4's new word goes.)
+     */
+    public function test_a_write_in_flight_when_the_tail_reads_its_boundary_is_named(): void
+    {
+        if (in_array($this->dbDriver, ['sqlite', 'sqlsrv'], true)) {
+            $this->markTestSkipped('SQLite has one writer, and SQL Server\'s locking READ COMMITTED makes the tail\'s read wait for the write instead of reading past it (the test would wait on itself); the CI MySQL, MariaDB and PostgreSQL jobs run this.');
+        }
+
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $default = config('database.default');
+        config(['database.connections.second_writer' => config("database.connections.{$default}")]);
+        $writer = DB::connection('second_writer');
+        $last   = (int) DB::table('fuzzy_index_postings')->max('id');
+
+        $armed = false;
+        DB::listen(function (QueryExecuted $query) use (&$armed, $writer) {
+            if ($armed && $query->connectionName !== 'second_writer' && preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                $armed = false;
+                $writer->commit(); // the write in flight commits while the tail copies the other one
+            }
+        });
+
+        Log::spy();
+        try {
+            $this->migrateWithWrites(3, function (int $high) use ($last, $writer, &$armed) {
+                if ($high < $last) {
+                    return;
+                }
+                $writer->beginTransaction();
+                $this->oldRewrite(MigratedCode::class, 'k-2', 'zzinflight', $writer); // its ids taken, not committed
+                $this->oldRewrite(MigratedNote::class, '4', 'zzcommitted');             // committed, with higher ids
+                $armed = true;
+            });
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+            if ($writer->transactionLevel() > 0) {
+                $writer->rollBack();
+            }
+            DB::purge('second_writer');
+        }
+
+        $this->assertFalse($armed, 'the write in flight committed during the tail');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
+    }
+
+    /** 2.0.1's removal of a row from the index: its postings, its document row and its share of the meta totals. */
+    private function oldRemove(string $type, string $id): void
+    {
+        $length = (int) DB::table('fuzzy_index_documents')->where('model_type', $type)->where('model_id', $id)->value('doc_length');
+        DB::table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id)->delete();
+        DB::table('fuzzy_index_documents')->where('model_type', $type)->where('model_id', $id)->delete();
+        DB::table('fuzzy_index_meta')->where('model_type', $type)->update(['total_docs' => DB::raw('total_docs - 1'), 'total_tokens' => DB::raw("total_tokens - {$length}")]);
+    }
+
+    public static function resumedRuns(): array
+    {
+        return [
+            'a write before the first run was killed'    => ['before'],
+            'writes between the kill and the rerun'      => ['between'],
+            'a kill in the re-copy of the rows written'  => ['tail'],
+            'a posting dropped in a range that committed' => ['dropped'],
+        ];
+    }
+
+    /**
+     * VA-1, VA-4. The meta snapshot, the ids the copy read and the count of the postings it dropped
+     * belong to one run: a run that goes on after an interrupted one copies a row the old code wrote
+     * meanwhile as ordinary ranges, which keep the postings the compact table holds for it (a word
+     * removed stays, a frequency keeps its old value), sees no change, and counts nothing the first
+     * run dropped. So a resumed run warns once, naming every indexed model, whichever writes it
+     * can or cannot see. The row written here keeps its size, so the meta totals tell nothing.
+     */
+    #[DataProvider('resumedRuns')]
+    public function test_a_run_resumed_after_an_interrupted_one_names_every_indexed_model(string $when): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $first = (object) DB::table('fuzzy_index_postings')->orderBy('id')->first(); // in the first range
+        if ($when === 'dropped') {
+            DB::table('fuzzy_index_postings')->where('id', $first->id)->update(['model_id' => '999']); // no document row
+        }
+
+        $armed = false;
+        DB::listen(function (QueryExecuted $query) use (&$armed) {
+            if ($armed && preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                $armed = false;
+                throw new \RuntimeException('killed');
+            }
+        });
+        $ranges = 0;
+        try {
+            $this->migrateWithWrites(3, function () use ($when, $first, &$armed, &$ranges) {
+                if (++$ranges > 1) {
+                    return;
+                }
+                if ($when === 'before' || $when === 'tail') {
+                    $this->oldRewrite($first->model_type, (string) $first->model_id);
+                }
+                if ($when === 'tail') {
+                    $armed = true; // killed in the re-copy of the row just written
+
+                    return;
+                }
+                throw new \RuntimeException('killed');
+            });
+            $this->fail('the first run was not killed');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('killed', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertGreaterThan(0, (int) DB::table('fuzzy_index_postings_copied')->value('copied_id'), 'a range committed');
+
+        if ($when === 'between') {
+            $this->oldRewrite($first->model_type, (string) $first->model_id);
+            $other = (object) DB::table('fuzzy_index_documents')->where(fn ($query) => $query->where('model_type', '!=', $first->model_type)->orWhere('model_id', '!=', $first->model_id))->first();
+            $this->oldRemove($other->model_type, (string) $other->model_id);
+        }
+
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message) => str_contains($message, 'resumed after an interrupted run')
+            && str_contains($message, 'dropped postings')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedNote::class . '" --fresh')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
+    }
+
+    /** 2.0.1's flush of $type after the copy's last range (every posting copied): its postings, documents and meta, then every word left without a posting in the earlier table. */
+    private function flushAfterTheLastRange(string $type): \Closure
+    {
+        $last = (int) DB::table('fuzzy_index_postings')->max('id');
+        $done = false;
+
+        return function (int $high) use ($type, $last, &$done) {
+            if ($done || $high < $last) {
+                return;
+            }
+            $done = true;
+            DB::table('fuzzy_index_postings')->where('model_type', $type)->delete();
+            DB::table('fuzzy_index_documents')->where('model_type', $type)->delete();
+            DB::table('fuzzy_index_meta')->where('model_type', $type)->delete();
+            DB::table('fuzzy_index_terms')->whereNotExists(fn ($query) => $query->selectRaw('1')->from('fuzzy_index_postings')->whereColumn('fuzzy_index_postings.term_id', 'fuzzy_index_terms.id'))->delete();
+        };
+    }
+
+    private function orphanPostings(): int
+    {
+        return DB::table('fuzzy_index_postings as p')->leftJoin('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')->whereNull('t.id')->count();
+    }
+
+    /**
+     * VA-2. The compact table has no term foreign key while the copy runs. An old-code flush
+     * meanwhile deletes the words its postings leave unused in the earlier table, and the compact
+     * table kept their copied postings: PostgreSQL and SQL Server then refused the foreign key after
+     * the earlier table was dropped, and MySQL and MariaDB kept the postings of words that are gone.
+     * The migration finishes without them, and names the flushed model (its meta row went).
+     */
+    public function test_an_old_code_flush_while_the_copy_runs_leaves_no_posting_of_a_deleted_word(): void
+    {
+        $this->index();
+        $codes = fn () => array_filter($this->searches(), fn ($key) => str_starts_with($key, 'codes '), ARRAY_FILTER_USE_KEY);
+        $before = $codes();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+
+        // The notes, indexed first: the words only they use leave gaps among the dictionary's ids.
+        Log::spy();
+        $this->migrateWithWrites(3, $this->flushAfterTheLastRange(MigratedNote::class));
+
+        $this->assertSame(0, $this->orphanPostings());
+        $this->assertSame([], MigratedNote::search('porcelain')->useInvertedIndex()->typoTolerance(0)->get()->all());
+        $this->assertSame($before, $codes());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedNote::class . '" --fresh'));
+    }
+
+    /**
+     * VA-2. A run that stopped once the earlier table was gone, before the foreign keys, left the
+     * postings of the words a flush deleted: the next run deletes them, then adds the keys (on
+     * PostgreSQL and SQL Server every rerun failed on the term foreign key).
+     */
+    public function test_a_rerun_after_a_flush_and_a_stop_before_the_foreign_keys_finishes(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+
+        DB::listen(function (QueryExecuted $query) {
+            if (preg_match('/^(?=.*rename)(?=.*fuzzy_index_postings_compact)/i', $query->sql)) {
+                throw new \RuntimeException('stopped after the swap');
+            }
+        });
+        try {
+            $this->migrateWithWrites(3, $this->flushAfterTheLastRange(MigratedCode::class));
+            $this->fail('the run did not stop');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('stopped after the swap', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type_id'), 'the compact table took the earlier one\'s name');
+
+        $this->artisanOk('migrate');
+
+        $this->assertSame(0, $this->orphanPostings());
+        $this->assertTrue(DB::table('migrations')->where('migration', self::MIGRATION)->exists());
+        $this->assertSame([1], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
     private function migrateFailingAfter(string $after): void
     {
@@ -649,6 +879,48 @@ class CompactPostingsMigrationTest extends TestCase
             $this->assertStringStartsWith('simulated failure after: ', $e->getMessage());
         } finally {
             DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+    }
+
+    public static function requirePrimaryKeyRuns(): array
+    {
+        return ['a fresh install' => [true], 'the upgrade of an index with data' => [false]];
+    }
+
+    /**
+     * VA-3. MySQL 8.0.13+ with sql_require_primary_key on (DigitalOcean's managed MySQL default)
+     * refuses a table without a primary key: the progress table had none, so a fresh install and
+     * the upgrade both stopped at it, and so did every rerun.
+     */
+    #[DataProvider('requirePrimaryKeyRuns')]
+    public function test_a_server_that_requires_a_primary_key_migrates(bool $fresh): void
+    {
+        if ($this->dbDriver !== 'mysql') {
+            $this->markTestSkipped('MySQL 8.0.13+ only: MariaDB has no session sql_require_primary_key (its innodb_force_primary_key is global, so a test cannot set it for itself); the CI MySQL job runs this.');
+        }
+
+        $before = null;
+        if (!$fresh) {
+            $this->index();
+            $before = $this->searches();
+        }
+        $this->artisanOk('migrate:rollback', ['--step' => $fresh ? $this->stepsFrom('') : 1]);
+
+        try {
+            DB::statement('SET SESSION sql_require_primary_key = 1');
+        } catch (\Illuminate\Database\QueryException) {
+            $this->artisanOk('migrate');
+            $this->markTestSkipped('MySQL before 8.0.13 has no sql_require_primary_key.');
+        }
+        try {
+            $this->artisanOk('migrate');
+        } finally {
+            DB::statement('SET SESSION sql_require_primary_key = 0');
+        }
+
+        $this->assertTrue(Schema::hasColumn('fuzzy_index_postings', 'model_type_id'));
+        if (!$fresh) {
+            $this->assertSame($before, $this->searches());
         }
     }
 
@@ -674,8 +946,11 @@ class CompactPostingsMigrationTest extends TestCase
         $before['terms'][DB::table('fuzzy_index_terms')->where('id', DB::table('fuzzy_index_terms')->min('id'))->value('term')] = 1_000_000;
 
         $this->migrateFailingAfter($after);
+        Log::spy();
         $this->artisanOk('migrate');
 
+        // Nothing of the copy committed (its one range rolled back), or all of it: not a resumed copy.
+        Log::shouldNotHaveReceived('warning');
         $this->assertTrue(DB::table('migrations')->where('migration', self::MIGRATION)->exists());
         $this->assertFalse(Schema::hasTable('fuzzy_index_postings_compact'));
         $this->assertSame($before, $this->searches());

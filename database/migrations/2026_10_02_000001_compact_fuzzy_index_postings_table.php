@@ -73,6 +73,7 @@ return new class extends Migration
     {
         $pretending = DB::connection()->pretending();
         $old        = $pretending || Schema::hasTable('fuzzy_index_postings');
+        $orphans    = !$pretending; // VA-2: the earlier table is gone, so an earlier run copied it (and may have warned)
 
         if ($old && ($pretending || !Schema::hasColumn('fuzzy_index_postings', 'model_type_id'))) {
             $collations = $this->collations($pretending);
@@ -102,27 +103,42 @@ return new class extends Migration
             }
 
             if ($pretending || !Schema::hasTable(self::PROGRESS)) {
-                Schema::create(self::PROGRESS, fn (Blueprint $table) => $table->unsignedBigInteger('copied_id'));
+                // A primary key, as every table needs under MySQL's sql_require_primary_key (VA-3); its one row is updated in place.
+                Schema::create(self::PROGRESS, fn (Blueprint $table) => $table->unsignedBigInteger('copied_id')->primary());
                 DB::table(self::PROGRESS)->insert(['copied_id' => 0]);
             }
+
+            // VA-1, VA-4: an earlier run committed part of the copy (a range, or rows the tail
+            // copied again). Its meta snapshot, the ids it read and its count of dropped postings
+            // went with it, so writes made during it or since cannot be told apart here.
+            $resumed = !$pretending && ((int) DB::table(self::PROGRESS)->value('copied_id') > 0 || DB::table(self::COMPACT)->exists());
 
             $meta = $pretending ? [] : $this->meta();
             [$dropped, $rewritten, $unfinished] = $pretending ? [0, [], false] : $this->copyUp();
 
-            if ($dropped > 0) {
+            // A resumed run's count misses what the earlier run dropped and holds the keys it
+            // copied already: its warning below says so instead.
+            if ($dropped > 0 && !$resumed) {
                 Log::warning("fuzzy-search: the compact postings migration dropped {$dropped} posting(s) whose document row was missing (an inconsistent index), or written again while it ran. Rebuild a model whose search should find them: php artisan fuzzy-search:rebuild \"App\\Models\\YourModel\" --fresh");
             }
 
             // ER-183: the index written while the copy ran (old code: a queue worker, a request).
             // A write is copied whole when its postings landed past the ids the copy read
             // (copyUp()), but a removal leaves no id, and doc_count follows whichever code wrote
-            // it: the meta totals tell. Rebuilding the models named makes them exact.
+            // it: the meta totals tell. Rebuilding the models named makes them exact. A resumed
+            // run names every indexed model: those in the meta and every type the dictionary
+            // holds (each with a document row, and any an earlier run recorded).
             if (!$pretending) {
-                $changed = array_keys(array_diff_assoc($meta, $this->meta()) + array_diff_assoc($this->meta(), $meta) + $rewritten);
+                $after   = $this->meta();
+                $changed = array_keys(array_diff_assoc($meta, $after) + array_diff_assoc($after, $meta) + $rewritten
+                    + ($resumed ? $after + $this->dictionary('fuzzy_index_model_types', 'model_type') : []));
                 if ($changed !== [] || $unfinished) {
-                    $this->warn('fuzzy-search: the index was written while the compact postings migration ran' . ($unfinished ? ', and was still being written when it stopped following the writes' : '')
+                    $this->warn('fuzzy-search: ' . ($resumed
+                        ? 'the compact postings migration was resumed after an interrupted run, which may have missed writes made meanwhile and dropped postings'
+                        : 'the index was written while the compact postings migration ran' . ($unfinished ? ', and was still being written when it stopped following the writes' : ''))
                         . '. Rebuild each model it names: ' . implode('; ', array_map(fn (string $type) => "php artisan fuzzy-search:rebuild \"{$type}\" --fresh", $changed)));
                 }
+                $orphans = $changed !== [] || $resumed;
             }
 
             Schema::drop('fuzzy_index_postings');
@@ -137,6 +153,9 @@ return new class extends Migration
         // The secondary index, then the foreign keys (MySQL's on model_type_id needs that index).
         if ($pretending || !in_array(self::BY_MODEL, $this->indexes('fuzzy_index_postings'), true)) {
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_MODEL));
+        }
+        if ($orphans) {
+            $this->deleteOrphans();
         }
         $this->addForeignKeys($pretending, [
             'term_id'       => ['fuzzy_index_terms', true],
@@ -298,13 +317,16 @@ return new class extends Migration
      * again past the ids the copy read. Once the ranges are done, the documents with postings past
      * them are copied again whole, from their current postings, read by document
      * (postings_model_idx), after their copied postings are deleted: both a row the copy had
-     * copied and one it had not end exact. The copy follows such writes TAIL_ROUNDS times.
+     * copied and one it had not end exact. The copy follows such writes TAIL_ROUNDS times. Ids are
+     * taken at insert and committed out of order (VA-5): a write in flight when a round reads its
+     * boundary commits below it, and its row keeps what the ranges copied. So every model type
+     * with a posting past the ids the ranges read is named, whether or not a round copied it.
      *
      * @return array{int, array<string, true>, bool} the postings the copy left out (without a
      *                                               document row, or written twice), the model
-     *                                               types of the rows copied again or written
-     *                                               past the last round, and whether writes went
-     *                                               on past it
+     *                                               types with postings written past the ids the
+     *                                               ranges read, and whether writes went on past
+     *                                               the last round
      */
     private function copyUp(): array
     {
@@ -346,6 +368,7 @@ return new class extends Migration
             }
         }
 
+        $read      = $max; // the ids the ranges read
         $rewritten = [];
         for ($round = 0; $round < self::TAIL_ROUNDS && ($last = (int) (clone $postings)->max('id')) > $max; $round++) {
             $written = []; // model type => model ids
@@ -363,12 +386,12 @@ return new class extends Migration
             $max = $last;
         }
 
-        $late = (clone $postings)->where('id', '>', $max)->distinct()->pluck('model_type')->all(); // past the last round: named, not copied
-        foreach ($late as $type) {
+        $unfinished = (int) (clone $postings)->max('id') > $max; // past the last round: named, not copied
+        foreach ((clone $postings)->where('id', '>', $read)->distinct()->pluck('model_type') as $type) { // one range of the key
             $rewritten[(string) $type] = true;
         }
 
-        return [$missed, $rewritten, $late !== []];
+        return [$missed, $rewritten, $unfinished];
     }
 
     /**
@@ -398,6 +421,45 @@ return new class extends Migration
                 'p.model_type = ? and p.model_id in (' . implode(', ', array_fill(0, count($ids), '?')) . ')', [$type, ...$ids]
             ));
         });
+    }
+
+    /**
+     * VA-2: delete the postings whose word the dictionary no longer has. The compact table has no
+     * term foreign key while the copy runs, and an old-code flush meanwhile (2.0.1's `flush`,
+     * `clear`, `rebuild --fresh`) deletes the words it leaves without a posting in the earlier
+     * table, so the compact table kept the postings it had copied of them: PostgreSQL and SQL
+     * Server then refused the foreign key, once the earlier table was dropped, on every run, and
+     * MySQL and MariaDB kept them. Only the dictionary is read whole, its ids in order: each gap
+     * in them is one range of the postings' leading term_id, so no posting outside a gap is read,
+     * and a word inserted into a gap meanwhile keeps its postings (NOT EXISTS).
+     */
+    private function deleteOrphans(): void
+    {
+        $delete = fn (array $gaps) => DB::table('fuzzy_index_postings')
+            ->where(function ($query) use ($gaps) {
+                foreach ($gaps as [$low, $high]) {
+                    $high === null ? $query->orWhere('term_id', '>=', $low) : $query->orWhereBetween('term_id', [$low, $high]);
+                }
+            })
+            ->whereNotExists(fn ($query) => $query->selectRaw('1')->from('fuzzy_index_terms as t')->whereColumn('t.id', 'fuzzy_index_postings.term_id'))
+            ->delete();
+
+        $last = 0;
+        do {
+            $ids  = DB::table('fuzzy_index_terms')->where('id', '>', $last)->orderBy('id')->limit(10000)->pluck('id')->all();
+            $gaps = [];
+            foreach ($ids as $id) {
+                if ((int) $id > $last + 1) {
+                    $gaps[] = [$last + 1, (int) $id - 1];
+                }
+                $last = (int) $id;
+            }
+            foreach (array_chunk($gaps, 250) as $chunk) { // 500 bindings: under every database's limit
+                $delete($chunk);
+            }
+        } while ($ids !== []);
+
+        $delete([[$last + 1, null]]); // past the last word
     }
 
     /** @return array<string, string> model type => its meta totals, to compare before and after the copy */
