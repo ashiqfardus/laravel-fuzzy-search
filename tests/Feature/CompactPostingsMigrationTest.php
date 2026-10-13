@@ -1034,6 +1034,34 @@ class CompactPostingsMigrationTest extends TestCase
         $this->assertNotContains('postings_compact_model_idx', $indexes, 'renamed after the swap');
     }
 
+    /**
+     * VA-7. SQL Server takes 2,100 parameters a statement, and the copy bound each column name of a
+     * range in its CASE: an index whose searchableText() is keyed per attribute, locale or custom
+     * field (VC-6's shape) stopped the upgrade in its first range, and every rerun. There the names
+     * are quoted literals, in the copy back too. One document, one word, 2,500 columns.
+     */
+    public function test_a_range_with_more_column_names_than_sql_server_takes_parameters_migrates_both_ways(): void
+    {
+        $names = 2500;
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzmany', 'doc_count' => 1, 'term_length' => 6]);
+        DB::table('fuzzy_index_documents')->insert(['model_type' => MigratedNote::class, 'model_id' => '1', 'doc_length' => $names]);
+        foreach (array_chunk(range(1, $names), 400) as $chunk) { // 2,000 bindings a statement
+            DB::table('fuzzy_index_postings')->insert(array_map(fn (int $i) => ['term_id' => $term, 'model_type' => MigratedNote::class, 'model_id' => '1', 'frequency' => 1, 'column_name' => "attr_{$i}"], $chunk));
+        }
+
+        $this->artisanOk('migrate');
+        $this->assertSame($names, $this->namedPostings()->where('column_name', 'like', 'attr_%')->count());
+        $this->assertSame(1, $this->namedPostings()->where('column_name', 'attr_2500')->where('model_type', MigratedNote::class)->count());
+
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->assertSame($names, DB::table('fuzzy_index_postings')->where('column_name', 'like', 'attr_%')->count());
+        $this->assertSame(1, DB::table('fuzzy_index_postings')->where('column_name', 'attr_2500')->where('model_type', MigratedNote::class)->count());
+
+        $this->artisanOk('migrate');
+        $this->assertSame($names, $this->namedPostings()->where('column_name', 'like', 'attr_%')->count());
+    }
+
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
     private function migrateFailingAfter(string $after): void
     {

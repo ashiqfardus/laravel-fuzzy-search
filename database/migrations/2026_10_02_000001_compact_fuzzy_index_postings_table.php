@@ -559,11 +559,15 @@ return new class extends Migration
 
     /**
      * CASE $column WHEN … THEN … END over $map: a name to its id (an id column's ids to their names
-     * when $column is one), the names bound, the ids inlined as integers (they come from the
-     * database; bound, PostgreSQL types the CASE as text). A name is compared in $column's own
-     * collation (on MySQL/MariaDB and SQL Server a case-insensitive one matches every spelling the
-     * dictionary keeps for it). A value $map lacks gives NULL, which the NOT NULL column refuses: a
-     * range's names are recorded before its copy.
+     * when $column is one), the names bound (quoted on SQL Server, below), the ids inlined as
+     * integers (they come from the database; bound, PostgreSQL types the CASE as text). A name is
+     * compared in $column's own collation (on MySQL/MariaDB and SQL Server a case-insensitive one
+     * matches every spelling the dictionary keeps for it). A value $map lacks gives NULL, which the
+     * NOT NULL column refuses: a range's names are recorded before its copy.
+     *
+     * SQL Server takes 2,100 parameters a statement, and a range can hold more names (VA-7: a
+     * searchableText() keyed per attribute, locale or custom field): there the names are nvarchar
+     * literals, quoted by the driver, as a bound name is sent.
      *
      * @param  array<int|string, int|string> $map
      * @return array{string, list<mixed>}
@@ -571,11 +575,19 @@ return new class extends Migration
     private function mapped(string $column, array $map): array
     {
         $ids      = str_ends_with($column, '_id');
+        $pdo      = DB::connection()->getDriverName() === DbDialect::SQLSRV ? DB::connection()->getPdo() : null;
         $sql      = 'case ' . $column;
         $bindings = [];
         foreach ($map as $value => $mapped) {
-            $sql       .= $ids ? ' when ' . (int) $value . ' then ?' : ' when ? then ' . (int) $mapped;
-            $bindings[] = (string) ($ids ? $mapped : $value);
+            $name = (string) ($ids ? $mapped : $value);
+            if ($pdo === null) {
+                $bindings[] = $name;
+                $name       = '?';
+            } else {
+                $name = $pdo->quote($name);
+                $name = str_starts_with($name, 'N') ? $name : 'N' . $name; // the driver's own N'…' or not, by its encoding
+            }
+            $sql .= $ids ? ' when ' . (int) $value . " then {$name}" : " when {$name} then " . (int) $mapped;
         }
 
         return [$sql . ' end', $bindings];
