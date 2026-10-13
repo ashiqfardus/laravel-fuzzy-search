@@ -53,7 +53,7 @@ $users = User::search('admin (john | jane)')->extended()->get();
 "'manager !@temp.com$"   // Substring 'manager' but not @temp.com emails
 ```
 
-Relevance scores each positive leaf term on its own and adds the leaf scores up; an explicit `orderBy()` replaces the relevance order, and `stableRanking()` adds the primary key as the final tiebreak. While accent folding is on, a leaf and its accent-free form count once (the better of the two); with the shipped `unicode.accent_insensitive` default, `Müller` also matches `Muller`, and `!Müller` excludes both forms.
+Relevance scores each positive leaf term on its own and adds the leaf scores up; an explicit `orderBy()` replaces the relevance order, and `stableRanking()` adds the primary key as the final tiebreak (under a join that repeats a model, the selected columns follow it). While accent folding is on, a leaf and its accent-free form count once (the better of the two); with the shipped `unicode.accent_insensitive` default, `Müller` also matches `Muller`, and `!Müller` excludes both forms.
 
 ### Synonyms and stop words
 

@@ -2685,7 +2685,8 @@ class SearchBuilder
 
     /**
      * orderBy()'s columns, in the order the calls were made, then stableRanking()'s key as the
-     * tiebreak ($endOnKey: always — the index path's offset/limit page needs a total order). On
+     * tiebreak ($endOnKey: always — the index path's offset/limit page needs a total order), and on
+     * the LIKE and extended paths, under a join, the selected columns after it (VC-7). On
      * every path (LIKE, extended, index) an explicit order is the result order: PHP rescoring still
      * sets _score but does not re-sort by it (calculateRelevanceScores()), and the index path reads
      * its matches in this order (orderedIndexedPage()).
@@ -2725,10 +2726,13 @@ class SearchBuilder
         // every column it selects, an aliased one by its alias. A distinct row is unique over its
         // selected columns, so each is a total order: paginate()'s window and its pages past
         // max_candidates (one OFFSET read each) are read in that one order and partition the matches.
-        // Unordered, SQL Server's grammar ordered the OFFSET by (SELECT 0), which a SELECT DISTINCT
-        // rejects (145), and elsewhere the pages could overlap. A select of raw expressions only stays
-        // unordered. PostgreSQL's distinct('col') (DISTINCT ON) is ordered by its own columns first,
-        // as PostgreSQL requires (42P10, UA-1): one row each, and the order above picks which.
+        // Under a join, which repeats the key once per joined row, the key is followed by the other
+        // selected columns (joinedRowColumns(), VC-7), and a select of the joined table's `table.*`
+        // is read by that table's columns. Unordered, SQL Server's grammar ordered the OFFSET by
+        // (SELECT 0), which a SELECT DISTINCT rejects (145), and elsewhere the pages could overlap. A
+        // select of raw expressions only stays unordered. PostgreSQL's distinct('col') (DISTINCT ON)
+        // is ordered by its own columns first, as PostgreSQL requires (42P10, UA-1): one row each,
+        // and the order above picks which.
         if ($distinct && $orders === []) {
             $from    = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
             $columns = $from === null || $query instanceof EloquentBuilder ? [] : SearchableColumns::onTable($base->getConnection(), $from[0]);
@@ -2741,6 +2745,8 @@ class SearchBuilder
             } else {
                 $columns = self::plainColumns($query);
             }
+
+            $columns = [...$columns, ...self::notNamedIn($columns, $this->joinedRowColumns($query, $columns === [$keyColumn]))];
 
             if (is_array($base->distinct) && $base->getGrammar() instanceof \Illuminate\Database\Query\Grammars\PostgresGrammar) {
                 $columns = [...$base->distinct, ...array_filter($columns, fn ($column) => !in_array($column, $base->distinct, true))];
@@ -2758,13 +2764,20 @@ class SearchBuilder
         }
 
         // Not by a key a SELECT DISTINCT does not select: the database rejects it (SE-1).
-        if ($distinct && !$keyShown) {
-            return;
-        }
+        $keyed = !$distinct || $keyShown;
+        $taken = array_filter(array_column($orders, 'column'), 'is_string');
 
         // Once (ruling ER-52): SQL Server rejects a column named twice in ORDER BY.
-        if (array_intersect(array_filter(array_column($orders, 'column'), 'is_string'), $names) === []) {
+        if ($keyed && array_intersect($taken, $names) === []) {
             $query->orderBy($keyColumn, 'asc');
+        }
+
+        // Under a join, which repeats the key, then the selected columns (VC-7). Not on the index
+        // path: it serves each model once, at its first row by the order (orderedIndexedPage()).
+        if (!$endOnKey) {
+            foreach (self::notNamedIn([...$taken, ...($keyed ? [$keyColumn] : [])], $this->joinedRowColumns($query, $keyed)) as $column) {
+                $query->orderBy($column, 'asc');
+            }
         }
     }
 
@@ -2837,6 +2850,100 @@ class SearchBuilder
         }
 
         return array_values(array_unique($columns));
+    }
+
+    /** Types no ORDER BY takes, by driver: joinedRowColumns() leaves such a column out. */
+    private const UNORDERED_TYPES = ['pgsql' => ['json', 'xml'], 'sqlsrv' => ['text', 'ntext', 'image', 'xml', 'geography', 'geometry']];
+
+    /**
+     * Under a join, or a FROM that is not the model's own table (a fromSub(), a union read as one
+     * table), the key repeats once per joined row and leaves those rows tied (VC-7): the columns
+     * that break the tie, each selected column as an ORDER BY names it, an aliased one by its alias
+     * (by its column when another selected column has that name: the alias would be ambiguous), and
+     * every column of each table a `*` or `table.*` select reads (SearchableColumns::onTable()).
+     * Only selected columns, so a SELECT DISTINCT takes them too. Not a raw expression, a derived
+     * table's columns (they cannot be listed), a type UNORDERED_TYPES names, nor, $afterKey, the
+     * FROM table's own columns: the key decides them. [] without a join.
+     *
+     * @return string[]
+     */
+    private function joinedRowColumns(Builder|EloquentBuilder $query, bool $afterKey): array
+    {
+        $base  = $query instanceof EloquentBuilder ? $query->toBase() : $query;
+        $from  = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+        $model = $query instanceof EloquentBuilder ? $query->getModel()->getTable() : null;
+
+        if (empty($base->joins) && $from !== null && ($model === null || $from[0] === $model)) {
+            return [];
+        }
+
+        // qualifier => [column => whether an ORDER BY takes it], for each plain table read
+        $connection = $base->getConnection();
+        $unordered  = self::UNORDERED_TYPES[$connection->getDriverName()] ?? [];
+        $listed     = [];
+        foreach ([$base->from, ...array_map(fn ($join) => $join->table, $base->joins ?? [])] as $read) {
+            if (($read = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($read)) !== null) {
+                $types = SearchableColumns::typesOn($connection, $read[0]);
+                foreach (SearchableColumns::onTable($connection, $read[0]) as $column) {
+                    $listed[$read[1] ?? self::lastSegment($read[0])][$column] = !in_array($types[$column] ?? '', $unordered, true);
+                }
+            }
+        }
+
+        // The key's table: the model's, or a query builder's FROM table with an id (its key).
+        $own     = $from === null ? '' : $from[1] ?? self::lastSegment($from[0]);
+        $own     = $afterKey && ($model !== null ? $from !== null && $from[0] === $model : isset($listed[$own]['id'])) ? $own : '';
+        $columns = [];
+        $names   = []; // every selected column's name in the result, to find an ambiguous alias
+        foreach ($base->columns ?? ['*'] as $column) {
+            if (!is_string($column)) {
+                continue;
+            }
+
+            if (str_ends_with($column, '*')) {
+                foreach ($column === '*' ? $listed : array_intersect_key($listed, [substr($column, 0, -2) => true]) as $qualifier => $listing) {
+                    foreach ($listing as $name => $ordered) {
+                        $names[]   = $name;
+                        $columns[] = $ordered && $qualifier !== $own ? ["{$qualifier}.{$name}", "{$qualifier}.{$name}"] : null;
+                    }
+                }
+                continue;
+            }
+
+            [$name, $alias] = array_pad(preg_split('/\s+as\s+/i', $column), 2, null);
+            $qualifier      = str_contains($name, '.') ? substr($name, 0, (int) strrpos($name, '.')) : null;
+            $ordered        = $qualifier === null ? !in_array(false, array_column($listed, $name), true) : $listed[$qualifier][self::lastSegment($name)] ?? true;
+            $names[]        = $alias ?? self::lastSegment($name);
+            $columns[]      = $ordered && $qualifier !== $own ? [$alias ?? $name, $name] : null;
+        }
+
+        $count = array_count_values($names);
+
+        return array_values(array_unique(array_map(fn (array $column) => ($count[$column[0]] ?? 1) > 1 ? $column[1] : $column[0], array_filter($columns))));
+    }
+
+    /**
+     * The columns of $columns that name none of $taken, nor one before them (ruling ER-52: SQL
+     * Server rejects a column named twice in ORDER BY). A bare name and a dotted one name the same
+     * column when their last segments match.
+     *
+     * @param string[] $taken
+     * @param string[] $columns
+     * @return string[]
+     */
+    private static function notNamedIn(array $taken, array $columns): array
+    {
+        $added = [];
+        foreach ($columns as $column) {
+            foreach ([...$taken, ...$added] as $name) {
+                if ($name === $column || (!str_contains($name, '.') || !str_contains($column, '.')) && self::lastSegment($name) === self::lastSegment($column)) {
+                    continue 2;
+                }
+            }
+            $added[] = $column;
+        }
+
+        return $added;
     }
 
     /**
