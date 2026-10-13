@@ -288,7 +288,7 @@ User::search('laptop')->using('similar_text')->get(); // Contains "laptop", at l
 
 Most algorithms compute their score on the fly during the SQL query. **Metaphone is the exception** — PHP's `metaphone()` function isn't available in SQL, so the package precomputes the phonetic code on every save and stores it in a sibling column.
 
-For a `users` table with a `name` column, that means adding a `name_metaphone` column right next to it. Each row's `name_metaphone` holds the phonetic code (e.g. `Stephen` → `STFN`, `Steven` → `STFN`, `Stefan` → `STFN`). At search time, the query is a simple equality check against the precomputed code — fast, no per-row PHP calls.
+For a `users` table with a `name` column, that means adding a `name_metaphone` column right next to it. Each row's `name_metaphone` holds the phonetic code (e.g. `Stephen` → `STFN`, `Steven` → `STFN`, `Stefan` → `STFN`). At search time, the query is a simple equality check against the precomputed code — fast, no per-row PHP calls. The code covers the whole value, so `smith` finds a row whose name is `Smith` but not `Jane Smith` (whose code is that of both words): to match one word of a longer value, use `soundex` (which matches the first or the last word) or the index (`useInvertedIndex()`, any word).
 
 **Setup (one-time per column):**
 
