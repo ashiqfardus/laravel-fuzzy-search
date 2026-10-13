@@ -369,6 +369,11 @@ class SingleTableInheritanceRebuildTest extends TestCase
 
     protected function tearDown(): void
     {
+        // The refiles and unfiles, like every write path, keeps each type's word counts with its postings (ER-197).
+        if ($this->status()->isSuccess()) {
+            $this->assertModelTermsMirrorPostings(static::class . '::' . $this->name());
+        }
+
         foreach (['sti_items', 'job_batches', 'sti_archived_items'] as $table) {
             Schema::dropIfExists($table);
         }

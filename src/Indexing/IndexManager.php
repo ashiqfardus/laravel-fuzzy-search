@@ -16,7 +16,8 @@ class IndexManager
 {
     /**
      * Rows per upsert, so no statement passes SQL Server's 2,100 bindings: a posting row binds
-     * six values (1,800 a statement), a dictionary or document row three (1,500).
+     * six values (1,800 a statement), a model's word row five (1,500), a dictionary or document
+     * row three (1,500).
      */
     private const POSTING_ROWS_PER_UPSERT = 300;
     private const ROWS_PER_UPSERT         = 500;
@@ -351,6 +352,7 @@ class IndexManager
 
             $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
             if ($posted !== []) { // see write()
+                $this->adjustModelTerms($typeId, self::termDeltas($posted, [], []));
                 $this->deletePostings($typeId, [$modelId]);
             }
 
@@ -522,7 +524,8 @@ class IndexManager
     }
 
     /**
-     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts().
+     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts() and
+     * adjustModelTerms().
      *
      * @param array<int|string> $modelIds
      */
@@ -568,42 +571,53 @@ class IndexManager
 
     /**
      * Flush (delete) the index of every model: `fuzzy-search:clear --all`. The model types and
-     * columns stay: their ids never change (see dictionaryIds()).
+     * columns stay: their ids never change (see dictionaryIds()). Returns false when it deleted the
+     * big tables row by row (the command says so: on a large index that is slow).
      *
-     * The big tables are truncated (ruling ER-187): a DELETE per table in one transaction logged
-     * every row, and on a large index filled the log (SQL Server: from 1 GB to 5.4 GB in two
-     * minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against index writes
-     * on each path (TB-1, see flushing()):
-     * - PostgreSQL: one TRUNCATE of the four tables in flushing()'s transaction, after its lock. Its
-     *   ACCESS EXCLUSIVE holds index searches off to the commit too (they read the old rows during
-     *   the DELETEs). No CASCADE: a table of the app's with a foreign key to one of them makes it
-     *   fail and the DELETEs run, rather than emptying that table. No RESTART IDENTITY.
+     * The big tables are truncated where that takes no waiting (ruling ER-187): a DELETE per table in
+     * one transaction logged every row, and on a large index filled the log (SQL Server: from 1 GB
+     * to 5.4 GB in two minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against
+     * index writes on each path (TB-1, see flushing()):
+     * - PostgreSQL: in flushing()'s transaction, after its lock, in a savepoint, LOCK TABLE the four
+     *   … NOWAIT, then one TRUNCATE of them. Its ACCESS EXCLUSIVE holds index searches off to the
+     *   commit too (they read the old rows during the DELETEs). No CASCADE: a table of the app's
+     *   with a foreign key to one of them makes it fail and the DELETEs run, rather than emptying
+     *   that table. No RESTART IDENTITY.
      * - SQL Server: after flushing()'s index write lock, TRUNCATE the postings and documents, which
      *   no foreign key references, in its transaction. Their schema locks hold searches off to the
-     *   commit.
-     * - MySQL/MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the
-     *   four holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES,
-     *   and a session may truncate a table it has write-locked (MySQL also read-locks the model
-     *   types the postings reference; writers still read them).
-     * SQL Server and MySQL/MariaDB then delete the meta rows (one per model) and the terms: MySQL
+     *   commit. A reader holds no lock there past its statement.
+     * - MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the four
+     *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
+     *   session may truncate a table it has write-locked. Laravel 10 connects to it as mysql.
+     * - MySQL: the DELETEs, as 2.0 did (R13-M3, ruling ER-194). Its LOCK TABLES cannot be told not
+     *   to wait (no NOWAIT; lock_wait_timeout is a second at least).
+     * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
      * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). SQLite: DELETE
      * without WHERE is its truncate.
      *
-     * The DELETEs run instead inside a transaction of the caller's on MySQL/MariaDB (TRUNCATE and
-     * LOCK TABLES would commit it), and wherever TRUNCATE is refused, for whatever reason: a
-     * database user without the privilege it needs beyond DELETE (DROP, and LOCK TABLES, on
-     * MySQL/MariaDB; TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign
-     * key to one of these tables. If the DELETEs fail too, their error is thrown. On PostgreSQL a
-     * refusal rolls back to a savepoint (the transaction would be aborted otherwise); SQL Server
-     * rolls back the whole transaction on one, so it checks both first.
+     * The exclusive table locks are taken with NOWAIT, never waited for (R13-M3): an app's
+     * transaction that had read one index table (a search) held its shared lock to its end, the
+     * clear waited for it holding the tables it had already locked, and the app's next statement on
+     * one of those (a search, a sync IndexModelJob) closed the cycle. MySQL and MariaDB killed the
+     * app's transaction (1213), its own rows with it; PostgreSQL the app's or the clear's (40P01,
+     * which Laravel's savepoint handler turned into a DeadlockException past the fallback). Searches
+     * hold their locks for a moment, so a refusal is tried again (withoutWaiting()).
      *
-     * ponytail: on MySQL/MariaDB each TRUNCATE commits on its own, under the table locks: no
-     * other session sees the index half cleared, but a clear interrupted part way leaves it so
-     * until it is run again. A crash-atomic cheap clear there would swap in empty copies of the
-     * tables (RENAME TABLE), at the cost of rebuilding their foreign keys.
+     * The DELETEs run instead on MySQL, inside a transaction of the caller's on MariaDB (TRUNCATE and
+     * LOCK TABLES would commit it), while the tables stay busy, and wherever TRUNCATE is refused: a
+     * database user without the privilege it needs beyond DELETE (DROP, and LOCK TABLES, on MariaDB;
+     * TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign key to one of these
+     * tables. A reader does not hold them off. If the DELETEs fail too, their error is thrown. On
+     * PostgreSQL a refusal rolls back to a savepoint (the transaction would be aborted otherwise);
+     * SQL Server rolls back the whole transaction on one, so it checks both first.
+     *
+     * ponytail: on MariaDB each TRUNCATE commits on its own, under the table locks: no other session
+     * sees the index half cleared, but a clear interrupted part way leaves it so until it is run
+     * again. A crash-atomic cheap clear there, and a cheap one on MySQL, would swap in empty copies
+     * of the tables (RENAME TABLE), at the cost of rebuilding their foreign keys.
      */
-    public function flushAll(): void
+    public function flushAll(): bool
     {
         $connection = DB::connection();
         $driver     = $connection->getDriverName();
@@ -615,32 +629,33 @@ class IndexManager
             }
         };
 
-        if (DbDialect::isMySqlFamily($driver) && DB::transactionLevel() === 0) {
-            try {
-                $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)));
-                try {
-                    foreach ($big as $table) {
-                        DB::table($table)->truncate();
-                    }
-                    $deletes($big);
-                } finally {
-                    $connection->unprepared('UNLOCK TABLES');
-                }
+        // Laravel 10 connects to MariaDB as mysql; the server tells them apart, without a query.
+        $mariadb = $driver === DbDialect::MARIADB
+            || ($driver === DbDialect::MYSQL && stripos((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), 'mariadb') !== false);
 
-                return;
-            } catch (\Illuminate\Database\QueryException) {
-                // Refused: the DELETEs below, which leave the index empty whatever ran before.
+        if ($mariadb && DB::transactionLevel() === 0 && $this->withoutWaiting(function () use ($connection, $tables, $big, $deletes) {
+            $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)) . ' NOWAIT');
+            try {
+                foreach ($big as $table) {
+                    DB::table($table)->truncate();
+                }
+                $deletes($big);
+            } finally {
+                $connection->unprepared('UNLOCK TABLES');
             }
+        })) {
+            return true;
         }
 
-        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes) {
-            $truncated = [];
+        $truncated = [];
+        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes, &$truncated) {
             if ($driver === DbDialect::PGSQL) {
-                try {
-                    DB::transaction(fn () => DB::statement('TRUNCATE TABLE ' . implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $tables)))); // a savepoint
+                $list = implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $tables));
+                if ($this->withoutWaiting(fn () => DB::transaction(function () use ($list) { // a savepoint
+                    DB::statement("LOCK TABLE {$list} IN ACCESS EXCLUSIVE MODE NOWAIT");
+                    DB::statement("TRUNCATE TABLE {$list}");
+                }))) {
                     $truncated = $tables;
-                } catch (\Illuminate\Database\QueryException) {
-                    // Refused (see above): rolled back to the savepoint.
                 }
             } elseif ($driver === DbDialect::SQLSRV) {
                 // A refused TRUNCATE rolls the whole transaction back there, the index write lock
@@ -656,6 +671,36 @@ class IndexManager
 
             $deletes($truncated);
         });
+
+        return $truncated !== [] || $driver === DbDialect::SQLITE;
+    }
+
+    /**
+     * Run $truncate, whose table locks are taken with NOWAIT, and tell whether it ran. Refused
+     * because the tables are busy (PostgreSQL's 55P03, MariaDB's 1205), it is tried again: a search
+     * holds its shared lock only while it runs, so under traffic one try mostly meets one. Any other
+     * refusal (a privilege, a foreign key) is final. Between tries MariaDB holds no lock; PostgreSQL
+     * holds flushing()'s lock, so index writes wait those moments too, as they wait for the clear.
+     * Anything else goes up, a DeadlockException too: Laravel rolls back no savepoint for one, so
+     * flushing()'s transaction rolls back whole and the index stays as it was.
+     *
+     * ponytail: 5 tries 200 ms apart, then the DELETEs; make them configurable if an index under
+     * constant load keeps deleting row by row.
+     */
+    private function withoutWaiting(\Closure $truncate): bool
+    {
+        for ($try = 1; ; $try++) {
+            try {
+                $truncate();
+
+                return true;
+            } catch (\Illuminate\Database\QueryException $e) {
+                if ($try === 5 || ($e->getCode() !== '55P03' && ($e->errorInfo[1] ?? null) !== 1205)) {
+                    return false;
+                }
+                usleep(200_000);
+            }
+        }
     }
 
     /**
@@ -677,8 +722,10 @@ class IndexManager
                     ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
                     ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
 
-                // Bulk delete index data for this model type — DB-side, no PHP memory load.
+                // Bulk delete index data for this model type — DB-side, no PHP memory load. Its own
+                // word counts go whole (ER-197).
                 DB::table('fuzzy_index_postings')->where('model_type_id', $typeId)->delete();
+                DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->delete();
             }
             DB::table('fuzzy_index_documents')->where('model_type', $modelClass)->delete();
             DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->delete();
@@ -1231,7 +1278,8 @@ class IndexManager
      *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
      *     terms, in id order (giving back the old terms, C12; raising the new ones), and delete
      *     the old postings;
-     *  4. insert the terms the dictionary lacks, sorted, then the postings, document rows and
+     *  4. insert the terms the dictionary lacks, sorted; apply the same changes to the model
+     *     type's own counts (adjustModelTerms(), ER-197); then the postings, document rows and
      *     meta (C11) of the rows with text.
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
@@ -1447,6 +1495,12 @@ class IndexManager
             // beside the one just inserted (ER-75). This write holds every one of these rows, so
             // it waits on none.
             $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
+
+            // The model type's own counts follow the dictionary's, now that this write holds every
+            // word it changes (ER-197).
+            if ($typeId !== null) {
+                $this->adjustModelTerms($typeId, self::termDeltas($posted, $counts, $termIds));
+            }
 
             // One posting per (term, column), with the document's length; a term missing from
             // $termIds means a pre-migration collation collapsed it into a variant: MySQL/MariaDB
@@ -1687,6 +1741,82 @@ class IndexManager
         }
 
         return $gone;
+    }
+
+    /**
+     * The changes to a model type's word counts a write makes: term id => [the word as the
+     * dictionary stores it, the change], from the words its rows held before ($posted, given back)
+     * and hold now ($counts, raised, through $termIds). A word with no id in $termIds gets no
+     * posting either (see postingRows()), so it is left out here too.
+     *
+     * @param  array<string, array{int, int}> $posted  see postedTerms()
+     * @param  array<string, int>             $counts  term => documents holding it
+     * @param  array<string, int>             $termIds the dictionary's term => id
+     * @return array<int, array{string, int}>
+     */
+    private static function termDeltas(array $posted, array $counts, array $termIds): array
+    {
+        $deltas = [];
+        foreach ($posted as $term => [$termId, $holders]) {
+            $deltas[$termId] = [(string) $term, -$holders];
+        }
+        $stored = array_flip($termIds);
+        foreach ($counts as $term => $increment) {
+            if (isset($termIds[$term])) {
+                $termId          = $termIds[$term];
+                $deltas[$termId] = [(string) $stored[$termId], ($deltas[$termId][1] ?? 0) + $increment];
+            }
+        }
+
+        return $deltas;
+    }
+
+    /**
+     * Apply a write's changes to its model type's rows in fuzzy_index_model_terms (ruling ER-197),
+     * as adjustDocCounts() applies them to the dictionary's doc_count: a new row for a word the type
+     * did not hold, a change to one it did (floored at 0), and a row that reaches 0 deleted. One
+     * upsert per distinct change and 300 rows (a row binds five values), the change inlined as an
+     * int, as the dictionary's own upserts raise their words on MySQL/MariaDB; then one DELETE per
+     * 1,000 words of the rows a decrease brought to 0.
+     *
+     * Called once the write holds the dictionary row of every word in $deltas (adjustDocCounts()'s
+     * locking read, the dictionary upsert, or its own insert), and every write that changes a type's
+     * row of a word holds that word's row first: no two writes change one row at once, and none
+     * waits on another here. Every statement finds its rows by the whole primary key: the upsert's
+     * conflict and the DELETE's rows (all of them exist once the upsert ran) take record locks only,
+     * no gap lock on MySQL/MariaDB, where another write's new row of the type would otherwise wait.
+     *
+     * @param array<int, array{string, int}> $deltas see termDeltas()
+     */
+    private function adjustModelTerms(int $typeId, array $deltas): void
+    {
+        ksort($deltas);
+        $runs    = []; // change => term id => word
+        $lowered = [];
+        foreach ($deltas as $termId => [$term, $delta]) {
+            if ($delta !== 0) {
+                $runs[$delta][$termId] = $term;
+            }
+            if ($delta < 0) {
+                $lowered[] = (int) $termId;
+            }
+        }
+
+        $count = DbDialect::rawIdentifier('fuzzy_index_model_terms.doc_count'); // qualified: see the dictionary's upsert in write()
+        foreach ($runs as $delta => $terms) {
+            $raise = $delta >= 0 ? "{$count} + {$delta}" : "CASE WHEN {$count} >= " . -$delta . " THEN {$count} - " . -$delta . ' ELSE 0 END';
+            foreach (array_chunk($terms, self::POSTING_ROWS_PER_UPSERT, true) as $chunk) {
+                $rows = [];
+                foreach ($chunk as $termId => $term) {
+                    $rows[] = ['model_type_id' => $typeId, 'term_id' => (int) $termId, 'term' => $term, 'term_length' => mb_strlen($term), 'doc_count' => max($delta, 0)];
+                }
+                DB::table('fuzzy_index_model_terms')->upsert($rows, ['model_type_id', 'term_id'], ['doc_count' => DB::raw($raise)]);
+            }
+        }
+
+        foreach (array_chunk($lowered, 1000) as $chunk) {
+            DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $chunk)->where('doc_count', 0)->delete();
+        }
     }
 
     /**
