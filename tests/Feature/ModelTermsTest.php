@@ -105,6 +105,37 @@ class ModelTermsTest extends TestCase
         $this->assertSame(0, DB::table('fuzzy_index_model_terms')->count());
     }
 
+    /**
+     * rebuild --fresh leaves the dictionary exact where its count of a word had drifted: a count one
+     * too low on a word both types hold (an upgrade's stale postings taken off twice) and one too
+     * high on a word only the users hold (2.0's). The flush counts each of the model's words again
+     * from the other types' own counts, rather than take its share off (R13-L7).
+     */
+    public function test_a_flush_counts_the_models_words_again_from_the_other_models(): void
+    {
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        $manager = app(IndexManager::class);
+        $manager->indexBatch(SoftDeletedUser::all());
+        $manager->indexBatch(Product::all());
+        SoftDeletedUser::create(['name' => 'Apple Pro Smith', 'email' => 'x@example.com']);
+        Product::create(['title' => 'Smith Apple', 'description' => 'pro tablet']);
+        $this->assertModelTermsMirrorPostings('before the drift');
+
+        $own    = fn (string $class) => DB::table('fuzzy_index_model_terms')->where('model_type_id', IndexManager::modelTypeId($class))->pluck('term_id')->map(fn ($id) => (int) $id)->all();
+        $shared = array_values(array_intersect($own(SoftDeletedUser::class), $own(Product::class)));
+        $only   = array_values(array_diff($own(SoftDeletedUser::class), $own(Product::class)));
+        $this->assertNotEmpty($shared);
+        $this->assertNotEmpty($only);
+        DB::table('fuzzy_index_terms')->where('id', $shared[0])->decrement('doc_count');
+        DB::table('fuzzy_index_terms')->where('id', $only[0])->increment('doc_count');
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => SoftDeletedUser::class, '--fresh' => true])->assertExitCode(0);
+        $this->assertModelTermsMirrorPostings('rebuild --fresh after the drift');
+
+        $this->artisan('fuzzy-search:clear', ['model' => SoftDeletedUser::class])->assertExitCode(0);
+        $this->assertModelTermsMirrorPostings('clear <model>');
+    }
+
     /** @return list<string> the SQL of the reads $run sends that match $pattern */
     private function reads(string $pattern, \Closure $run): array
     {

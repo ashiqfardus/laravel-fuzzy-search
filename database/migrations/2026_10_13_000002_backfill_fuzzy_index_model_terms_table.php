@@ -18,7 +18,8 @@ use Illuminate\Support\Facades\Schema;
  * added later gets its rows from the index write that adds it), each about $chunk documents by the
  * words' doc_count (a word that common is a range of its own). Each range is one transaction: lock
  * its words, delete its rows, insert them again with one INSERT … SELECT that counts its postings,
- * and record its end in STATE. Outside a transaction, so every range commits on its own.
+ * set the words' dictionary counts to the sum of those rows where they differ (R13-L7), and record
+ * its end in STATE. Outside a transaction, so every range commits on its own.
  *
  * STATE, which 2026_10_13_000001 creates with last_term_id 0, holds the progress: a run that stopped
  * part way (a killed deploy, a lock timeout) goes on after the last range it committed, and the run
@@ -148,6 +149,11 @@ return new class extends Migration
             . ' inner join ' . $grammar->wrapTable('fuzzy_index_terms') . ' t on t.id = g.term_id where t.id > ? and t.id <= ?',
             [$low, $high, $low, $high]
         );
+
+        // The dictionary's counts of the range's words, again from the rows just counted (R13-L7):
+        // an index 2.0 wrote can hold a count too high, or a word no posting holds any more, which no
+        // flush gave back, and the dictionary would no longer equal the sum of the types' counts.
+        IndexManager::recountDictionary(fn ($words) => $words->where('id', '>', $low)->where('id', '<=', $high));
 
         DB::table(self::STATE)->update(['last_term_id' => $high]);
 

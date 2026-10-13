@@ -1156,9 +1156,9 @@ class CompactPostingsMigrationTest extends TestCase
         $before = $this->searches();
 
         $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
-        // The first word's count past a chunk: the copy takes it alone, then the rest.
+        // The first word's count past a chunk: the copy takes it alone, then the rest. The model terms
+        // backfill after it counts the word again from its postings (R13-L7), so it ends at its count.
         DB::table('fuzzy_index_terms')->where('id', DB::table('fuzzy_index_terms')->min('id'))->update(['doc_count' => 1_000_000]);
-        $before['terms'][DB::table('fuzzy_index_terms')->where('id', DB::table('fuzzy_index_terms')->min('id'))->value('term')] = 1_000_000;
 
         $this->migrateFailingAfter($after);
         Log::spy();

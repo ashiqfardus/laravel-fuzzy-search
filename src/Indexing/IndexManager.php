@@ -721,14 +721,24 @@ class IndexManager
             $typeId = self::modelTypeId($modelClass);
 
             if ($typeId !== null) {
-                // Give back this model's share of every term's doc_count first. A term another model
-                // still uses survives the orphan sweep below, and it kept counting this model's
-                // documents: every rebuild --fresh inflated it. One chunk of terms in memory at a time.
+                // Count each word this model held again from the other models' own counts, once its
+                // rows of them are gone. A word another model still uses survives the orphan sweep
+                // below, and it kept counting this model's documents: every rebuild --fresh inflated
+                // it. Taking this model's share off instead took off twice a document the dictionary
+                // had already let go of, one whose postings an upgrade's copy kept (ER-183), so the
+                // rebuild the migration's warning names left the word's count short for good (R13-L7).
+                // One chunk of words at a time, their dictionary rows locked in id order first, as
+                // every write takes them (adjustDocCounts()).
                 DB::table('fuzzy_index_postings')
                     ->where('model_type_id', $typeId)
                     ->groupBy('term_id')
-                    ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
-                    ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
+                    ->selectRaw('term_id')
+                    ->chunkById(1000, function ($rows) use ($typeId) {
+                        $ids = $rows->pluck('term_id')->map(fn ($id) => (int) $id)->sort()->values()->all();
+                        DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
+                        DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $ids)->delete();
+                        self::recountDictionary(fn ($words) => $words->whereIn('id', $ids));
+                    }, 'term_id');
 
                 // Bulk delete index data for this model type — DB-side, no PHP memory load. Its own
                 // word counts go whole (ER-197).
@@ -1308,7 +1318,7 @@ class IndexManager
      */
     private function write(string $modelType, array $keys, array $unsaved, bool $scout = false, bool $refile = true): int
     {
-        [$indexed, $elsewhere] = DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
+        [$indexed, $elsewhere] = self::yieldingDeadlocks(fn () => DB::transaction(function () use ($modelType, $keys, $unsaved, $scout) {
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
             $old = $this->claimDocuments($modelType, $ids); // id => doc_length, for the indexed ones
 
@@ -1539,7 +1549,7 @@ class IndexManager
             );
 
             return [count($byModel), $elsewhere];
-        }, self::ATTEMPTS);
+        }, self::ATTEMPTS));
 
         $this->analyzeUnanalyzedIndex();
 
@@ -1704,6 +1714,65 @@ class IndexManager
             }
         }
         return $byColumn;
+    }
+
+    /**
+     * Set the dictionary's doc_count of the words $words selects to the sum of the model types' own
+     * counts (fuzzy_index_model_terms, ER-197), where the two differ: the index writes keep that sum
+     * and doc_count equal, so this writes only a count something else left wrong (R13-L7). flush()
+     * calls it with the flushed type's rows of the words gone, and 2026_10_13_000002 on each range of
+     * words it counts, so an index 2.0 or an upgrade's copy left with a count too high or too low, or
+     * with a word no posting holds any more, comes out exact. The caller holds the words' rows.
+     *
+     * @internal public for 2026_10_13_000002
+     *
+     * @param \Closure(\Illuminate\Database\Query\Builder): \Illuminate\Database\Query\Builder $words
+     */
+    public static function recountDictionary(\Closure $words): void
+    {
+        $own   = DbDialect::rawIdentifier('fuzzy_index_model_terms');
+        $terms = DbDialect::rawIdentifier('fuzzy_index_terms');
+        $sum   = "COALESCE((SELECT SUM({$own}.doc_count) FROM {$own} WHERE {$own}.term_id = {$terms}.id), 0)";
+
+        $words(DB::table('fuzzy_index_terms'))->whereRaw("doc_count <> {$sum}")->update(['doc_count' => DB::raw($sum)]);
+    }
+
+    /**
+     * SQL Server: run an index write the package owns (no transaction of yours open) at
+     * DEADLOCK_PRIORITY LOW, and give the session its own priority back after it (ruling ER-199).
+     * Under locking read committed (READ_COMMITTED_SNAPSHOT off), the write's re-read of a row waits
+     * on a transaction of yours that updated the row and waits in turn for the index write lock,
+     * to index inside it (Scout with after_commit off, IndexModelJob::dispatchSync() in
+     * DB::transaction()): SQL Server chose that transaction, or a read of yours in the cycle, as the
+     * deadlock victim. At LOW the package's write is the victim, and its attempt is retried
+     * (ATTEMPTS) once yours has committed, so it reads the committed row. Inside a transaction of
+     * yours the priority is left as it is: the package cannot retry that transaction. Only write()
+     * reads your rows (the re-read, its eager loads, a hierarchy's root); removeFromIndex() and the
+     * flushes read the index's own tables, which only index writes lock, one at a time.
+     * SET runs unprepared: a prepared batch's SET would end with it.
+     */
+    private static function yieldingDeadlocks(\Closure $write): mixed
+    {
+        $connection = DB::connection();
+        if ($connection->getDriverName() !== DbDialect::SQLSRV || $connection->transactionLevel() > 0) {
+            return $write();
+        }
+
+        $own = (int) $connection->scalar('SELECT deadlock_priority FROM sys.dm_exec_sessions WHERE session_id = @@SPID', [], false);
+        $connection->unprepared('SET DEADLOCK_PRIORITY LOW');
+        try {
+            $result = $write();
+        } catch (\Throwable $e) {
+            try {
+                $connection->unprepared("SET DEADLOCK_PRIORITY {$own}");
+            } catch (\Throwable) {
+                // The write's error is the one to report; a connection that lost this too is gone.
+            }
+            throw $e;
+        }
+        $connection->unprepared("SET DEADLOCK_PRIORITY {$own}");
+
+        return $result;
     }
 
     /**

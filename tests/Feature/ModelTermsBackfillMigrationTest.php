@@ -251,6 +251,26 @@ class ModelTermsBackfillMigrationTest extends TestCase
         return ['one range' => [250000], 'a range a word' => [1]];
     }
 
+    /**
+     * An index 2.0 left with a word's count one too high, and a word no posting holds any more, comes
+     * out of the backfill with the dictionary equal to the models' counts: each range's words are
+     * counted again from the rows just written (R13-L7).
+     */
+    #[DataProvider('chunks')]
+    public function test_the_backfill_counts_the_dictionary_again(int $chunk): void
+    {
+        $this->index();
+        DB::table('fuzzy_index_terms')->where('term', 'copper')->increment('doc_count');
+        $orphan = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'split', 'term_length' => 5, 'doc_count' => 1]);
+        $this->created();
+
+        $this->backfill($chunk);
+
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertSumsMatchTheDictionary();
+        $this->assertSame(0, (int) DB::table('fuzzy_index_terms')->where('id', $orphan)->value('doc_count'));
+    }
+
     /** The backfill of an index written before it counts each model's documents of each word, as the index writes keep them, then drops its state. */
     #[DataProvider('chunks')]
     public function test_the_backfill_counts_each_models_documents_of_each_word(int $chunk): void
