@@ -36,6 +36,7 @@ class FederatedSearch
     protected ?int $typoTolerance = null;
     protected ?int $limitPerModel = null;
     protected array $modelOrder = [];
+    protected bool $useInvertedIndex = false;
 
     /**
      * Create a new federated search across multiple models
@@ -132,6 +133,19 @@ class FederatedSearch
     public function limitPerModel(int $limit): self
     {
         $this->limitPerModel = max(1, $limit);
+        return $this;
+    }
+
+    /**
+     * Search every model with the Searchable trait through its BM25 inverted index, exactly as
+     * Model::search($term)->useInvertedIndex() searches it: a model whose index was never built
+     * matches nothing. There using() and options() are not read, and typoTolerance() is how many
+     * edits a query word is expanded by in the index's dictionary. A model without the trait is
+     * still searched as queryFor() describes. false goes back to each model's own algorithm.
+     */
+    public function useInvertedIndex(bool $use = true): self
+    {
+        $this->useInvertedIndex = $use;
         return $this;
     }
 
@@ -287,6 +301,10 @@ class FederatedSearch
 
             if ($this->typoTolerance !== null) {
                 $builder->typoTolerance($this->typoTolerance);
+            }
+
+            if ($this->useInvertedIndex) {
+                $builder->useInvertedIndex();
             }
 
             return $builder;
