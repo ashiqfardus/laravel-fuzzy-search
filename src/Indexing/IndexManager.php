@@ -348,11 +348,11 @@ class IndexManager
             // Waits for a write to this row in flight; empty = it was not indexed.
             $old    = $this->claimDocuments($modelType, [$modelId]);
             $typeId = self::modelTypeId($modelType);
-            $posted = $this->postedTerms($typeId, [$modelId]);
+            $posted = self::holders($this->currentPostings($typeId, [$modelId], $old));
 
-            $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
+            $words = $this->adjustDocCounts(array_map(fn (int $holders) => -$holders, $posted));
             if ($posted !== []) { // see write()
-                $this->adjustModelTerms($typeId, self::termDeltas($posted, [], []));
+                $this->adjustModelTerms($typeId, self::termDeltas($posted, [], [], $words));
                 $this->deletePostings($typeId, [$modelId]);
             }
 
@@ -494,33 +494,130 @@ class IndexManager
     }
 
     /**
-     * The dictionary terms the models' postings hold: term => [term id, how many of the models
-     * hold it], COUNT(DISTINCT model_id) since a document has one posting per column a term is in.
-     * None for a model type without an id (modelTypeId()): nothing is posted under it.
+     * The models' postings as they are now: model id => term id => column id => [frequency,
+     * doc_length]. None for a model type without an id (modelTypeId()): nothing is posted under it.
+     * The write's claim holds every other write to them off, so a plain read finds them as the last
+     * write committed them, but for one case: on MySQL/MariaDB at REPEATABLE READ a plain read sees
+     * the transaction's snapshot, which starts at its first plain read. In a transaction of its own
+     * the write's first one comes after its claim. Inside a transaction of yours that read anything
+     * before it indexed (User::find() then save(), Scout with after_commit off), the snapshot can
+     * predate a write of the same row another process committed before the claim was granted: the
+     * read found the words the row held before that write, so the counts were given back for those
+     * and the ones that write added kept their doc_count for good (P6-S1, ruling ER-201). There the
+     * read is checked against the rows as they are now (postingsCurrent()), and read again with FOR
+     * UPDATE where it differs.
      *
-     * @param  array<int|string>              $modelIds
-     * @return array<string, array{int, int}>
+     * The plain read is first because a locking one through postings_model_idx takes next-key locks
+     * (the gaps beside the rows' entries, which a neighbouring row's new postings are inserted into)
+     * before the write takes its dictionary rows: a write holding a gap and waiting for a word then
+     * crosses one holding the word and inserting into the gap.
+     *
+     * @param  array<int|string>                                  $modelIds
+     * @param  array<int|string, int>                             $old      the claim's: id => doc_length, for the indexed ones
+     * @return array<int|string, array<int, array<int, array{int, int}>>>
      */
-    private function postedTerms(?int $typeId, array $modelIds): array
+    private function currentPostings(?int $typeId, array $modelIds, array $old): array
     {
-        $posted = [];
-        foreach ($typeId === null ? [] : array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
-            $rows = DB::table('fuzzy_index_postings as p')
-                ->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
-                ->where('p.model_type_id', $typeId)
-                ->whereIn('p.model_id', $chunk)
-                ->groupBy('t.id', 't.term')
-                ->select('t.id', 't.term')
-                ->selectRaw('COUNT(DISTINCT ' . DbDialect::rawIdentifier('p.model_id') . ') as cnt')
-                ->get();
+        $read = function (bool $lock) use ($typeId, $modelIds): array {
+            $postings = [];
+            foreach ($typeId === null ? [] : array_chunk(array_map('strval', $modelIds), 1000) as $chunk) {
+                $rows = DB::table('fuzzy_index_postings')
+                    ->where('model_type_id', $typeId)
+                    ->whereIn('model_id', $chunk)
+                    ->when($lock, fn ($query) => $query->lockForUpdate())
+                    ->get(['model_id', 'term_id', 'column_id', 'frequency', 'doc_length']);
 
-            foreach ($rows as $row) {
-                $row = (object) $row; // an app-wide array fetch mode returns arrays (UC-1)
-                $posted[(string) $row->term] = [(int) $row->id, ($posted[(string) $row->term][1] ?? 0) + (int) $row->cnt];
+                foreach ($rows as $row) {
+                    $row = (object) $row; // an app-wide array fetch mode returns arrays (UC-1)
+                    $postings[(string) $row->model_id][(int) $row->term_id][(int) $row->column_id] = [(int) $row->frequency, (int) $row->doc_length];
+                }
+            }
+
+            return $postings;
+        };
+
+        $postings = $read(false);
+        if ($typeId !== null && DB::transactionLevel() > 1 && DbDialect::isMySqlFamily(DB::connection()->getDriverName())
+            && !$this->postingsCurrent($typeId, $postings, $modelIds, $old)) {
+            $postings = $read(true);
+        }
+
+        return $postings;
+    }
+
+    /**
+     * MySQL/MariaDB: whether $postings, read from the transaction's snapshot, are the models'
+     * postings now. Each is read again by its whole primary key with FOR UPDATE, one point read
+     * per posting sent as one UNION ALL (as the claim reads its rows): a const plan, which locks its
+     * own row only, a row this write deletes or rewrites anyway. The snapshot missed a write of
+     * these rows when a posting is gone or holds another frequency or doc_length, or when a model
+     * is indexed now ($old) and had no posting in it, or the reverse. A write that only added
+     * postings raised the document's length, which every posting of it carries.
+     *
+     * @param array<int|string, array<int, array<int, array{int, int}>>> $postings see currentPostings()
+     * @param array<int|string>                                          $modelIds
+     * @param array<int|string, int>                                     $old
+     */
+    private function postingsCurrent(int $typeId, array $postings, array $modelIds, array $old): bool
+    {
+        foreach ($modelIds as $id) {
+            if (isset($old[$id]) !== isset($postings[$id])) {
+                return false;
             }
         }
 
-        return $posted;
+        $points = [];
+        foreach ($postings as $id => $terms) {
+            foreach ($terms as $termId => $columns) {
+                foreach ($columns as $columnId => $values) {
+                    $points[] = [(int) $termId, (string) $id, (int) $columnId, $values];
+                }
+            }
+        }
+
+        $point = '(' . DB::table('fuzzy_index_postings')
+            ->select('model_id', 'term_id', 'column_id', 'frequency', 'doc_length')
+            ->where('term_id', 0)->where('model_type_id', $typeId)->where('model_id', '')->where('column_id', 0)
+            ->lockForUpdate()->toSql() . ')';
+        foreach (array_chunk($points, self::ROWS_PER_UPSERT) as $chunk) {
+            $bindings = [];
+            foreach ($chunk as [$termId, $id, $columnId]) {
+                array_push($bindings, $termId, $typeId, $id, $columnId); // the point read's four placeholders, in order
+            }
+
+            $found = 0;
+            foreach (DB::select(implode(' union all ', array_fill(0, count($chunk), $point)), $bindings, false) as $row) {
+                $row = (object) $row;
+                if (($postings[(string) $row->model_id][(int) $row->term_id][(int) $row->column_id] ?? null) !== [(int) $row->frequency, (int) $row->doc_length]) {
+                    return false;
+                }
+                $found++;
+            }
+            if ($found !== count($chunk)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * How many of the models hold each word their postings hold: term id => models (a document has
+     * one posting per column a word is in).
+     *
+     * @param  array<int|string, array<int, array<int, array{int, int}>>> $postings see currentPostings()
+     * @return array<int, int>
+     */
+    private static function holders(array $postings): array
+    {
+        $holders = [];
+        foreach ($postings as $terms) {
+            foreach (array_keys($terms) as $termId) {
+                $holders[$termId] = ($holders[$termId] ?? 0) + 1;
+            }
+        }
+
+        return $holders;
     }
 
     /**
@@ -1397,7 +1494,7 @@ class IndexManager
             // write takes its locks on existing terms in the order every other write takes them
             // (ER-71): giving back old terms, then raising new ones in a second statement, let two
             // writes whose terms cross each hold a row the other needed.
-            $posted   = $this->postedTerms($typeId, $ids);
+            $posted   = self::holders($this->currentPostings($typeId, $ids, $old)); // term id => rows holding it
             $existing = $this->termIds(array_map('strval', array_keys($counts)));
             $driver   = DB::connection()->getDriverName();
 
@@ -1425,10 +1522,7 @@ class IndexManager
                 $existing += $this->termIds($new);
             }
 
-            $deltas   = [];
-            foreach ($posted as [$termId, $holders]) {
-                $deltas[$termId] = -$holders;
-            }
+            $deltas   = array_map(fn (int $holders) => -$holders, $posted);
             foreach ($counts as $term => $increment) {
                 if (isset($existing[$term])) {
                     $deltas[$existing[$term]] = ($deltas[$existing[$term]] ?? 0) + $increment;
@@ -1437,8 +1531,8 @@ class IndexManager
             // A word the locking read no longer finds was swept since the read above: a flush of
             // any model deletes every word no posting holds, which a word this write reuses after
             // re-indexing dropped it can be. It is inserted again below, as a missing one (ER-75).
-            $gone     = array_flip($this->adjustDocCounts($deltas));
-            $existing = array_filter($existing, fn ($id) => !isset($gone[$id]));
+            $words    = $this->adjustDocCounts($deltas);
+            $existing = array_filter($existing, fn ($id) => isset($words[$id]));
 
             // No DELETE when nothing is posted: on MySQL/MariaDB one that matches nothing still
             // gap-locks the end of postings_model_idx, where another first index's postings
@@ -1513,12 +1607,12 @@ class IndexManager
             // After a sweep, a current read: MySQL's snapshot still shows a swept word's old row
             // beside the one just inserted (ER-75). This write holds every one of these rows, so
             // it waits on none.
-            $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
+            $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: count($words) < count($deltas));
 
             // The model type's own counts follow the dictionary's, now that this write holds every
             // word it changes (ER-197).
             if ($typeId !== null) {
-                $this->adjustModelTerms($typeId, self::termDeltas($posted, $counts, $termIds));
+                $this->adjustModelTerms($typeId, self::termDeltas($posted, $counts, $termIds, $words));
             }
 
             // One posting per (term, column), with the document's length; a term missing from
@@ -1788,18 +1882,19 @@ class IndexManager
      * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
      *
      * @param  array<int, int> $deltas
-     * @return list<int> the ids the locking read did not find: terms deleted since the caller
-     *                   read them, by a flush's orphan sweep (ER-75)
+     * @return array<int, string> the words the locking read found, id => term, as they are now
+     *                            (termDeltas() copies them); an id it did not find is a term deleted
+     *                            since the caller read it, by a flush's orphan sweep (ER-75)
      */
     private function adjustDocCounts(array $deltas): array
     {
         ksort($deltas);
-        $gone = [];
+        $words = [];
 
         foreach (array_chunk($deltas, 1000, true) as $chunk) {
-            $found = DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('id')->all();
-            $gone  = [...$gone, ...array_values(array_diff(array_keys($chunk), $found))];
-            $chunk = array_filter(array_intersect_key($chunk, array_flip($found))); // locked above; a 0 is not updated
+            $found  = DB::table('fuzzy_index_terms')->whereIn('id', array_keys($chunk))->orderBy('id')->lockForUpdate()->pluck('term', 'id')->all();
+            $words += $found;
+            $chunk  = array_filter(array_intersect_key($chunk, $found)); // locked above; a 0 is not updated
             if ($chunk === []) {
                 continue;
             }
@@ -1818,25 +1913,29 @@ class IndexManager
             );
         }
 
-        return $gone;
+        return $words;
     }
 
     /**
      * The changes to a model type's word counts a write makes: term id => [the word as the
      * dictionary stores it, the change], from the words its rows held before ($posted, given back)
      * and hold now ($counts, raised, through $termIds). A word with no id in $termIds gets no
-     * posting either (see postingRows()), so it is left out here too.
+     * posting either (see postingRows()), so it is left out here too, and so is a word held before
+     * that a flush's orphan sweep deleted since (not in $words): its rows went with it (ER-75).
      *
-     * @param  array<string, array{int, int}> $posted  see postedTerms()
-     * @param  array<string, int>             $counts  term => documents holding it
-     * @param  array<string, int>             $termIds the dictionary's term => id
+     * @param  array<int, int>    $posted  term id => rows holding it (holders())
+     * @param  array<string, int> $counts  term => documents holding it
+     * @param  array<string, int> $termIds the dictionary's term => id
+     * @param  array<int, string> $words   the dictionary's id => term, for $posted (adjustDocCounts())
      * @return array<int, array{string, int}>
      */
-    private static function termDeltas(array $posted, array $counts, array $termIds): array
+    private static function termDeltas(array $posted, array $counts, array $termIds, array $words): array
     {
         $deltas = [];
-        foreach ($posted as $term => [$termId, $holders]) {
-            $deltas[$termId] = [(string) $term, -$holders];
+        foreach ($posted as $termId => $holders) {
+            if (isset($words[$termId])) {
+                $deltas[$termId] = [(string) $words[$termId], -$holders];
+            }
         }
         $stored = array_flip($termIds);
         foreach ($counts as $term => $increment) {
