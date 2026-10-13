@@ -242,6 +242,37 @@ class IndexWriteLockTest extends TestCase
     }
 
     /**
+     * ER-188. A flush (clear <model>, rebuild --fresh's first step, clear --all) takes the index
+     * lock first too. Without it its DELETEs ran against the writers' claims and dictionary locks,
+     * the cycles the lock removed between writers, and a flush is not retried. Ten flushes of the
+     * model, a chunk's write apart, while three rebuild workers run: everything completes, and a
+     * rebuild after it leaves the index a sequential rebuild writes.
+     */
+    public function test_flushes_during_parallel_writers_complete(): void
+    {
+        $this->skipUnlessSqlServer();
+        [$low, $high] = $this->seedRows();
+        [$lowA, $lowB] = self::halves($low);
+        $all = [...$low, ...$high];
+
+        $flusher = [];
+        foreach (array_slice(array_chunk($all, 250), 0, 10) as $chunk) {
+            array_push($flusher, ['flush', User::class, []], ['index', User::class, $chunk]);
+        }
+        $this->assertNoneFailed($this->runWriters([
+            self::rebuild(User::class, $lowA),
+            self::rebuild(User::class, $lowB),
+            self::rebuild(User::class, $high),
+            $flusher,
+        ]));
+
+        foreach (array_chunk($all, 250) as $chunk) {
+            app(IndexManager::class)->indexBatch(User::whereKey($chunk)->get());
+        }
+        $this->assertSameIndex($this->sequentialRebuild([User::class => $all]), $this->snapshot());
+    }
+
+    /**
      * An app's transaction that updated a row and indexes it before its commit, while another write
      * of that row has claimed it and waits on the update in its re-read (SQL Server's locking read
      * committed): that write holds the index lock the transaction's write waits for. SQL Server's

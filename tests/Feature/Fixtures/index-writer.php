@@ -9,7 +9,8 @@
  *  - save:  a save of each row, its index written synchronously by the package's observer;
  *  - update-then-index: an app's transaction that updates the first row, then indexes it before
  *    its commit (Scout with after_commit off), 1.5 s later;
- *  - index-after-update: once that update is in, a write of the first row (IndexModelJob's).
+ *  - index-after-update: once that update is in, a write of the first row (IndexModelJob's);
+ *  - flush: a flush of the model (clear <model>, and rebuild --fresh's first step).
  * Prints "ready" once connected, starts when the barrier file exists, and ends with one JSON line:
  * the failures (thrown or reported) and the transactions it rolled back.
  */
@@ -67,6 +68,8 @@ foreach ($job['steps'] as [$action, $class, $ids]) {
                 usleep(1500000); // the other write claims the row, then waits on it in its re-read
                 app(IndexManager::class)->indexModel($class::findOrFail($ids[0]));
             });
+        } elseif ($action === 'flush') {
+            app(IndexManager::class)->flush($class);
         } else {
             while (!is_file($job['go'] . '.updated')) {
                 usleep(1000);

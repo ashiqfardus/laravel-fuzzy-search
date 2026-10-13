@@ -841,6 +841,40 @@ class IndexModelJobOverlapTest extends TestCase
         $this->assertSame([$id], User::search('quokka')->useInvertedIndex()->get()->pluck('id')->map(fn ($key) => (int) $key)->all());
     }
 
+    /**
+     * ER-187. `clear --all` truncates the big tables: on MySQL/MariaDB each TRUNCATE commits on
+     * its own, under LOCK TABLES; on PostgreSQL one TRUNCATE takes all four; on SQL Server the
+     * index write lock comes first. A write for a new row arriving after the documents TRUNCATE
+     * still lands after the whole clear, with its meta totals (TB-1's guarantee, above).
+     */
+    public function test_a_write_during_clear_all_s_truncate_lands_after_it_with_its_meta_totals(): void
+    {
+        if ($this->dbDriver === 'sqlite') {
+            $this->markTestSkipped('SQLite clears with its DELETEs: the test above.');
+        }
+        app(IndexManager::class)->indexBatch(User::all());
+        $id = DB::table('users')->insertGetId(['name' => 'Quokka Wombat', 'email' => 'numbat@quoll.test', 'created_at' => now(), 'updated_at' => now()]);
+
+        [$childError, $parentError] = $this->race(
+            fn () => \Illuminate\Support\Facades\Artisan::call('fuzzy-search:clear', ['--all' => true]),
+            fn () => app(IndexManager::class)->syncModel(User::class, $id),
+            '/^\s*truncate table\b.*fuzzy_index_documents\W/is', // clear --all pauses after its documents TRUNCATE
+            1_000_000,
+            300_000,
+            pauseParent: false,
+        );
+
+        $this->assertNull($childError);
+        $this->assertNull($parentError);
+        $documents = DB::table('fuzzy_index_documents')->where('model_type', User::class);
+        $meta      = DB::table('fuzzy_index_meta')->where('model_type', User::class)->first(['total_docs', 'total_tokens']);
+        $this->assertSame(['documents' => [(string) $id], 'meta' => [1, (int) (clone $documents)->sum('doc_length')]], [
+            'documents' => (clone $documents)->pluck('model_id')->map(fn ($key) => (string) $key)->all(),
+            'meta'      => $meta === null ? null : [(int) $meta->total_docs, (int) $meta->total_tokens],
+        ]);
+        $this->assertSame([$id], User::search('quokka')->useInvertedIndex()->get()->pluck('id')->map(fn ($key) => (int) $key)->all());
+    }
+
     /** Every model_id the indexer binds is a string: an integer against the varchar column cannot use its key. */
     public function test_the_indexer_binds_model_ids_as_strings(): void
     {

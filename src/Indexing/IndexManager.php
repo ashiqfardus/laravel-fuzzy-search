@@ -369,7 +369,8 @@ class IndexManager
      * transaction, so its index writes run one at a time (ruling ER-180). Called first in every
      * index write's transaction (claimDocuments(), which write() and removeFromIndex() start
      * with), before any other lock: the claim, the dictionary rows and the model types' and
-     * columns' inserts all come after it. Parallel writers deadlocked there until they lost all
+     * columns' inserts all come after it; every flush takes it first too (flushing(), ER-188).
+     * Parallel writers deadlocked there until they lost all
      * their attempts: the claim's MERGE takes HOLDLOCK range locks on the varchar model_id key,
      * whose string order interleaves id ranges ('1000' < '10000' < '1001'); the dictionary's
      * locking read took a range lock past the newest word, which every other writer's new word
@@ -534,8 +535,8 @@ class IndexManager
     }
 
     /**
-     * Run a flush's DELETEs in one transaction that holds every index write off until it commits
-     * (flush() and flushAll()).
+     * Run a flush's DELETEs (or flushAll()'s TRUNCATE) in one transaction that holds every index
+     * write off until it commits (flush() and flushAll()).
      *
      * PostgreSQL: lock first (ruling ER-151, SB-1). A write for a new row waited on nothing the
      * DELETEs lock: it committed between them, so its document row stayed and its meta increment
@@ -543,12 +544,18 @@ class IndexManager
      * that no rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
      * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
      * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
-     * from its one writer, SQL Server from its DELETEs' locks (tested), each held to the commit:
-     * `clear --all` ran its DELETEs autocommitted, one by one, and lost the meta the same way (TB-1).
+     * from its one writer, each held to the commit: `clear --all` ran its DELETEs autocommitted,
+     * one by one, and lost the meta the same way (TB-1). flushAll() keeps it on every path it takes.
+     *
+     * SQL Server: the index write lock first (lockIndexForWrite(), ER-188), as every index write
+     * takes it, so the flush waits for the writes in flight and new ones wait for its commit. Its
+     * DELETEs ran against the writers' claims and dictionary locks without it: the cycles ER-180
+     * removed between writers, with no retry on the flush's side.
      */
     private function flushing(\Closure $deletes): void
     {
         DB::transaction(function () use ($deletes) {
+            $this->lockIndexForWrite();
             if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
                 DB::statement('LOCK TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . ' IN SHARE ROW EXCLUSIVE MODE');
             }
@@ -558,17 +565,94 @@ class IndexManager
     }
 
     /**
-     * Flush (delete) the index of every model: `fuzzy-search:clear --all`. Table by table rather
-     * than a truncate, so the foreign keys are respected and only the package's tables are touched.
-     * The model types and columns stay: their ids never change (see dictionaryIds()).
+     * Flush (delete) the index of every model: `fuzzy-search:clear --all`. The model types and
+     * columns stay: their ids never change (see dictionaryIds()).
+     *
+     * The big tables are truncated (ruling ER-187): a DELETE per table in one transaction logged
+     * every row, and on a large index filled the log (SQL Server: from 1 GB to 5.4 GB in two
+     * minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against index writes
+     * on each path (TB-1, see flushing()):
+     * - PostgreSQL: one TRUNCATE of the four tables in flushing()'s transaction, after its lock. Its
+     *   ACCESS EXCLUSIVE holds index searches off to the commit too (they read the old rows during
+     *   the DELETEs). No CASCADE: a table of the app's with a foreign key to one of them makes it
+     *   fail and the DELETEs run, rather than emptying that table. No RESTART IDENTITY.
+     * - SQL Server: after flushing()'s index write lock, TRUNCATE the postings and documents, which
+     *   no foreign key references, in its transaction. Their schema locks hold searches off to the
+     *   commit.
+     * - MySQL/MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the
+     *   four holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES,
+     *   and a session may truncate a table it has write-locked (MySQL also read-locks the model
+     *   types the postings reference; writers still read them).
+     * SQL Server and MySQL/MariaDB then delete the meta rows (one per model) and the terms: MySQL
+     * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
+     * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). SQLite: DELETE
+     * without WHERE is its truncate.
+     *
+     * The DELETEs run instead inside a transaction of the caller's on MySQL/MariaDB (TRUNCATE and
+     * LOCK TABLES would commit it), and wherever TRUNCATE is refused, for whatever reason: a
+     * database user without the privilege it needs beyond DELETE (DROP, and LOCK TABLES, on
+     * MySQL/MariaDB; TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign
+     * key to one of these tables. If the DELETEs fail too, their error is thrown. On PostgreSQL a
+     * refusal rolls back to a savepoint (the transaction would be aborted otherwise); SQL Server
+     * rolls back the whole transaction on one, so it checks both first.
+     *
+     * ponytail: on MySQL/MariaDB each TRUNCATE commits on its own, under the table locks: no
+     * other session sees the index half cleared, but a clear interrupted part way leaves it so
+     * until it is run again. A crash-atomic cheap clear there would swap in empty copies of the
+     * tables (RENAME TABLE), at the cost of rebuilding their foreign keys.
      */
     public function flushAll(): void
     {
-        $this->flushing(function () {
-            DB::table('fuzzy_index_postings')->delete();
-            DB::table('fuzzy_index_documents')->delete();
-            DB::table('fuzzy_index_meta')->delete();
-            DB::table('fuzzy_index_terms')->delete();
+        $connection = DB::connection();
+        $driver     = $connection->getDriverName();
+        $tables     = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_terms'];
+        $big        = ['fuzzy_index_postings', 'fuzzy_index_documents'];
+        $deletes    = function (array $truncated) use ($tables) {
+            foreach (array_diff($tables, $truncated) as $table) {
+                DB::table($table)->delete();
+            }
+        };
+
+        if (DbDialect::isMySqlFamily($driver) && DB::transactionLevel() === 0) {
+            try {
+                $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)));
+                try {
+                    foreach ($big as $table) {
+                        DB::table($table)->truncate();
+                    }
+                    $deletes($big);
+                } finally {
+                    $connection->unprepared('UNLOCK TABLES');
+                }
+
+                return;
+            } catch (\Illuminate\Database\QueryException) {
+                // Refused: the DELETEs below, which leave the index empty whatever ran before.
+            }
+        }
+
+        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes) {
+            $truncated = [];
+            if ($driver === DbDialect::PGSQL) {
+                try {
+                    DB::transaction(fn () => DB::statement('TRUNCATE TABLE ' . implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $tables)))); // a savepoint
+                    $truncated = $tables;
+                } catch (\Illuminate\Database\QueryException) {
+                    // Refused (see above): rolled back to the savepoint.
+                }
+            } elseif ($driver === DbDialect::SQLSRV) {
+                // A refused TRUNCATE rolls the whole transaction back there, the index write lock
+                // with it (1088, 4712: tested), so ask first: ALTER on both, no foreign key to them.
+                $names = array_map(fn ($table) => $connection->getTablePrefix() . $table, $big);
+                if ((int) $connection->scalar("select case when exists (select 1 from sys.foreign_keys where referenced_object_id in (object_id(?), object_id(?))) then 0 else has_perms_by_name(?, 'OBJECT', 'ALTER') * has_perms_by_name(?, 'OBJECT', 'ALTER') end", [...$names, ...$names], false) === 1) {
+                    foreach ($big as $table) {
+                        DB::table($table)->truncate();
+                    }
+                    $truncated = $big;
+                }
+            }
+
+            $deletes($truncated);
         });
     }
 
