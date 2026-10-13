@@ -108,7 +108,8 @@ On PostgreSQL and SQLite, install the package once per schema (or database file)
 >   `horizon:terminate` under Horizon, `octane:reload` under Octane), and keep them from indexing
 >   until the new code serves.
 > - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit` to `true`;
->   otherwise an index write inside one of your transactions can deadlock (see the guide's
+>   otherwise an index write inside one of your transactions can deadlock with your other
+>   transactions and reads of the same rows (see the guide's
 >   [Inverted index](docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-bm25) section).
 >
 > → [Upgrade v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md)
