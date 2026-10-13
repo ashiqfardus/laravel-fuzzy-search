@@ -190,6 +190,14 @@ class CompactPostingsMigrationTest extends TestCase
             [MigratedNote::class, '1', 'apple', '', 3, 3], [MigratedNote::class, '2', 'apple', '', 1, 5], [MigratedNote::class, '2', 'pear', '', 4, 5],
         ], $copied);
 
+        // ER-197: 2026_10_13_000002 counts each model's documents of each word from the copied postings.
+        $this->assertSame([
+            [MigratedCode::class, 'apple', 5, 1], [MigratedCode::class, 'pear', 4, 1], [MigratedCode::class, 'plum', 4, 1],
+            [MigratedNote::class, 'apple', 5, 2], [MigratedNote::class, 'pear', 4, 1],
+        ], DB::table('fuzzy_index_model_terms as mt')->join('fuzzy_index_model_types as ty', 'ty.id', '=', 'mt.model_type_id')
+            ->orderBy('ty.model_type')->orderBy('mt.term')->get(['ty.model_type', 'mt.term', 'mt.term_length', 'mt.doc_count'])
+            ->map(fn ($row) => [(string) ((array) $row)['model_type'], (string) ((array) $row)['term'], (int) ((array) $row)['term_length'], (int) ((array) $row)['doc_count']])->all());
+
         // Note 1 holds apple three times in three words, note 2 once in five.
         $this->assertSame(['1', '2'], array_map('strval', array_keys(app(Bm25Scorer::class)->rank(['apple'], MigratedNote::class))));
         $this->assertSame(['k-1'], array_map('strval', array_keys(app(Bm25Scorer::class)->rank(['pear'], MigratedCode::class))));

@@ -34,6 +34,7 @@ trait ConfiguresDatabaseConnection
         return [
             'fuzzy_search_logs',
             'fuzzy_index_postings_compact', // a compact postings migration that stopped part way
+            'fuzzy_index_model_terms_filling', // a model terms backfill that stopped part way
             'fuzzy_index_postings',
             'fuzzy_index_model_terms_backfill',
             'fuzzy_index_model_terms',
