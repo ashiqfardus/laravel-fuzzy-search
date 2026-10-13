@@ -172,6 +172,66 @@ class JoinedRowPagingTest extends TestCase
     }
 
     /**
+     * R13-L6 (ER-195). PostgreSQL's geometric types have no default btree operator class, nor does an
+     * array of one (or of json), so no ORDER BY takes them either: such a joined column threw 42883
+     * ("could not identify an ordering operator for type point") under stableRanking(). They are left
+     * out as json is, and so is SQL Server's geometry; MySQL's and MariaDB's POINT orders, and stays.
+     */
+    public function test_a_joined_geometric_column_no_order_by_takes_is_left_out(): void
+    {
+        $I       = self::ITEMS;
+        $N       = self::NOTES;
+        $columns = match ($this->dbDriver) {
+            'pgsql' => [
+                'g_point'   => ['point', "point '(1,2)'"],
+                'g_line'    => ['line', "line '{1,-1,0}'"],
+                'g_lseg'    => ['lseg', "lseg '[(0,0),(1,1)]'"],
+                'g_box'     => ['box', "box '((0,0),(1,1))'"],
+                'g_path'    => ['path', "path '[(0,0),(1,1)]'"],
+                'g_polygon' => ['polygon', "polygon '((0,0),(1,1),(1,0))'"],
+                'g_circle'  => ['circle', "circle '<(0,0),1>'"],
+                'g_points'  => ['point[]', "array[point '(1,2)']"],
+                'g_jsons'   => ['json[]', "array['{\"a\":1}'::json]"],
+            ],
+            'mysql', 'mariadb' => ['g_point' => ['point', "ST_GeomFromText('POINT(1 2)')"]],
+            'sqlsrv' => ['g_shape' => ['geometry', "geometry::STGeomFromText('POINT(1 2)', 0)"]],
+            default  => [],
+        };
+        if ($columns === []) {
+            $this->markTestSkipped('SQLite has no geometric column type.');
+        }
+        if (!method_exists(DB::connection()->getSchemaBuilder(), 'getColumns')) {
+            $this->markTestSkipped('Laravel 10 before 10.30 reads no column types: the key alone, as the json test above asserts.');
+        }
+
+        $wrapped = DB::connection()->getQueryGrammar()->wrapTable($N);
+        foreach ($columns as $name => [$type, $value]) {
+            DB::statement("alter table {$wrapped} add " . ($this->dbDriver === 'sqlsrv' ? '' : 'column ') . "{$name} {$type} null");
+            DB::statement("update {$wrapped} set {$name} = {$value}");
+        }
+        \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::reset();
+
+        $join   = fn ($search) => $search->join($N, "{$N}.item_id", '=', "{$I}.id")->stableRanking();
+        $kept   = in_array($this->dbDriver, ['mysql', 'mariadb'], true) ? ", \"{$N}\".\"g_point\" asc" : '';
+        $shapes = [
+            'stableRanking()' => fn () => $join(JoinedRowPagingItem::search('alpha')),
+            'extended()'      => fn () => $join(JoinedRowPagingItem::search('')->extended('alpha')),
+        ];
+
+        foreach ($shapes as $label => $make) {
+            $this->assertStringEndsWith("\"{$I}\".\"id\" asc, \"{$N}\".\"id\" asc, \"{$N}\".\"item_id\" asc, \"{$N}\".\"label\" asc{$kept}", str_replace(['`', '[', ']'], '"', $make()->toSql()), $label);
+
+            $first  = $make()->paginate(5);
+            $second = self::rows($make()->paginate(5, 'page', 2)->items());
+            $this->assertSame(94, $first->total(), $label);
+            $this->assertCount(5, $first->items(), $label);
+            $this->assertCount(5, $second, "{$label} page 2");
+            $this->assertSame([], array_intersect(self::rows($first->items()), $second), "{$label} page 2");
+            $this->assertCount(94, $make()->limit(100)->get(), "{$label} get()");
+        }
+    }
+
+    /**
      * ER-189 (UF-6). An unordered distinct() without the key is read by its selected columns, an
      * aliased one by its alias: an alias with the name of another selected column made that ORDER BY
      * ambiguous, and PostgreSQL rejected it (42702). Such an alias is read by its column.
