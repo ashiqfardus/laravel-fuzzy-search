@@ -2,6 +2,12 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
+require_once __DIR__ . '/../TestModels.php';
+
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Tests\Product;
+use Ashiqfardus\LaravelFuzzySearch\Tests\SoftDeletedUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
 
@@ -11,6 +17,64 @@ use Illuminate\Support\Facades\DB;
  */
 class ModelTermsTest extends TestCase
 {
+    /**
+     * Every write path keeps each type's counts equal to its postings, and their sum per word equal
+     * to the dictionary's doc_count, two types sharing words: an observed save, update, soft delete,
+     * restore and force delete; IndexModelJob for a row deleted without events; removeFromIndex();
+     * rebuild, rebuild --fresh, clear <model> and clear --all. Scout's update and delete, and the
+     * single-table-inheritance refiles, are checked after every test of ScoutEngineTest and
+     * SingleTableInheritanceRebuildTest.
+     */
+    public function test_each_types_counts_follow_every_write_path(): void
+    {
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        $manager = app(IndexManager::class);
+
+        $manager->indexBatch(SoftDeletedUser::all());
+        $manager->indexBatch(Product::all());
+        $this->assertModelTermsMirrorPostings('indexing both types');
+
+        $user = SoftDeletedUser::create(['name' => 'Apple Pro Smith', 'email' => 'x@example.com']); // words both types hold
+        Product::create(['title' => 'Smith Apple', 'description' => 'pro tablet']);
+        $this->assertModelTermsMirrorPostings('an observed create');
+
+        $user->update(['name' => 'Zebulon Quixote']);
+        $this->assertModelTermsMirrorPostings('an update to new words');
+        $user->update(['name' => 'Zebulon Quixote']);
+        $user->touch();
+        $this->assertModelTermsMirrorPostings('a save that changes no word');
+
+        $user->delete();
+        $this->assertModelTermsMirrorPostings('a soft delete');
+        $user->restore();
+        $this->assertModelTermsMirrorPostings('a restore');
+        $user->forceDelete();
+        $this->assertModelTermsMirrorPostings('a force delete');
+
+        $gone = (int) DB::table('users')->min('id');
+        DB::table('users')->where('id', $gone)->delete(); // no model event
+        (new IndexModelJob(SoftDeletedUser::class, $gone))->handle($manager);
+        $this->assertModelTermsMirrorPostings('IndexModelJob for a row deleted without events');
+
+        $manager->removeFromIndex(SoftDeletedUser::class, (string) DB::table('users')->max('id'));
+        $this->assertModelTermsMirrorPostings('removeFromIndex()');
+
+        DB::table('products')->where('title', 'like', 'iPhone%')->update(['title' => 'Quixote Phone']);
+        $this->artisan('fuzzy-search:rebuild', ['model' => Product::class])->assertExitCode(0);
+        $this->assertModelTermsMirrorPostings('a rebuild');
+        $this->artisan('fuzzy-search:rebuild', ['model' => Product::class, '--fresh' => true])->assertExitCode(0);
+        $this->assertModelTermsMirrorPostings('a rebuild --fresh');
+
+        $this->artisan('fuzzy-search:clear', ['model' => Product::class])->assertExitCode(0);
+        $this->assertModelTermsMirrorPostings('clear <model>');
+        $this->assertSame(0, DB::table('fuzzy_index_model_terms')->where('model_type_id', IndexManager::modelTypeId(Product::class))->count());
+        $this->assertGreaterThan(0, DB::table('fuzzy_index_model_terms')->count());
+
+        $this->artisan('fuzzy-search:clear', ['--all' => true])->assertExitCode(0);
+        $this->assertModelTermsMirrorPostings('clear --all');
+        $this->assertSame(0, DB::table('fuzzy_index_model_terms')->count());
+    }
+
     /**
      * The prefix read's key holds the word as the dictionary keys it: on MySQL/MariaDB term(191),
      * which fits 767 bytes, so the table is created where the dictionary is (a COMPACT or REDUNDANT

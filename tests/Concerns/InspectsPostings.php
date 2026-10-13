@@ -60,6 +60,46 @@ trait InspectsPostings
         }
     }
 
+    /**
+     * fuzzy_index_model_terms mirrors the postings (ruling ER-197): one row per model type and word
+     * it posts, counting the type's documents holding the word; per word, the types' counts sum to
+     * the dictionary's doc_count; each row's word and length are the dictionary's.
+     */
+    protected function assertModelTermsMirrorPostings(string $after = ''): void
+    {
+        $expected = [];
+        foreach (DB::table('fuzzy_index_postings')->groupBy('model_type_id', 'term_id')->select('model_type_id', 'term_id')->selectRaw('count(distinct ' . DB::getQueryGrammar()->wrap('model_id') . ') as n')->get() as $row) {
+            $row                                              = (object) $row; // whatever the app's fetch mode
+            $expected[$row->model_type_id . ':' . $row->term_id] = (int) $row->n;
+        }
+
+        $actual = [];
+        $sums   = [];
+        $copies = [];
+        $rows   = DB::table('fuzzy_index_model_terms as mt')->join('fuzzy_index_terms as t', 't.id', '=', 'mt.term_id')
+            ->get(['mt.model_type_id', 'mt.term_id', 'mt.doc_count', 'mt.term', 'mt.term_length', 't.term as dictionary_term', 't.term_length as dictionary_length']);
+        foreach ($rows as $row) {
+            $row                                            = (object) $row;
+            $actual[$row->model_type_id . ':' . $row->term_id] = (int) $row->doc_count;
+            $sums[(int) $row->term_id]                      = ($sums[(int) $row->term_id] ?? 0) + (int) $row->doc_count;
+            if ([(string) $row->term, (int) $row->term_length] !== [(string) $row->dictionary_term, (int) $row->dictionary_length]) {
+                $copies[] = "{$row->term}/{$row->term_length} for {$row->dictionary_term}/{$row->dictionary_length}";
+            }
+        }
+        ksort($expected, SORT_STRING);
+        ksort($actual, SORT_STRING);
+
+        $this->assertSame($expected, $actual, "fuzzy_index_model_terms against the postings, after {$after}");
+        $this->assertSame([], $copies, "the word and its length as the dictionary has them, after {$after}");
+
+        $counts = DB::table('fuzzy_index_terms')->pluck('doc_count', 'id')->map(fn ($count) => (int) $count)->all();
+        $this->assertSame(
+            array_filter($counts),
+            array_filter(array_replace(array_fill_keys(array_keys($counts), 0), $sums)),
+            "the dictionary's doc_count against the sum of the types' counts, after {$after}"
+        );
+    }
+
     /** The id of $modelType's row in fuzzy_index_model_types, inserted on first need. */
     protected function modelTypeId(string $modelType): int
     {

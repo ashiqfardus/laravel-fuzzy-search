@@ -16,7 +16,8 @@ class IndexManager
 {
     /**
      * Rows per upsert, so no statement passes SQL Server's 2,100 bindings: a posting row binds
-     * six values (1,800 a statement), a dictionary or document row three (1,500).
+     * six values (1,800 a statement), a model's word row five (1,500), a dictionary or document
+     * row three (1,500).
      */
     private const POSTING_ROWS_PER_UPSERT = 300;
     private const ROWS_PER_UPSERT         = 500;
@@ -351,6 +352,7 @@ class IndexManager
 
             $this->adjustDocCounts(array_map(fn (array $term) => -$term[1], array_column($posted, null, 0)));
             if ($posted !== []) { // see write()
+                $this->adjustModelTerms($typeId, self::termDeltas($posted, [], []));
                 $this->deletePostings($typeId, [$modelId]);
             }
 
@@ -520,7 +522,8 @@ class IndexManager
     }
 
     /**
-     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts().
+     * Delete the models' postings. Their doc_count share goes back through adjustDocCounts() and
+     * adjustModelTerms().
      *
      * @param array<int|string> $modelIds
      */
@@ -675,8 +678,10 @@ class IndexManager
                     ->selectRaw('term_id, COUNT(DISTINCT model_id) as cnt')
                     ->chunkById(1000, fn ($rows) => $this->adjustDocCounts($rows->pluck('cnt', 'term_id')->map(fn ($cnt) => -(int) $cnt)->all()), 'term_id');
 
-                // Bulk delete index data for this model type — DB-side, no PHP memory load.
+                // Bulk delete index data for this model type — DB-side, no PHP memory load. Its own
+                // word counts go whole (ER-197).
                 DB::table('fuzzy_index_postings')->where('model_type_id', $typeId)->delete();
+                DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->delete();
             }
             DB::table('fuzzy_index_documents')->where('model_type', $modelClass)->delete();
             DB::table('fuzzy_index_meta')->where('model_type', $modelClass)->delete();
@@ -1229,7 +1234,8 @@ class IndexManager
      *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
      *     terms, in id order (giving back the old terms, C12; raising the new ones), and delete
      *     the old postings;
-     *  4. insert the terms the dictionary lacks, sorted, then the postings, document rows and
+     *  4. insert the terms the dictionary lacks, sorted; apply the same changes to the model
+     *     type's own counts (adjustModelTerms(), ER-197); then the postings, document rows and
      *     meta (C11) of the rows with text.
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
@@ -1445,6 +1451,12 @@ class IndexManager
             // beside the one just inserted (ER-75). This write holds every one of these rows, so
             // it waits on none.
             $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: $gone !== []);
+
+            // The model type's own counts follow the dictionary's, now that this write holds every
+            // word it changes (ER-197).
+            if ($typeId !== null) {
+                $this->adjustModelTerms($typeId, self::termDeltas($posted, $counts, $termIds));
+            }
 
             // One posting per (term, column), with the document's length; a term missing from
             // $termIds means a pre-migration collation collapsed it into a variant: MySQL/MariaDB
@@ -1685,6 +1697,82 @@ class IndexManager
         }
 
         return $gone;
+    }
+
+    /**
+     * The changes to a model type's word counts a write makes: term id => [the word as the
+     * dictionary stores it, the change], from the words its rows held before ($posted, given back)
+     * and hold now ($counts, raised, through $termIds). A word with no id in $termIds gets no
+     * posting either (see postingRows()), so it is left out here too.
+     *
+     * @param  array<string, array{int, int}> $posted  see postedTerms()
+     * @param  array<string, int>             $counts  term => documents holding it
+     * @param  array<string, int>             $termIds the dictionary's term => id
+     * @return array<int, array{string, int}>
+     */
+    private static function termDeltas(array $posted, array $counts, array $termIds): array
+    {
+        $deltas = [];
+        foreach ($posted as $term => [$termId, $holders]) {
+            $deltas[$termId] = [(string) $term, -$holders];
+        }
+        $stored = array_flip($termIds);
+        foreach ($counts as $term => $increment) {
+            if (isset($termIds[$term])) {
+                $termId          = $termIds[$term];
+                $deltas[$termId] = [(string) $stored[$termId], ($deltas[$termId][1] ?? 0) + $increment];
+            }
+        }
+
+        return $deltas;
+    }
+
+    /**
+     * Apply a write's changes to its model type's rows in fuzzy_index_model_terms (ruling ER-197),
+     * as adjustDocCounts() applies them to the dictionary's doc_count: a new row for a word the type
+     * did not hold, a change to one it did (floored at 0), and a row that reaches 0 deleted. One
+     * upsert per distinct change and 300 rows (a row binds five values), the change inlined as an
+     * int, as the dictionary's own upserts raise their words on MySQL/MariaDB; then one DELETE per
+     * 1,000 words of the rows a decrease brought to 0.
+     *
+     * Called once the write holds the dictionary row of every word in $deltas (adjustDocCounts()'s
+     * locking read, the dictionary upsert, or its own insert), and every write that changes a type's
+     * row of a word holds that word's row first: no two writes change one row at once, and none
+     * waits on another here. Every statement finds its rows by the whole primary key: the upsert's
+     * conflict and the DELETE's rows (all of them exist once the upsert ran) take record locks only,
+     * no gap lock on MySQL/MariaDB, where another write's new row of the type would otherwise wait.
+     *
+     * @param array<int, array{string, int}> $deltas see termDeltas()
+     */
+    private function adjustModelTerms(int $typeId, array $deltas): void
+    {
+        ksort($deltas);
+        $runs    = []; // change => term id => word
+        $lowered = [];
+        foreach ($deltas as $termId => [$term, $delta]) {
+            if ($delta !== 0) {
+                $runs[$delta][$termId] = $term;
+            }
+            if ($delta < 0) {
+                $lowered[] = (int) $termId;
+            }
+        }
+
+        $count = DbDialect::rawIdentifier('fuzzy_index_model_terms.doc_count'); // qualified: see the dictionary's upsert in write()
+        foreach ($runs as $delta => $terms) {
+            $raise = $delta >= 0 ? "{$count} + {$delta}" : "CASE WHEN {$count} >= " . -$delta . " THEN {$count} - " . -$delta . ' ELSE 0 END';
+            foreach (array_chunk($terms, self::POSTING_ROWS_PER_UPSERT, true) as $chunk) {
+                $rows = [];
+                foreach ($chunk as $termId => $term) {
+                    $rows[] = ['model_type_id' => $typeId, 'term_id' => (int) $termId, 'term' => $term, 'term_length' => mb_strlen($term), 'doc_count' => max($delta, 0)];
+                }
+                DB::table('fuzzy_index_model_terms')->upsert($rows, ['model_type_id', 'term_id'], ['doc_count' => DB::raw($raise)]);
+            }
+        }
+
+        foreach (array_chunk($lowered, 1000) as $chunk) {
+            DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $chunk)->where('doc_count', 0)->delete();
+        }
     }
 
     /**
