@@ -2835,8 +2835,16 @@ class SearchBuilder
         return false;
     }
 
-    /** Types no ORDER BY takes, by driver: selectedColumns() leaves such a column out. */
-    private const UNORDERED_TYPES = ['pgsql' => ['json', 'xml'], 'sqlsrv' => ['text', 'ntext', 'image', 'xml', 'geography', 'geometry']];
+    /**
+     * Types no ORDER BY takes, by driver: selectedColumns() leaves such a column out, and on PostgreSQL
+     * an array of one too (its type name is the element's with a leading `_`). PostgreSQL's are those
+     * without a default btree operator class: json, xml and the geometric types (ER-195); PostGIS's
+     * geometry and geography have one.
+     */
+    private const UNORDERED_TYPES = [
+        'pgsql'  => ['json', 'xml', 'point', 'line', 'lseg', 'box', 'path', 'polygon', 'circle'],
+        'sqlsrv' => ['text', 'ntext', 'image', 'xml', 'geography', 'geometry'],
+    ];
 
     /**
      * The columns $query selects, as an ORDER BY names them: a column as written, an aliased one by
@@ -2874,7 +2882,7 @@ class SearchBuilder
             if (($read = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($read)) !== null) {
                 $types = SearchableColumns::typesOn($connection, $read[0]);
                 foreach (SearchableColumns::onTable($connection, $read[0]) as $column) {
-                    $listed[$read[1] ?? self::lastSegment($read[0])][$column] = !$typed || isset($types[$column]) && !in_array($types[$column], $unordered, true);
+                    $listed[$read[1] ?? self::lastSegment($read[0])][$column] = !$typed || isset($types[$column]) && !in_array(ltrim($types[$column], '_'), $unordered, true);
                 }
             }
         }

@@ -611,9 +611,17 @@ $page = FederatedSearch::across([User::class, Product::class])
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->simplePaginate(15);
+
+// Search every Searchable model through its BM25 inverted index instead of LIKE
+$page = FederatedSearch::across([User::class, Product::class])
+    ->search('laptop')
+    ->useInvertedIndex()
+    ->paginate(15);
 ```
 
 Each model is searched the way `Model::search()` searches it, with its own `$searchable` configuration — algorithm, typo tolerance, stop words, synonyms, accent handling and options. `using()`, `typoTolerance()` and `options()` on the federated search override them for every model (`options()` takes the same driver options as `SearchBuilder::options()`, such as `max_distance`; `typoTolerance()` wins over its `max_distance`). Narrowing the columns with `searchIn()` overrides only the column list. A model without the `Searchable` trait is searched with LIKE — or, with the `Fuzzy` trait, with its own `getFuzzyAlgorithm()` and `getFuzzyOptions()` (its `$fuzzyAlgorithm`, default `default_algorithm`, and `$fuzzyOptions`), which `using()`, `options()` and `typoTolerance()` override — on the `searchIn()` columns its table has; without `searchIn()`, on its declared `$searchable['columns']`, else — with the `Fuzzy` trait — on `getFuzzySearchableColumns()` (its `$fuzzySearchable`, `name` by default), else on whichever of `name` and `title` its table has, and a model with none of these contributes nothing. Every model, with the trait or without, contributes at most `max_candidates` rows.
+
+`useInvertedIndex()` searches each model with the `Searchable` trait through its BM25 inverted index, exactly as `Model::search($term)->useInvertedIndex()` does (under `searchIn()`, `searchOn()` with those columns), rows and counts alike: a model whose index was never built matches nothing. On the index, `using()` and `options()` are not read, and `typoTolerance()` sets how many edits a query word is expanded by in the index's dictionary. A model without the `Searchable` trait is still searched with LIKE or its `Fuzzy` algorithm, as above. Each `Searchable` model's `_score` is normalised to its own top hit (1.0), on the index as on LIKE, and a model without the trait carries no `_score` and sorts as 0. `useInvertedIndex(false)` turns it off.
 
 A relation column (`author.name`) passed to the federated `searchIn()` is ignored. A model with none of the named columns on its table contributes nothing and is left out of `getCounts()`; one with some of them is searched on those only. Relation columns a model declares in `$searchable['columns']` are searched, as `Model::search()` searches them.
 
@@ -1449,7 +1457,7 @@ Regardless of algorithm, after SQL candidates are fetched:
 
 Top-N results are always the most relevant N from the candidate set (not just the first N SQL rows). Candidate set size is controlled by `max_candidates` (default: 1000).
 
-> **Pagination note:** `paginate()` ranks globally across up to `max_candidates` rows before slicing. Rows past that window are served in database order and scored within their page. That includes a page that runs across the boundary, so every match is on exactly one page. Add `stableRanking()` so the database order has no ties that two pages' queries could break differently. Under a join that repeats a model (one row per variant), the key ties that model's rows, so on the LIKE and extended paths the pages follow the key and then the selected columns (every column of a selected `table.*`; no raw expression, and no PostgreSQL `json` or `xml` column or SQL Server `text`, `ntext`, `image`, `xml` or spatial column, which no `ORDER BY` takes; on Laravel 10 before 10.30, which cannot read column types, PostgreSQL and SQL Server keep the key alone): add an `orderBy()` on the joined table's key (`variants.id`) for a specific order, or when the select has no such column. `simplePaginate()` runs through `get()`, so on the LIKE and extended paths it serves only that window: its last page ends at `max_candidates` rows.
+> **Pagination note:** `paginate()` ranks globally across up to `max_candidates` rows before slicing. Rows past that window are served in database order and scored within their page. That includes a page that runs across the boundary, so every match is on exactly one page. Add `stableRanking()` so the database order has no ties that two pages' queries could break differently. Under a join that repeats a model (one row per variant), the key ties that model's rows, so on the LIKE and extended paths the pages follow the key and then the selected columns (every column of a selected `table.*`; no raw expression, and no PostgreSQL `json`, `xml` or geometric (`point`, `line`, `lseg`, `box`, `path`, `polygon`, `circle`) column or array of one, or SQL Server `text`, `ntext`, `image`, `xml` or spatial column, which no `ORDER BY` takes; on Laravel 10 before 10.30, which cannot read column types, PostgreSQL and SQL Server keep the key alone): add an `orderBy()` on the joined table's key (`variants.id`) for a specific order, or when the select has no such column. `simplePaginate()` runs through `get()`, so on the LIKE and extended paths it serves only that window: its last page ends at `max_candidates` rows.
 
 ---
 
