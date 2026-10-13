@@ -68,6 +68,18 @@ class ClearAllTest extends TestCase
     /** The line clear --all prints when it deleted row by row. */
     private const ROW_BY_ROW = 'deleted row by row';
 
+    /**
+     * Run `fuzzy-search:clear --all`, expecting it to say it deleted row by row, or not. Through the
+     * pending command: under Laravel 10's test kernel a package command's output never reaches
+     * Artisan::output().
+     */
+    private function clearAll(bool $rowByRow): void
+    {
+        $command = $this->artisan('fuzzy-search:clear', ['--all' => true]);
+        $rowByRow ? $command->expectsOutputToContain(self::ROW_BY_ROW) : $command->doesntExpectOutputToContain(self::ROW_BY_ROW);
+        $command->assertExitCode(0)->run();
+    }
+
     /** The statements a clear --all sends, without quoting: the four tables', the locks and SQL Server's applock. */
     private function statements(\Closure $run): array
     {
@@ -90,10 +102,9 @@ class ClearAllTest extends TestCase
         $this->indexBoth();
         $dictionaries = $this->dictionaries();
 
-        $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true]));
+        $this->clearAll($this->dbDriver === 'mysql');
 
         $this->assertCleared($dictionaries);
-        $this->assertSame($this->dbDriver === 'mysql', str_contains(Artisan::output(), self::ROW_BY_ROW), Artisan::output());
         // The dictionaries' ids still hold: the index fills again and searches.
         app(IndexManager::class)->indexBatch(User::all());
         $this->assertSame($dictionaries, $this->dictionaries());
@@ -189,11 +200,10 @@ class ClearAllTest extends TestCase
             $this->indexBoth();
             $dictionaries = $this->dictionaries();
 
-            $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true]));
+            $this->clearAll(in_array($this->dbDriver, ['mysql', 'pgsql'], true));
 
             $this->assertCleared($dictionaries);
             $this->assertSame(2, DB::table('clear_all_refs')->count());
-            $this->assertSame(in_array($this->dbDriver, ['mysql', 'pgsql'], true), str_contains(Artisan::output(), self::ROW_BY_ROW), Artisan::output());
         } finally {
             Schema::dropIfExists('clear_all_refs');
         }
@@ -249,8 +259,7 @@ class ClearAllTest extends TestCase
         config(['database.connections.rows_only' => ['username' => $user, 'password' => $password] + config('database.connections.integration')]);
         DB::setDefaultConnection('rows_only');
         try {
-            $statements = $this->statements(fn () => $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true])));
-            $output     = Artisan::output();
+            $statements = $this->statements(fn () => $this->clearAll(true));
         } finally {
             DB::setDefaultConnection('integration');
             DB::purge('rows_only');
@@ -268,7 +277,6 @@ class ClearAllTest extends TestCase
         // The refused statement is not logged (no QueryExecuted); the DELETEs that followed are.
         $this->assertContains('delete from fuzzy_index_postings', $statements);
         $this->assertSame($lockTables && $this->dbDriver === 'mariadb', in_array('unlock tables', $statements, true));
-        $this->assertStringContainsString(self::ROW_BY_ROW, $output);
     }
 
     /** @return array<string, array{string, string, float}> what the app's transaction does first, then $delay seconds into the clear */
@@ -369,8 +377,8 @@ class ClearAllTest extends TestCase
             $reader->table('fuzzy_index_postings')->count();
             $reader->table('fuzzy_index_documents')->count();
 
-            $statements = $this->statements(fn () => $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true])));
-            $output     = Artisan::output();
+            $sqlsrv     = $this->dbDriver === 'sqlsrv';
+            $statements = $this->statements(fn () => $this->clearAll(!$sqlsrv));
             $this->assertCleared($dictionaries);
 
             // Inside a transaction of the caller's: the DELETEs follow the refusals in it, and it goes on.
@@ -385,9 +393,7 @@ class ClearAllTest extends TestCase
             DB::purge('reader');
         }
 
-        $sqlsrv = $this->dbDriver === 'sqlsrv';
         $this->assertSame($sqlsrv, (bool) preg_grep('/^truncate /', $statements), implode("\n", $statements));
-        $this->assertSame(!$sqlsrv, str_contains($output, self::ROW_BY_ROW), $output);
         $this->assertSame($sqlsrv, $truncated);
     }
 
