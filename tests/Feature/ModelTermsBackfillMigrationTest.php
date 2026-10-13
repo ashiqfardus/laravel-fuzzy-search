@@ -271,6 +271,27 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->assertSame(0, (int) DB::table('fuzzy_index_terms')->where('id', $orphan)->value('doc_count'));
     }
 
+    /**
+     * A word a 2.0 worker added during the deploy window has a term_length of 0 (MySQL/MariaDB). The
+     * backfill sets its length before it copies it, so a model's typo expansion, which reads the
+     * copy, reaches the word (P6-A1).
+     */
+    #[DataProvider('chunks')]
+    public function test_the_backfill_fills_a_length_a_2_0_worker_left_at_0(int $chunk): void
+    {
+        $this->index();
+        DB::table('fuzzy_index_terms')->where('term', 'kettle')->update(['term_length' => 0]);
+        $this->created();
+
+        $this->backfill($chunk);
+
+        $this->assertSame(6, (int) DB::table('fuzzy_index_terms')->where('term', 'kettle')->value('term_length'));
+        $this->assertSame([6], DB::table('fuzzy_index_model_terms')->where('term', 'kettle')->pluck('term_length')->map(fn ($length) => (int) $length)->unique()->values()->all());
+        $this->assertSame(0, DB::table('fuzzy_index_model_terms')->where('term_length', 0)->count());
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertContains('kettle', array_column(app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates('kettl', 1, 500, BackfillNote::class, false), 'term'));
+    }
+
     /** The backfill of an index written before it counts each model's documents of each word, as the index writes keep them, then drops its state. */
     #[DataProvider('chunks')]
     public function test_the_backfill_counts_each_models_documents_of_each_word(int $chunk): void

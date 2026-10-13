@@ -139,6 +139,15 @@ return new class extends Migration
             DB::table('fuzzy_index_terms')->where('id', '>', $low)->where('id', '<=', $high)->orderBy('id')->lockForUpdate()->pluck('id');
         }
 
+        // A word a 2.0 worker added during the upgrade's deploy window has a term_length of 0 on
+        // MySQL/MariaDB (UPGRADE: "New migration to run"). The rows below copy the length, and a
+        // model's typo expansion reads it there, so set it first, as 2026_09_17_000001 does (P6-A1).
+        $driver = DB::connection()->getDriverName();
+        $length = $driver === DbDialect::SQLSRV
+            ? 'LEN(term COLLATE Latin1_General_100_CI_AS_SC)'
+            : DbDialect::lengthFunction($driver) . '(term)';
+        DB::update('UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET term_length = {$length} WHERE term_length = 0 AND id > ? AND id <= ?", [$low, $high]);
+
         DB::table(self::TABLE)->where('term_id', '>', $low)->where('term_id', '<=', $high)->delete();
 
         $grammar = DB::getQueryGrammar();
