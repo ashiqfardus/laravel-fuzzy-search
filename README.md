@@ -101,7 +101,9 @@ On PostgreSQL and SQLite, install the package once per schema (or database file)
 >
 > - **A large index takes a while to migrate.** The postings are rewritten into a compact layout
 >   (about 22 minutes for 6M rows on MySQL, 1 hour 45 minutes for 24M rows on PostgreSQL), then
->   each model's words are counted (about 2 minutes more on MySQL, up to 45 on PostgreSQL), and index
+>   each model's words are counted (about 2 minutes more on MySQL, up to 45 on PostgreSQL); from 2.0.x,
+>   MySQL and MariaDB first rewrite the table for two earlier migrations too (about 10 s per million
+>   postings each, some 30 minutes more at 6M rows). Index
 >   searches fail until it finishes: migrate under `php artisan down`, or empty the index and
 >   rebuild it instead (see the guide's [Inverted index](docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-bm25) section, "A large index").
 > - **Restart the queue workers right after migrating** (`php artisan queue:restart`,
