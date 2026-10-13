@@ -107,21 +107,34 @@ return new class extends Migration
                 DB::table(self::PROGRESS)->insert(['copied_id' => 0]);
             }
 
+            // VA-1, VA-4: an earlier run committed part of the copy (a range, or rows the tail
+            // copied again). Its meta snapshot, the ids it read and its count of dropped postings
+            // went with it, so writes made during it or since cannot be told apart here.
+            $resumed = !$pretending && ((int) DB::table(self::PROGRESS)->value('copied_id') > 0 || DB::table(self::COMPACT)->exists());
+
             $meta = $pretending ? [] : $this->meta();
             [$dropped, $rewritten, $unfinished] = $pretending ? [0, [], false] : $this->copyUp();
 
-            if ($dropped > 0) {
+            // A resumed run's count misses what the earlier run dropped and holds the keys it
+            // copied already: its warning below says so instead.
+            if ($dropped > 0 && !$resumed) {
                 Log::warning("fuzzy-search: the compact postings migration dropped {$dropped} posting(s) whose document row was missing (an inconsistent index), or written again while it ran. Rebuild a model whose search should find them: php artisan fuzzy-search:rebuild \"App\\Models\\YourModel\" --fresh");
             }
 
             // ER-183: the index written while the copy ran (old code: a queue worker, a request).
             // A write is copied whole when its postings landed past the ids the copy read
             // (copyUp()), but a removal leaves no id, and doc_count follows whichever code wrote
-            // it: the meta totals tell. Rebuilding the models named makes them exact.
+            // it: the meta totals tell. Rebuilding the models named makes them exact. A resumed
+            // run names every indexed model: those in the meta and every type the dictionary
+            // holds (each with a document row, and any an earlier run recorded).
             if (!$pretending) {
-                $changed = array_keys(array_diff_assoc($meta, $this->meta()) + array_diff_assoc($this->meta(), $meta) + $rewritten);
+                $after   = $this->meta();
+                $changed = array_keys(array_diff_assoc($meta, $after) + array_diff_assoc($after, $meta) + $rewritten
+                    + ($resumed ? $after + $this->dictionary('fuzzy_index_model_types', 'model_type') : []));
                 if ($changed !== [] || $unfinished) {
-                    $this->warn('fuzzy-search: the index was written while the compact postings migration ran' . ($unfinished ? ', and was still being written when it stopped following the writes' : '')
+                    $this->warn('fuzzy-search: ' . ($resumed
+                        ? 'the compact postings migration was resumed after an interrupted run, which may have missed writes made meanwhile and dropped postings'
+                        : 'the index was written while the compact postings migration ran' . ($unfinished ? ', and was still being written when it stopped following the writes' : ''))
                         . '. Rebuild each model it names: ' . implode('; ', array_map(fn (string $type) => "php artisan fuzzy-search:rebuild \"{$type}\" --fresh", $changed)));
                 }
             }

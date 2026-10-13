@@ -631,6 +631,101 @@ class CompactPostingsMigrationTest extends TestCase
         Log::shouldNotHaveReceived('warning');
     }
 
+    /** 2.0.1's re-index of a row whose index stays the same size: its postings deleted and inserted again (new ids), its first word replaced by a new one. */
+    private function oldRewrite(string $type, string $id): void
+    {
+        $old  = fn () => DB::table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id);
+        $rows = $old()->orderBy('id')->get(['term_id', 'column_name', 'frequency'])->map(fn ($row) => (array) $row)->all();
+        $old()->delete();
+        $word = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzresumed', 'doc_count' => 1, 'term_length' => 9]);
+        foreach ([...array_slice($rows, 1), ['term_id' => $word, 'column_name' => (string) $rows[0]['column_name'], 'frequency' => 1]] as $row) {
+            DB::table('fuzzy_index_postings')->insert(['model_type' => $type, 'model_id' => $id] + $row);
+        }
+    }
+
+    /** 2.0.1's removal of a row from the index: its postings, its document row and its share of the meta totals. */
+    private function oldRemove(string $type, string $id): void
+    {
+        $length = (int) DB::table('fuzzy_index_documents')->where('model_type', $type)->where('model_id', $id)->value('doc_length');
+        DB::table('fuzzy_index_postings')->where('model_type', $type)->where('model_id', $id)->delete();
+        DB::table('fuzzy_index_documents')->where('model_type', $type)->where('model_id', $id)->delete();
+        DB::table('fuzzy_index_meta')->where('model_type', $type)->update(['total_docs' => DB::raw('total_docs - 1'), 'total_tokens' => DB::raw("total_tokens - {$length}")]);
+    }
+
+    public static function resumedRuns(): array
+    {
+        return [
+            'a write before the first run was killed'    => ['before'],
+            'writes between the kill and the rerun'      => ['between'],
+            'a kill in the re-copy of the rows written'  => ['tail'],
+            'a posting dropped in a range that committed' => ['dropped'],
+        ];
+    }
+
+    /**
+     * VA-1, VA-4. The meta snapshot, the ids the copy read and the count of the postings it dropped
+     * belong to one run: a run that goes on after an interrupted one copies a row the old code wrote
+     * meanwhile as ordinary ranges, which keep the postings the compact table holds for it (a word
+     * removed stays, a frequency keeps its old value), sees no change, and counts nothing the first
+     * run dropped. So a resumed run warns once, naming every indexed model, whichever writes it
+     * can or cannot see. The row written here keeps its size, so the meta totals tell nothing.
+     */
+    #[DataProvider('resumedRuns')]
+    public function test_a_run_resumed_after_an_interrupted_one_names_every_indexed_model(string $when): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $first = (object) DB::table('fuzzy_index_postings')->orderBy('id')->first(); // in the first range
+        if ($when === 'dropped') {
+            DB::table('fuzzy_index_postings')->where('id', $first->id)->update(['model_id' => '999']); // no document row
+        }
+
+        $armed = false;
+        DB::listen(function (QueryExecuted $query) use (&$armed) {
+            if ($armed && preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                $armed = false;
+                throw new \RuntimeException('killed');
+            }
+        });
+        $ranges = 0;
+        try {
+            $this->migrateWithWrites(3, function () use ($when, $first, &$armed, &$ranges) {
+                if (++$ranges > 1) {
+                    return;
+                }
+                if ($when === 'before' || $when === 'tail') {
+                    $this->oldRewrite($first->model_type, (string) $first->model_id);
+                }
+                if ($when === 'tail') {
+                    $armed = true; // killed in the re-copy of the row just written
+
+                    return;
+                }
+                throw new \RuntimeException('killed');
+            });
+            $this->fail('the first run was not killed');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('killed', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertGreaterThan(0, (int) DB::table('fuzzy_index_postings_copied')->value('copied_id'), 'a range committed');
+
+        if ($when === 'between') {
+            $this->oldRewrite($first->model_type, (string) $first->model_id);
+            $other = (object) DB::table('fuzzy_index_documents')->where(fn ($query) => $query->where('model_type', '!=', $first->model_type)->orWhere('model_id', '!=', $first->model_id))->first();
+            $this->oldRemove($other->model_type, (string) $other->model_id);
+        }
+
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message) => str_contains($message, 'resumed after an interrupted run')
+            && str_contains($message, 'dropped postings')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedNote::class . '" --fresh')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
+    }
+
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
     private function migrateFailingAfter(string $after): void
     {
@@ -716,8 +811,11 @@ class CompactPostingsMigrationTest extends TestCase
         $before['terms'][DB::table('fuzzy_index_terms')->where('id', DB::table('fuzzy_index_terms')->min('id'))->value('term')] = 1_000_000;
 
         $this->migrateFailingAfter($after);
+        Log::spy();
         $this->artisanOk('migrate');
 
+        // Nothing of the copy committed (its one range rolled back), or all of it: not a resumed copy.
+        Log::shouldNotHaveReceived('warning');
         $this->assertTrue(DB::table('migrations')->where('migration', self::MIGRATION)->exists());
         $this->assertFalse(Schema::hasTable('fuzzy_index_postings_compact'));
         $this->assertSame($before, $this->searches());
