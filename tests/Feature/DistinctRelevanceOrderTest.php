@@ -151,11 +151,11 @@ class DistinctRelevanceOrderTest extends TestCase
             $this->assertStringContainsString('order by', strtolower($make()->toSql()), "{$label} toSql");
         }
 
-        // A select of another table's columns only names no key or plain column: it stays
-        // unordered, and still reads (pages past the window need an orderBy() on SQL Server).
+        // A select of the joined table's columns only (VC-7): read by that table's columns, it had
+        // no order at all (JoinedRowPagingTest walks its pages).
         $notes = DistinctItem::search('alpha')
             ->join('distinct_notes', 'distinct_notes.item_id', '=', 'distinct_items.id')->distinct()->select('distinct_notes.*');
-        $this->assertStringNotContainsString('order by', strtolower($notes->toSql()));
+        $this->assertStringContainsString('order by "distinct_notes"."id" asc, "distinct_notes"."item_id" asc, "distinct_notes"."label" asc', str_replace(['`', '[', ']'], '"', $notes->toSql()));
         $this->assertCount(5, $notes->paginate(5)->items());
     }
 
