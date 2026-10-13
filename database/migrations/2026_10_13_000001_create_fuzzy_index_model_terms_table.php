@@ -18,7 +18,9 @@ use Illuminate\Support\Facades\Schema;
  * The keys: the primary key (model_type_id, term_id); MT_LENGTH (model_type_id, term_length,
  * doc_count, term_id), the typo read's per length, most common first; MT_TERM (model_type_id,
  * term), the prefix read's range (on PostgreSQL with varchar_pattern_ops, which serves its
- * LIKE 'abc%' as a range under any collation); MT_TERM_ID (term_id), which the foreign key's
+ * LIKE 'abc%' as a range under any collation; on MySQL/MariaDB on term(191), as the dictionary
+ * keys it, so the key fits 767 bytes under a COMPACT or REDUNDANT row format: no word is longer,
+ * Pipeline::MAX_TERM_LENGTH); MT_TERM_ID (term_id), which the foreign key's
  * ON DELETE CASCADE reads when a flush's orphan sweep deletes words (and MySQL's foreign key needs).
  * The term column is the dictionary's, so its comparisons and ranges are the dictionary's:
  * VARCHAR(255) utf8mb4_bin on MySQL/MariaDB (2026_09_17_000002), NVARCHAR(255)
@@ -61,7 +63,7 @@ return new class extends Migration
 
             $table->primary(['model_type_id', 'term_id'], $prefix . self::PRIMARY);
             $table->index(['model_type_id', 'term_length', 'doc_count', 'term_id'], $prefix . self::MT_LENGTH);
-            if ($driver !== DbDialect::PGSQL) {
+            if ($driver !== DbDialect::PGSQL && !DbDialect::isMySqlFamily($driver)) {
                 $table->index(['model_type_id', 'term'], $prefix . self::MT_TERM);
             }
             $table->index('term_id', $prefix . self::MT_TERM_ID);
@@ -70,9 +72,11 @@ return new class extends Migration
             $table->foreign('term_id')->references('id')->on('fuzzy_index_terms')->onDelete('cascade');
         });
 
+        $table = DB::getQueryGrammar()->wrapTable('fuzzy_index_model_terms');
         if ($driver === DbDialect::PGSQL) {
-            DB::statement('create index ' . DbDialect::quoteIdentifier($prefix . self::MT_TERM, DbDialect::PGSQL) . ' on '
-                . DB::getQueryGrammar()->wrapTable('fuzzy_index_model_terms') . ' (model_type_id, term varchar_pattern_ops)');
+            DB::statement('create index ' . DbDialect::quoteIdentifier($prefix . self::MT_TERM, $driver) . " on {$table} (model_type_id, term varchar_pattern_ops)");
+        } elseif (DbDialect::isMySqlFamily($driver)) {
+            DB::statement("alter table {$table} add index " . DbDialect::quoteIdentifier($prefix . self::MT_TERM, $driver) . ' (model_type_id, term(191))');
         }
     }
 
