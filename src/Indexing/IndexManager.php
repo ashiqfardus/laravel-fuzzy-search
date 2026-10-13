@@ -578,23 +578,26 @@ class IndexManager
      * one transaction logged every row, and on a large index filled the log (SQL Server: from 1 GB
      * to 5.4 GB in two minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against
      * index writes on each path (TB-1, see flushing()):
-     * - PostgreSQL: in flushing()'s transaction, after its lock, in a savepoint, LOCK TABLE the four
-     *   … NOWAIT, then one TRUNCATE of them. Its ACCESS EXCLUSIVE holds index searches off to the
+     * - PostgreSQL: in flushing()'s transaction, after its lock, in a savepoint, LOCK TABLE the five
+     *   … NOWAIT, then one TRUNCATE of them (the model terms with them: their foreign key to the
+     *   terms refuses a TRUNCATE of the terms alone, 0A000). Its ACCESS EXCLUSIVE holds index searches off to the
      *   commit too (they read the old rows during the DELETEs). No CASCADE: a table of the app's
      *   with a foreign key to one of them makes it fail and the DELETEs run, rather than emptying
      *   that table. No RESTART IDENTITY.
-     * - SQL Server: after flushing()'s index write lock, TRUNCATE the postings and documents, which
-     *   no foreign key references, in its transaction. Their schema locks hold searches off to the
+     * - SQL Server: after flushing()'s index write lock, TRUNCATE the postings, the documents and the
+     *   model terms (ER-197), which no foreign key references, in its transaction. Their schema locks hold searches off to the
      *   commit. A reader holds no lock there past its statement.
-     * - MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the four
+     * - MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the five
      *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
-     *   session may truncate a table it has write-locked. Laravel 10 connects to it as mysql.
+     *   session may truncate a table it has write-locked: the postings, the documents and the model
+     *   terms. Laravel 10 connects to it as mysql.
      * - MySQL: the DELETEs, as 2.0 did (R13-M3, ruling ER-194). Its LOCK TABLES cannot be told not
      *   to wait (no NOWAIT; lock_wait_timeout is a second at least).
      * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
-     * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). SQLite: DELETE
-     * without WHERE is its truncate.
+     * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). Every DELETE path
+     * deletes the model terms before the terms, which would otherwise cascade into them row by
+     * row. SQLite: DELETE without WHERE is its truncate.
      *
      * The exclusive table locks are taken with NOWAIT, never waited for (R13-M3): an app's
      * transaction that had read one index table (a search) held its shared lock to its end, the
@@ -621,8 +624,11 @@ class IndexManager
     {
         $connection = DB::connection();
         $driver     = $connection->getDriverName();
-        $tables     = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_terms'];
-        $big        = ['fuzzy_index_postings', 'fuzzy_index_documents'];
+        // Each model's words (ER-197), once 2026_10_13_000001 has created them: clear --all also
+        // empties an index before the upgrade's migrations run (UPGRADE: A large index).
+        $own        = $connection->getSchemaBuilder()->hasTable('fuzzy_index_model_terms') ? ['fuzzy_index_model_terms'] : [];
+        $tables     = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', ...$own, 'fuzzy_index_terms'];
+        $big        = ['fuzzy_index_postings', 'fuzzy_index_documents', ...$own];
         $deletes    = function (array $truncated) use ($tables) {
             foreach (array_diff($tables, $truncated) as $table) {
                 DB::table($table)->delete();
@@ -659,9 +665,11 @@ class IndexManager
                 }
             } elseif ($driver === DbDialect::SQLSRV) {
                 // A refused TRUNCATE rolls the whole transaction back there, the index write lock
-                // with it (1088, 4712: tested), so ask first: ALTER on both, no foreign key to them.
+                // with it (1088, 4712: tested), so ask first: ALTER on each, no foreign key to them.
                 $names = array_map(fn ($table) => $connection->getTablePrefix() . $table, $big);
-                if ((int) $connection->scalar("select case when exists (select 1 from sys.foreign_keys where referenced_object_id in (object_id(?), object_id(?))) then 0 else has_perms_by_name(?, 'OBJECT', 'ALTER') * has_perms_by_name(?, 'OBJECT', 'ALTER') end", [...$names, ...$names], false) === 1) {
+                $ids   = implode(', ', array_fill(0, count($names), 'object_id(?)'));
+                $alter = implode(' * ', array_fill(0, count($names), "has_perms_by_name(?, 'OBJECT', 'ALTER')"));
+                if ((int) $connection->scalar("select case when exists (select 1 from sys.foreign_keys where referenced_object_id in ({$ids})) then 0 else {$alter} end", [...$names, ...$names], false) === 1) {
                     foreach ($big as $table) {
                         DB::table($table)->truncate();
                     }

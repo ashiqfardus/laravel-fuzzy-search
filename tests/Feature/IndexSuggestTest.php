@@ -82,7 +82,8 @@ class IndexSuggestTest extends TestCase
     {
         $this->index();
 
-        // Children first: fuzzy_index_postings carries the FK to fuzzy_index_terms.
+        // Children first: fuzzy_index_postings and fuzzy_index_model_terms carry FKs to fuzzy_index_terms.
+        $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_model_terms');
         $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_postings');
         $this->app['db']->getSchemaBuilder()->drop('fuzzy_index_terms');
 
