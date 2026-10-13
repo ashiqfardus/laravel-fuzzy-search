@@ -876,7 +876,9 @@ class IndexManager
                 return;
             }
 
-            $tables = array_map(fn (string $table) => $grammar->wrapTable($table), ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents']);
+            // The two dictionaries too: a few rows each, which autovacuum's threshold never reaches,
+            // and a read joined to them is planned on a guess otherwise (R13-M2).
+            $tables = array_map(fn (string $table) => $grammar->wrapTable($table), ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents', 'fuzzy_index_columns', 'fuzzy_index_model_types']);
 
             // $vacuum (a synchronous rebuild's end): VACUUM the postings too, outside any
             // transaction (VACUUM cannot run in one), so the visibility map lets the ranking's

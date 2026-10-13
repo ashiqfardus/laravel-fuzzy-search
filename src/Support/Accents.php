@@ -8,6 +8,9 @@ final class Accents
     /** @internal How many strings fold() decomposed (past its ASCII shortcut): a cost guard for tests. */
     public static int $decompositions = 0;
 
+    /** @internal How many bytes those strings held: a cost guard for tests (a value folded whole, or its head only). */
+    public static int $decomposedBytes = 0;
+
     public static function usesIntl(): bool
     {
         return class_exists(\Normalizer::class);
@@ -29,6 +32,7 @@ final class Accents
             return $string; // pure ASCII: nothing to decompose and no key of MAP can match
         }
         self::$decompositions++;
+        self::$decomposedBytes += strlen($string);
 
         if (self::usesIntl()) {
             $decomposed = \Normalizer::normalize($string, \Normalizer::FORM_D);

@@ -15,6 +15,9 @@ use Illuminate\Support\Facades\DB;
  */
 final class TermExpander
 {
+    /** @var list<int>|null the dotted column ids, read once an expander (see visibleColumnsOnly()) */
+    private ?array $dotted = null;
+
     /**
      * TC-4: candidates() reads a length at a time (S1) when the model's total_tokens squared passes
      * this many times the pool times the index's total_tokens, and the whole window once otherwise.
@@ -363,13 +366,18 @@ final class TermExpander
 
         if ($model::class !== $modelType) { // as PHP names it: a leading backslash or another case is the class itself (R12-L3)
             // The type's class must show it too (R12-L4): its postings hold every class's rows, and a
-            // column a sibling hides reached a child that shows it, past the parent's $hidden.
+            // column a sibling hides reached a child that shows it, past the parent's $hidden. A
+            // relation only the searched class declares is no method of the type's class, which reads
+            // the path as a table-qualified column, by its leaf: it must show the relation's name too
+            // (R13-L4: the parent's $hidden = ['owner'] never counted).
             $type  = new $modelType();
             $flat  = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column) && self::shows($type, $column));
             $typed = [];
-            foreach ($columns as $column) {
-                if (str_contains((string) $column, '.') && $paths[mb_substr((string) $column, 0, 64)] && self::pathShown($type, (string) $column)) {
-                    $typed[] = mb_substr((string) $column, 0, 64);
+            foreach (array_map('strval', $columns) as $column) {
+                $head = explode('.', $column)[0];
+                if (str_contains($column, '.') && $paths[mb_substr($column, 0, 64)] && self::pathShown($type, $column)
+                    && (method_exists($type, $head) || !method_exists($model, $head) || self::shows($type, $head))) {
+                    $typed[] = mb_substr($column, 0, 64);
                 }
             }
             $postings->whereIn('sp.column_id', $ids([...array_values($flat), ...$typed]));
@@ -389,10 +397,15 @@ final class TermExpander
         // A dotted name only the searchableText() hook gives (a morphTo path, a relation key the
         // model never declares) has no relation walk to judge it by, and the model never hides a
         // dotted name: it is withheld, as only a declared, shown path is offered (R12-L5). The
-        // postings name columns by id, so the dotted names are read from the column dictionary.
-        $postings->where(fn (Builder $q) => $q
-            ->whereNotIn('sp.column_id', fn (Builder $dotted) => $dotted->select('id')->from('fuzzy_index_columns')->where('name', 'like', '%.%'))
-            ->orWhereIn('sp.column_id', $ids($shownPaths)));
+        // postings name columns by id, so the dotted ids are read from the column dictionary first,
+        // once an expander (SearchBuilder resolves one per call, so a dotted column another process
+        // records later is withheld too): as a subquery of each read, on a dictionary no rebuild
+        // analyzed, it made PostgreSQL scan every posting instead of probing them (R13-M2).
+        $this->dotted ??= DB::table('fuzzy_index_columns')->where('name', 'like', '%.%')->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $withheld = array_diff($this->dotted, $ids($shownPaths));
+        if ($withheld !== []) {
+            $postings->whereNotIn('sp.column_id', array_values($withheld));
+        }
     }
 
     /**

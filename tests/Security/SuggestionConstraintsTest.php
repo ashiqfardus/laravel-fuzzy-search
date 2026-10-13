@@ -87,13 +87,14 @@ class SuggestionConstraintsTest extends TestCase
 
     /**
      * The queries $run made besides didYouMean()'s dictionary reads: one per word length within
-     * reach (TermExpander::candidates(), S1), and on MySQL its read of the meta totals.
+     * reach (TermExpander::candidates(), S1), on MySQL its read of the meta totals, and its read of
+     * the dotted column ids (R13-M2).
      *
      * @return string[]
      */
     private function checksOf(Closure $run): array
     {
-        return array_values(array_filter($this->queriesOf($run), fn (string $sql) => !str_contains($sql, 'term_length') && !str_contains($sql, 'fuzzy_index_meta')));
+        return array_values(array_filter($this->queriesOf($run), fn (string $sql) => !str_contains($sql, 'term_length') && !str_contains($sql, 'fuzzy_index_meta') && !str_contains($sql, 'fuzzy_index_columns')));
     }
 
     /** @return string[] */

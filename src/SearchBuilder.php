@@ -3237,20 +3237,42 @@ class SearchBuilder
                     return [$lower, Utf8::scoringInput($lower)];
                 }, $values);
                 $folded = [];
+                $heads  = [];
+                $leads  = [];
 
                 // A to-many relation contributes its best related row, never an average.
                 foreach ($groups as $i => $group) {
                     $groupScore = 0;
+                    $holds      = fn (string $text) => array_filter($group, fn (string $term) => str_contains($text, $term)) !== [];
                     foreach ($values as $k => [$lower, $cut]) {
                         $forms = [[$lower, $cut]];
-                        // Where the SQL compared accents away (sqlFoldsAccents()), a value holding none
-                        // of the group's terms as written is compared folded too, so "José" scores as
-                        // "jose" does: folded once, and only then (R12-M1; a long non-ASCII value
-                        // folded on every row cost 3-4 times the scoring).
-                        if ($foldsValues && array_filter($group, fn (string $term) => str_contains($lower, $term)) === []) {
-                            $folded[$k] ??= self::sqlFold($lower);
-                            if ($folded[$k] !== $lower) {
-                                $forms[] = [$folded[$k], Utf8::scoringInput($folded[$k])];
+                        // Where the SQL compared accents away (sqlFoldsAccents()), the value is compared
+                        // folded too, so "José" scores as "jose" does (TF-8): the better of the two forms,
+                        // each value folded no further than a tier needs, and once (R12-M1, R13-M1: a long
+                        // value folded whole cost 3-4 times the scoring). Not at all when it starts with
+                        // a term as written (its fold has no better tier, unless a mark follows the term:
+                        // a decomposed "Café" folds to the term), nor when it holds one as written and its
+                        // first character folds into the start of none (the prefix tier, all its fold
+                        // could add). Within the 255-character scoring head, whole: the head is the
+                        // value. Past it, by its head when the folded head holds a term: the prefix or
+                        // contains tier the head gives is the whole value's, and a value longer than its
+                        // head equals no term (a head that does is folded whole). Whole only when neither
+                        // the value nor its folded head holds a term.
+                        $fold = $foldsValues && array_filter($group, fn (string $term) => str_starts_with($lower, $term)
+                            && preg_match('/^\p{M}/u', mb_substr($lower, mb_strlen($term, 'UTF-8'), 1, 'UTF-8')) !== 1) === [];
+                        if ($fold && $holds($lower)) {
+                            $lead = $leads[$k] ??= self::sqlFold(preg_match('/^\X/u', $lower, $first) === 1 ? $first[0] : '');
+                            $fold = array_filter($group, fn (string $term) => str_starts_with($term, $lead) || str_starts_with($lead, $term)) !== [];
+                        }
+                        if ($fold) {
+                            $head = $cut === $lower ? null : ($heads[$k] ??= self::sqlFold($cut));
+                            if ($head !== null && !in_array($head, $group, true) && $holds($head)) {
+                                $forms[] = [$head, $head];
+                            } elseif ($head === null || in_array($head, $group, true) || !$holds($lower)) {
+                                $folded[$k] ??= self::sqlFold($lower);
+                                if ($folded[$k] !== $lower) {
+                                    $forms[] = [$folded[$k], Utf8::scoringInput($folded[$k])];
+                                }
                             }
                         }
                         foreach ($forms as [$form, $formCut]) {
@@ -3725,7 +3747,8 @@ class SearchBuilder
      * folded text back to $value: one per character whose fold is not one character of its own byte
      * length ("é" → "e", "ß" → "ss", a combining mark → ""), as [its first byte in the folded text,
      * its fold's length, its first and last byte in $value]. Between anchors the two texts run byte
-     * for byte. A value with no byte past ASCII, or one that is not valid UTF-8, is itself.
+     * for byte. A value with no byte past ASCII, one that is not valid UTF-8, or one with no character
+     * the fold changes (most Cyrillic or CJK text) is itself, with no anchors.
      *
      * @param  array<string, string> $memo
      * @return array{0: string, 1: array<int, array{int, int, int, int}>}
@@ -3736,14 +3759,22 @@ class SearchBuilder
             return [$value, []];
         }
 
-        preg_match_all('/[^\x00-\x7F]/u', $value, $chars);
+        // Only the characters the fold changes are replaced (R13-L2: a scan and a strtr() that
+        // changed nothing cost Cyrillic and CJK highlighting).
         $forms   = [];
         $resized = [];
-        foreach (array_unique($chars[0]) as $char) {
-            $forms[$char] = $memo[$char] ??= self::sqlFold($char);
-            if (strlen($forms[$char]) !== strlen($char) || mb_strlen($forms[$char], 'UTF-8') !== 1) {
-                $resized[$char] = $forms[$char];
+        foreach (array_keys(array_flip(mb_str_split((string) preg_replace('/[\x00-\x7F]+/', '', $value), 1, 'UTF-8'))) as $char) {
+            $form = $memo[$char] ??= self::sqlFold($char);
+            if ($form === $char) {
+                continue;
             }
+            $forms[$char] = $form;
+            if (strlen($form) !== strlen($char) || mb_strlen($form, 'UTF-8') !== 1) {
+                $resized[$char] = $form;
+            }
+        }
+        if ($forms === []) {
+            return [$value, []];
         }
 
         $anchors = [];
@@ -3764,7 +3795,8 @@ class SearchBuilder
      * the bytes of the characters it covers in $value, so "muller" marks "Müller" and "strasse"
      * marks "Straße". A combining mark, which folds to nothing, stays inside the range of the letter
      * it follows; two matches that meet inside one letter folded to two (ß) become one range. A
-     * value with no byte past ASCII, or one that is not valid UTF-8, is searched as it is. $text is
+     * value with no anchors (no byte past ASCII, not valid UTF-8, or no letter whose fold resizes it)
+     * runs byte for byte with its fold, so its matches are findMatchOffsets()'s own. $text is
      * $value's foldedText(), when the caller has it.
      *
      * @param array{0: string, 1: array<int, array{int, int, int, int}>}|null $text
@@ -3774,6 +3806,9 @@ class SearchBuilder
         $memo              = [];
         [$folded, $anchors] = $text ?? $this->foldedText($value, $memo);
         $needle            = self::sqlFold($term);
+        if ($anchors === []) {
+            return $this->findMatchOffsets($folded, $needle, $max); // R13-L2: no mapping to pay for
+        }
 
         // The index of the last anchor at or before folded byte $at (-1: none), and $at's byte in $value.
         $locate = function (int $at, bool $end) use ($anchors): array {
