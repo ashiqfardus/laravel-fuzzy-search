@@ -369,7 +369,8 @@ class IndexManager
      * transaction, so its index writes run one at a time (ruling ER-180). Called first in every
      * index write's transaction (claimDocuments(), which write() and removeFromIndex() start
      * with), before any other lock: the claim, the dictionary rows and the model types' and
-     * columns' inserts all come after it. Parallel writers deadlocked there until they lost all
+     * columns' inserts all come after it; every flush takes it first too (flushing(), ER-188).
+     * Parallel writers deadlocked there until they lost all
      * their attempts: the claim's MERGE takes HOLDLOCK range locks on the varchar model_id key,
      * whose string order interleaves id ranges ('1000' < '10000' < '1001'); the dictionary's
      * locking read took a range lock past the newest word, which every other writer's new word
@@ -543,12 +544,18 @@ class IndexManager
      * that no rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
      * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
      * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
-     * from its one writer, SQL Server from its DELETEs' locks (tested), each held to the commit:
-     * `clear --all` ran its DELETEs autocommitted, one by one, and lost the meta the same way (TB-1).
+     * from its one writer, each held to the commit: `clear --all` ran its DELETEs autocommitted,
+     * one by one, and lost the meta the same way (TB-1).
+     *
+     * SQL Server: the index write lock first (lockIndexForWrite(), ER-188), as every index write
+     * takes it, so the flush waits for the writes in flight and new ones wait for its commit. Its
+     * DELETEs ran against the writers' claims and dictionary locks without it: the cycles ER-180
+     * removed between writers, with no retry on the flush's side.
      */
     private function flushing(\Closure $deletes): void
     {
         DB::transaction(function () use ($deletes) {
+            $this->lockIndexForWrite();
             if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
                 DB::statement('LOCK TABLE ' . DbDialect::rawIdentifier('fuzzy_index_documents') . ' IN SHARE ROW EXCLUSIVE MODE');
             }
