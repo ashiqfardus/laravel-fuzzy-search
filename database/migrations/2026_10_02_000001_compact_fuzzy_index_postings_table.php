@@ -84,7 +84,9 @@ return new class extends Migration
             }
             if ($pretending || !Schema::hasTable('fuzzy_index_columns')) {
                 Schema::create('fuzzy_index_columns', function (Blueprint $table) use ($collations) {
-                    $table->smallIncrements('id');
+                    // Not a small id: column names are shared by every model and never deleted, and a
+                    // searchableText() keyed per attribute, locale or custom field can pass 32,767 (VC-6).
+                    $table->increments('id');
                     $this->collate($table->string('name', 64), $collations['column_name'] ?? null)->unique();
                 });
             }
@@ -576,7 +578,7 @@ return new class extends Migration
 
         if ($driver === DbDialect::PGSQL) {
             DB::statement("create table {$table} (term_id bigint not null, model_type_id smallint not null, model_id varchar(191) not null,"
-                . ' column_id smallint not null, frequency integer not null, doc_length integer not null,'
+                . ' column_id integer not null, frequency integer not null, doc_length integer not null,'
                 . " constraint {$primary} primary key (term_id, model_type_id, model_id, column_id) include (frequency, doc_length))");
 
             return;
@@ -589,7 +591,7 @@ return new class extends Migration
             if (DbDialect::isMySqlFamily($driver)) {
                 $id->charset('utf8mb4')->collation(self::noPadBinary());
             }
-            $table->unsignedSmallInteger('column_id');
+            $table->unsignedInteger('column_id');
             $table->unsignedInteger('frequency');
             $table->unsignedInteger('doc_length');
             $table->primary(['term_id', 'model_type_id', 'model_id', 'column_id'], $primary);
