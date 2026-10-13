@@ -391,8 +391,10 @@ class IndexManager
      * chunk load, stays parallel. To lift it, fix the cycles one by one: no HOLDLOCK on
      * adjustDocCounts()' locking read, MERGE hints of our own for the claim, LOCK_ESCALATION
      * off on fuzzy_index_terms, and the doc_count UPDATE in the order the dictionary MERGE locks.
+     *
+     * @internal public for 2026_10_13_000002, whose backfill ranges take it too (V1-2)
      */
-    private function lockIndexForWrite(): void
+    public function lockIndexForWrite(): void
     {
         $connection = DB::connection();
 

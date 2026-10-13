@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
+use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,6 +14,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
+
+require_once __DIR__ . '/../TestModels.php';
 
 class BackfillNote extends Model
 {
@@ -89,13 +92,19 @@ class BackfillPost extends Model
 /**
  * ER-197. 2026_10_13_000002 fills fuzzy_index_model_terms from an index written before it: per
  * model type and word, count(distinct model_id) of its postings, with the word and its length, a
- * range of words a transaction. A run that stopped part way resumes, warning that writes made
- * meanwhile were missed; a write while it runs is named; a second run does nothing.
- * CompactPostingsMigrationTest runs it in the upgrade from 2.0.1 and in the rollback and migrate.
+ * range of words a transaction, its progress in fuzzy_index_model_terms_backfill (2026_10_13_000001
+ * creates it, the backfill drops it once done). Rows the index writes add meanwhile do not stop it
+ * (V1-1); a run that stopped part way resumes, warning that writes made meanwhile were missed; a
+ * write while it runs is named, and one to a word of a range waits for it (V1-2); a second run does
+ * nothing. CompactPostingsMigrationTest runs it in the upgrade from 2.0.1 and in the rollback and
+ * migrate.
  */
 class ModelTermsBackfillMigrationTest extends TestCase
 {
-    private const MIGRATION = __DIR__ . '/../../database/migrations/2026_10_13_000002_backfill_fuzzy_index_model_terms_table.php';
+    private const PATH      = __DIR__ . '/../../database/migrations';
+    private const CREATE    = self::PATH . '/2026_10_13_000001_create_fuzzy_index_model_terms_table.php';
+    private const MIGRATION = self::PATH . '/2026_10_13_000002_backfill_fuzzy_index_model_terms_table.php';
+    private const STATE     = 'fuzzy_index_model_terms_backfill';
 
     private const MODELS = [BackfillNote::class, BackfillItem::class, BackfillItemChild::class, BackfillPost::class];
 
@@ -174,6 +183,12 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->assertEqualsCanonicalizing(self::MODELS, $types, 'the STI child has a type of its own');
     }
 
+    /** An empty fuzzy_index_model_terms and the backfill's state, as 2026_10_13_000001 leaves them, over the index as it is. */
+    private function created(): void
+    {
+        (require self::CREATE)->up();
+    }
+
     /** The migration, ranges of $chunk documents, $afterRange called after each committed one. */
     private function backfill(int $chunk = 250000, ?\Closure $afterRange = null): void
     {
@@ -235,19 +250,19 @@ class ModelTermsBackfillMigrationTest extends TestCase
         return ['one range' => [250000], 'a range a word' => [1]];
     }
 
-    /** The backfill of an index written before it counts what the index writes keep. */
+    /** The backfill of an index written before it counts each model's documents of each word, then drops its state. */
     #[DataProvider('chunks')]
     public function test_the_backfill_counts_each_models_documents_of_each_word(int $chunk): void
     {
         $this->index();
-        DB::table('fuzzy_index_model_terms')->delete();
+        $this->created();
 
         Log::spy();
         $this->backfill($chunk);
 
         $this->assertSame($this->expected(), $this->modelTerms());
         $this->assertSumsMatchTheDictionary();
-        $this->assertFalse(Schema::hasTable('fuzzy_index_model_terms_filling'));
+        $this->assertFalse(Schema::hasTable(self::STATE));
         Log::shouldNotHaveReceived('warning');
 
         // The relation's and the hidden column's words are counted, a word in two columns of a note once.
@@ -259,15 +274,28 @@ class ModelTermsBackfillMigrationTest extends TestCase
     }
 
     /**
-     * A run stopped after its first range resumes from the highest word the table holds. Old code
-     * wrote the index in between, in a range the stopped run had counted: the rerun cannot see it,
-     * and warns, naming every indexed model.
+     * V1-1. An index write between 2026_10_13_000001 and this one (new code serving before the
+     * migrate, a migrate that stopped between the two files) adds a row to the table. The backfill
+     * took a table with rows for a finished one and skipped the whole index: it goes by its state.
      */
-    public function test_a_stopped_run_resumes_and_names_every_model(): void
+    public function test_a_row_an_index_write_added_before_it_ran_does_not_stop_it(): void
     {
         $this->index();
-        DB::table('fuzzy_index_model_terms')->delete();
+        $this->created();
+        [$type, $term, $word, $length, $count] = $this->expected()[0];
+        DB::table('fuzzy_index_model_terms')->insert(['model_type_id' => $type, 'term_id' => $term, 'term' => $word, 'term_length' => $length, 'doc_count' => $count]);
 
+        Log::spy();
+        $this->backfill();
+
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertGreaterThan(1, count($this->modelTerms()));
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    /** The backfill run with ranges of 3 documents, killed after its first range commits. */
+    private function stoppedAfterTheFirstRange(): int
+    {
         try {
             $this->backfill(3, function () {
                 throw new \RuntimeException('killed');
@@ -276,10 +304,25 @@ class ModelTermsBackfillMigrationTest extends TestCase
         } catch (\RuntimeException $e) {
             $this->assertSame('killed', $e->getMessage());
         }
-        $done = (int) DB::table('fuzzy_index_model_terms')->max('term_id');
-        $this->assertGreaterThan(0, $done, 'the first range committed');
+
+        $done = (int) DB::table(self::STATE)->value('last_term_id');
+        $this->assertGreaterThan(0, $done, 'the first range committed its end');
         $this->assertLessThan((int) DB::table('fuzzy_index_postings')->max('term_id'), $done, 'and not the rest');
-        $this->assertTrue(Schema::hasTable('fuzzy_index_model_terms_filling'));
+        $this->assertSame([], array_filter($this->modelTerms(), fn ($row) => $row[1] > $done), 'none of the rest');
+
+        return $done;
+    }
+
+    /**
+     * A run stopped after its first range resumes after the end that range committed. Old code
+     * wrote the index in between, in that range: the rerun cannot see it, and warns, naming every
+     * indexed model.
+     */
+    public function test_a_stopped_run_resumes_and_names_every_model(): void
+    {
+        $this->index();
+        $this->created();
+        $done = $this->stoppedAfterTheFirstRange();
 
         // Old code: post 3 gains a word of the first range (its posting and the dictionary's count).
         $post  = IndexManager::modelTypeId(BackfillPost::class);
@@ -292,16 +335,37 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->backfill(3);
 
         Log::shouldHaveReceived('warning')->once()->withArgs($this->warnedNaming('resumed after an interrupted run', self::MODELS));
-        $this->assertFalse(Schema::hasTable('fuzzy_index_model_terms_filling'));
-        $past = fn (array $rows) => array_values(array_filter($rows, fn ($row) => $row[1] >= $done));
-        $this->assertSame($past($this->expected()), $past($this->modelTerms()), 'the words from the resume point on');
+        $this->assertFalse(Schema::hasTable(self::STATE));
+        $past = fn (array $rows) => array_values(array_filter($rows, fn ($row) => $row[1] > $done));
+        $this->assertSame($past($this->expected()), $past($this->modelTerms()), 'the words past the resume point');
+    }
+
+    /**
+     * V1-1. A write of new words between a stopped run and the rerun gives them the highest ids,
+     * past the stopped run's ranges: the rerun went on from the highest term id the table held, and
+     * skipped every word between. It goes on from its state, and ends with every pair, exact.
+     */
+    public function test_a_stopped_run_then_a_write_of_new_words_ends_exact(): void
+    {
+        $this->index();
+        $this->created();
+        $this->stoppedAfterTheFirstRange();
+
+        app(IndexManager::class)->indexBatch(collect([BackfillNote::create(['title' => 'Zygote quokka', 'body' => 'xylem'])]));
+
+        Log::spy();
+        $this->backfill(3);
+
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertSumsMatchTheDictionary();
+        Log::shouldHaveReceived('warning')->once()->withArgs($this->warnedNaming('resumed after an interrupted run', self::MODELS));
     }
 
     /** A write between two ranges changes the meta totals: the run names that model, and only it. */
     public function test_a_write_while_it_runs_names_the_model(): void
     {
         $this->index();
-        DB::table('fuzzy_index_model_terms')->delete();
+        $this->created();
 
         Log::spy();
         $written = false;
@@ -334,20 +398,131 @@ class ModelTermsBackfillMigrationTest extends TestCase
         return $statements;
     }
 
-    /** A second run after a complete one finds the table filled and does nothing; so does a run on an index with no posting. */
-    public function test_a_second_run_and_a_run_on_an_empty_index_do_nothing(): void
+    /**
+     * A fresh install, and an index with no posting: the backfill drops its state, and writes
+     * nothing else. A second run after a complete one finds no state, and does nothing.
+     */
+    public function test_an_empty_index_and_a_second_run_leave_no_state_and_write_nothing(): void
     {
+        $this->assertFalse(Schema::hasTable(self::STATE), 'the migrate of a fresh install');
+
+        $this->created();
         Log::spy();
-        $this->assertSame([], $this->writes(fn () => $this->backfill()), 'an empty index');
+        $writes = $this->writes(fn () => $this->backfill());
+        $this->assertCount(1, $writes, 'an empty index: ' . implode('; ', $writes));
+        $this->assertMatchesRegularExpression('/^\s*drop table\b.*fuzzy_index_model_terms_backfill/i', $writes[0]);
+        $this->assertFalse(Schema::hasTable(self::STATE));
 
         $this->index();
-        DB::table('fuzzy_index_model_terms')->delete();
+        $this->created();
         $this->backfill();
         $rows = $this->modelTerms();
 
         $this->assertSame([], $this->writes(fn () => $this->backfill()), 'a second run');
         $this->assertSame($rows, $this->modelTerms());
-        $this->assertFalse(Schema::hasTable('fuzzy_index_model_terms_filling'));
         Log::shouldNotHaveReceived('warning');
+    }
+
+    private function artisanOk(string $command, array $options = []): void
+    {
+        $this->assertSame(0, $this->artisan($command, ['--path' => realpath(self::PATH), '--realpath' => true, ...$options])->run(), $command);
+    }
+
+    /**
+     * 2026_10_13_000001's down() drops the backfill's state with the table, after a backfill that
+     * stopped part way too; the migrate after that rollback creates both again and counts every
+     * word afresh: exact, and no resumed run.
+     */
+    public function test_a_rollback_after_a_stopped_run_then_migrate_ends_exact(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 2]);
+        $this->assertFalse(Schema::hasTable('fuzzy_index_model_terms'));
+        $this->assertSame(0, $this->artisan('migrate', ['--path' => realpath(self::CREATE), '--realpath' => true])->run());
+        $this->stoppedAfterTheFirstRange();
+
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->assertFalse(Schema::hasTable(self::STATE));
+        $this->assertFalse(Schema::hasTable('fuzzy_index_model_terms'));
+
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        $this->assertSame($this->expected(), $this->modelTerms());
+        $this->assertFalse(Schema::hasTable(self::STATE));
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    /** Sessions of this database waiting on a lock. */
+    private function waitingOnALock(): int
+    {
+        return (int) match ($this->dbDriver) {
+            'pgsql'  => DB::scalar("select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'"),
+            'sqlsrv' => DB::scalar('select count(*) from sys.dm_exec_requests where database_id = db_id() and blocking_session_id <> 0'),
+            default  => DB::scalar("select count(*) from information_schema.innodb_trx t join information_schema.processlist p on p.id = t.trx_mysql_thread_id where p.db = database() and t.trx_state = 'LOCK WAIT'"),
+        };
+    }
+
+    /**
+     * V1-2. Each range deletes its rows, then inserts them from the postings, two statements: on
+     * READ COMMITTED (PostgreSQL, SQL Server, MySQL set to it) a write that committed a row for a
+     * new (model, word) pair in between made the insert hit the key, or lost or doubled its delta.
+     * A range now locks its words first, as a write does (on SQL Server it takes the index's write
+     * lock): a write to a word of the range, in a process of its own, started between the two
+     * statements, waits for the range to commit.
+     */
+    public function test_a_write_to_a_word_of_a_range_waits_for_the_range(): void
+    {
+        if ($this->dbDriver === 'sqlite') {
+            $this->markTestSkipped('The writer runs in a process of its own, which an in-memory SQLite database cannot share; the CI MySQL, MariaDB, PostgreSQL and SQL Server jobs run this.');
+        }
+        if (!function_exists('proc_open')) {
+            $this->markTestSkipped('The writer needs a process of its own: proc_open().');
+        }
+
+        $this->index();
+        DB::table('users')->where('id', 1)->update(['name' => 'John Kettle']); // a word of the notes, new to the users
+        $this->created();
+
+        $base   = sys_get_temp_dir() . '/fuzzy-backfill-writer-' . getmypid() . '-' . uniqid();
+        $writer = null;
+        $waited = false;
+        DB::listen(function (QueryExecuted $query) use (&$writer, &$waited, $base) {
+            if ($writer !== null || !preg_match('/^\s*delete\s+from\s+\S*fuzzy_index_model_terms[`"\]]?\s+where\b/i', $query->sql)) {
+                return;
+            }
+            // Fixtures/index-writer.php: user 1 indexed by the package, from a connection of its own.
+            file_put_contents("{$base}.json", json_encode(['connection' => config('database.connections.' . config('database.default')), 'go' => "{$base}.go", 'steps' => [['index', User::class, [1]]], 'names' => []]));
+            $proc   = proc_open([PHP_BINARY, __DIR__ . '/Fixtures/index-writer.php', "{$base}.json"], [1 => ['pipe', 'w'], 2 => ['file', "{$base}.err", 'w']], $pipes);
+            $writer = [$proc, $pipes[1]];
+            fgets($pipes[1]); // "ready"
+            touch("{$base}.go");
+            for ($i = 0; $i < 400 && !$waited && proc_get_status($proc)['running']; $i++) {
+                usleep(50000);
+                $waited = $this->waitingOnALock() > 0;
+            }
+        });
+
+        try {
+            $this->backfill();
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+            $output = $writer === null ? '' : trim((string) stream_get_contents($writer[1]));
+            if ($writer !== null) {
+                fclose($writer[1]);
+                proc_close($writer[0]);
+            }
+            $error = (string) @file_get_contents("{$base}.err");
+            foreach (glob("{$base}*") ?: [] as $file) {
+                @unlink($file);
+            }
+        }
+
+        $this->assertNotNull($writer, 'the range deleted its rows');
+        $lines = explode("\n", $output);
+        $this->assertSame(['failed' => [], 'rollbacks' => 0], json_decode((string) end($lines), true), "the write: {$output} {$error}");
+        $this->assertTrue($waited, 'the write to a word of the range waited for the range');
+        $this->assertSame([1], User::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->map(fn ($id) => (int) $id)->all());
+        $this->assertFalse(Schema::hasTable(self::STATE));
     }
 }

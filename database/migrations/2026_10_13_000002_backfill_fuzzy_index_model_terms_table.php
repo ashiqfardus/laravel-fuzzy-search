@@ -1,8 +1,8 @@
 <?php
 
+use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -11,19 +11,33 @@ use Illuminate\Support\Facades\Schema;
  * ER-197: fill fuzzy_index_model_terms, the per-model dictionary of counts 2026_10_13_000001
  * creates, from an index written before it: for each model type and word, the number of the type's
  * documents that hold it (count(distinct model_id) of its postings), beside the word and its length.
- * From here on every index write keeps the table in step.
+ * Every index write keeps the table in step from 2026_10_13_000001 on.
  *
  * The postings are clustered by term_id, so a range of words is one range of their primary key. The
- * ranges come from the dictionary, in id order, each about $chunk documents by the words' doc_count
- * (a word that common is a range of its own), and each is one transaction: delete the range's rows,
- * then one INSERT … SELECT that counts its postings. Outside a transaction, so every range commits on
- * its own.
+ * ranges come from the dictionary, in id order, up to its highest id when the run starts (a word
+ * added later gets its rows from the index write that adds it), each about $chunk documents by the
+ * words' doc_count (a word that common is a range of its own). Each range is one transaction: lock
+ * its words, delete its rows, insert them again with one INSERT … SELECT that counts its postings,
+ * and record its end in STATE. Outside a transaction, so every range commits on its own.
  *
- * A marker table (RUNNING) stands while a run is under way. A run that stopped part way (a killed
- * deploy, a lock timeout) is resumed from the highest term_id the table holds, that word counted
- * again; a run that finds the table filled and no marker finds a complete run's work, kept since by
- * the index writes, and does nothing. An index with no posting has nothing to count, and nothing
- * runs: what `migrate --pretend`, which runs no select, prints.
+ * STATE, which 2026_10_13_000001 creates with last_term_id 0, holds the progress: a run that stopped
+ * part way (a killed deploy, a lock timeout) goes on after the last range it committed, and the run
+ * that counts every word drops it, so a run that finds no STATE does nothing. The rows the index
+ * writes add meanwhile say nothing of the progress (V1-1). An index with no word has nothing to
+ * count: STATE is dropped and nothing else runs, which is what `migrate --pretend`, running no
+ * select, prints.
+ *
+ * A range and an index write on the same words run one after the other (V1-2). The range's delete
+ * and insert are two statements, and under READ COMMITTED (PostgreSQL, SQL Server, a MySQL set to
+ * it) a write committed between them would have its row hit by the insert's key, or its delta lost
+ * or counted twice. So a range first locks its words, in ascending id order, holding nothing before
+ * them, as a write locks every word it touches, in ascending id order too, before it writes any
+ * posting or model terms row (IndexManager::adjustDocCounts()): whichever locks a shared word first,
+ * the other waits for its commit, and neither waits holding a word the other needs. On SQL Server a
+ * range takes the index's write lock first instead, as every index write and flush does (ER-180).
+ * MySQL/MariaDB's REPEATABLE READ also locks the record just past what a statement reads (next-key
+ * locking), which a write on the next word can hold: should InnoDB roll the range back as a deadlock
+ * victim, the range is retried, as a write is.
  *
  * Code from before this migration writes the index without this table. The run warns (Log and
  * STDERR), naming each model to rebuild with --fresh, when the meta totals changed while it ran. A
@@ -35,54 +49,29 @@ return new class extends Migration
 {
     public $withinTransaction = false;
 
-    private const TABLE   = 'fuzzy_index_model_terms';
-    private const RUNNING = 'fuzzy_index_model_terms_filling';
+    private const TABLE = 'fuzzy_index_model_terms';
+    private const STATE = 'fuzzy_index_model_terms_backfill';
 
-    /** The documents (the words' doc_count, summed) one range counts, about. */
+    /**
+     * The documents (the words' doc_count, summed) one range counts, about. Its statement's time
+     * follows the rows it inserts more than the postings it reads: at 4M postings on MySQL 9.6 a
+     * range of common words took 0.1–0.3 s, one of 50,000 single-document words about 1 s, and the
+     * whole run took the same time with ranges of 50,000 to 1M documents.
+     */
     public int $chunk = 50000;
 
-    /** Called with the last term id of each range up() commits, null for the last one (tests write the index in between). */
+    /** Called with the last term id of each range up() commits (tests write the index in between). */
     public ?\Closure $afterRange = null;
 
     public function up(): void
     {
-        if (DB::connection()->pretending()) {
+        $pretending = DB::connection()->pretending();
+        if (!$pretending && !Schema::hasTable(self::STATE)) {
             return;
         }
 
-        $running = Schema::hasTable(self::RUNNING);
-        if (!$running && (DB::table(self::TABLE)->exists() || !DB::table('fuzzy_index_postings')->exists())) {
-            return;
-        }
-        if (!$running) {
-            // A primary key, as every table needs under MySQL's sql_require_primary_key (VA-3).
-            Schema::create(self::RUNNING, fn (Blueprint $table) => $table->unsignedTinyInteger('id')->primary());
-        }
-
-        $started = microtime(true);
-        $resumed = DB::table(self::TABLE)->exists();
-        $meta    = $this->meta();
-        $written = 0;
-
-        foreach ($this->ranges($resumed ? (int) DB::table(self::TABLE)->max('term_id') - 1 : 0) as [$low, $high]) {
-            $written += DB::transaction(fn () => $this->count($low, $high));
-            if ($this->afterRange !== null) {
-                ($this->afterRange)($high);
-            }
-        }
-
-        $after   = $this->meta();
-        $changed = array_keys(array_diff_assoc($meta, $after) + array_diff_assoc($after, $meta)
-            + ($resumed ? $after + array_flip(DB::table('fuzzy_index_model_types')->pluck('model_type')->map(fn ($type) => (string) $type)->all()) : []));
-        if ($changed !== []) {
-            $this->warn('fuzzy-search: ' . ($resumed
-                ? 'the model terms backfill was resumed after an interrupted run, and may have missed index writes made meanwhile'
-                : 'the index was written while the model terms backfill ran')
-                . '. Rebuild each model it names: ' . implode('; ', array_map(fn (string $type) => "php artisan fuzzy-search:rebuild \"{$type}\" --fresh", $changed)));
-        }
-
-        Schema::drop(self::RUNNING);
-        Log::info(sprintf('fuzzy-search: the model terms backfill wrote %d row(s) in %.1f s.', $written, microtime(true) - $started));
+        $written = $pretending ? 0 : $this->fill();
+        Schema::drop(self::STATE);
 
         // PostgreSQL: statistics, and the visibility map for an index-only read. Best-effort, as the
         // package's own ANALYZE: autovacuum gets there too. Unprepared: VACUUM runs only on its own.
@@ -97,48 +86,92 @@ return new class extends Migration
 
     public function down(): void
     {
-        // Nothing to undo: 2026_10_13_000001's down() drops the table this fills.
+        // Nothing to undo: 2026_10_13_000001's down() drops the table this fills, and STATE.
+    }
+
+    /** Count every word past STATE's last term id, a range at a time, and warn as the class says. Returns the rows inserted. */
+    private function fill(): int
+    {
+        $started = microtime(true);
+        $done    = (int) DB::table(self::STATE)->value('last_term_id');
+        $end     = (int) DB::table('fuzzy_index_terms')->max('id');
+        $meta    = $this->meta();
+        $written = 0;
+
+        foreach ($this->ranges($done, $end) as [$low, $high]) {
+            $written += DB::transaction(fn () => $this->count($low, $high), 3); // retried on a deadlock, as an index write (IndexManager::ATTEMPTS)
+            if ($this->afterRange !== null) {
+                ($this->afterRange)($high);
+            }
+        }
+
+        $after   = $this->meta();
+        $changed = array_keys(array_diff_assoc($meta, $after) + array_diff_assoc($after, $meta)
+            + ($done > 0 ? $after + array_flip(DB::table('fuzzy_index_model_types')->pluck('model_type')->map(fn ($type) => (string) $type)->all()) : []));
+        if ($changed !== []) {
+            $this->warn('fuzzy-search: ' . ($done > 0
+                ? 'the model terms backfill was resumed after an interrupted run, and may have missed index writes made meanwhile'
+                : 'the index was written while the model terms backfill ran')
+                . '. Rebuild each model it names: ' . implode('; ', array_map(fn (string $type) => "php artisan fuzzy-search:rebuild \"{$type}\" --fresh", $changed)));
+        }
+
+        if ($end > $done) {
+            Log::info(sprintf('fuzzy-search: the model terms backfill wrote %d row(s) in %.1f s.', $written, microtime(true) - $started));
+        }
+
+        return $written;
     }
 
     /**
-     * Count the words in ($low, $high] (to the end for null) again, in the caller's transaction:
-     * delete their rows (through model_terms_term_id_idx), then insert them from the postings, one
-     * range of their primary key grouped in its order, the words joined after. The words' range
-     * bounds the dictionary's side too: MySQL, which reckons the grouped postings the larger, read
-     * the whole dictionary for each range and looked each word up in them. Returns the rows inserted.
+     * Count the words in ($low, $high] again, in the caller's transaction: lock them (on SQL Server
+     * the index's write lock), delete their rows (through model_terms_term_id_idx), insert them from
+     * the postings, one range of their primary key grouped in its order, the words joined after, and
+     * record $high. The words' range bounds the dictionary's side of the join too: MySQL, which
+     * reckons the grouped postings the larger, read the whole dictionary for each range. Returns the
+     * rows inserted.
      */
-    private function count(int $low, ?int $high): int
+    private function count(int $low, int $high): int
     {
-        DB::table(self::TABLE)->where('term_id', '>', $low)->when($high !== null, fn ($query) => $query->where('term_id', '<=', $high))->delete();
+        if (DB::connection()->getDriverName() === DbDialect::SQLSRV) {
+            app(IndexManager::class)->lockIndexForWrite();
+        } else {
+            DB::table('fuzzy_index_terms')->where('id', '>', $low)->where('id', '<=', $high)->orderBy('id')->lockForUpdate()->pluck('id');
+        }
+
+        DB::table(self::TABLE)->where('term_id', '>', $low)->where('term_id', '<=', $high)->delete();
 
         $grammar = DB::getQueryGrammar();
-        $range   = fn (string $column) => "{$column} > ?" . ($high === null ? '' : " and {$column} <= ?");
-        $bounds  = $high === null ? [$low] : [$low, $high];
-
-        return DB::affectingStatement(
+        $written = DB::affectingStatement(
             'insert into ' . $grammar->wrapTable(self::TABLE) . ' (model_type_id, term_id, term, term_length, doc_count)'
             . ' select g.model_type_id, g.term_id, t.term, t.term_length, g.documents from (select term_id, model_type_id, count(distinct model_id) as documents'
-            . ' from ' . $grammar->wrapTable('fuzzy_index_postings') . ' where ' . $range('term_id') . ' group by term_id, model_type_id) g'
-            . ' inner join ' . $grammar->wrapTable('fuzzy_index_terms') . ' t on t.id = g.term_id where ' . $range('t.id'),
-            [...$bounds, ...$bounds]
+            . ' from ' . $grammar->wrapTable('fuzzy_index_postings') . ' where term_id > ? and term_id <= ? group by term_id, model_type_id) g'
+            . ' inner join ' . $grammar->wrapTable('fuzzy_index_terms') . ' t on t.id = g.term_id where t.id > ? and t.id <= ?',
+            [$low, $high, $low, $high]
         );
+
+        DB::table(self::STATE)->update(['last_term_id' => $high]);
+
+        return $written;
     }
 
     /**
-     * The ranges of term ids past $start, ($low, $high], each of about $chunk documents by the words'
-     * doc_count, read from the dictionary in id order; the last one is open, for the words written
-     * meanwhile.
+     * The ranges of term ids in ($start, $end], ($low, $high], each of about $chunk documents by
+     * the words' doc_count, read from the dictionary in id order.
      *
-     * @return \Generator<array{int, ?int}>
+     * @return \Generator<array{int, int}>
      */
-    private function ranges(int $start): \Generator
+    private function ranges(int $start, int $end): \Generator
     {
         $low  = $start;
         $last = $start;
         $sum  = 0;
 
-        do {
-            $terms = DB::table('fuzzy_index_terms')->where('id', '>', $last)->orderBy('id')->limit(10000)->get(['id', 'doc_count']);
+        while ($last < $end) {
+            $terms = DB::table('fuzzy_index_terms')->where('id', '>', $last)->where('id', '<=', $end)->orderBy('id')->limit(10000)->get(['id', 'doc_count']);
+            if ($terms->isEmpty()) {
+                break;
+            }
+
             foreach ($terms as $term) {
                 $term = (object) $term; // whatever the app's fetch mode
                 $last = (int) $term->id;
@@ -149,9 +182,11 @@ return new class extends Migration
                     $sum = 0;
                 }
             }
-        } while ($terms->isNotEmpty());
+        }
 
-        yield [$low, null];
+        if ($low < $end) {
+            yield [$low, $end];
+        }
     }
 
     /** @return array<string, string> model type => its meta totals, to compare before and after the run */
