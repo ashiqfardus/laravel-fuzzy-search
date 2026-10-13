@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\StatementPrepared;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
@@ -859,6 +860,104 @@ class CompactPostingsMigrationTest extends TestCase
         $this->assertSame(0, $this->orphanPostings());
         $this->assertTrue(DB::table('migrations')->where('migration', self::MIGRATION)->exists());
         $this->assertSame([1], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
+    /** The migration run directly, a quarter of the postings' ids a range, killed in its third range (a stopped deploy). */
+    private function stopInTheThirdRange(): void
+    {
+        $migration        = require self::PATH . '/' . self::MIGRATION . '.php';
+        $migration->chunk = (int) ceil(DB::table('fuzzy_index_postings')->count() / 4);
+        $copies           = 0;
+        DB::listen(function (QueryExecuted $query) use (&$copies) {
+            if (preg_match('/^\s*insert\s+into\s+\S*fuzzy_index_postings_compact/i', $query->sql) && ++$copies === 3) {
+                throw new \RuntimeException('killed');
+            }
+        });
+        try {
+            $migration->up();
+            $this->fail('the run was not killed');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('killed', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertGreaterThan(0, DB::table('fuzzy_index_postings_compact')->count(), 'two ranges committed');
+    }
+
+    /** Exactly one warning came: the resumed run's, naming both models. */
+    private function assertWarnedResumed(): void
+    {
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message) => str_contains($message, 'resumed after an interrupted run')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedNote::class . '" --fresh')
+            && str_contains($message, 'php artisan fuzzy-search:rebuild "' . MigratedCode::class . '" --fresh'));
+    }
+
+    /**
+     * VA-2, UPGRADE's own large-index route after a stopped upgrade: 2.1's `fuzzy-search:clear
+     * --all` empties the earlier tables, the dictionary included, but not the compact table, which
+     * keeps what the stopped run copied. The next `migrate` finds nothing to copy and the meta empty
+     * before and after: PostgreSQL and SQL Server refused the term foreign key, on every run, and
+     * MySQL and MariaDB kept postings of words that are gone. The stopped run's progress mark makes
+     * it a resumed run: it deletes them, warns, and the rebuilds the route prescribes follow.
+     */
+    public function test_a_stopped_upgrade_then_clear_all_then_migrate_finishes(): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->stopInTheThirdRange();
+
+        $this->assertSame(0, Artisan::call('fuzzy-search:clear', ['--all' => true]));
+        $this->assertSame(0, DB::table('fuzzy_index_terms')->count());
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->count(), 'the cleared index keeps none of the copied postings');
+        $this->assertWarnedResumed();
+        foreach ([MigratedNote::class, MigratedCode::class] as $model) {
+            $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => $model, '--fresh' => true]));
+        }
+        $this->assertSame([1], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
+    }
+
+    public static function deployRollbacks(): array
+    {
+        return ['one step' => [false], 'back to the 2.0.1 schema' => [true]];
+    }
+
+    /**
+     * VA-1 (d). A deploy whose `migrate` stopped in the copy, then rolled back: the compact migration
+     * was never recorded, so no down() removes what it made (the compact table, its progress mark,
+     * the dictionaries). The old release indexes a row again, and the next `migrate` goes on after
+     * the stale mark, keeping the row's copied postings: a resumed run, which warns naming every
+     * model, and a rebuild --fresh of each makes the index exact.
+     */
+    #[DataProvider('deployRollbacks')]
+    public function test_a_stopped_upgrade_rolled_back_by_the_deploy_then_migrated_again_warns(bool $to201): void
+    {
+        $this->index();
+        $this->artisanOk('migrate:rollback', ['--step' => 1]);
+        $this->stopInTheThirdRange();
+        $this->artisanOk('migrate:rollback', ['--step' => $to201 ? $this->stepsFrom('2026_09') - 1 : 1]); // the recorded ones
+        $this->assertTrue(Schema::hasTable('fuzzy_index_postings_copied'), 'the stopped run\'s tables stay');
+
+        // The old release indexes note 1 again, as one word.
+        DB::table('migrated_notes')->where('id', 1)->update(['title' => 'zzafter', 'body' => null]);
+        DB::table('fuzzy_index_postings')->where('model_type', MigratedNote::class)->where('model_id', '1')->delete();
+        $word = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzafter', 'doc_count' => 1] + (Schema::hasColumn('fuzzy_index_terms', 'term_length') ? ['term_length' => 7] : []));
+        DB::table('fuzzy_index_postings')->insert(['term_id' => $word, 'model_type' => MigratedNote::class, 'model_id' => '1', 'frequency' => 1]
+            + (Schema::hasColumn('fuzzy_index_postings', 'column_name') ? ['column_name' => 'title'] : []));
+        DB::table('fuzzy_index_documents')->where('model_type', MigratedNote::class)->where('model_id', '1')->update(['doc_length' => 1]);
+
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        $this->assertWarnedResumed();
+        $this->assertSame(0, $this->orphanPostings());
+        foreach ([MigratedNote::class, MigratedCode::class] as $model) {
+            $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => $model, '--fresh' => true]));
+        }
+        $this->assertSame([], MigratedNote::search('kettle')->useInvertedIndex()->typoTolerance(0)->get()->all());
+        $this->assertSame([1], MigratedNote::search('zzafter')->useInvertedIndex()->typoTolerance(0)->get()->pluck('id')->all());
     }
 
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
