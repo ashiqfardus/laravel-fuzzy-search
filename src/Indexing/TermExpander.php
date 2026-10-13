@@ -71,6 +71,13 @@ final class TermExpander
         // that length, once per length (TC-4: 0.75–1.6 s a term on SQL Server at 1M words, where one
         // read of the window took 50 ms): such a model reads the window once, through its own
         // postings, as before S1 (see PER_LENGTH_ABOVE).
+        //
+        // ponytail: both reads stop after $pool of the model's own words, so in a length where the
+        // model has fewer they read every word of that length, whichever model posted it: another
+        // model's distinct codes crowding a length (1M six-digit SKUs at 3M words: 1.2 s on MySQL)
+        // slow every model's typo search over it, linearly in their number. A model dimension in the
+        // dictionary (per-model term statistics, or a (model, length, doc_count) index) bounds it;
+        // that is a schema change.
         $from   = max(1, $length - $maxDistance);
         $to     = $length + $maxDistance;
         $above  = self::perLengthAbove();
