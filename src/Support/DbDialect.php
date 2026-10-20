@@ -208,4 +208,37 @@ final class DbDialect
 
         return str_contains($identifier, '.') ? $grammar->wrap($identifier) : $grammar->wrapTable($identifier);
     }
+
+    /**
+     * The name of an index the migrations name themselves, on the default connection: led by the
+     * connection's table prefix when it prefixes index names (`prefix_indexes`, Laravel's own rule
+     * for the names it makes), so that installs with different prefixes can share a schema, where
+     * PostgreSQL, SQLite and SQL Server need an index or constraint name to be unique. Without a
+     * prefix, or without `prefix_indexes`, the name as written (ER-216).
+     */
+    public static function indexName(string $name): string
+    {
+        $connection = \Illuminate\Support\Facades\DB::connection();
+
+        return ($connection->getConfig('prefix_indexes') ? $connection->getTablePrefix() : '') . $name;
+    }
+
+    /**
+     * Which of an index's names $present holds (the names the migrations read from the catalog,
+     * compared case-insensitively): indexName()'s, or the name as written, which an install made
+     * before index names carried the prefix has. Null when it holds neither.
+     *
+     * @param list<string> $present
+     */
+    public static function presentIndexName(string $name, array $present): ?string
+    {
+        $present = array_map('strtolower', $present);
+        foreach (array_unique([self::indexName($name), $name]) as $candidate) {
+            if (in_array(strtolower($candidate), $present, true)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
 }

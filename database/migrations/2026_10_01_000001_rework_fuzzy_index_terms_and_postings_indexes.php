@@ -49,19 +49,21 @@ return new class extends Migration
         // earlier migrations leave.
         $pretending = DB::connection()->pretending();
 
-        // The new index first, so the dictionary is never without a length index.
-        $terms = $pretending ? [self::LENGTH] : $this->indexes('fuzzy_index_terms');
-        if (!in_array(self::LENGTH_COUNT_ID, $terms, true)) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], self::LENGTH_COUNT_ID));
+        // The new index first, so the dictionary is never without a length index. Each name led by
+        // the table prefix under prefix_indexes; an install made before index names carried it has
+        // them as written (ER-216).
+        $terms = $pretending ? [DbDialect::indexName(self::LENGTH)] : $this->indexes('fuzzy_index_terms');
+        if (DbDialect::presentIndexName(self::LENGTH_COUNT_ID, $terms) === null) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], DbDialect::indexName(self::LENGTH_COUNT_ID)));
         }
         foreach ([self::LENGTH, self::LENGTH_COUNT] as $index) {
-            if (in_array($index, $terms, true)) {
-                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($index));
+            if (($present = DbDialect::presentIndexName($index, $terms)) !== null) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($present));
             }
         }
 
-        if (in_array(self::TERM_MODEL, $pretending ? [self::TERM_MODEL] : $this->indexes('fuzzy_index_postings'), true)) {
-            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropIndex(self::TERM_MODEL));
+        if (($present = DbDialect::presentIndexName(self::TERM_MODEL, $pretending ? [DbDialect::indexName(self::TERM_MODEL)] : $this->indexes('fuzzy_index_postings'))) !== null) {
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->dropIndex($present));
         }
     }
 
@@ -76,17 +78,17 @@ return new class extends Migration
         // A table or a column a test removed (as 2026_09_17_000001's down() allows) has no index to
         // restore. `migrate:rollback --pretend` runs no select: the indexes as up() left them.
         $pretending = DB::connection()->pretending();
-        if ($pretending || (Schema::hasTable('fuzzy_index_postings') && !in_array(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'), true))) {
-            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['term_id', 'model_type'], self::TERM_MODEL));
+        if ($pretending || (Schema::hasTable('fuzzy_index_postings') && DbDialect::presentIndexName(self::TERM_MODEL, $this->indexes('fuzzy_index_postings')) === null)) {
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['term_id', 'model_type'], DbDialect::indexName(self::TERM_MODEL)));
         }
 
-        $terms = $pretending ? [self::LENGTH_COUNT_ID] : $this->indexes('fuzzy_index_terms');
-        if (!in_array(self::LENGTH, $terms, true) && ($pretending || Schema::hasColumn('fuzzy_index_terms', 'term_length'))) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::LENGTH));
+        $terms = $pretending ? [DbDialect::indexName(self::LENGTH_COUNT_ID)] : $this->indexes('fuzzy_index_terms');
+        if (DbDialect::presentIndexName(self::LENGTH, $terms) === null && ($pretending || Schema::hasColumn('fuzzy_index_terms', 'term_length'))) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', DbDialect::indexName(self::LENGTH)));
         }
         foreach ([self::LENGTH_COUNT_ID, self::LENGTH_COUNT] as $index) {
-            if (in_array($index, $terms, true)) {
-                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($index));
+            if (($present = DbDialect::presentIndexName($index, $terms)) !== null) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($present));
             }
         }
     }

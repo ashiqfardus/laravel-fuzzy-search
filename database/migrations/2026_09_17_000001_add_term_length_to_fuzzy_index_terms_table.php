@@ -27,8 +27,10 @@ return new class extends Migration
         if ($pretending || !Schema::hasColumn('fuzzy_index_terms', 'term_length')) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->unsignedSmallInteger('term_length')->default(0));
         }
-        if ($pretending || !in_array(self::INDEX, $this->indexes(), true)) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', self::INDEX));
+        // Its name led by the table prefix under prefix_indexes; an install made before index names
+        // carried it has the name as written (ER-216).
+        if ($pretending || DbDialect::presentIndexName(self::INDEX, $this->indexes()) === null) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', DbDialect::indexName(self::INDEX)));
         }
 
         // Backfill dictionaries built before this column existed, so TermExpander can filter by
@@ -56,13 +58,18 @@ return new class extends Migration
         // Rolled back on its own (migrate:rollback --path) under 2026_10_01_000001, which replaced
         // this migration's index with its own on (term_length, doc_count, id): dropping the column
         // under that index fails on SQLite and SQL Server, cuts the index short on MySQL and
-        // MariaDB, and drops it on PostgreSQL, with 2026_10_01_000001 still recorded. Refuse first.
-        if (!DB::connection()->pretending() && array_intersect(self::LATER, $this->indexes()) !== []) {
-            throw new \RuntimeException('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first: its index on term_length is still there.');
+        // MariaDB, and drops it on PostgreSQL, with 2026_10_01_000001 still recorded. Refuse first;
+        // also once 2026_10_20_000001 has dropped that index in turn: this migration's is gone all
+        // the same, and the drop below would fail.
+        $indexes = DB::connection()->pretending() ? [] : $this->indexes();
+        $later   = array_filter(self::LATER, fn (string $index) => DbDialect::presentIndexName($index, $indexes) !== null);
+        if (!DB::connection()->pretending() && ($later !== [] || DbDialect::presentIndexName(self::INDEX, $indexes) === null)) {
+            throw new \RuntimeException('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first: it replaced the index on term_length this migration drops.');
         }
 
         // Two statements on purpose: SQLite refuses to drop a column an index still references.
-        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::INDEX));
+        $index = DbDialect::presentIndexName(self::INDEX, $indexes) ?? DbDialect::indexName(self::INDEX);
+        Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($index));
 
         if (DB::connection()->getDriverName() !== DbDialect::SQLITE) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropColumn('term_length'));

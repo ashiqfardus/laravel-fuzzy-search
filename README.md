@@ -80,7 +80,7 @@ If you plan to use the **BM25 inverted index** (recommended for 10k+ rows), also
 php artisan migrate
 ```
 
-On PostgreSQL and SQLite, install the package once per schema (or database file): the package's index names do not carry the connection's table prefix, and those databases need an index name to be unique across the schema, so a second install with another prefix stops at `relation "postings_unique_idx" already exists`. Give each install its own schema (`search_path`) or database. MySQL, MariaDB and SQL Server name indexes per table and are not affected.
+Installs with different table prefixes can share a schema (or SQLite file): with `prefix_indexes` on, Laravel's default for MySQL, PostgreSQL and SQL Server (add it to an SQLite connection), the package's index names carry the prefix, as Laravel's own do.
 
 > **Upgrading from v1.x?** There are breaking changes — result rankings and `_score` values may shift.
 > Run the scanner to find affected code, then follow the full guide.

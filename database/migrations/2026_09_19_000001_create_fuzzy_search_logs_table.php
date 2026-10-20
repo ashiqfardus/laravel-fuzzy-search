@@ -47,8 +47,9 @@ return new class extends Migration
         $existing = $pretending ? [] : $this->indexes($name);
         Schema::table($name, function (Blueprint $table) use ($existing) {
             foreach (self::INDEXES as $index => $column) {
-                if (!in_array($index, $existing, true)) {
-                    $table->index($column, $index);
+                // Led by the table prefix under prefix_indexes; as written in an install made before (ER-216).
+                if (DbDialect::presentIndexName($index, $existing) === null) {
+                    $table->index($column, DbDialect::indexName($index));
                 }
             }
         });

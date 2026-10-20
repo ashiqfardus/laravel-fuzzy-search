@@ -180,10 +180,15 @@ class Bm25Scorer
 
         // 0 when the type has no id: no posting has it (ids start at 1), so nothing matches.
         $typeId   = IndexManager::modelTypeId($modelType) ?? 0;
+        $termIds  = $driver === DbDialect::SQLSRV ? $this->termIds($query, $terms) : null;
         $postings = fn (\Illuminate\Database\Query\Builder $postings) => $postings
             ->from('fuzzy_index_postings as fzr')
             ->where('fzr.model_type_id', $typeId)
-            ->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
+            ->when(
+                $termIds !== null,
+                fn ($q) => $q->whereIntegerInRaw('fzr.term_id', $termIds),
+                fn ($q) => $q->whereIn('fzr.term_id', fn ($ids) => $ids->select('id')->from('fuzzy_index_terms')->whereIn('term', $terms))
+            )
             ->tap(fn ($q) => $this->readColumns($q, 'fzr.column_id', $columnWeights));
 
         $lookup = $model !== null && DbDialect::isMySqlFamily($driver) ? self::keyLookup($query, $model) : null;
@@ -213,6 +218,24 @@ class Bm25Scorer
 
         $query->whereExists(fn ($subquery) => $postings($subquery->selectRaw($select))
             ->whereRaw($subquery->getGrammar()->wrap('fzr.model_id') . " = {$cast}"));
+    }
+
+    /**
+     * SQL Server: the dictionary ids of $terms, for whereRanked() to inline (ruling ER-224). From the
+     * subquery's terms the optimizer can only estimate their postings at the average (804 for 13,305
+     * at 1M rows), and an ordered page past the first one then read the model table whole through a
+     * hash semi-join: 1.6 to 2.2 s for pages 30 and 500, where page 1 walked the order column's
+     * index in 12 ms. Each inlined id is estimated from the postings' own statistics, and the walk
+     * holds: 0.4 s for those pages, and the COUNT of a word in a quarter of the rows 70 ms for 286.
+     * Inlined, not bound: a plan compiled for one word's ids is not reused for another's.
+     *
+     * @param  array<int, string> $terms
+     * @return array<int, int>
+     */
+    private function termIds(\Illuminate\Database\Query\Builder $query, array $terms): array
+    {
+        return $query->newQuery()->from('fuzzy_index_terms')->whereIn('term', $terms)->pluck('id')
+            ->map(fn ($id) => (int) $id)->all();
     }
 
     /**
@@ -264,6 +287,7 @@ class Bm25Scorer
                 . ' where table_schema = database() and table_name = ? and column_name = ?',
                 [$connection->getTablePrefix() . $table, $column]
             );
+            $row = $row === null ? null : (object) $row; // an app-wide array fetch mode returns arrays
 
             self::$collations[$id] = $row !== null && preg_match('/^\w+$/', (string) $row->charset) && preg_match('/^\w+$/', (string) $row->collation)
                 ? [(string) $row->charset, (string) $row->collation]
@@ -331,6 +355,7 @@ class Bm25Scorer
         $meta = DB::table('fuzzy_index_meta')
             ->where('model_type', $modelType)
             ->first();
+        $meta = $meta === null ? null : (object) $meta; // an app-wide array fetch mode returns arrays
 
         if (!$meta || $meta->total_docs == 0) {
             return [];
@@ -348,6 +373,7 @@ class Bm25Scorer
             ->whereIn('term', $this->termBindings($weights))
             ->select('id', 'term')
             ->get()
+            ->map(fn ($row) => (object) $row) // an app-wide array fetch mode returns arrays
             ->keyBy('id');
 
         if ($termData->isEmpty()) {
@@ -425,8 +451,9 @@ class Bm25Scorer
         $scores = [];
         $rows   = []; // term_id => the rows read of it
         foreach ($postings as $row) {
+            $row = (object) $row; // an app-wide array fetch mode returns arrays
             $rows[$row->term_id] = ($rows[$row->term_id] ?? 0) + 1;
-            $f = (float) $row->wf;
+            $f   = (float) $row->wf;
             if ($f <= 0) {
                 continue;
             }

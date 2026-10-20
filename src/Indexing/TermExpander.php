@@ -64,7 +64,7 @@ final class TermExpander
 
         $rows = [];
         for ($l = $from; $l <= $to; $l++) {
-            $rows = [...$rows, ...$read()->where($modelType === null ? 'term_length' : 'mt.term_length', $l)->limit($pool)->get()->all()];
+            $rows = [...$rows, ...$read()->where($modelType === null ? 'term_length' : 'mt.term_length', $l)->limit($pool)->get()->map(fn ($row) => (object) $row)->all()]; // an app-wide array fetch mode returns arrays
         }
         usort($rows, fn ($a, $b) => [(int) $b->doc_count, (int) $b->id] <=> [(int) $a->doc_count, (int) $a->id]);
 
