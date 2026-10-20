@@ -31,7 +31,7 @@ class SoundexDriver extends BaseDriver
         // leading byte its C library does not call a letter, so under glibc "Émile" encoded from
         // its "m" (M400, the code of "Mila"), and on macOS it kept the byte and returned a code
         // that is not UTF-8 (“Mila” too). ASCII punctuation and digits it skips under every locale.
-        if (preg_match($this->driver === 'pgsql' ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
+        if (preg_match(in_array($this->driver, ['pgsql', 'sqlite'], true) ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
             return $this->applyFallback($query, $column, $value, $boolean);
         }
 
@@ -42,7 +42,7 @@ class SoundexDriver extends BaseDriver
         $words = preg_split('/\s+/u', trim($value), -1, PREG_SPLIT_NO_EMPTY) ?: [$value];
         $first = $words[0];
         $last  = $words[count($words) - 1];
-        $lead  = $this->driver === 'pgsql' ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u';
+        $lead  = in_array($this->driver, ['pgsql', 'sqlite'], true) ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u';
         if (preg_match($lead, $first) !== 1) {
             $first = $last;
         } elseif (preg_match($lead, $last) !== 1) {
@@ -93,7 +93,31 @@ class SoundexDriver extends BaseDriver
             );
         }
 
-        // SQLite and SQL Server: fallback pattern matching
+        if ($this->driver === 'sqlsrv') {
+            $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
+            // The first and the last word of the column, as T-SQL spells them (no SUBSTRING_INDEX):
+            // the value trimmed, up to its first space, and from its last.
+            $text = "LTRIM(RTRIM(CAST({$col} AS NVARCHAR(MAX))))";
+
+            return $query->$method(
+                "(SOUNDEX(LEFT({$text}, CHARINDEX(' ', {$text} + ' ') - 1)) = SOUNDEX(?)"
+                . " OR SOUNDEX(RIGHT({$text}, CHARINDEX(' ', REVERSE({$text}) + ' ') - 1)) = SOUNDEX(?))",
+                [$first, $last]
+            );
+        }
+
+        if ($this->driver === 'sqlite') {
+            // The package's own PDO function (PHP's soundex()), registered on the connection; it
+            // splits the column into its first and last word. The codes are the term's, computed here.
+            DbDialect::registerSqliteFunctions($query->getConnection());
+            $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
+
+            return $query->$method(
+                "(fuzzy_soundex({$col}, 1) = ? OR fuzzy_soundex({$col}, -1) = ?)",
+                [soundex($first), soundex($last)]
+            );
+        }
+
         return $this->applyFallback($query, $column, $value, $boolean);
     }
 

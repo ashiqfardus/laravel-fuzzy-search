@@ -182,10 +182,21 @@ final class DbDialect
             return $column;
         }
 
-        self::registerFold($connection->getPdo());
-        self::registerFold($connection->getReadPdo()); // the same object unless reads are split
+        self::registerSqliteFunctions($connection);
 
         return "fuzzy_lower({$column})";
+    }
+
+    /**
+     * The package's own SQLite functions on the connection's PDO, once per PDO: fuzzy_lower(value),
+     * and fuzzy_soundex(value, position), the soundex() code of the value's first (1) or last (-1)
+     * word, null for a word SOUNDEX() would not encode from its first ASCII letter. Neither
+     * replaces anything of SQLite's own.
+     */
+    public static function registerSqliteFunctions(\Illuminate\Database\ConnectionInterface $connection): void
+    {
+        self::registerFold($connection->getPdo());
+        self::registerFold($connection->getReadPdo()); // the same object unless reads are split
     }
 
     private static function registerFold(\PDO|\Closure|null $pdo): void
@@ -201,16 +212,28 @@ final class DbDialect
             return;
         }
 
-        $fold = fn ($value) => $value === null ? null : mb_strtolower((string) $value, 'UTF-8');
+        $functions = [
+            'fuzzy_lower'   => [fn ($value) => $value === null ? null : mb_strtolower((string) $value, 'UTF-8'), 1],
+            'fuzzy_soundex' => [function ($value, $position) {
+                $words = preg_split('/ +/', trim((string) $value), -1, PREG_SPLIT_NO_EMPTY);
+                $word  = $words === [] || $words === false ? '' : ((int) $position < 0 ? end($words) : $words[0]);
 
-        if (method_exists($pdo, 'createFunction')) { // Pdo\Sqlite (PHP 8.4+, PDO::connect())
-            $pdo->createFunction('fuzzy_lower', $fold, 1, 2048); // 2048: SQLITE_DETERMINISTIC
-        } else {
+                // As PostgreSQL's soundex() reads a word: ASCII non-letters, then an ASCII letter.
+                return preg_match('/^[\x01-\x40\x5B-\x60\x7B-\x7F]*[A-Za-z]/', $word) === 1 ? soundex($word) : null;
+            }, 2],
+        ];
+
+        foreach ($functions as $name => [$function, $arguments]) {
+            if (method_exists($pdo, 'createFunction')) { // Pdo\Sqlite (PHP 8.4+, PDO::connect())
+                $pdo->createFunction($name, $function, $arguments, 2048); // 2048: SQLITE_DETERMINISTIC
+                continue;
+            }
+
             // A plain PDO, as Laravel opens it: PHP 8.5 deprecates this name, Pdo\Sqlite has no way
             // to take such an object over, and the function has to be there either way.
             set_error_handler(fn () => true, E_DEPRECATED);
             try {
-                $pdo->sqliteCreateFunction('fuzzy_lower', $fold, 1, 2048);
+                $pdo->sqliteCreateFunction($name, $function, $arguments, 2048);
             } finally {
                 restore_error_handler();
             }
