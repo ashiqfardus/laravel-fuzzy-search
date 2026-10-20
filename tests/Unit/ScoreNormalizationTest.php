@@ -45,12 +45,12 @@ class ScoreNormalizationTest extends TestCase
         $this->assertEquals(0, $results->count());
     }
 
-    public function test_null_direct_column_still_contributes_an_empty_fuzzy_score(): void
+    public function test_null_direct_column_earns_no_fuzzy_floor(): void
     {
         // v2.0 fed '' into the fuzzy branch for a missing/NULL direct column, so with
-        // typoTolerance(2) a 2-letter term scored (20 - 2*4) x weight = 12 against it.
-        // columnValues() now returns [] for an empty value, which must not silently
-        // drop that contribution for a direct (non-relation) column.
+        // typoTolerance(2) a 2-letter term scored (20 - 2*4) x weight = 12 against it, which
+        // ranked a row with no data in the other column above one that had some. An empty value
+        // earns nothing now.
         $this->app['db']->table('products')->insert([
             'title' => 'ab', 'description' => null, 'price' => 10,
             'created_at' => now(), 'updated_at' => now(),
@@ -62,7 +62,7 @@ class ScoreNormalizationTest extends TestCase
 
         $row = $results->firstWhere('title', 'ab');
         $this->assertNotNull($row);
-        // 100 (exact match on title, weight 1) + 12 (empty description, fuzzy floor, weight 1)
-        $this->assertEquals(112.0, (float) $row->_raw_score);
+        // 100 (exact match on title, weight 1) + 0 (empty description)
+        $this->assertEquals(100.0, (float) $row->_raw_score);
     }
 }

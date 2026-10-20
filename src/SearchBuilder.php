@@ -3708,7 +3708,8 @@ class SearchBuilder
         if (str_contains($value, $term)) {
             return $this->scoring['contains'] * $weight;
         }
-        if (!$fuzzy) {
+        // An empty or missing column is within a short term's edit distance of it by length alone
+        if (!$fuzzy || $value === '') {
             return 0.0;
         }
 
