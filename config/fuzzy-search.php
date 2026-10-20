@@ -392,6 +392,11 @@ return [
     |--------------------------------------------------------------------------
     | Trigram Settings
     |--------------------------------------------------------------------------
+    |
+    | min_similarity (0-100): pg_trgm's similarity() threshold, read only on
+    | PostgreSQL with use_native_functions on. The LIKE-pattern fallback that
+    | trigram runs everywhere else does not use it.
+    |
     */
     'trigram' => [
         'min_similarity' => 30,  // 0-100
@@ -456,6 +461,12 @@ return [
     |--------------------------------------------------------------------------
     | Default Locale
     |--------------------------------------------------------------------------
+    |
+    | Picks the stop_words list the inverted index drops for every model (one
+    | whose $searchable['locale'] names another uses that), and the list a
+    | preset's stop_words_enabled drops. A locale with no stop_words entry
+    | drops none. Rebuild the index (rebuild --fresh) after changing it.
+    |
     */
     'locale' => 'en',
 
