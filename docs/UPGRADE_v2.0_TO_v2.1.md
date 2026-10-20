@@ -324,6 +324,9 @@ normalization.
   below).
 - `indexing.table` — the v1 `search_index` table name, unread by v2 outside the deprecated
   `performReindex()` path (which keeps its own default).
+- `levenshtein.cost_insert`, `levenshtein.cost_replace` and `levenshtein.cost_delete` — never
+  read; no search or score used them. `FuzzySearch::levenshteinDistance()` still takes these costs
+  in its own `$options` argument.
 
 Removing these keys from your published config is safe — they had no effect.
 

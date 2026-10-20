@@ -386,9 +386,6 @@ return [
     */
     'levenshtein' => [
         'max_distance' => 2,
-        'cost_insert' => 1,
-        'cost_replace' => 1,
-        'cost_delete' => 1,
     ],
 
     /*
