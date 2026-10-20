@@ -91,7 +91,7 @@ On PostgreSQL and SQLite, install the package once per schema (or database file)
 > php artisan fuzzy-search:upgrade-v1   # scans your app/ for v1-era API usage
 > ```
 >
-> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md)
+> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md): every behaviour change there applies to you too.
 
 > **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
 > per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`, while nothing is
