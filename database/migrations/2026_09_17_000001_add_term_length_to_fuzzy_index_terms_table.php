@@ -56,9 +56,11 @@ return new class extends Migration
         // Rolled back on its own (migrate:rollback --path) under 2026_10_01_000001, which replaced
         // this migration's index with its own on (term_length, doc_count, id): dropping the column
         // under that index fails on SQLite and SQL Server, cuts the index short on MySQL and
-        // MariaDB, and drops it on PostgreSQL, with 2026_10_01_000001 still recorded. Refuse first.
-        if (!DB::connection()->pretending() && array_intersect(self::LATER, $this->indexes()) !== []) {
-            throw new \RuntimeException('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first: its index on term_length is still there.');
+        // MariaDB, and drops it on PostgreSQL, with 2026_10_01_000001 still recorded. Refuse first;
+        // also once 2026_10_20_000001 has dropped that index in turn: this migration's is gone all
+        // the same, and the drop below would fail.
+        if (!DB::connection()->pretending() && (array_intersect(self::LATER, $indexes = $this->indexes()) !== [] || !in_array(self::INDEX, $indexes, true))) {
+            throw new \RuntimeException('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first: it replaced the index on term_length this migration drops.');
         }
 
         // Two statements on purpose: SQLite refuses to drop a column an index still references.
