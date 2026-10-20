@@ -153,7 +153,7 @@ Either way, rebuild after changing it, while nothing is indexing (see [Artisan C
 php artisan fuzzy-search:rebuild "App\Models\Product" --fresh
 ```
 
-On the index path, `highlight()` marks whatever the query actually matched (see [the BM25 guide](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)); for a CJK term tokenized into n-grams, that is the matching n-gram fragment, which may be shorter than the whole word.
+On the index path, `highlight()` marks whatever the query actually matched (see [the BM25 guide](bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index)); for a CJK term tokenized into n-grams, that is the matching n-gram fragment, which may be shorter than the whole word. On the LIKE path it marks every term the search used: each word under `tokenize()`, the accent-free form and the synonyms, as well as the whole typed string. A match found through a typo pattern is not marked.
 
 ### Per-Model Pipelines
 

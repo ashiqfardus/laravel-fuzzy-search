@@ -79,6 +79,9 @@ class SearchBuilder
 
     protected bool $stopWordsOverridden = false;
     protected array $synonyms = [];
+
+    /** @var string[]|null the terms the LIKE search matched on (tokens, folded forms, synonyms), for highlight(); set by applySearchConditions() */
+    protected ?array $likeTerms = null;
     protected array $synonymGroups = [];
     protected ?string $locale = null;
     /** Explicitly asked for: accentInsensitive(), the model's $searchable or a preset — see foldsAccents(). */
@@ -1543,7 +1546,7 @@ class SearchBuilder
         $results = $candidates->slice($this->offset, $this->limit)->values();
 
         if ($this->highlightTagOpen) {
-            $results = $this->applyHighlighting($results);
+            $results = $this->applyHighlighting($results, $this->likeTerms);
         }
 
         if ($this->debugMode) {
@@ -3147,6 +3150,9 @@ class SearchBuilder
             $allTerms = array_merge($allTerms, $this->termAlternatives($token));
         }
         $allTerms = array_unique($allTerms);
+
+        // highlight() marks all of them; one term alone is the null the highlighter reads as the search string.
+        $this->likeTerms = count($allTerms) > 1 ? array_values($allTerms) : null;
 
         // The SQL names a direct column qualified under a join; the targets themselves (scoring,
         // highlighting) keep the logical name. A column weighted 0 is not searched (TE-8).
