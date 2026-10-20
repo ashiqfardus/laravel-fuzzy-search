@@ -37,11 +37,11 @@ class CappedTieCode extends Model
 
 /**
  * SE-3 (round 11). rank() cuts the (document, term) rows at bm25.max_postings_per_term, ordered by
- * weighted frequency only. When the cap fell inside a group of equal weighted frequency (the usual
+ * weighted frequency only (each term's rows on their own since ER-225b). When the cap fell inside a group of equal weighted frequency (the usual
  * case: it takes few values), which of those rows were kept was the database's choice, and changed
  * with its plan (a statistics refresh, the ANALYZE the package runs after a rebuild), so a user
  * paging a capped search was served pages cut from different rankings. Equal rows are now cut by
- * model_id, then term_id: the capped ranking is a function of the index. The rows here all weigh
+ * model_id: the capped ranking is a function of the index. The rows here all weigh
  * the same, and were indexed in shuffled order, so the order the database stores them in is not the
  * order the cut must follow.
  */
@@ -81,20 +81,24 @@ class CappedRankingTieTest extends TestCase
     }
 
     /**
-     * The documents of the first $cap (document, term) rows of $class's postings for $terms, every
-     * row weighing the same: by model_id (byte-wise here), then term_id.
+     * The documents of the first $cap (document, term) rows of each of $terms in $class's postings,
+     * every row weighing the same: by model_id (byte-wise here).
      *
      * @return string[]
      */
     private function expected(string $class, array $terms, int $cap): array
     {
-        $rows = $this->namedPostings('p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
-            ->where('p.model_type', $class)->whereIn('t.term', $terms)
-            ->get(['p.model_id', 'p.term_id'])
-            ->map(fn ($row) => [(string) $row->model_id, (int) $row->term_id])->all();
+        $documents = [];
+        foreach ($terms as $term) {
+            $rows = $this->namedPostings('p')->join('fuzzy_index_terms as t', 't.id', '=', 'p.term_id')
+                ->where('p.model_type', $class)->where('t.term', $term)
+                ->distinct()->pluck('p.model_id')
+                ->map(fn ($id) => (string) $id)->all();
 
-        usort($rows, fn ($a, $b) => strcmp($a[0], $b[0]) ?: $a[1] <=> $b[1]);
-        $documents = array_values(array_unique(array_column(array_slice($rows, 0, $cap), 0)));
+            usort($rows, 'strcmp');
+            $documents = [...$documents, ...array_slice($rows, 0, $cap)];
+        }
+        $documents = array_values(array_unique($documents));
         sort($documents);
 
         return $documents;
@@ -128,7 +132,7 @@ class CappedRankingTieTest extends TestCase
                     $at       = class_basename($class) . ' ' . json_encode($terms) . " cap {$cap}";
                     $expected = $this->expected($class, $terms, $cap);
 
-                    $this->assertCount(intdiv($cap + count($terms) - 1, count($terms)), $expected, $at);
+                    $this->assertCount($cap, $expected, $at); // every row holds both words
                     $this->assertSame($expected, $this->ranked($class, $terms), "{$at}: the cut");
                     $this->analyze();
                     $this->assertSame($expected, $this->ranked($class, $terms), "{$at}: the cut after the statistics change");
@@ -146,9 +150,9 @@ class CappedRankingTieTest extends TestCase
             $make   = fn () => $class::search('common alpha')->useInvertedIndex()->typoTolerance(0);
             $served = [];
 
-            for ($page = 1; $page <= 4; $page++) {
+            for ($page = 1; $page <= 7; $page++) {
                 $paginator = $make()->paginate(4, 'page', $page);
-                $this->assertSame(13, $paginator->total(), class_basename($class) . " page {$page}");
+                $this->assertSame(25, $paginator->total(), class_basename($class) . " page {$page}");
                 $served = [...$served, ...array_map(fn ($model) => (string) $model->getKey(), $paginator->items())];
                 $this->analyze();
             }

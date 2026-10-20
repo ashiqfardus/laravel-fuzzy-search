@@ -236,14 +236,17 @@ return [
         'k1' => 1.5,
         'b'  => 0.75,
         /*
-         * max_postings_per_term: SQL-side top-K cutoff shared by all the matched terms of a
-         * query. The cap applies to (document, term) rows — the per-column postings are summed
-         * in SQL first — ordered by weighted frequency DESC, then model_id and term (so the cut
-         * is the same on every request), so the highest-signal rows are always retained and a
-         * document is never partially cut across its columns. It bounds
-         * memory when a term matches tens of thousands of documents. In relevance order the
-         * results and their total()/count() stop at the cap, which applies to the whole model
-         * before any where() or scope; orderBy() still serves and counts every match.
+         * max_postings_per_term: SQL-side top-K cutoff of each matched term of a query, on its
+         * own, so a common term never pushes a rarer term's matches out. It applies to a term's
+         * (document, term) rows — the per-column postings are summed in SQL first — ordered by
+         * weighted frequency DESC, then model_id (so the cut is the same on every request), so
+         * the highest-signal rows are always retained and a document is never partially cut
+         * across its columns; a term in no more of the model's documents than the cap is read
+         * whole. A search reads at most terms × cap rows (typo and prefix expansions and
+         * synonyms count as terms), and PHP keeps a score per document, not the rows. In
+         * relevance order the results and their total()/count() stop where a term was cut, which
+         * applies to the whole model before any where() or scope; orderBy() still serves and
+         * counts every match.
          */
         'max_postings_per_term' => 50000,
         /*

@@ -304,8 +304,8 @@ class Bm25Scorer
      * no postings:
      *  - share: the terms' document frequencies summed over the model's total_docs (a document that
      *    holds two of the terms counts twice);
-     *  - cut: whether its read reached bm25.max_postings_per_term, so that the ranking may lack
-     *    matches (TF-9).
+     *  - cut: whether a term's read reached bm25.max_postings_per_term, so that the ranking may
+     *    lack matches (TF-9).
      *
      * A typo expansion in $sources counts the documents of the word it expands, when the type holds
      * that word and more of them (the blended document frequency Lucene's FuzzyQuery scores with):
@@ -377,34 +377,38 @@ class Bm25Scorer
         // One range of the postings' primary key per term (S2, S8): a term's postings are
         // contiguous, and each carries its document's length, so no other table is read; a
         // document's postings of a term all carry the same length, MAX() takes it.
-        // One row per (document, term), weighted in SQL, ordered by that weighted frequency DESC
-        // and capped at max_postings_per_term so that a high-frequency term (e.g. "john" with 50k
-        // hits) cannot pull the entire posting list into PHP. The cap is over (document, term)
-        // rows — exactly what v2.0 capped, which ordered by raw frequency — so a document is
-        // never partially cut across its columns. High-frequency rows are prioritised globally
-        // across all matched terms; in a pathological corpus a single dominant term could consume
-        // the cap, but at the default 50k the bound is never reached for normal workloads. Rows of
-        // equal weight are cut by model_id, then term_id (SE-3): the weight takes few values, so the
-        // cap usually falls inside a group of equal rows, and which of them the database kept changed
-        // with its plan (a statistics refresh, the ANALYZE after a rebuild): a user paging a capped
-        // search was served pages cut from different rankings.
+        // One row per (document, term), weighted in SQL. A term in more of the type's documents than
+        // max_postings_per_term is ordered by that weighted frequency DESC and capped there, on its
+        // own, so that a high-frequency term (e.g. "john" with 50k hits) cannot pull its entire
+        // posting list into PHP. One cap shared by every term let a common term fill it and push a
+        // rarer term's rows out, the best match holding both included. A term in no more documents
+        // than the cap is read whole, unordered. Each read is one part of a UNION ALL, so the
+        // ranking stays one statement, and its rows are scored as they arrive: PHP holds a score
+        // per document, not the rows. The cap is over (document, term) rows — exactly what v2.0
+        // capped, which ordered by raw frequency — so a document is never partially cut across its
+        // columns. Rows of equal weight are cut by model_id (SE-3): the weight takes few values, so
+        // the cap usually falls inside a group of equal rows, and which of them the database kept
+        // changed with its plan (a statistics refresh, the ANALYZE after a rebuild): a user paging a
+        // capped search was served pages cut from different rankings.
         $maxPostings = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
 
-        $postings = DB::table('fuzzy_index_postings as p')
+        $termRows = fn (array $ids) => DB::table('fuzzy_index_postings as p')
             ->where('p.model_type_id', $typeId)
-            ->whereIn('p.term_id', $termIds)
+            ->whereIn('p.term_id', $ids)
             ->tap(fn ($q) => $this->readColumns($q, 'p.column_id', $columnWeights))
             ->groupBy('p.model_id', 'p.term_id')
             ->select('p.model_id', 'p.term_id')
             ->selectRaw('MAX(' . DbDialect::rawIdentifier('p.doc_length') . ') as doc_len')
-            ->selectRaw($this->weightedFrequencySql($columnWeights) . ' as wf')
-            ->orderByDesc('wf')
-            ->orderBy('p.model_id')
-            ->orderBy('p.term_id')
-            ->limit($maxPostings)
-            ->get();
+            ->selectRaw($this->weightedFrequencySql($columnWeights) . ' as wf');
 
-        $read = ['share' => array_sum(array_map('intval', $df)) / $N, 'cut' => $postings->count() >= $maxPostings];
+        $capped = array_values(array_filter($termIds, fn ($id) => (int) ($df[$id] ?? 0) > $maxPostings));
+        $whole  = array_values(array_diff($termIds, $capped));
+        $parts  = array_map(fn ($id) => $termRows([$id])->orderByDesc('wf')->orderBy('p.model_id')->limit($maxPostings), $capped);
+        $query  = $whole === [] ? array_shift($parts) : $termRows($whole);
+        foreach ($parts as $part) {
+            $query->unionAll($part);
+        }
+        $postings = $query->cursor();
 
         // The idf's document frequency: an expansion's, at least its word's (see above).
         $idfDf = $df;
@@ -419,7 +423,9 @@ class Bm25Scorer
         }
 
         $scores = [];
+        $rows   = []; // term_id => the rows read of it
         foreach ($postings as $row) {
+            $rows[$row->term_id] = ($rows[$row->term_id] ?? 0) + 1;
             $f = (float) $row->wf;
             if ($f <= 0) {
                 continue;
@@ -433,6 +439,8 @@ class Bm25Scorer
 
             $scores[$row->model_id] = ($scores[$row->model_id] ?? 0) + $weight * $idf * $tf;
         }
+
+        $read = ['share' => array_sum(array_map('intval', $df)) / $N, 'cut' => array_filter($capped, fn ($id) => ($rows[$id] ?? 0) >= $maxPostings) !== []];
 
         // Rounded before sorting: the sums' last bits depend on the order the database returned
         // the postings in. Best first; a tie goes to the lower model key, so equal scores come

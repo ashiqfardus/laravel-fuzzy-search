@@ -267,11 +267,11 @@ final class RankedCandidates
         $chunk = self::chunkSize(null);
         $int   = in_array($model->getKeyType(), ['int', 'integer'], true);
 
-        // rank() reads one row per document and term, best first, up to max_postings_per_term: the
-        // ranking holds every match unless its read reached the cap (TF-9: its documents times the
-        // terms, typo and prefix expansions and synonyms included, reached it from a sixth of the cap
-        // for a word with five neighbours). That bound stands in for a ranking whose read is not given.
-        $whole = $read === null ? count($ids) * count($terms) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
+        // rank() reads one row per document and term, each term's best first, up to
+        // max_postings_per_term of them: the ranking holds every match unless a term's read reached
+        // the cap (TF-9). A term that reaches it ranks that many documents, so a ranking of fewer
+        // stands in for one whose read is not given.
+        $whole = $read === null ? count($ids) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
             if (!$whole || !self::listsWhole($base, $int, count($ids))) {
