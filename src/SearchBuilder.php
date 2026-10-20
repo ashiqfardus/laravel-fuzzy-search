@@ -1510,6 +1510,21 @@ class SearchBuilder
     }
 
     /**
+     * How many rows get() reads from the LIKE and extended paths: the max_candidates ceiling PHP
+     * rescores and ranks, or, where it keeps the SQL order (an explicit orderBy(), or
+     * withRelevance(false)), only the rows up to the end of the page. _score is then
+     * normalised over the rows read.
+     */
+    private function candidateWindow(): int
+    {
+        $ceiling = (int) config('fuzzy-search.max_candidates', 1000);
+
+        return $this->sortBy !== [] || !$this->withRelevance
+            ? max(1, min($ceiling, $this->offset + $this->limit))
+            : $ceiling;
+    }
+
+    /**
      * Execute the search
      */
     protected function executeSearch(): Collection
@@ -1530,10 +1545,9 @@ class SearchBuilder
         $this->prepareQuery();
         $startTime = microtime(true);
 
-        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
-
-        // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet
-        $candidates    = $this->query->limit($maxCandidates)->get();
+        // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet, unless PHP keeps
+        // the SQL order (candidateWindow())
+        $candidates    = $this->query->limit($this->candidateWindow())->get();
         $this->matched = $candidates->isNotEmpty();
 
         // Rescore ALL candidates before slicing
@@ -2118,8 +2132,7 @@ class SearchBuilder
 
         $this->prepareQuery();
 
-        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
-        $candidates = $this->query->limit($maxCandidates)->get();
+        $candidates = $this->query->limit($this->candidateWindow())->get();
         $this->matched = $candidates->isNotEmpty();
 
         if ($this->withRelevance) {
