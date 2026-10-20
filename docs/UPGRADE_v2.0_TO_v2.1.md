@@ -68,10 +68,6 @@ analytics, `suggest()` and the tokenizers.
   `José Ramírez` as a near miss with no tag; it now ranks as the prefix match it is and is
   highlighted, so the order of such results can change. The same holds on PostgreSQL with
   `accentInsensitive()` and unaccent.
-- **A `belongsToMany` pivot column now scores and highlights.** `searchIn(['tags.note'])` on a
-  relation declared `withPivot('note')` matched rows through the pivot but scored 0 at any weight
-  and was never highlighted; it now scores at its weight and is highlighted (not where the related
-  model hides `pivot`), so the order of searches that match through a pivot column can change.
 - **`min_search_length` now applies to every search, not only `get()`.** A plain term shorter
   than `min_search_length` characters (default 2) now matches nothing on `paginate()` (an empty
   page, total 0), `count()` (0), `getFacets()`, `FuzzySearch::on()`, the Scout engine and
@@ -409,7 +405,7 @@ No code changes required — these are bug fixes in the package itself:
 `extended()` / `searchBoolean()` gained two operators:
 
 - **`~word`** — a typo-tolerant term, run through the same driver as the rest of the package. It
-  follows `typoTolerance()` (default 2; `0`, or `config('fuzzy-search.typo_tolerance.enabled') ===
+  follows `typoTolerance()` (default `typo_tolerance.max_distance`, shipped as 2; `0`, or `config('fuzzy-search.typo_tolerance.enabled') ===
   false`, makes it a plain substring match). `~` can't combine with `'`, `=`, `^`, a quoted phrase or a trailing
   `$` — `~word` stands on its own (a field scope in front is fine: `name:~jonh`) — and `~` alone
   throws.
@@ -452,7 +448,7 @@ through `get()`) now agree.
 ## Inverted index (BM25)
 
 - **New migration to run.** `fuzzy_index_terms` gained a `term_length` column — run `php artisan migrate`, then restart your queue workers right away (`php artisan queue:restart`, or `php artisan horizon:terminate` under Horizon). Existing rows are backfilled automatically, and a second `php artisan migrate` after a failed one fills the words still at 0; no index rebuild is required. On MySQL/MariaDB, a worker still running 2.0 code after the migration adds new words with a `term_length` of 0, and typo expansion and `didYouMean()` never reach those words (it also writes postings with no column name, which score at weight 1). If workers indexed during the deploy window before the model terms migration (`2026_10_13_000002`) ran, it fills those lengths in as it counts each model's words. For writes after it, rebuild the models they indexed with `--fresh`: each model keeps its own copy of a word's length (`fuzzy_index_model_terms`), which neither a plain `rebuild` (a word whose count does not change is left as it is) nor `UPDATE fuzzy_index_terms SET term_length = CHAR_LENGTH(term) WHERE term_length = 0` reaches. On SQLite, PostgreSQL and SQL Server a 2.0 worker's index writes fail instead and roll back whole (on SQLite the postings' unique key changed under it; on PostgreSQL and SQL Server 2.0.1's dictionary upsert fails on its own), so the rows they were indexing are not in the index at all: once the workers run 2.1, retry the failed jobs (`php artisan queue:retry all`), or rebuild the models they indexed. A job that 2.0 queued and a 2.1 worker runs indexes its row normally.
-- **BM25 searches are typo-tolerant by default.** `useInvertedIndex()` now expands each query term against the dictionary within `typoTolerance()` edits (2 by default). Call `->typoTolerance(0)` to restore exact-term-only matching. `_score` normalisation itself is unchanged, but rankings can now include near-miss rows that a pre-2.1.0 search would not have returned.
+- **BM25 searches are typo-tolerant by default.** `useInvertedIndex()` now expands each query term against the dictionary within `typoTolerance()` edits (`typo_tolerance.max_distance` by default, shipped as 2). Call `->typoTolerance(0)` to restore exact-term-only matching. `_score` normalisation itself is unchanged, but rankings can now include near-miss rows that a pre-2.1.0 search would not have returned.
 - **The dictionary is read per model.** `didYouMean()` offers only terms posted under the
   searched model (it used to offer every indexed model's terms) and returns `[]` for a builder
   with no Eloquent model unless you pass `useInvertedIndex(Model::class)`. Typo expansion and

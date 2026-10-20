@@ -457,8 +457,12 @@ Some guards hold on one database only. The indexer inserts a batch's new diction
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run the default suites (Unit, Feature, Integration, Security, Legacy), as CI does
 composer test
+
+# The Performance suite (wall-clock timings) is not in the default run
+composer benchmark
+# or: vendor/bin/phpunit --testsuite Performance
 
 # Run with coverage
 composer test-coverage
