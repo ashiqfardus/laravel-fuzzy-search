@@ -12,8 +12,8 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * The last job of a plain `fuzzy-search:rebuild --async` batch: removes the documents of rows the
- * model's index query no longer returns (IndexManager::prune()), $chunks chunks of 1,000 documents
+ * The last job of a plain `fuzzy-search:rebuild --async` batch: removes the documents of rows that
+ * are gone (IndexManager::prune()), $chunks chunks of 1,000 documents
  * at a time (CHUNKS by default), each step within the job timeout, and adds the next step to the
  * batch until every document was read. A cancelled batch stops it.
  */

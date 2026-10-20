@@ -62,8 +62,8 @@ class RebuildCommand extends Command
         $queue     = $this->option('queue') ?? config('fuzzy-search.indexing.queue', 'default');
         $total     = IndexQuery::for($modelClass)->count();
 
-        // Without --fresh, the documents of rows the walk no longer reads (deleted, trashed or scoped
-        // out without model events) are removed after it (IndexManager::prune()). --fresh flushed them.
+        // Without --fresh, the documents of rows deleted, trashed or left out by searchIndexQuery()
+        // without model events are removed after the walk (IndexManager::prune()). --fresh flushed them.
         $prune = !$this->option('fresh');
 
         if ($this->option('async')) {
@@ -94,7 +94,7 @@ class RebuildCommand extends Command
 
         $pruned = $prune ? $indexManager->prune($modelClass) : 0;
         if ($pruned > 0) {
-            $this->line("Removed {$pruned} documents of rows the index query no longer returns.");
+            $this->line("Removed {$pruned} documents of rows deleted, trashed or left out by searchIndexQuery().");
         }
 
         // Statistics for the rebuilt index (PostgreSQL; see IndexManager::analyzeIndex()).
@@ -215,7 +215,7 @@ class RebuildCommand extends Command
         }
 
         $this->info("Batch dispatched: {$batch->id}");
-        $this->line("Jobs: {$chunks} × {$chunkSize} records" . ($prune ? ', then one that removes the documents of rows the index query no longer returns' : ''));
+        $this->line("Jobs: {$chunks} × {$chunkSize} records" . ($prune ? ', then one that removes the documents of rows that are gone' : ''));
         $this->line("Monitor: php artisan queue:work --queue={$queue}");
 
         return self::SUCCESS;

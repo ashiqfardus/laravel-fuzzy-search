@@ -281,13 +281,19 @@ class IndexManager
     }
 
     /**
-     * Take out of $class's index type every document whose row its index query (IndexQuery::for(),
-     * with the model's global scopes, a trashed row left out, as write() re-reads a row) no longer
-     * returns, and out of the other types of its single-table-inheritance hierarchy every row gone
-     * from the table (unfileGone()): a row deleted, trashed or scoped out without model events (a
-     * query-builder delete(), a reseed, a failed index write, a changed key) left its document in
-     * the index, counted by total_docs, a paginator's total and the federated counts until a
-     * `rebuild --fresh`. A plain rebuild runs this after its walk.
+     * Take out of $class's index type every document of a row that is gone, trashed or left out by
+     * the model's searchIndexQuery(), or, under single-table inheritance, is now of a kind another
+     * type indexes (rowClass(): read through the hierarchy's newFromBuilder()); and out of
+     * the other types of its hierarchy every row gone from the table (unfileGone()). Such a row,
+     * changed without model events (a query-builder delete(), a reseed, a failed index write, a
+     * changed key), left its document in the index, counted by total_docs, a paginator's total and
+     * the federated counts until a `rebuild --fresh`. A plain rebuild runs this after its walk.
+     *
+     * The rows are read without global scopes: a row a scope hides is no row gone. A single-database
+     * multi-tenant app rebuilds each tenant under its tenant scope, and a read through the scope took
+     * every other tenant's documents out. Such a row keeps its document until its next save (whose
+     * write reads through the scopes) or a `rebuild --fresh`; so does a row whose kind a global
+     * scope alone tells apart, with no newFromBuilder() of its class's to read it.
      *
      * One keyed read of the table per 1,000 documents. The documents found gone go through write(),
      * a chunk in one transaction, whose re-read under its claim removes them, or indexes a row saved
@@ -305,19 +311,25 @@ class IndexManager
         $type   = self::indexType($class);
         $model  = new $type();
         $int    = in_array($model->getKeyType(), ['int', 'integer'], true);
+        $kinds  = self::hydratesOtherClasses($type);
         $pruned = 0;
         $read   = 0;
         $last   = null;
 
         $complete = DB::table('fuzzy_index_documents')->useWritePdo()->where('model_type', $type)->select('model_id')
             ->when($after !== null, fn ($query) => $query->where('model_id', '>', $after))
-            ->chunkById(1000, function ($rows) use ($type, $model, $int, $chunks, &$pruned, &$read, &$last) {
+            ->chunkById(1000, function ($rows) use ($type, $model, $int, $kinds, $chunks, &$pruned, &$read, &$last) {
                 $ids  = $rows->map(fn ($row) => (string) ((object) $row)->model_id)->all(); // an app-wide array fetch mode returns arrays
                 // model_id holds strval() of the key: one no integer key gives names no row.
                 $keys = $int ? array_values(array_filter($ids, fn (string $id) => (string) (int) $id === $id)) : $ids;
-                $live = $keys === [] ? collect() : Model::withoutEvents(fn () => IndexQuery::for($type)->useWritePdo()->setEagerLoads([])
+                // searchIndexQuery() applied with the scopes registered (it may call withTrashed() or
+                // withoutGlobalScope()), then every global scope dropped; trashed rows left out by hand.
+                $query = fn () => IndexQuery::for($type)->withoutGlobalScopes()->useWritePdo()->setEagerLoads([])
                     ->when(method_exists($model, 'getQualifiedDeletedAtColumn'), fn ($query) => $query->whereNull($model->getQualifiedDeletedAtColumn()))
-                    ->whereKey($keys)->pluck($model->getQualifiedKeyName()));
+                    ->whereKey($keys);
+                $live = $keys === [] ? collect() : Model::withoutEvents(fn () => $kinds
+                    ? $query()->get()->filter(fn (Model $row) => self::indexType(self::rowClass($row)) === $type)->map(fn (Model $row) => $row->getKey())
+                    : $query()->pluck($model->getQualifiedKeyName()));
                 $gone = array_values(array_diff($ids, $live->map(fn ($key) => (string) $key)->all()));
                 if ($gone !== []) {
                     $this->write($type, $gone, [], refile: false);

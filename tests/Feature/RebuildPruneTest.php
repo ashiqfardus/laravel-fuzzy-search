@@ -77,6 +77,56 @@ class PruneKindChild extends PruneKindParent
     }
 }
 
+/** A tenant scope bound to the request or the command's context: a static flag here. */
+class PruneTenantArticle extends Model
+{
+    use Searchable;
+
+    public static ?string $tenant = null;
+
+    protected $table   = 'prune_tenant_articles';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope('tenant', fn (Builder $query) => $query->when(static::$tenant !== null, fn ($query) => $query->where('tenant', static::$tenant)));
+    }
+}
+
+/** Single-table inheritance with an index per kind: the child's kind is a global scope. */
+class PruneSepParent extends Model
+{
+    use Searchable;
+
+    protected $table   = 'prune_kinds';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['title' => 1]];
+
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $attributes = (array) $attributes;
+        $class      = ($attributes['kind'] ?? '') === 'child' ? PruneSepChild::class : static::class;
+        $model      = (new $class)->newInstance([], true);
+        $model->setRawAttributes($attributes, true);
+        $model->setConnection($connection ?: $this->getConnectionName());
+
+        return $model;
+    }
+}
+
+class PruneSepChild extends PruneSepParent
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('child', fn ($query) => $query->where('kind', 'child'));
+    }
+}
+
 /**
  * ER-222 (WF-14): a plain fuzzy-search:rebuild indexed the rows the model's index query returns and
  * left every other document in place: those of rows deleted, trashed or scoped out without model
@@ -87,7 +137,7 @@ class PruneKindChild extends PruneKindParent
  */
 class RebuildPruneTest extends TestCase
 {
-    private const TABLES = ['prune_articles', 'prune_codes', 'prune_kinds', 'job_batches'];
+    private const TABLES = ['prune_articles', 'prune_codes', 'prune_kinds', 'prune_tenant_articles', 'job_batches'];
 
     protected function setUp(): void
     {
@@ -111,6 +161,11 @@ class RebuildPruneTest extends TestCase
             $table->string('title');
             $table->string('kind', 16);
         });
+        Schema::create('prune_tenant_articles', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+            $table->string('tenant', 8);
+        });
 
         DB::table('prune_articles')->insert(array_map(fn ($w) => ['title' => "quartz {$w}"], ['amber', 'birch', 'cedar', 'delta', 'ember', 'fjord']));
         DB::table('prune_codes')->insert(array_map(fn ($c) => ['code' => $c, 'title' => "quartz code{$c}"], ['b-2', 'a-1', 'C-3', '10', '9']));
@@ -124,6 +179,8 @@ class RebuildPruneTest extends TestCase
 
     protected function tearDown(): void
     {
+        PruneTenantArticle::$tenant = null;
+
         if ($this->status()->isSuccess()) {
             $this->assertModelTermsMirrorPostings(static::class . '::' . $this->name());
         }
@@ -296,6 +353,61 @@ class RebuildPruneTest extends TestCase
 
         $this->assertSame(1998, $this->totalDocs(PruneArticle::class));
         $this->assertSame(array_map('strval', array_values(array_diff($ids, [...$gone, $ids[1], $ids[1999], $ids[2], $ids[1998]]))), array_map('strval', DB::table('fuzzy_index_documents')->where('model_type', PruneArticle::class)->pluck('model_id')->map(fn ($id) => (int) $id)->sort()->values()->all()));
+    }
+
+    /**
+     * ER-222b: a row a global scope hides is no row gone. A single-database multi-tenant app runs the
+     * rebuild per tenant (tenants:run fuzzy-search:rebuild) under a tenant scope: the pruning read
+     * through it removed every other tenant's documents. It reads the rows without global scopes;
+     * a row deleted, trashed or left out by searchIndexQuery() is still removed.
+     *
+     * @dataProvider modes
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('modes')]
+    public function test_rows_a_global_scope_hides_keep_their_documents(array $options): void
+    {
+        foreach (['a', 'b'] as $tenant) {
+            DB::table('prune_tenant_articles')->insert(array_map(fn ($i) => ['title' => "quartz {$tenant}{$i}", 'tenant' => $tenant], [1, 2, 3]));
+        }
+        $this->rebuild(PruneTenantArticle::class);
+        $all = DB::table('prune_tenant_articles')->orderBy('id')->pluck('id')->map(fn ($id) => (string) $id)->all();
+        $this->assertSame($all, $this->indexed(PruneTenantArticle::class));
+
+        // One of tenant b's rows is deleted; the rebuild runs for tenant a.
+        $goneB = (string) DB::table('prune_tenant_articles')->where('tenant', 'b')->max('id');
+        DB::table('prune_tenant_articles')->where('id', $goneB)->delete();
+        PruneTenantArticle::$tenant = 'a';
+
+        $this->rebuild(PruneTenantArticle::class, $options);
+
+        PruneTenantArticle::$tenant = null;
+        $this->assertSame(array_values(array_diff($all, [$goneB])), $this->indexed(PruneTenantArticle::class), 'tenant b keeps its documents, but the deleted row\'s');
+        $this->assertSame(5, $this->totalDocs(PruneTenantArticle::class));
+    }
+
+    /**
+     * Without global scopes a row is read as its kind: a document filed under a kind's type for a row
+     * of another kind now is removed from it.
+     *
+     * @dataProvider modes
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('modes')]
+    public function test_a_row_that_changed_kind_leaves_the_type_of_its_old_kind(array $options): void
+    {
+        $this->rebuild(PruneSepParent::class);
+        $this->assertSame(['1', '3'], $this->indexed(PruneSepChild::class));
+        $this->assertSame(['2', '4'], $this->indexed(PruneSepParent::class));
+
+        DB::table('prune_kinds')->where('id', 3)->update(['kind' => 'parent']); // without model events
+
+        $this->rebuild(PruneSepChild::class, $options);
+
+        $this->assertSame(['1'], $this->indexed(PruneSepChild::class));
+        $this->assertSame(1, $this->totalDocs(PruneSepChild::class));
+
+        $this->rebuild(PruneSepParent::class, $options);
+        $this->assertSame(['2', '3', '4'], $this->indexed(PruneSepParent::class));
+        $this->assertSame(['1'], $this->indexed(PruneSepChild::class));
     }
 
     public function test_the_rebuild_says_how_many_documents_it_removed(): void
