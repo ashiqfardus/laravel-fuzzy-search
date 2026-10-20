@@ -213,7 +213,7 @@ class InMemorySearch
             searchTerm:     $term,
             columns:        $this->columns,
             algorithm:      'in_memory',
-            candidateCount: $this->items->count(),
+            candidateCount: $scored->count(), // the matches before the skip()/take() cut
             latencyMs:      round((microtime(true) - $startedAt) * 1000, 2),
             resultCount:    $results->count(),
             path:           'in_memory',
