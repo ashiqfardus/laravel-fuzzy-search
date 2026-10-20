@@ -19,6 +19,9 @@ class KeyChangeIndexTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        if (DB::connection()->getDriverName() === 'sqlsrv') {
+            $this->markTestSkipped('SQL Server cannot update an IDENTITY column: a key change is not possible on the users table there. CI covers the other databases.');
+        }
         config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
     }
 
