@@ -133,9 +133,8 @@ class SearchableIndexingObserver
                         // change, and a deleted row leaves the index only if it is still gone or trashed.
                         (new IndexModelJob($type, $key))->handle(app(IndexManager::class));
                     } catch (\Throwable $e) {
-                        // Named, so the row can be repaired on its own: a deadlock's error names neither,
-                        // and a plain rebuild reads only the rows the query returns, so it leaves a
-                        // deleted row in the index (P7W-2).
+                        // Named, so the row can be repaired on its own, without a rebuild of the whole
+                        // model: a deadlock's error names neither.
                         report(new LaravelFuzzySearchException(
                             "Indexing {$type} {$key} failed: {$e->getMessage()} IndexModelJob::dispatch() of that type and key repairs its index entry, and removes it if the row is gone.",
                             ['model' => $type, 'key' => $key],

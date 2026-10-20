@@ -281,6 +281,64 @@ class IndexManager
     }
 
     /**
+     * Take out of $class's index type every document whose row its index query (IndexQuery::for(),
+     * with the model's global scopes, a trashed row left out, as write() re-reads a row) no longer
+     * returns, and out of the other types of its single-table-inheritance hierarchy every row gone
+     * from the table (unfileGone()): a row deleted, trashed or scoped out without model events (a
+     * query-builder delete(), a reseed, a failed index write, a changed key) left its document in
+     * the index, counted by total_docs, a paginator's total and the federated counts until a
+     * `rebuild --fresh`. A plain rebuild runs this after its walk.
+     *
+     * One keyed read of the table per 1,000 documents. The documents found gone go through write(),
+     * a chunk in one transaction, whose re-read under its claim removes them, or indexes a row saved
+     * meanwhile under the same key, so it can run while the app indexes.
+     *
+     * Given $chunks, it stops after that many chunks and sets $after to the model_id to go on after
+     * (rebuild --async runs one PruneIndexJob per $chunks, each within its job timeout); null once
+     * the last document was read, when unfileGone() runs.
+     *
+     * @param  string|null $after the model_id to go on after; null from the first
+     * @return int the documents of $class's type found gone
+     */
+    public function prune(string $class, ?string &$after = null, ?int $chunks = null): int
+    {
+        $type   = self::indexType($class);
+        $model  = new $type();
+        $int    = in_array($model->getKeyType(), ['int', 'integer'], true);
+        $pruned = 0;
+        $read   = 0;
+        $last   = null;
+
+        $complete = DB::table('fuzzy_index_documents')->useWritePdo()->where('model_type', $type)->select('model_id')
+            ->when($after !== null, fn ($query) => $query->where('model_id', '>', $after))
+            ->chunkById(1000, function ($rows) use ($type, $model, $int, $chunks, &$pruned, &$read, &$last) {
+                $ids  = $rows->map(fn ($row) => (string) ((object) $row)->model_id)->all(); // an app-wide array fetch mode returns arrays
+                // model_id holds strval() of the key: one no integer key gives names no row.
+                $keys = $int ? array_values(array_filter($ids, fn (string $id) => (string) (int) $id === $id)) : $ids;
+                $live = $keys === [] ? collect() : Model::withoutEvents(fn () => IndexQuery::for($type)->useWritePdo()->setEagerLoads([])
+                    ->when(method_exists($model, 'getQualifiedDeletedAtColumn'), fn ($query) => $query->whereNull($model->getQualifiedDeletedAtColumn()))
+                    ->whereKey($keys)->pluck($model->getQualifiedKeyName()));
+                $gone = array_values(array_diff($ids, $live->map(fn ($key) => (string) $key)->all()));
+                if ($gone !== []) {
+                    $this->write($type, $gone, [], refile: false);
+                    $pruned += count($gone);
+                }
+
+                $last = end($ids);
+
+                // A short chunk is the last: chunkById() ends there, and the read is complete.
+                return $chunks === null || ++$read < $chunks || count($ids) < 1000;
+            }, 'model_id');
+
+        $after = $complete ? null : $last;
+        if ($complete) {
+            $this->unfileGone($class);
+        }
+
+        return $pruned;
+    }
+
+    /**
      * After indexBatch() filed each row under its kind's type, re-sync it under every other type
      * that may hold it: each type of its hierarchy that does (filedUnder()), and the instance's own
      * class's type unless that is the hierarchy's parent (see rowTypes()). The write re-reads the row

@@ -810,7 +810,7 @@ A real inverted index for large tables, across seven tables: `fuzzy_index_terms`
 php artisan fuzzy-search:rebuild "App\Models\Post"    # build once; with indexing.enabled on, saves keep it in sync
 ```
 
-With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild only reads the rows the model's query returns, so it does not remove a row such a write deleted, trashed or moved out of a global scope. For those, run `fuzzy-search:rebuild "App\Models\Post" --fresh`, or `IndexModelJob::dispatch(Post::class, $id)` per row: the job removes a row that is gone.
+With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild also removes the documents of the rows the model's index query no longer returns: a row such a write deleted, trashed or moved out of a global scope. `IndexModelJob::dispatch(Post::class, $id)` repairs one row: the job removes a row that is gone.
 
 ```php
 Post::search('tolkien')->useInvertedIndex()->get();

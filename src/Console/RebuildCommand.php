@@ -4,6 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
 use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Jobs\PruneIndexJob;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\RebuildIndexJob;
 use Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver;
 use Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery;
@@ -61,14 +62,18 @@ class RebuildCommand extends Command
         $queue     = $this->option('queue') ?? config('fuzzy-search.indexing.queue', 'default');
         $total     = IndexQuery::for($modelClass)->count();
 
+        // Without --fresh, the documents of rows the walk no longer reads (deleted, trashed or scoped
+        // out without model events) are removed after it (IndexManager::prune()). --fresh flushed them.
+        $prune = !$this->option('fresh');
+
         if ($this->option('async')) {
-            return $this->rebuildAsync($modelClass, $chunkSize, $queue, $total);
+            return $this->rebuildAsync($modelClass, $chunkSize, $queue, $total, $prune);
         }
 
-        return $this->rebuildSync($modelClass, $chunkSize, $indexManager, $total);
+        return $this->rebuildSync($modelClass, $chunkSize, $indexManager, $total, $prune);
     }
 
-    private function rebuildSync(string $modelClass, int $chunkSize, IndexManager $indexManager, int $total): int
+    private function rebuildSync(string $modelClass, int $chunkSize, IndexManager $indexManager, int $total, bool $prune): int
     {
         $this->info("Rebuilding index for [{$modelClass}] synchronously ({$total} records, chunk: {$chunkSize})...");
         $bar = $this->output->createProgressBar($total);
@@ -86,6 +91,11 @@ class RebuildCommand extends Command
 
         $bar->finish();
         $this->newLine();
+
+        $pruned = $prune ? $indexManager->prune($modelClass) : 0;
+        if ($pruned > 0) {
+            $this->line("Removed {$pruned} documents of rows the index query no longer returns.");
+        }
 
         // Statistics for the rebuilt index (PostgreSQL; see IndexManager::analyzeIndex()).
         $indexManager->analyzeIndex(vacuum: true);
@@ -130,7 +140,7 @@ class RebuildCommand extends Command
      */
     private const JOBS_PER_DISPATCH = 300;
 
-    private function rebuildAsync(string $modelClass, int $chunkSize, string $queue, int $total): int
+    private function rebuildAsync(string $modelClass, int $chunkSize, string $queue, int $total, bool $prune): int
     {
         $this->info("Dispatching async rebuild for [{$modelClass}] ({$total} records, chunk: {$chunkSize}, queue: {$queue})...");
 
@@ -179,6 +189,13 @@ class RebuildCommand extends Command
                 $model->getQualifiedKeyName(),
                 $model->getKeyName()
             );
+            $chunks = $queued + count($jobs);
+            // The batch's last job, in steps it adds to the batch (PruneIndexJob): with no row left
+            // to index, the batch is this job alone. It does not depend on the walk, so a worker that
+            // runs it beside the last rebuild jobs leaves the same index.
+            if ($prune) {
+                $jobs[] = new PruneIndexJob($modelClass);
+            }
             if ($jobs !== []) {
                 $dispatch();
             }
@@ -198,7 +215,7 @@ class RebuildCommand extends Command
         }
 
         $this->info("Batch dispatched: {$batch->id}");
-        $this->line("Jobs: {$queued} × {$chunkSize} records");
+        $this->line("Jobs: {$chunks} × {$chunkSize} records" . ($prune ? ', then one that removes the documents of rows the index query no longer returns' : ''));
         $this->line("Monitor: php artisan queue:work --queue={$queue}");
 
         return self::SUCCESS;
