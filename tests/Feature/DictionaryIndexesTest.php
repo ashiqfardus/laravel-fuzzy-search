@@ -32,6 +32,7 @@ class DictionaryIndexesTest extends TestCase
     private const COMPACT      = __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
     private const MODEL_TERMS  = __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php';
     private const PATH         = __DIR__ . '/../../database/migrations';
+    private const DROP         = self::PATH . '/2026_10_20_000001_drop_term_length_index_from_fuzzy_index_terms_table.php';
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
@@ -228,6 +229,31 @@ class DictionaryIndexesTest extends TestCase
 
         $this->migrations('migrate');
         $this->assertSame($fresh, $this->schema());
+    }
+
+    /**
+     * WD-7: an install that holds an earlier build's (term_length, doc_count) index without the id,
+     * which the compact postings migration's convergence did not reach, loses it too: 2026_10_20_000001
+     * drops either index, and the schema is a fresh install's. A second run changes nothing, and
+     * down() builds back only the (term_length, doc_count, id) one, the schema before it at the head.
+     */
+    public function test_the_drop_takes_an_earlier_builds_two_column_index_too_and_runs_twice(): void
+    {
+        $migration = require self::DROP;
+        $fresh     = $this->schema();
+        $migration->down();
+        $before = $this->schema();
+        Schema::table('fuzzy_index_terms', fn ($table) => $table->index(['term_length', 'doc_count'], self::LENGTH_COUNT));
+        Schema::table('fuzzy_index_terms', fn ($table) => $table->dropIndex(self::LENGTH_COUNT_ID));
+
+        $migration->up();
+        $this->assertSame($fresh, $this->schema());
+        $this->assertSame([], $this->ddl(fn () => $migration->up()), 'a second run');
+
+        $migration->down();
+        $this->assertSame($before, $this->schema());
+        $this->assertSame(['term_length', 'doc_count', 'id'], $this->indexColumns('fuzzy_index_terms', self::LENGTH_COUNT_ID));
+        $migration->up();
     }
 
     /**
