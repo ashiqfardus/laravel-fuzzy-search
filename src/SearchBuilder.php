@@ -139,6 +139,9 @@ class SearchBuilder
         $this->withSynonyms((array) config('fuzzy-search.synonyms', []));
         $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
         $this->maxPatterns = (int) config('fuzzy-search.performance.max_patterns', 100);
+        // The default distance of every path (LIKE fuzzy, the index, extended ~), as typoTolerance()
+        // clamps it. Not put in $options: levenshtein keeps its own levenshtein.max_distance.
+        $this->typoTolerance = max(0, min(5, (int) config('fuzzy-search.typo_tolerance.max_distance', 2)));
         // Forwarded through $options (merged into every applyFuzzyWhere() call) rather than
         // left to BaseDriver::capPatterns()'s own config fallback: the FuzzySearch singleton
         // is resolved eagerly at service-provider boot, so its config snapshot predates any
@@ -508,7 +511,9 @@ class SearchBuilder
     }
 
     /**
-     * Set typo tolerance level
+     * How many edits a typo may take (0 to 5), on every path: it replaces typo_tolerance.max_distance,
+     * the default, and on the levenshtein algorithm its own levenshtein.max_distance.
+     * typo_tolerance.enabled = false makes it 0 everywhere (see typoDistance()).
      */
     public function typoTolerance(int $level): self
     {
@@ -1663,6 +1668,16 @@ class SearchBuilder
     }
 
     /**
+     * The edits a typo may take on the index and extended ~ paths: typoTolerance(), or 0 under
+     * typo_tolerance.enabled = false. The fuzzy and levenshtein drivers apply the same switch to
+     * the LIKE path (and the query-builder macros) themselves.
+     */
+    private function typoDistance(): int
+    {
+        return config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+    }
+
+    /**
      * The weighted terms the inverted index is queried with: the processed tokens at 1.0
      * plus, when typoTolerance() > 0 (and typo_tolerance.enabled), dictionary neighbours
      * within that many edits, damped so an expansion contributes less than the exact term
@@ -1718,7 +1733,7 @@ class SearchBuilder
             $terms = array_keys($weights);
         }
 
-        $distance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+        $distance = $this->typoDistance();
 
         if ($distance > 0 && $terms !== []) {
             $fuzzy  = (array) config('fuzzy-search.bm25.fuzzy', []);
@@ -2022,7 +2037,7 @@ class SearchBuilder
             ? $this->query
             : ($this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query);
 
-        $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+        $typoDistance = $this->typoDistance();
 
         // The caller's where(A)->orWhere(B) as one group, before the query and the filters (RE-1).
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);

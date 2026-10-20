@@ -111,6 +111,17 @@ return [
     |--------------------------------------------------------------------------
     | Typo Tolerance
     |--------------------------------------------------------------------------
+    |
+    | enabled: false stops every typo match. The fuzzy and levenshtein
+    |   algorithms, the inverted index, extended ~ and the whereFuzzy-style
+    |   macros then match the term itself, whatever a distance says.
+    | max_distance: the edits a typo may take by default, on the fuzzy
+    |   algorithm, the inverted index and extended ~, for every model.
+    |   typoTolerance(), $searchable['typo_tolerance'] or a preset override it.
+    |   The levenshtein algorithm reads levenshtein.max_distance instead.
+    | min_word_length: a shorter word gets no typo tolerance (it still matches
+    |   exactly), on the fuzzy algorithm, extended ~ and the inverted index.
+    |
     */
     'typo_tolerance' => [
         'enabled' => true,
@@ -367,6 +378,11 @@ return [
     |--------------------------------------------------------------------------
     | Levenshtein Settings
     |--------------------------------------------------------------------------
+    |
+    | max_distance: the levenshtein algorithm's default distance.
+    | typoTolerance(), $searchable['typo_tolerance'] or a preset override it,
+    | and typo_tolerance.enabled = false makes it 0.
+    |
     */
     'levenshtein' => [
         'max_distance' => 2,

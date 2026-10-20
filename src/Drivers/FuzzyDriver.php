@@ -18,8 +18,10 @@ class FuzzyDriver extends BaseDriver
     public function __construct(array $config, string $driver)
     {
         parent::__construct($config, $driver);
-        $this->maxDistance   = (int) ($config['fuzzy']['max_distance']
-            ?? $config['typo_tolerance']['max_distance'] ?? 2);
+        // typo_tolerance.enabled = false stops typo patterns whatever the distance, as on the index.
+        $this->maxDistance   = ($config['typo_tolerance']['enabled'] ?? true)
+            ? (int) ($config['fuzzy']['max_distance'] ?? $config['typo_tolerance']['max_distance'] ?? 2)
+            : 0;
         $this->minWordLength = (int) ($config['typo_tolerance']['min_word_length'] ?? 4);
     }
 

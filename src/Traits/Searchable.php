@@ -282,11 +282,11 @@ trait Searchable
             return $config;
         }
 
-        // Zero-config: auto-detect columns
+        // Zero-config: auto-detect columns. The builder's own default is the typo tolerance
+        // (typo_tolerance.max_distance), as for a model that declares none.
         return [
             'columns' => $this->getAutoDetectedColumns(),
             'algorithm' => config('fuzzy-search.default_algorithm', 'fuzzy'),
-            'typo_tolerance' => config('fuzzy-search.typo_tolerance.max_distance', 2),
         ];
     }
 
