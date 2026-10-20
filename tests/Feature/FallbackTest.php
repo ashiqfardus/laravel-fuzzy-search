@@ -84,7 +84,7 @@ class FallbackTest extends TestCase
 
     public function test_fallback_with_typo_tolerance(): void
     {
-        $results = User::search('jhn')
+        $results = User::search('jonh')
             ->using('levenshtein')
             ->typoTolerance(2)
             ->fallback('like')

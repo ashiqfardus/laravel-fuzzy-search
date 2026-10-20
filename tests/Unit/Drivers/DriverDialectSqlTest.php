@@ -148,11 +148,11 @@ class DriverDialectSqlTest extends TestCase
     public function test_relevance_ordering_quotes_identifiers_per_driver(): void
     {
         $expected = [
-            'mysql'   => 'case when `name` = ?',
-            'mariadb' => 'case when `name` = ?',
-            'pgsql'   => 'case when "name" = ?',
-            'sqlsrv'  => 'case when [name] = ?',
-            'sqlite'  => 'case when "name" = ?',
+            'mysql'   => 'case when `name` like ?',
+            'mariadb' => 'case when `name` like ?',
+            'pgsql'   => 'case when "name" ilike ?',
+            'sqlsrv'  => 'case when [name] like ?',
+            'sqlite'  => 'case when "name" like ?',
         ];
 
         $checked = 0;

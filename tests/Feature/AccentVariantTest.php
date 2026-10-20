@@ -166,7 +166,7 @@ class AccentVariantTest extends TestCase
     {
         $search = fn () => $this->builder()->search('Müller')->searchIn(['name'])->using('like');
 
-        $this->assertMatchesRegularExpression('/order by .*CASE WHEN \S+ = \? OR \S+ = \? THEN/', $search()->toSql());
+        $this->assertMatchesRegularExpression('/order by .*CASE WHEN \S+ I?LIKE \? (ESCAPE \S+ )?OR \S+ I?LIKE \? (ESCAPE \S+ )?THEN/i', $search()->toSql());
         $bindings = $search()->getBindings();
         $exact    = array_search(100, $bindings, true);
         $this->assertSame(['Müller', 'Muller', 100], array_slice($bindings, $exact - 2, 3), 'the exact tier binds both forms');

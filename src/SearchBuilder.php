@@ -3254,7 +3254,8 @@ class SearchBuilder
         // the folded form ranks as a match of it; one form (an ASCII term) compiles as before.
         $terms  = $this->termVariants($this->searchTerm);
         // Escape LIKE metacharacters so user input cannot widen the match set (consistent
-        // with all driver LIKE paths). The exact-match binding uses the raw term intentionally.
+        // with all driver LIKE paths). The exact tier is the same LIKE without a wildcard, so it
+        // folds case as the predicate does (a plain = is case-sensitive on SQLite and PostgreSQL).
         $safeTerms = array_map(fn (string $term) => \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($term, $driver), $terms);
 
         $scoreExpressions = [];
@@ -3268,7 +3269,7 @@ class SearchBuilder
             // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else.
             $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
 
-            $equals = implode(' OR ', array_fill(0, count($terms), "{$col} = ?"));
+            $equals = implode(' OR ', array_fill(0, count($terms), $like));
             $likes  = implode(' OR ', array_fill(0, count($terms), $like));
 
             $scoreExpressions[] = "(CASE WHEN {$equals} THEN ? ELSE 0 END)";
@@ -3276,7 +3277,7 @@ class SearchBuilder
             $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
             $bindings = array_merge(
                 $bindings,
-                $terms, [(int) round($weight * $this->scoring['exact_match'])],
+                $safeTerms, [(int) round($weight * $this->scoring['exact_match'])],
                 array_map(fn (string $safe) => $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['prefix_match'] * $prefixBoost)],
                 array_map(fn (string $safe) => '%' . $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['contains'])],
             );
