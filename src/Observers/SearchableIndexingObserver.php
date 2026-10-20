@@ -9,6 +9,17 @@ use Illuminate\Database\Eloquent\Model;
 
 class SearchableIndexingObserver
 {
+    /** @var \WeakMap<Model, int|string> the key a row had before a save that changes it (read at updating, since saved() sees the new one as the original) */
+    private static ?\WeakMap $oldKeys = null; // static: "Class@method" listeners get a new observer per event
+
+    public function updating(Model $model): void
+    {
+        if ($model->isDirty($model->getKeyName()) && $model->getOriginal($model->getKeyName()) !== null) {
+            self::$oldKeys ??= new \WeakMap();
+            self::$oldKeys[$model] = $model->getOriginal($model->getKeyName());
+        }
+    }
+
     public function saved(Model $model): void
     {
         if (!config('fuzzy-search.indexing.enabled', false)) {
@@ -21,11 +32,22 @@ class SearchableIndexingObserver
             return;
         }
 
-        if (!$model->wasRecentlyCreated && !$this->needsReindex($model, $columns)) {
+        // A save that changes the primary key indexes the new key, and syncs the old one too: its
+        // sync finds no row under that key and takes the document and postings out, which nothing
+        // else would (a rebuild reads only the rows that exist).
+        $oldKey     = self::$oldKeys[$model] ?? null;
+        $keyChanged = $oldKey !== null && $model->wasChanged($model->getKeyName());
+        unset(self::$oldKeys[$model]);
+
+        if (!$model->wasRecentlyCreated && !$keyChanged && !$this->needsReindex($model, $columns)) {
             return; // nothing the index depends on changed — skip dispatch
         }
 
         $this->reindex($model);
+
+        if ($keyChanged) {
+            $this->reindex($model, $oldKey);
+        }
     }
 
     public function deleted(Model $model): void
@@ -89,10 +111,10 @@ class SearchableIndexingObserver
         return $model->wasChanged(array_values(array_unique(array_merge($columns, $triggers))));
     }
 
-    protected function reindex(Model $model): void
+    protected function reindex(Model $model, int|string|null $key = null): void
     {
         $row   = clone $model; // as saved or deleted: a later save can change this instance before the commit
-        $key   = $model->getKey();
+        $key ??= $model->getKey(); // the old key of a key change
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 
