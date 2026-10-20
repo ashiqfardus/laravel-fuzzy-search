@@ -567,6 +567,8 @@ $alternatives = User::search('jonh')->didYouMean(3);  // Typo
 
 The closest term comes first, then the most common one. How far it reaches scales with the term's length: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. `searchIn()` does not narrow them: like dictionary completions, they are the model's terms from every indexed column. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
 
+A phrase is corrected word by word: `User::search('charli brwn')->didYouMean(1)` returns `charlie brown` with a distance of 2 (the edits of each word added up). A word the model's dictionary holds stays as typed, and a phrase with no word to correct, or none with an alternative, returns `[]`. The first phrase takes every misspelled word's closest alternative, the second the next closest, and so on.
+
 ### Multi-Model Federation Search
 
 Search across multiple models simultaneously:

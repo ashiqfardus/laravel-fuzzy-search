@@ -4537,7 +4537,79 @@ class SearchBuilder
             return [];
         }
 
-        $term    = mb_strtolower(trim($this->searchTerm));
+        $term  = mb_strtolower(trim($this->searchTerm));
+        $words = preg_split('/\s+/u', $term, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+        if (count($words) > 1) {
+            return $this->didYouMeanPhrase($words, $term, $limit, $modelClass);
+        }
+
+        $found = $this->wordCorrections($term, $limit, $modelClass);
+
+        return array_map(
+            fn ($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
+            $found['alternatives'] ?? []
+        );
+    }
+
+    /**
+     * Correct a phrase word by word: a word the model's dictionary does not hold is replaced by its
+     * closest alternatives, a word it holds stays. The first phrase takes every such word's best
+     * alternative, the next one the second best, and so on; a word with fewer alternatives keeps
+     * its best. A phrase with no word to correct, or none that has an alternative, offers nothing.
+     *
+     * @param  list<string> $words
+     * @return list<array{term: string, distance: int, confidence: float}>
+     */
+    protected function didYouMeanPhrase(array $words, string $term, int $limit, string $modelClass): array
+    {
+        $corrections = [];
+        foreach ($words as $i => $word) {
+            if (mb_strlen($word) < 2) {
+                continue;
+            }
+            $found = $this->wordCorrections($word, $limit, $modelClass);
+            if ($found === null) {
+                return []; // dictionary not migrated yet
+            }
+            if (!$found['known'] && $found['alternatives'] !== []) {
+                $corrections[$i] = $found['alternatives'];
+            }
+        }
+
+        $phrases = [];
+        for ($n = 0; $n < $limit; $n++) {
+            $out      = $words;
+            $distance = 0;
+            $moved    = false;
+            foreach ($corrections as $i => $alternatives) {
+                $pick = $alternatives[min($n, count($alternatives) - 1)];
+                $moved = $moved || $n < count($alternatives);
+                $out[$i]   = $pick['term'];
+                $distance += $pick['distance'];
+            }
+            if (!$moved) {
+                break;
+            }
+            $phrase    = implode(' ', $out);
+            $phrases[] = [
+                'term'       => $phrase,
+                'distance'   => $distance,
+                'confidence' => round(1 - ($distance / max(mb_strlen($term), mb_strlen($phrase))), 2),
+            ];
+        }
+
+        return $phrases;
+    }
+
+    /**
+     * The alternatives to one word, best first, and whether the model's dictionary holds the word
+     * itself; null when the dictionary is not migrated yet.
+     *
+     * @return array{known: bool, alternatives: list<array<string, mixed>>}|null
+     */
+    protected function wordCorrections(string $term, int $limit, string $modelClass): ?array
+    {
         $termLen = mb_strlen($term);
 
         // The reach grows with the term: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Three
@@ -4554,12 +4626,14 @@ class SearchBuilder
                 throw $e; // a real database error — surface it
             }
 
-            return []; // dictionary not migrated yet
+            return null; // dictionary not migrated yet
         }
 
+        $known        = false;
         $alternatives = [];
         foreach ($candidates as $candidate) {
             if ($candidate['distance'] === 0) {
+                $known = true;
                 continue;
             }
             $maxLen = max($termLen, mb_strlen($candidate['term']));
@@ -4581,14 +4655,7 @@ class SearchBuilder
             $alternatives = $this->visibleAlternatives($alternatives, $base, $modelClass, $limit);
         }
 
-        return array_slice(
-            array_map(
-                fn($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
-                $alternatives
-            ),
-            0,
-            $limit
-        );
+        return ['known' => $known, 'alternatives' => array_slice($alternatives, 0, $limit)];
     }
 
     /**
