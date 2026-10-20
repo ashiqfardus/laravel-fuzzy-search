@@ -24,9 +24,9 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 | **Results** | Highlighted results • Custom scoring hooks • Debug/explain-score mode |
 | **Performance** | BM25 inverted index • Async indexing (queue) • Redis/cache support |
 | **Pagination** | Stable ranking • Offset pagination • Simple (look-ahead) pagination |
-| **Reliability** | Fallback search strategy • DB-agnostic • Rate-limit friendly • SQL-injection safe |
+| **Reliability** | Fallback search strategy • DB-agnostic • SQL-injection safe |
 | **Configuration** | Config file support • Per-model customization |
-| **Developer Tools** | CLI indexing • Benchmark tools • Built-in test suite • Performance utilities |
+| **Developer Tools** | CLI indexing • Benchmark tools • Performance utilities |
 | **Smart Search** | Autocomplete suggestions (dictionary-backed on indexed models) • "Did you mean" spell correction • Multi-model federation • Persisted search analytics |
 | **Integrations** | Filament global search & table search • Scout driver • JSON API resources |
 
