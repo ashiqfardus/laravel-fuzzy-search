@@ -94,9 +94,9 @@ On PostgreSQL and SQLite, install the package once per schema (or database file)
 > → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md): every behaviour change there applies to you too.
 
 > **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
-> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`, while nothing is
-> indexing: see [Artisan Commands](docs/bm25.md#artisan-commands)) to pick up weighted BM25
-> ranking. Read the guide's behaviour-changes list first: some calls now return
+> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`) to pick up weighted BM25
+> ranking; a plain rebuild can run while the app indexes, and only `--fresh` needs nothing
+> indexing (see [Artisan Commands](docs/bm25.md#artisan-commands)). Read the guide's behaviour-changes list first: some calls now return
 > other rows, throw, or cache where 2.0 did not. Before you deploy:
 >
 > - **On MySQL and MariaDB a large index takes a while to migrate.** The postings are rewritten
@@ -109,7 +109,8 @@ On PostgreSQL and SQLite, install the package once per schema (or database file)
 >   and take seconds: build each model's index once afterwards (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`).
 > - **Restart the queue workers right after migrating** (`php artisan queue:restart`,
 >   `horizon:terminate` under Horizon, `octane:reload` under Octane), and keep them from indexing
->   until the new code serves.
+>   until the new code serves. A `rebuild --fresh` a migration's warning asks for runs before the
+>   restart, since it needs nothing indexing.
 > - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit` to `true`;
 >   otherwise an index write inside one of your transactions can deadlock with your other
 >   transactions and reads of the same rows (see the guide's
