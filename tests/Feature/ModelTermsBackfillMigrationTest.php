@@ -292,6 +292,38 @@ class ModelTermsBackfillMigrationTest extends TestCase
         $this->assertContains('kettle', array_column(app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates('kettl', 1, 500, BackfillNote::class, false), 'term'));
     }
 
+    /**
+     * The backfill sets a range's 0 lengths by primary key, over the ids of the words it locked: an
+     * UPDATE by `term_length = 0` went through the (term_length, doc_count, id) index on MySQL/MariaDB
+     * and locked every such word, those of other ranges and the gap new words go in too, so an index
+     * write deadlocked with it (P7R-3).
+     */
+    public function test_the_backfill_sets_lengths_by_primary_key(): void
+    {
+        $this->index();
+        DB::table('fuzzy_index_terms')->whereIn('term', ['kettle', 'copper'])->update(['term_length' => 0]);
+        $this->created();
+
+        $updates = [];
+        DB::listen(function (QueryExecuted $query) use (&$updates) {
+            if (preg_match('/^\s*update\s+\S*fuzzy_index_terms\S*\s+set\s+term_length\b/i', $query->sql)) {
+                $updates[] = $query->sql;
+            }
+        });
+        try {
+            $this->backfill(1);
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+
+        $this->assertNotEmpty($updates);
+        foreach ($updates as $sql) {
+            $this->assertMatchesRegularExpression('/\bwhere\s+id\s+in\s*\(/i', $sql);
+            $this->assertDoesNotMatchRegularExpression('/term_length\s*=\s*0/i', $sql);
+        }
+        $this->assertSame(0, DB::table('fuzzy_index_terms')->where('term_length', 0)->count());
+    }
+
     /** The backfill of an index written before it counts each model's documents of each word, as the index writes keep them, then drops its state. */
     #[DataProvider('chunks')]
     public function test_the_backfill_counts_each_models_documents_of_each_word(int $chunk): void

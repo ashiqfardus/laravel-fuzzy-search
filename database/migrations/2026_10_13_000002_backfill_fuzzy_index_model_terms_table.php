@@ -142,11 +142,18 @@ return new class extends Migration
         // A word a 2.0 worker added during the upgrade's deploy window has a term_length of 0 on
         // MySQL/MariaDB (UPGRADE: "New migration to run"). The rows below copy the length, and a
         // model's typo expansion reads it there, so set it first, as 2026_09_17_000001 does (P6-A1).
+        // Found with a plain read (the range's words are locked above, so it reads them as they
+        // are) and set by primary key: an UPDATE by `term_length = 0` went through the
+        // (term_length, doc_count, id) index and locked every such word, those of later ranges and
+        // the gap new words go in too, so an index write deadlocked with it (P7R-3).
         $driver = DB::connection()->getDriverName();
         $length = $driver === DbDialect::SQLSRV
             ? 'LEN(term COLLATE Latin1_General_100_CI_AS_SC)'
             : DbDialect::lengthFunction($driver) . '(term)';
-        DB::update('UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET term_length = {$length} WHERE term_length = 0 AND id > ? AND id <= ?", [$low, $high]);
+        $zero = DB::table('fuzzy_index_terms')->where('id', '>', $low)->where('id', '<=', $high)->where('term_length', 0)->pluck('id')->all();
+        foreach (array_chunk($zero, 1000) as $ids) {
+            DB::update('UPDATE ' . DbDialect::rawIdentifier('fuzzy_index_terms') . " SET term_length = {$length} WHERE id IN (" . implode(',', array_map('intval', $ids)) . ')');
+        }
 
         DB::table(self::TABLE)->where('term_id', '>', $low)->where('term_id', '<=', $high)->delete();
 
