@@ -4662,8 +4662,10 @@ class SearchBuilder
                 ? $dateValue
                 : new \DateTime($dateValue);
 
-            $now = new \DateTime();
-            $daysDiff = $now->diff($date)->days;
+            // The age in whole days. A date in the future (a scheduled post, clock skew) counts as
+            // age 0: diff() alone is absolute, and boosted a row 10 days ahead as if 10 days old.
+            $diff     = (new \DateTime())->diff($date);
+            $daysDiff = $diff->invert ? $diff->days : 0;
 
             if ($daysDiff <= $this->recencyDays) {
                 // Linear decay: full boost at day 0, no boost at recencyDays
