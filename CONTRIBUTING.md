@@ -457,8 +457,12 @@ Some guards hold on one database only. The indexer inserts a batch's new diction
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run the default suites (Unit, Feature, Integration, Security, Legacy), as CI does
 composer test
+
+# The Performance suite (wall-clock timings) is not in the default run
+composer benchmark
+# or: vendor/bin/phpunit --testsuite Performance
 
 # Run with coverage
 composer test-coverage
@@ -549,7 +553,8 @@ is a tag plus release notes, not a file edit.
 1. **CI green on the release commit.** Every row of `test-sqlite`, `test-mysql`, `test-pgsql`,
    `test-mariadb`, `test-sqlsrv`, both `test-scout10` legs and `test-lowest`, and all three `test-filament` legs.
 2. **CHANGELOG.** Give `[x.y.z]` its date (`## [2.1.0] — 2026-09-18`, em-dash), keep the
-   subsection order Added / Changed / Deprecated / Removed / Fixed / Security, and add the
+   subsection order (Upgrade notes / Database migrations, when the release has them, then
+   Added / Changed / Deprecated / Removed / Fixed / Security), remove any `PENDING` comment, and add the
    compare link at the bottom: `[x.y.z]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v<prev>...v<new>`.
 3. **Commit** `chore: release x.y.z`.
 4. **Annotated tag** (v2.0.0's precedent, not v2.0.1's lightweight tag):
@@ -558,6 +563,8 @@ is a tag plus release notes, not a file edit.
 6. **GitHub release** — `gh` is not installed here; use the REST API with the token from the
    credential helper and the CHANGELOG section as the body:
    `POST /repos/ashiqfardus/laravel-fuzzy-search/releases` with `tag_name`, `name`, `body`.
+   The section must stay under 125,000 characters, GitHub's limit for a release body (it
+   answers 422 past it).
 7. **Packagist** — confirm the new version appears in
    `https://repo.packagist.org/p2/ashiqfardus/laravel-fuzzy-search.json`. If auto-update is not
    wired to the GitHub webhook, trigger it from the Packagist package page.
