@@ -295,6 +295,46 @@ class IndexAfterCommitTest extends TestCase
         $other->rollBack();
     }
 
+    /**
+     * A transaction of another connection opened inside the model's own: Laravel attaches an
+     * after-commit callback to the newest open transaction of any connection, so the index write ran
+     * when the inner one committed, while the model's was still open, and a rollback of the model's
+     * then left the write done (a queued job, or text indexed on another connection). It waits for
+     * the model's own transaction.
+     */
+    public function test_a_save_inside_another_connections_nested_transaction_waits_for_its_own_commit(): void
+    {
+        config(['fuzzy-search.indexing.async' => true]);
+        Queue::fake();
+        $other = $this->otherConnection();
+
+        DB::beginTransaction();
+        $other->beginTransaction();
+        $user = User::query()->create(['name' => 'Nested Alphaword', 'email' => 'n1@example.com']);
+        $other->commit();
+        Queue::assertNothingPushed();
+        DB::commit();
+        Queue::assertPushed(IndexModelJob::class, fn (IndexModelJob $job) => (int) $job->modelId === $user->id);
+
+        Queue::fake();
+        DB::beginTransaction();
+        $other->beginTransaction();
+        User::query()->create(['name' => 'Nested Betaword', 'email' => 'n2@example.com']);
+        $other->commit();
+        DB::rollBack();
+        Queue::assertNothingPushed();
+
+        // In-process: indexed at the model's commit, not the other connection's.
+        config(['fuzzy-search.indexing.async' => false]);
+        DB::beginTransaction();
+        $other->beginTransaction();
+        $held = User::query()->create(['name' => 'Nested Gammaword', 'email' => 'n3@example.com']);
+        $other->commit();
+        $this->assertFalse($this->userIndexed($held->id), 'not at the other connection\'s commit');
+        DB::commit();
+        $this->assertTrue($this->userIndexed($held->id), 'at its own');
+    }
+
     public function test_reindex_related_runs_at_once_while_another_connection_has_a_transaction_open(): void
     {
         config(['fuzzy-search.indexing.async' => false]);

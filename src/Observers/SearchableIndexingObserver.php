@@ -154,9 +154,14 @@ class SearchableIndexingObserver
      * never pushed before the row it reloads is committed, where a worker could run it first.
      *
      * Only a transaction of $connection's own: Laravel attaches an after-commit callback to the
-     * last open transaction of any connection, so a save committed at once on this one, while
+     * newest open transaction of any connection, so a save committed at once on this one, while
      * another connection had a transaction open, was indexed only when that one committed, and
-     * never if it rolled back.
+     * never if it rolled back; and a save inside this connection's transaction, with another
+     * connection's opened inside it, was indexed when that inner one committed, while the save's
+     * own could still roll back. The callback goes to the newest transaction of $connection that
+     * Laravel's manager applies callbacks to (callbackApplicableTransactions(), Laravel 10.0 on:
+     * RefreshDatabase's wrapping transaction is not one, so a test runs it at once, as Laravel
+     * does), and runs at once when there is none.
      *
      * An error in it (a deadlock or lock-wait timeout on the sync path, an unreachable queue) is
      * reported, not thrown: the caller's write has committed, and a throw here would also skip
@@ -173,6 +178,15 @@ class SearchableIndexingObserver
             }
         };
 
-        $connection->transactionLevel() > 0 ? $connection->afterCommit($run) : $run();
+        $manager = app()->bound('db.transactions') ? app('db.transactions') : null;
+
+        if ($manager === null || !method_exists($manager, 'callbackApplicableTransactions')) {
+            $connection->transactionLevel() > 0 ? $connection->afterCommit($run) : $run();
+
+            return;
+        }
+
+        $transaction = $manager->callbackApplicableTransactions()->where('connection', $connection->getName())->last();
+        $transaction === null ? $run() : $transaction->addCallback($run);
     }
 }
