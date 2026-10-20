@@ -158,8 +158,8 @@ class SearchBuilder
      * using the extended()/searchBoolean() pattern can override the term
      * before execution:
      *
-     *   User::search('')->extended('=John ^Doe')->get();  // safe
-     *   User::search('=John ^Doe')->extended()->get();    // also safe (preferred)
+     *   User::search('')->extended('^John !banned')->get();  // safe
+     *   User::search('^John !banned')->extended()->get();    // also safe (preferred)
      *
      * @param string $term
      * @return self
@@ -648,12 +648,13 @@ class SearchBuilder
      *             key: no stop-word list, stemmer or collation was ever selected from it. Pass
      *             the locale where it is actually read — `ignoreStopWords('de')` for a
      *             query-time stop-word list, `$searchable['locale']` for a model's index
-     *             pipeline. This method is a no-op and will be removed in v3.0.0.
+     *             pipeline, the top-level `locale` config key for every other model's index
+     *             stop-word list. This method is a no-op and will be removed in v3.0.0.
      */
     public function locale(string $locale): self
     {
         trigger_error(
-            "SearchBuilder::locale() is deprecated since 2.1.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list or \$searchable['locale'] for a model's index pipeline. It will be removed in v3.0.0.",
+            "SearchBuilder::locale() is deprecated since 2.1.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list, \$searchable['locale'] for a model's index pipeline, or the locale config key for every other model's index stop-word list. It will be removed in v3.0.0.",
             E_USER_DEPRECATED
         );
 
