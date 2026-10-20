@@ -172,12 +172,14 @@ class FederatedSearch
         $page    = SearchBuilder::resolvePage($page, $pageName, $perPage);
         $offset  = ($page - 1) * $perPage;
 
-        $total  = $this->countAll();
-        $ranked = $this->fetchRanked($offset + $perPage);
+        // Each model's total and first rows from one search: counting it apart ranked every model
+        // twice on the index (countAll() then fetchRanked()), 99.7% of a federated page at 1M rows.
+        $counts = [];
+        $ranked = $this->fetchRanked($offset + $perPage, $counts);
         $items  = $ranked->slice($offset, $perPage)->values();
 
         return new LengthAwarePaginator(
-            $items, $total, $perPage, $page,
+            $items, array_sum($counts), $perPage, $page,
             ['path' => request()->url(), 'pageName' => $pageName]
         );
     }
@@ -207,8 +209,13 @@ class FederatedSearch
      * Fetch up to $perModelCeiling rows from every model — never more than max_candidates, the
      * most a ranked search reads (see countPerModel()) — tag them, and return the merged,
      * ranked collection (score DESC, then orderByModel() rank, then model type, then each model's own order: by key, as its database orders it).
+     *
+     * Given $counts, it is filled as countPerModel() fills its result, from the same search that
+     * reads each model's rows (see searchModel()).
+     *
+     * @param array<class-string, int>|null $counts
      */
-    protected function fetchRanked(int $perModelCeiling): Collection
+    protected function fetchRanked(int $perModelCeiling, ?array &$counts = null): Collection
     {
         if ($this->matchesNothing()) {
             return collect();
@@ -220,13 +227,19 @@ class FederatedSearch
 
         $perModel   = min($this->limitPerModel ?? PHP_INT_MAX, max(1, $perModelCeiling), $this->maxCandidates());
         $allResults = collect();
+        $counting   = $counts !== null;
 
         foreach ($this->models as $modelClass) {
             if (!class_exists($modelClass)) {
                 continue;
             }
 
-            $results = $this->searchModel($modelClass, $perModel);
+            $total   = $counting ? 0 : null;
+            $results = $this->searchModel($modelClass, $perModel, $total);
+
+            if ($total !== null) {
+                $counts[$modelClass] = min($total, $this->limitPerModel ?? PHP_INT_MAX, $this->maxCandidates());
+            }
 
             $results = $results->map(function ($item) use ($modelClass) {
                 $item->_model_type  = class_basename($modelClass);
@@ -261,7 +274,7 @@ class FederatedSearch
 
     /**
      * Build (but do not finish) one model's search query, honouring searchIn() columns.
-     * searchModel() and countAll() each finish it their own way (get() vs count()), so
+     * searchModel() and countPerModel() each finish it their own way (get() or paginate() vs count()), so
      * ordering/relevance/limit are intentionally left to the caller.
      *
      * searchIn() appends to a builder rather than replacing its defaults, so
@@ -356,20 +369,37 @@ class FederatedSearch
      * Run one model's search capped at $limit rows. stableRanking()/orderBy(key) gives
      * equal-score rows a consistent order across the growing LIMIT that paginate()
      * re-fetches on each page, so no row is duplicated or skipped between pages.
+     *
+     * Given a $total (not null), it is set to the model's match count, count()'s: a SearchBuilder
+     * reads it and the rows as the first page of one paginate(), its total and page from one
+     * ranking on the index, and the same count and max_candidates read as count() and get() on
+     * the LIKE path. A model it skips leaves $total null.
      */
-    protected function searchModel(string $modelClass, int $limit): Collection
+    protected function searchModel(string $modelClass, int $limit, ?int &$total = null): Collection
     {
-        $query = $this->queryFor($modelClass);
+        $query    = $this->queryFor($modelClass);
+        $counting = $total !== null;
+        $total    = null;
 
         if ($query === null) {
             return collect();
         }
 
         if ($query instanceof SearchBuilder) {
-            return $query->withRelevance($this->withRelevance)
-                ->stableRanking()
-                ->limit($limit)
-                ->get();
+            $query->withRelevance($this->withRelevance)->stableRanking();
+
+            if ($counting) {
+                $page  = $query->paginate(max(1, $limit), 'page', 1);
+                $total = $page->total();
+
+                return collect($page->items())->take($limit);
+            }
+
+            return $query->limit($limit)->get();
+        }
+
+        if ($counting) {
+            $total = $query->count();
         }
 
         return $query->orderBy($query->getModel()->getKeyName())

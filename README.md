@@ -625,7 +625,8 @@ $page = FederatedSearch::across([User::class, Product::class])
     ->limitPerModel(5)
     ->paginate(15);
 
-// Cursor-less "load more" pagination — cheaper than paginate() when you only need hasMorePages()
+// Cursor-less "load more" pagination — on LIKE, cheaper than paginate() when you only need hasMorePages()
+// (it skips the count); on the index both rank each model once, and paginate()'s total comes with it
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->simplePaginate(15);
