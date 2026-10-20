@@ -124,6 +124,9 @@ abstract class BaseDriver
     /**
      * Cap the LIKE-pattern list. Order matters: callers append the highest-signal
      * patterns (exact contains, prefix) first, so slicing keeps the best ones.
+     *
+     * @deprecated Not called by any bundled driver: they cap with firstPatterns(), which takes a
+     *             generator as well as an array. Will be removed in v3.
      */
     protected function capPatterns(array $patterns): array
     {

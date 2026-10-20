@@ -142,10 +142,9 @@ class SearchBuilder
         // The default distance of every path (LIKE fuzzy, the index, extended ~), as typoTolerance()
         // clamps it. Not put in $options: levenshtein keeps its own levenshtein.max_distance.
         $this->typoTolerance = max(0, min(5, (int) config('fuzzy-search.typo_tolerance.max_distance', 2)));
-        // Forwarded through $options (merged into every applyFuzzyWhere() call) rather than
-        // left to BaseDriver::capPatterns()'s own config fallback: the FuzzySearch singleton
-        // is resolved eagerly at service-provider boot, so its config snapshot predates any
-        // config() override made later inside a test or request.
+        // Forwarded through $options (merged into every applyFuzzyWhere() call), which
+        // BaseDriver::firstPatterns() reads before its own performance.max_patterns fallback:
+        // maxPatterns() and the binding budget (prepareQuery()) set it per search.
         $this->options['max_patterns'] = $this->maxPatterns;
 
         if (config('fuzzy-search.highlighting.enabled', false)) {
@@ -902,7 +901,7 @@ class SearchBuilder
     public function maxPatterns(int $max): self
     {
         $this->maxPatterns = max(1, $max);
-        $this->options['max_patterns'] = $this->maxPatterns; // read by BaseDriver::capPatterns()
+        $this->options['max_patterns'] = $this->maxPatterns; // read by BaseDriver::firstPatterns()
         return $this;
     }
 
