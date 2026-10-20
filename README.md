@@ -509,7 +509,7 @@ $suggestions = User::search('joh')
 // Returns: ['John', 'Johnny', 'Johanna', ...]
 ```
 
-**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own dictionary, scoped to its postings and ordered by document count across all indexed models (the dictionary's `doc_count` is global, so a term that is common in another indexed model can head the list); any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
+**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own words, ordered by how many of this model's rows hold each word (`fuzzy_index_model_terms`), equal counts newest word first; any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
 
 ```php
 // Product is indexed; only "mo" is completed, "wireless " is kept as typed
