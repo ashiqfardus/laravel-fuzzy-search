@@ -275,7 +275,7 @@ final class RankedCandidates
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
             if (!$whole || !self::listsWhole($base, $int, count($ids))) {
-                return self::whereMatches($base, $terms, $modelType, $columnWeights, $read !== null && $read['share'] <= self::JOIN_SHARE);
+                return self::whereMatches($base, $terms, $modelType, $columnWeights, $read !== null && $read['share'] <= self::JOIN_SHARE, $read['share'] ?? null);
             }
         } else {
             $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
@@ -446,7 +446,7 @@ final class RankedCandidates
         self::selectKey($query, $qualifiedKey);
 
         if ($order === 'rows') {
-            return self::keysOf($query->offset($offset)->limit($limit));
+            return self::keysOf(self::walkToPage($query, $offset, $limit)->offset($offset)->limit($limit));
         }
 
         $keys = [];
@@ -556,13 +556,62 @@ final class RankedCandidates
      * without an index on the key, read slower through the join too (4.8 s for 3.7 s at 1M rows on
      * MariaDB).
      */
-    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights, bool $sparse = false): Builder
+    private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights, bool $sparse = false, ?float $share = null): Builder
     {
         $key   = self::keyColumn($base);
         $model = $sparse && self::unconstrained($base) ? $base->getModel() : null;
 
-        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => app(Bm25Scorer::class)
-            ->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model));
+        return (clone $base)->withGlobalScope(self::MATCHES, function (Builder $query) use ($key, $terms, $modelType, $columnWeights, $model, $share) {
+            app(Bm25Scorer::class)->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model);
+
+            // The share its words' postings reach, kept with the EXISTS it added, for walkToPage().
+            $wheres = $query->getQuery()->wheres;
+            $exists = end($wheres);
+            if ($share !== null && is_array($exists) && $exists['type'] === 'Exists') {
+                self::$walks ??= new \WeakMap();
+                self::$walks[$exists['query']] = $share;
+            }
+        });
+    }
+
+    /**
+     * The most rows of the model table an ordered page read may walk on PostgreSQL to reach the end
+     * of its page through the order column's index (ruling ER-223): (offset + limit) / share, the
+     * share of the model's documents its words' postings reach. PostgreSQL pulls whereRanked()'s
+     * EXISTS up into a hash semi-join, which reads the table whole whatever the page: at 24M rows
+     * for a word in 1.3% of them, 3.3 s warm and 23 to 86 s cold, where a walk of the order column's
+     * index stopped at the page in 12 ms (about 870 rows probed). The walk costs a probe of the
+     * postings per row, the semi-join a read of every row, so the walk is kept well under the table:
+     * a word in 0.01% of the rows would walk 200,000 rows for a page of 20, past the bound.
+     */
+    private const WALK_ROWS = 50000;
+
+    /** @var \WeakMap<QueryBuilder, float>|null whereMatches()' EXISTS subqueries => the share their words reach */
+    private static ?\WeakMap $walks = null;
+
+    /**
+     * $query, an ordered page read of $offset and $limit, with each EXISTS of whereMatches() kept a
+     * probe per row on PostgreSQL when the walk to the end of the page stays under WALK_ROWS rows:
+     * an OFFSET 0 inside the subquery keeps PostgreSQL from pulling it up into a semi-join (a
+     * subquery with an OFFSET is not), so the read walks the order column's index and stops at the
+     * page. Each such EXISTS is replaced by a copy that has it, so the query it was cloned from (the
+     * COUNT reads every match either way) keeps its own.
+     */
+    private static function walkToPage(QueryBuilder $query, int $offset, int $limit): QueryBuilder
+    {
+        if (self::$walks === null || $query->getConnection()->getDriverName() !== DbDialect::PGSQL) {
+            return $query;
+        }
+
+        foreach ($query->wheres as $i => $where) {
+            $share = $where['type'] === 'Exists' ? (self::$walks[$where['query']] ?? null) : null;
+
+            if ($share > 0 && ($offset + $limit) / $share <= self::WALK_ROWS) {
+                $query->wheres[$i]['query'] = (clone $where['query'])->offset(0);
+            }
+        }
+
+        return $query;
     }
 
     /**
