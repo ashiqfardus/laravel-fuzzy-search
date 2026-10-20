@@ -1731,10 +1731,11 @@ class IndexManager
      * row is left out, unless $scout: then no global scope applies, as in Scout's own jobs, and
      * a trashed row is kept while scout.soft_delete is on (ER-72).
      *
-     * $lock reads the rows, and the relations it eager loads, with shared locks (LOCK IN SHARE
-     * MODE): the rows as they are now, not the transaction's snapshot (write(), ER-202). A morphTo
-     * relation's query for each type it finds is Laravel's own, which keeps no lock: those related
-     * rows are read without one.
+     * $lock reads the rows with shared locks (LOCK IN SHARE MODE): as they are now, not the
+     * transaction's snapshot (write(), ER-202). The relations it eager loads are read without one:
+     * a shared read of them took next-key and gap locks in the app's own tables, so an insert of a
+     * related row near them (a comment for that post, or its neighbour) waited for the app's commit,
+     * for related text that reindexRelated() and a rebuild bring up to date (P7R-4).
      *
      * @param  list<int|string>    $keys
      * @return array<string, Model>
@@ -1750,8 +1751,8 @@ class IndexManager
             // model's connection (a queue worker; in-process without `sticky`), and a replica behind
             // the commit gave a deleted row back, or the old text, which this write then indexed.
             $query = IndexQuery::for($modelType)->useWritePdo()->when($lock, fn ($query) => $query->sharedLock());
-            $query->setEagerLoads(array_map(fn (\Closure $constraints) => function ($relation) use ($constraints, $lock) {
-                $constraints($relation->useWritePdo()->when($lock, fn ($query) => $query->sharedLock()));
+            $query->setEagerLoads(array_map(fn (\Closure $constraints) => function ($relation) use ($constraints) {
+                $constraints($relation->useWritePdo());
             }, $query->getEagerLoads()));
             if ($scout) {
                 $query->withoutGlobalScopes();

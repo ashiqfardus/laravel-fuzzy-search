@@ -202,11 +202,12 @@ class IndexWriteSnapshotTest extends TestCase
     }
 
     /**
-     * ER-202: on MySQL/MariaDB a write inside a transaction of yours re-reads the row, and the relation
-     * its searchIndexQuery() eager loads, with shared locks before it claims the row; a write in a
-     * transaction of its own, and every write elsewhere, locks none of your rows.
+     * ER-202: on MySQL/MariaDB a write inside a transaction of yours re-reads the row with a shared
+     * lock before it claims the row, and the relation its searchIndexQuery() eager loads without one
+     * (P7R-4: a shared read of it locked gaps in your own tables); a write in a transaction of its
+     * own, and every write elsewhere, locks none of your rows.
      */
-    public function test_a_write_in_a_transaction_of_yours_rereads_the_row_and_its_relations_with_a_lock_before_its_claim(): void
+    public function test_a_write_in_a_transaction_of_yours_rereads_the_row_with_a_lock_before_its_claim_and_its_relations_without(): void
     {
         Schema::dropIfExists('snapshot_notes');
         Schema::dropIfExists('snapshot_authors');
@@ -229,8 +230,8 @@ class IndexWriteSnapshotTest extends TestCase
         DB::transaction(fn () => app(IndexManager::class)->indexModel($note));
         if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
             $this->assertCount(1, $locked('snapshot_notes'), 'the row');
-            $this->assertCount(1, $locked('snapshot_authors'), 'its eager-loaded author');
-            $this->assertLessThan($claim(), max([...$locked('snapshot_notes'), ...$locked('snapshot_authors')]), 'both before the claim');
+            $this->assertSame([], $locked('snapshot_authors'), 'its eager-loaded author, read without a lock');
+            $this->assertLessThan($claim(), max($locked('snapshot_notes')), 'before the claim');
         } else {
             $this->assertSame([], [...$locked('snapshot_notes'), ...$locked('snapshot_authors')]);
         }
