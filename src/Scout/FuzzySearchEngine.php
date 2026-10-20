@@ -90,9 +90,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         // query hydrates only itself removes under its own type, as before.
         foreach ($keys as $class => $classKeys) {
             foreach ($this->indexManager->filedUnder($class, $classKeys) as $type => $typeKeys) {
-                foreach ($typeKeys as $key) {
-                    $this->indexManager->removeFromIndex($type, $key);
-                }
+                $this->indexManager->removeManyFromIndex($type, $typeKeys);
             }
         }
     }

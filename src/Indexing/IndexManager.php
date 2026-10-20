@@ -342,29 +342,46 @@ class IndexManager
      */
     public function removeFromIndex(string $modelType, int|string $modelId): void
     {
-        $modelId = (string) $modelId; // bound as a string: see the note at the top of the class
+        $this->removeManyFromIndex($modelType, [$modelId]);
+    }
 
-        DB::transaction(function () use ($modelType, $modelId) {
-            // Waits for a write to this row in flight; empty = it was not indexed.
-            $old    = $this->claimDocuments($modelType, [$modelId]);
-            $typeId = self::modelTypeId($modelType);
-            $current = $this->currentPostings($typeId, [$modelId], $old);
-            $posted  = self::holders($current);
+    /**
+     * Remove the index entries of several models of one type, ROWS_PER_UPSERT of them to a
+     * transaction: one claim, one postings read, one pass over the dictionary, the postings, the
+     * documents and the meta counts for the chunk, as write() has, where a removal per model took
+     * a transaction and a dozen statements each. A key listed twice, or never indexed, is
+     * removed once, or not at all.
+     *
+     * @param array<int|string> $modelIds
+     */
+    public function removeManyFromIndex(string $modelType, array $modelIds): void
+    {
+        // Bound as strings: see the note at the top of the class.
+        $modelIds = array_values(array_unique(array_map('strval', $modelIds)));
 
-            $words = $this->adjustDocCounts(array_map(fn (int $holders) => -$holders, $posted));
-            if ($posted !== []) {
-                $this->adjustModelTerms($typeId, self::termDeltas($posted, [], [], $words));
-                $this->deletePostings($typeId, $current);
-            }
+        foreach (array_chunk($modelIds, self::ROWS_PER_UPSERT) as $chunk) {
+            DB::transaction(function () use ($modelType, $chunk) {
+                // Waits for a write to these rows in flight; empty = none was indexed.
+                $old     = $this->claimDocuments($modelType, $chunk);
+                $typeId  = self::modelTypeId($modelType);
+                $current = $this->currentPostings($typeId, $chunk, $old);
+                $posted  = self::holders($current);
 
-            // The document row, or the placeholder the claim just inserted.
-            DB::table('fuzzy_index_documents')
-                ->where('model_type', $modelType)
-                ->where('model_id', $modelId)
-                ->delete();
+                $words = $this->adjustDocCounts(array_map(fn (int $holders) => -$holders, $posted));
+                if ($posted !== []) {
+                    $this->adjustModelTerms($typeId, self::termDeltas($posted, [], [], $words));
+                    $this->deletePostings($typeId, $current);
+                }
 
-            $this->adjustMeta($modelType, -count($old), -array_sum($old), ensure: false);
-        }, self::ATTEMPTS);
+                // The document rows, or the placeholders the claim just inserted.
+                DB::table('fuzzy_index_documents')
+                    ->where('model_type', $modelType)
+                    ->whereIn('model_id', $chunk)
+                    ->delete();
+
+                $this->adjustMeta($modelType, -count($old), -array_sum($old), ensure: false);
+            }, self::ATTEMPTS);
+        }
     }
 
     /**
