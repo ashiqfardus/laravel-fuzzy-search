@@ -23,7 +23,7 @@ class StatusCommandTest extends TestCase
         // the same warning line cannot both be asserted separately.
         $this->artisan('fuzzy-search:status')
             ->assertSuccessful()
-            ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '" --fresh')
+            ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '"')
             ->run();
     }
 
@@ -69,7 +69,7 @@ class StatusCommandTest extends TestCase
 
         $reads = $this->postingsReads(fn () => $this->artisan('fuzzy-search:status', ['--legacy' => true])
             ->assertSuccessful()
-            ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '" --fresh')
+            ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '"')
             ->run());
 
         $this->assertCount(1, $reads);
@@ -90,6 +90,30 @@ class StatusCommandTest extends TestCase
     {
         // indexModel() writes the meta row too, so the command reaches the legacy check.
         app(IndexManager::class)->indexModel(User::first());
+
+        $this->artisan('fuzzy-search:status')
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('predate column weighting')
+            ->run();
+    }
+
+    /**
+     * The warning names a plain rebuild, not --fresh: re-indexing a row replaces every posting it
+     * held, a legacy one included, and a plain rebuild runs while the app writes the index.
+     */
+    public function test_the_plain_rebuild_the_warning_names_clears_it(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $termId = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'legacy', 'doc_count' => 1, 'term_length' => 6]);
+        $this->insertNamedPostings([['term_id' => $termId, 'model_type' => User::class, 'model_id' => (string) User::query()->min('id'), 'frequency' => 1]]);
+
+        // Two runs: PendingCommand consumes the line the first expectation matches.
+        $this->artisan('fuzzy-search:status')
+            ->expectsOutputToContain('predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "' . User::class . '"')
+            ->run();
+        $this->artisan('fuzzy-search:status')->doesntExpectOutputToContain('--fresh')->run();
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertSuccessful()->run();
 
         $this->artisan('fuzzy-search:status')
             ->assertSuccessful()
