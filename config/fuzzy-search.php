@@ -268,7 +268,10 @@ return [
          * dictionary terms within typoTolerance() edits, closest first, chosen from the
          * candidate_pool most common of the searched model's own terms of a similar length, by
          * its own document count, equal counts newest first (a term outside that window is never
-         * reached — raise the pool for catalogs of rare terms). With damping on, an
+         * reached — raise the pool for catalogs of rare terms). A term in more than half of the
+         * model's documents, or in more than max_postings_per_term of them, is never an expansion
+         * (it holds no signal for a misspelling, and its read is the costly one); the words typed,
+         * prefix completions and synonyms match at any frequency. With damping on, an
          * expansion contributes 1 - distance / length of what the exact term would, and it is
          * scored with the idf of the word it expands when the index holds that word, so its rows
          * rank below the exact hits; an expansion of a word the index lacks keeps its own idf.

@@ -71,8 +71,10 @@ class HiddenColumnSuggestionTest extends TestCase
     #[\PHPUnit\Framework\Attributes\DataProvider('hidingModels')]
     public function test_the_typo_and_prefix_expansions_still_match_a_hidden_column(string $class): void
     {
-        app(IndexManager::class)->indexBatch($class::all());
         $all = $class::count();
+        // As many rows again without "example": a word in more than half of the model's rows is no typo expansion (ER-225a).
+        DB::table('users')->insert(array_map(fn ($i) => ['name' => "Filler {$i}", 'email' => "filler{$i}@site.test"], range(1, $all)));
+        app(IndexManager::class)->indexBatch($class::all());
 
         $this->assertCount($all, $class::search('exampel')->useInvertedIndex()->typoTolerance(2)->get());
         $this->assertCount($all, $class::search('exampl')->useInvertedIndex()->typoTolerance(0)->asYouType()->get());

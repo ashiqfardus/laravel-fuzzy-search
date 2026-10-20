@@ -33,6 +33,8 @@ class DebugIndexTermsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // As many rows again without "example": a word in more than half of the model's rows is no typo expansion (ER-225a).
+        \Illuminate\Support\Facades\DB::table('users')->insert(array_map(fn ($i) => ['name' => "Filler {$i}", 'email' => "filler{$i}@site.test"], range(1, 7)));
         app(IndexManager::class)->indexBatch(DebugHiddenEmailUser::all());
     }
 

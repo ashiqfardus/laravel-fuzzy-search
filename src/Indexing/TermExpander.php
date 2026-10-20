@@ -92,6 +92,13 @@ final class TermExpander
      * Bm25Scorer::rank() caps the expansion's idf at: a misspelling is rare, so its own idf put
      * the misspelled rows of a common word above every exact hit.
      *
+     * A neighbour in more than half of $modelType's documents, or in more than
+     * bm25.max_postings_per_term of them, is no expansion: the first holds no signal for a
+     * misspelling (its Robertson–Spärck Jones idf is at most 0), and the second's read alone
+     * reaches the cap; yet the ranking read every posting of either: "smith" expanded into "with",
+     * in 999,967 of 1M rows, and its read took 2.0 to 2.5 s. The words in $terms keep matching at
+     * any frequency.
+     *
      * @param  string[]                   $terms
      * @param  array<string, string>|null $sources set to expansion => the input term it expands
      * @return array<string, float>
@@ -104,6 +111,15 @@ final class TermExpander
         if ($maxDistance <= 0 || $maxExpansions <= 0) {
             return $weights;
         }
+
+        // The most documents an expansion may hold, read once a neighbour needs it (one keyed read
+        // of the model's total); the whole dictionary (no $modelType) has no total: the cap alone.
+        $most = function () use ($modelType): int {
+            $cap = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+
+            return $modelType === null ? $cap : min($cap, intdiv((int) DB::table('fuzzy_index_meta')->where('model_type', $modelType)->value('total_docs'), 2));
+        };
+        $limit = null;
 
         foreach ($terms as $term) {
             $length = mb_strlen((string) $term);
@@ -119,6 +135,9 @@ final class TermExpander
             foreach ($candidates as $candidate) {
                 if ($taken >= $maxExpansions) {
                     break;
+                }
+                if ($candidate['doc_count'] > ($limit ??= $most())) {
+                    continue;
                 }
                 $weight = $damping ? 1 - $candidate['distance'] / max($length, 1) : 1.0;
                 if ($weight <= 0) {
