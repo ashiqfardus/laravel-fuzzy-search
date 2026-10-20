@@ -4335,6 +4335,9 @@ class SearchBuilder
         // and one past 4,000 characters threw on SQL Server, past 50,000 bytes on SQLite.
         $rawTerm  = Utf8::lowerAscii(FuzzySearch::capTerm($this->searchTerm));
         $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
+        // What the database's LIKE found is compared in PHP with case folded in every script
+        // (lowerAscii() left "Émile" not starting with "émi").
+        $foldedTerm = mb_strtolower($rawTerm, 'UTF-8');
 
         $results = $this->shortestFirst($this->suggestCandidateQuery($safeTerm), $targets)->limit($limit * 3)->get();
 
@@ -4347,15 +4350,15 @@ class SearchBuilder
                     // Extract the matching word/phrase
                     $words = preg_split(self::WHITESPACE, $value);
                     foreach ($words as $word) {
-                        $wordLower = Utf8::lowerAscii($word);
-                        if (str_starts_with($wordLower, $rawTerm) && strlen($word) > strlen($rawTerm)) {
+                        $wordLower = mb_strtolower($word, 'UTF-8');
+                        if (str_starts_with($wordLower, $foldedTerm) && mb_strlen($word, 'UTF-8') > mb_strlen($foldedTerm, 'UTF-8')) {
                             $suggestions[$wordLower] = $word;
                         }
                     }
 
                     // Also add full column value if it starts with the raw search term
-                    $valueLower = Utf8::lowerAscii($value);
-                    if (str_starts_with($valueLower, $rawTerm)) {
+                    $valueLower = mb_strtolower($value, 'UTF-8');
+                    if (str_starts_with($valueLower, $foldedTerm)) {
                         $suggestions[$valueLower] = $value;
                     }
                 }
