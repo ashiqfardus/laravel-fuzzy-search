@@ -522,7 +522,8 @@ class ModelTermsBackfillMigrationTest extends TestCase
     public function test_a_rollback_after_a_stopped_run_then_migrate_ends_exact(): void
     {
         $this->index();
-        $this->artisanOk('migrate:rollback', ['--step' => 2]);
+        // Back to before 2026_10_13_000001: the two migrations, and every one after them.
+        $this->artisanOk('migrate:rollback', ['--step' => count(array_filter(glob(self::PATH . '/*.php'), fn (string $file) => basename($file) >= basename(self::CREATE)))]);
         $this->assertFalse(Schema::hasTable('fuzzy_index_model_terms'));
         $this->assertSame(0, $this->artisan('migrate', ['--path' => realpath(self::CREATE), '--realpath' => true])->run());
         $this->stoppedAfterTheFirstRange();

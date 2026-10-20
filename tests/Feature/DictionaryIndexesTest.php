@@ -10,6 +10,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 require_once __DIR__ . '/../TestModels.php';
 
@@ -20,12 +21,17 @@ require_once __DIR__ . '/../TestModels.php';
  * term_length index; the id serves the tiebreak (R11-M5) from the index on PostgreSQL too. S5:
  * postings_term_model_idx (term_id, model_type) repeats the leading columns of postings_unique_idx,
  * which covers the same reads; it is dropped.
+ *
+ * ER-211: since ER-197 no read filters or orders fuzzy_index_terms by term_length or doc_count, so
+ * 2026_10_20_000001 drops (term_length, doc_count, id) again, on a fresh install and on every
+ * install of an earlier 2.1 build, which ran 2026_10_01_000001 already. down() builds it back.
  */
 class DictionaryIndexesTest extends TestCase
 {
     private const MIGRATION    = __DIR__ . '/../../database/migrations/2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes.php';
     private const COMPACT      = __DIR__ . '/../../database/migrations/2026_10_02_000001_compact_fuzzy_index_postings_table.php';
     private const MODEL_TERMS  = __DIR__ . '/../../database/migrations/2026_10_13_000001_create_fuzzy_index_model_terms_table.php';
+    private const PATH         = __DIR__ . '/../../database/migrations';
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
     private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
@@ -105,9 +111,163 @@ class DictionaryIndexesTest extends TestCase
         return array_values(preg_grep('/^\s*(alter|drop|create)\b/i', $statements));
     }
 
-    public function test_a_fresh_install_reads_the_dictionary_by_length_and_doc_count(): void
+    /** No index on fuzzy_index_terms has term_length or doc_count in its key (ER-211). */
+    private function assertNoLengthOrCountIndex(): void
     {
-        $this->assertMigrated();
+        foreach ($this->indexes('fuzzy_index_terms') as $index) {
+            $this->assertSame([], array_intersect(['term_length', 'doc_count'], $this->indexColumns('fuzzy_index_terms', $index)), $index);
+        }
+    }
+
+    /** @return array<string, array{list<string>, list<string>}> each index table's columns and indexes, as the catalog reads them */
+    private function schema(): array
+    {
+        $schema = [];
+        foreach (['fuzzy_index_terms', 'fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', 'fuzzy_index_model_types', 'fuzzy_index_columns', 'fuzzy_index_model_terms'] as $table) {
+            $columns = Schema::getColumnListing($table);
+            sort($columns);
+            // Not SQL Server's primary key names: it names a key anew each time its table is created.
+            $schema[$table] = [$columns, array_values(preg_grep('/^pk__/', $this->indexes($table), PREG_GREP_INVERT))];
+        }
+
+        return $schema;
+    }
+
+    /** $command over the package's migrations, or over the one file $file; it must exit 0. */
+    private function migrations(string $command, array $options = [], ?string $file = null): void
+    {
+        $this->assertSame(0, $this->artisan($command, ['--path' => realpath($file ?? self::PATH), '--realpath' => true, ...$options])->run(), $command);
+    }
+
+    /** @return list<string> the package's migration files, in the order they run */
+    private function files(): array
+    {
+        $files = glob(self::PATH . '/*.php');
+        sort($files);
+
+        return $files;
+    }
+
+    public function test_a_fresh_install_has_no_dictionary_index_on_length_or_count(): void
+    {
+        $this->assertNotContains(self::LENGTH_COUNT_ID, $this->indexes('fuzzy_index_terms'));
+        $this->assertNotContains(self::LENGTH_COUNT, $this->indexes('fuzzy_index_terms'));
+        $this->assertNotContains(self::LENGTH, $this->indexes('fuzzy_index_terms'));
+        $this->assertNoLengthOrCountIndex();
+        $this->assertNotContains(self::TERM_MODEL, $this->indexes('fuzzy_index_postings'));
+    }
+
+    /**
+     * ER-211: the typo expansion, didYouMean(), suggest() and asYouType() read a model's own words
+     * (fuzzy_index_model_terms), on every terminal of the index path; no statement filters or orders
+     * the shared dictionary by term_length or doc_count, which an index on it would serve.
+     */
+    public function test_no_search_reads_the_dictionary_by_length_or_count(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+
+        $reads = [];
+        DB::listen(function (QueryExecuted $query) use (&$reads) {
+            $reads[] = $query->sql;
+        });
+        try {
+            $typo = fn () => User::search('jonh')->useInvertedIndex();
+            $typo()->get();
+            $typo()->first();
+            $typo()->paginate(2);
+            $typo()->simplePaginate(2);
+            $typo()->count();
+            $typo()->facet('email')->getFacets();
+            User::search('jonh')->extended('jonh doe')->useInvertedIndex()->get();
+            User::search('joh')->useInvertedIndex()->asYouType()->get();
+            User::search('jonh')->didYouMean();
+            User::search('joh')->suggestFrom('index')->suggest();
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+
+        $own = 0;
+        foreach ($reads as $sql) {
+            $own += (int) str_contains($sql, 'fuzzy_index_model_terms');
+            $dictionary = str_replace('fuzzy_index_model_terms', '', $sql);
+            if (str_contains($dictionary, 'fuzzy_index_terms')) {
+                $this->assertDoesNotMatchRegularExpression('/\bterm_length\b|\bdoc_count\b/i', $dictionary, $sql);
+            }
+        }
+        $this->assertGreaterThan(0, $own, 'the reads go to the model terms');
+    }
+
+    /**
+     * A 2.0.1 install (the four create migrations, as 2.0.1 shipped them) migrated to the head: no
+     * index on the dictionary's length or count, and a fresh install's schema, which an index is
+     * written to and searched. Every 2.1 migration rolled back gives back 2.0.1's schema.
+     */
+    public function test_the_upgrade_from_2_0_1_and_its_rollback_end_at_each_schema(): void
+    {
+        $fresh = $this->schema();
+        $files = $this->files();
+        $steps = count(array_filter($files, fn (string $file) => basename($file) >= '2026_09'));
+
+        $this->migrations('migrate:rollback', ['--step' => count($files)]);
+        foreach ($files as $file) {
+            if (basename($file) < '2026_09') {
+                $this->migrations('migrate', [], $file);
+            }
+        }
+        $earlier = $this->schema();
+        $this->assertFalse(Schema::hasColumn('fuzzy_index_terms', 'term_length'), 'the 2.0.1 schema');
+
+        $this->migrations('migrate');
+        $this->assertSame($fresh, $this->schema());
+        $this->assertNoLengthOrCountIndex();
+        app(IndexManager::class)->indexBatch(User::all());
+        $this->assertSame(['John Doe'], User::search('jonh doe')->useInvertedIndex()->get()->pluck('name')->take(1)->all());
+
+        $this->migrations('migrate:rollback', ['--step' => $steps]);
+        $this->assertSame($earlier, $this->schema());
+
+        $this->migrations('migrate');
+        $this->assertSame($fresh, $this->schema());
+    }
+
+    /**
+     * @return array<string, array{string}> the last migration each earlier 2.1 build recorded. Their
+     * up() code is the head's (only down() refusals changed since), so running the head's files up
+     * to it records that build's schema.
+     */
+    public static function earlierBuilds(): array
+    {
+        return [
+            '5220f97' => ['2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes'],
+            '10fd1cc' => ['2026_10_02_000001_compact_fuzzy_index_postings_table'],
+            'd8205bd' => ['2026_10_13_000002_backfill_fuzzy_index_model_terms_table'],
+        ];
+    }
+
+    /**
+     * ER-211: an install of an earlier 2.1 build ran 2026_10_01_000001, which built (term_length,
+     * doc_count, id), and recorded migrations never run again. `migrate` to the head drops it, and
+     * the schema is a fresh install's. (The rows an index holds through it are the compact postings
+     * and model terms migrations' tests.)
+     */
+    #[DataProvider('earlierBuilds')]
+    public function test_an_install_of_an_earlier_build_loses_the_unread_dictionary_index(string $last): void
+    {
+        $fresh = $this->schema();
+        $files = $this->files();
+
+        $this->migrations('migrate:rollback', ['--step' => count(array_filter($files, fn (string $file) => basename($file) >= '2026_09'))]);
+        foreach ($files as $file) {
+            if (basename($file) >= '2026_09' && basename($file, '.php') <= $last) {
+                $this->migrations('migrate', [], $file);
+            }
+        }
+        $this->assertContains(self::LENGTH_COUNT_ID, $this->indexes('fuzzy_index_terms'), 'the build\'s schema');
+
+        $this->migrations('migrate');
+
+        $this->assertNotContains(self::LENGTH_COUNT_ID, $this->indexes('fuzzy_index_terms'));
+        $this->assertSame($fresh, $this->schema());
     }
 
     /**
@@ -353,9 +513,9 @@ class DictionaryIndexesTest extends TestCase
     /**
      * S1: candidates() reads one length at a time, each in (term_length, doc_count) order: no
      * sort of the window, whose size grows with the dictionary. A model's words are read through
-     * fuzzy_index_model_terms' (model_type_id, term_length, doc_count, term_id) (ER-197), the
-     * dictionary's through (term_length, doc_count, id). The plan check runs where EXPLAIN is plain
-     * SQL (SQLite, MySQL, MariaDB, PostgreSQL); SQL Server checks the shape only.
+     * fuzzy_index_model_terms' (model_type_id, term_length, doc_count, term_id) (ER-197); no package
+     * read is unscoped, and the dictionary has no such index (ER-211). The plan check runs where
+     * EXPLAIN is plain SQL (SQLite, MySQL, MariaDB, PostgreSQL); SQL Server checks the shape only.
      */
     public function test_the_typo_read_takes_each_length_in_index_order(): void
     {
@@ -381,7 +541,7 @@ class DictionaryIndexesTest extends TestCase
             default            => null,
         };
 
-        foreach (['fuzzy_index_model_terms' => [User::class, 'model_terms_length_idx'], 'fuzzy_index_terms' => [null, self::LENGTH_COUNT_ID]] as $table => [$model, $index]) {
+        foreach (['fuzzy_index_model_terms' => [User::class, 'model_terms_length_idx']] as $table => [$model, $index]) {
             $reads = [];
             DB::listen(function ($query) use (&$reads, $table) {
                 if (preg_match('/^\s*select\b/i', $query->sql) && preg_match('/\b\W?\w*' . $table . '\b/', $query->sql)) {
