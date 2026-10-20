@@ -4,7 +4,6 @@ namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
 use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
 use Illuminate\Console\Command;
-use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
 
 class ExplainCommand extends Command
 {
@@ -84,50 +83,7 @@ class ExplainCommand extends Command
             $this->table(['ID', 'Score', 'Column Scores'], $tableData);
         }
 
-        // Pattern analysis
-        $this->newLine();
-        $this->info('Pattern Analysis:');
-
-        $fuzzySearch = app(FuzzySearch::class);
-        $patterns = $this->analyzePatterns($term, $algorithm);
-
-        $this->line("  Generated patterns: " . count($patterns));
-        $this->line("  Sample patterns:");
-        foreach (array_slice($patterns, 0, 10) as $pattern) {
-            $this->line("    - {$pattern}");
-        }
-
-        if (count($patterns) > 10) {
-            $this->line("    ... and " . (count($patterns) - 10) . " more");
-        }
-
         return 0;
-    }
-
-    protected function analyzePatterns(string $term, string $algorithm): array
-    {
-        $patterns = [];
-        $term = strtolower(trim($term));
-
-        // Basic patterns
-        $patterns[] = "%{$term}%";
-        $patterns[] = "{$term}%";
-        $patterns[] = "%{$term}";
-
-        if ($algorithm === 'fuzzy' || $algorithm === 'levenshtein') {
-            // Character omission patterns
-            for ($i = 0; $i < strlen($term); $i++) {
-                $patterns[] = '%' . substr($term, 0, $i) . '%' . substr($term, $i + 1) . '%';
-            }
-
-            // Transposition patterns
-            for ($i = 0; $i < strlen($term) - 1; $i++) {
-                $transposed = substr($term, 0, $i) . $term[$i + 1] . $term[$i] . substr($term, $i + 2);
-                $patterns[] = '%' . $transposed . '%';
-            }
-        }
-
-        return array_unique($patterns);
     }
 }
 
