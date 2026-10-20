@@ -58,7 +58,11 @@ Synonyms for every search go in the `synonyms` config key (word => its synonyms;
 
 A locale selects a stop-word list — nothing else. Pass it where it is read: `ignoreStopWords()`
 at query time, `$searchable['locale']` for a model's index pipeline (see "Per-Model Pipelines"
-below).
+below). The top-level `locale` key in `config/fuzzy-search.php` (`'en'` by default) picks the list
+every other model's index drops, and the query-time list of a preset with `stop_words_enabled`
+and no `locale` of its own: out of the box the index drops the 14 English words of `stop_words.en`, and a search on the index drops them
+from the query too. To index every word, set `locale` to a code with no `stop_words` entry
+(`'locale' => 'none'`), or set that locale's entry to an empty list, then rebuild.
 
 ```php
 // Query time: drop German stop words from this search
@@ -153,7 +157,7 @@ On the index path, `highlight()` marks whatever the query actually matched (see 
 
 ### Per-Model Pipelines
 
-Every model shares the global `indexing.*` config by default. Override the tokenizer, stemmer (and its language) or stop-word locale for one model with `$searchable`:
+Every model shares the global `indexing.*` config, and the stop-word list of the top-level `locale` key, by default. Override the tokenizer, stemmer (and its language) or stop-word locale for one model with `$searchable`:
 
 ```php
 use Ashiqfardus\LaravelFuzzySearch\Traits\Searchable;
@@ -174,7 +178,7 @@ class Product extends Model
 }
 ```
 
-Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline — it is the only place a locale changes what is indexed (the builder's deprecated `->locale()` never did anything).
+Any key you omit falls back to the global config. `stemmer_language` is passed to the stemmer's constructor (`new PorterStemmer('French')`) — see "Stemming (Optional)" below for the full list of Snowball languages. It only means something to a stemmer whose constructor accepts one; naming it on a stemmer that takes none (`NullStemmer`) throws `InvalidArgumentException` instead of silently ignoring it. `locale` picks the stop-word list from `config('fuzzy-search.stop_words')` for this model's index pipeline, in place of the one the top-level `locale` key picks for every model (the builder's deprecated `->locale()` never did anything).
 
 The resolved pipeline is cached per model class for the lifetime of the request/worker; nothing in a running process needs to call `IndexManager::resetPipelineCache()` yourself unless you swap `$searchable` at runtime (tests that do this between cases should call it). Query-time processing — typo expansion and `suggest()` — follows the same per-model pipeline automatically, and the Scout engine passes its model too. `didYouMean()` is a separate lookup, scoped to the searched model's postings: it queries that model's terms in the dictionary on the raw search term, without running it through any model's tokenizer, stemmer or stop-word list. Rebuild after changing any of these keys, while nothing is indexing (see [Artisan Commands](bm25.md#artisan-commands)), same as the global tokenizer/stemmer:
 

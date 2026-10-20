@@ -337,7 +337,8 @@ Removing these keys from your published config is safe — they had no effect.
   value was only ever folded into the cache key. Calling it now raises `E_USER_DEPRECATED` and
   remains the no-op it always was. Pass the locale where it is actually read —
   `->ignoreStopWords('de')` for a query-time stop-word list, `$searchable['locale']` for a
-  model's index pipeline. Will be removed in v3.0.0.
+  model's index pipeline, the top-level `locale` config key for every other model's index. Will
+  be removed in v3.0.0.
 - **`SearchBuilder::minMatchLength()`** — likewise never read into a pattern or a predicate. Use
   the `min_search_length` config key (whole term) or `typo_tolerance.min_word_length` (per word).
   Raises `E_USER_DEPRECATED`, still a no-op, removed in v3.0.0.
