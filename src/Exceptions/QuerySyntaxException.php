@@ -56,6 +56,11 @@ class QuerySyntaxException extends LaravelFuzzySearchException
         return new self('The typo operator (~) needs a term after it, for example ~john.');
     }
 
+    public static function notNeedsTerm(): self
+    {
+        return new self('The negation operator (!) needs a term right after it, for example !spam. Quote a lone "!" to search for it.');
+    }
+
     public static function typoOperatorCombination(): self
     {
         return new self(
