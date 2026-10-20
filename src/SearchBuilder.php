@@ -78,7 +78,6 @@ class SearchBuilder
     protected array $stopWords = [];
 
     protected bool $stopWordsOverridden = false;
-    protected ?string $stopWordLocale = null;
     protected array $synonyms = [];
     protected array $synonymGroups = [];
     protected ?string $locale = null;
@@ -116,7 +115,6 @@ class SearchBuilder
     private bool $matched = false;
     protected bool $stableRankingEnabled = false;
     protected array $fallbackAlgorithms = [];
-    protected ?int $debounceMs = null;
     protected int $maxPatterns = 100;
     protected array $scoring = ['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50];
 
@@ -607,7 +605,6 @@ class SearchBuilder
         $this->stopWordsOverridden = true;
         if (is_string($stopWords)) {
             // Locale code
-            $this->stopWordLocale = $stopWords;
             $this->stopWords = config()->has("fuzzy-search.stop_words.{$stopWords}")
                 ? \Ashiqfardus\LaravelFuzzySearch\Support\StopWords::forLocale($stopWords)
                 : ($this->defaultStopWords[$stopWords] ?? []);
@@ -891,7 +888,6 @@ class SearchBuilder
             E_USER_DEPRECATED
         );
 
-        $this->debounceMs = $ms;
         return $this;
     }
 
