@@ -57,6 +57,11 @@ class IndexWriteRelationLockTest extends TestCase
     {
         parent::setUp();
 
+        // Before the tables: their explicit ids are refused by SQL Server's identity columns.
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('The shared re-read is MySQL/MariaDB\'s (ER-202): the other databases read the rows as they are now without it.');
+        }
+
         Schema::dropIfExists('iwrl_comments');
         Schema::dropIfExists('iwrl_posts');
         Schema::create('iwrl_posts', function (Blueprint $table) {
@@ -86,9 +91,6 @@ class IndexWriteRelationLockTest extends TestCase
 
     public function test_an_index_write_in_your_transaction_leaves_the_related_tables_unlocked(): void
     {
-        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
-            $this->markTestSkipped('The shared re-read is MySQL/MariaDB\'s (ER-202): the other databases read the rows as they are now without it.');
-        }
         config(['database.connections.iwrl_other' => DB::connection()->getConfig()]);
         $other = DB::connection('iwrl_other');
         $other->statement('set session innodb_lock_wait_timeout = 1');
