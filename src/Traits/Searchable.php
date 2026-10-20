@@ -4,9 +4,8 @@ namespace Ashiqfardus\LaravelFuzzySearch\Traits;
 
 use Ashiqfardus\LaravelFuzzySearch\SearchBuilder;
 use Ashiqfardus\LaravelFuzzySearch\FuzzySearch;
-use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
-use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\ReindexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver;
 use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 
@@ -147,31 +146,33 @@ trait Searchable
      * Reindex every row of this model whose $foreignKey equals $id — for the related
      * side of a relation-backed searchable field (renaming an Author must reindex its
      * Posts; Eloquent does not do that for you). Queued per row when indexing.async is on,
-     * run in-process otherwise. Returns the number of rows scheduled.
+     * run in-process otherwise, as the observer indexes a save: once the transaction open on
+     * this model's connection commits, at once outside one, and not at all if it rolls back. A
+     * job queued before the commit could run first and index the old related text, and a write
+     * inside the transaction held its shared locks on every related row until the commit. A
+     * failed in-process write is reported, naming the model and key, not thrown. Returns the
+     * number of rows scheduled.
      *
      *   // in Author::saved (or an observer):
      *   Post::reindexRelated('author_id', $author->id);
      */
     public static function reindexRelated(string $foreignKey, int|string $id): int
     {
-        $async = config('fuzzy-search.indexing.async', true);
-        $queue = config('fuzzy-search.indexing.queue', 'default');
-        $count = 0;
+        $model = new static;
+        $keys  = [];
 
-        static::query()->where($foreignKey, $id)->select((new static)->getKeyName())
-            ->chunkById(500, function ($rows) use ($async, $queue, &$count) {
+        static::query()->where($foreignKey, $id)->select($model->getKeyName())
+            ->chunkById(500, function ($rows) use (&$keys) {
                 foreach ($rows as $row) {
-                    if ($async) {
-                        IndexModelJob::dispatch(static::class, $row->getKey())->onQueue($queue);
-                    } else {
-                        (new IndexModelJob(static::class, $row->getKey()))
-                            ->handle(app(IndexManager::class));
-                    }
-                    $count++;
+                    $keys[] = $row->getKey();
                 }
             });
 
-        return $count;
+        if ($keys !== []) {
+            SearchableIndexingObserver::indexAfterCommit($model->getConnection(), fn () => [static::class], $keys);
+        }
+
+        return count($keys);
     }
 
     /**
