@@ -148,6 +148,77 @@ final class DbDialect
             . (self::needsLikeEscape($driver) ? " ESCAPE '" . self::likeEscapeCharacter($driver) . "'" : '');
     }
 
+    /** @var \WeakMap<\PDO, true>|null the SQLite PDOs fuzzy_lower() is registered on */
+    private static ?\WeakMap $foldRegistered = null;
+
+    /**
+     * Whether SQLite's LIKE would compare $pattern case-sensitively: it folds ASCII letters only,
+     * so a pattern with any other character ("лев" for "Лев", "é" for "É") needs the column and the
+     * pattern lower-cased in PHP. Every other database folds case in LIKE itself.
+     */
+    public static function foldsInPhp(string $driver, string $pattern): bool
+    {
+        return $driver === 'sqlite' && preg_match('/[^\x00-\x7F]/', $pattern) === 1;
+    }
+
+    /** $pattern as it is bound to the LIKE that likeColumn() wrote: lower-cased where the column is. */
+    public static function likePattern(string $pattern, string $driver): string
+    {
+        return self::foldsInPhp($driver, $pattern) ? mb_strtolower($pattern, 'UTF-8') : $pattern;
+    }
+
+    /**
+     * $column (already written as SQL) as the LIKE for $pattern reads it: wrapped in the package's
+     * own fuzzy_lower() on SQLite for a non-ASCII pattern, registered on the connection's PDO
+     * here, and unchanged, byte for byte, everywhere else. SQLite's own lower() and like() are
+     * never replaced, so the application's queries do not change.
+     *
+     * ponytail: one PHP call per row and column for a non-ASCII term on SQLite's LIKE path; an
+     * indexed lower-cased shadow column would avoid it, if that cost matters.
+     */
+    public static function likeColumn(string $column, string $driver, string $pattern, \Illuminate\Database\ConnectionInterface $connection): string
+    {
+        if (!self::foldsInPhp($driver, $pattern)) {
+            return $column;
+        }
+
+        self::registerFold($connection->getPdo());
+        self::registerFold($connection->getReadPdo()); // the same object unless reads are split
+
+        return "fuzzy_lower({$column})";
+    }
+
+    private static function registerFold(\PDO|\Closure|null $pdo): void
+    {
+        if ($pdo instanceof \Closure) {
+            $pdo = $pdo(); // a lazy read connection
+        }
+        if (!$pdo instanceof \PDO || $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME) !== 'sqlite') {
+            return;
+        }
+        self::$foldRegistered ??= new \WeakMap();
+        if (isset(self::$foldRegistered[$pdo])) {
+            return;
+        }
+
+        $fold = fn ($value) => $value === null ? null : mb_strtolower((string) $value, 'UTF-8');
+
+        if (method_exists($pdo, 'createFunction')) { // Pdo\Sqlite (PHP 8.4+, PDO::connect())
+            $pdo->createFunction('fuzzy_lower', $fold, 1, 2048); // 2048: SQLITE_DETERMINISTIC
+        } else {
+            // A plain PDO, as Laravel opens it: PHP 8.5 deprecates this name, Pdo\Sqlite has no way
+            // to take such an object over, and the function has to be there either way.
+            set_error_handler(fn () => true, E_DEPRECATED);
+            try {
+                $pdo->sqliteCreateFunction('fuzzy_lower', $fold, 1, 2048);
+            } finally {
+                restore_error_handler();
+            }
+        }
+
+        self::$foldRegistered[$pdo] = true;
+    }
+
     /**
      * Add "$column LIKE $pattern" to $query (a query or Eloquent builder) as the $boolean where.
      * PostgreSQL gets ILIKE (its LIKE is case-sensitive), every other database like() with the
@@ -157,7 +228,10 @@ final class DbDialect
     {
         $raw = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
 
-        $query->$raw(self::like(self::column($query, $column, $driver), $driver, self::likeOperator($driver)), [$pattern]);
+        $query->$raw(
+            self::like(self::likeColumn(self::column($query, $column, $driver), $driver, $pattern, $query->getConnection()), $driver, self::likeOperator($driver)),
+            [self::likePattern($pattern, $driver)]
+        );
     }
 
     /**

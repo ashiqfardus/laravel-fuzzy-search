@@ -1446,7 +1446,7 @@ The LIKE algorithms scan the table: at 1M rows `simple` took 0.75 s, `fuzzy` 14 
 
 ## Algorithm × Database Compatibility
 
-This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns.
+This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns. On SQLite, whose LIKE folds ASCII letters only, a LIKE term with a non-ASCII character (`лев`, `Ünal`) is compared through the package's own `fuzzy_lower()` function, registered on the connection, so it matches whatever the case; it costs one PHP call per row and column, so it is slower than an ASCII term there. SQLite's own `lower()` and `LIKE` are not replaced.
 
 | Algorithm | MySQL 8 | MariaDB 11.4 (CI); 10.6+ expected | PostgreSQL 14 | SQLite | SQL Server |
 |---|---|---|---|---|---|

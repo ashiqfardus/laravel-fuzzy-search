@@ -169,7 +169,7 @@ class AccentVariantTest extends TestCase
         $this->assertMatchesRegularExpression('/order by .*CASE WHEN \S+ I?LIKE \? (ESCAPE \S+ )?OR \S+ I?LIKE \? (ESCAPE \S+ )?THEN/i', $search()->toSql());
         $bindings = $search()->getBindings();
         $exact    = array_search(100, $bindings, true);
-        $this->assertSame(['Müller', 'Muller', 100], array_slice($bindings, $exact - 2, 3), 'the exact tier binds both forms');
+        $this->assertSame([\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likePattern('Müller', \Illuminate\Support\Facades\DB::connection()->getDriverName()), 'Muller', 100], array_slice($bindings, $exact - 2, 3), 'the exact tier binds both forms');
 
         // "Muller" is the folded form's exact match: it must be the one candidate kept.
         config(['fuzzy-search.max_candidates' => 1]);

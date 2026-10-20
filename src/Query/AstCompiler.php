@@ -203,7 +203,10 @@ class AstCompiler
             $q->$rawMethod('LOWER(' . $this->nullSafe($this->quoteColumn($column, $q), $negated) . ') = LOWER(?)', [$term]);
         } elseif ($negated) {
             // whereLike()'s predicate, the column wrapped as where() writes it
-            $q->$rawMethod(DbDialect::like($this->nullSafe($q->getGrammar()->wrap($column), true), $this->dbDriver, DbDialect::likeOperator($this->dbDriver)), [$pattern]);
+            $q->$rawMethod(
+                DbDialect::like(DbDialect::likeColumn($this->nullSafe($q->getGrammar()->wrap($column), true), $this->dbDriver, $pattern, $q->getConnection()), $this->dbDriver, DbDialect::likeOperator($this->dbDriver)),
+                [DbDialect::likePattern($pattern, $this->dbDriver)]
+            );
         } else {
             DbDialect::whereLike($q, $column, $pattern, $this->dbDriver, $boolean);
         }

@@ -73,9 +73,11 @@ abstract class BaseDriver
 
     /**
      * Trim a search term and lower-case its ASCII letters only. The term becomes a LIKE pattern,
-     * and SQLite's LIKE folds ASCII only: a lower-cased 'Лев' ('%лев%') would no longer match a
-     * stored "Лев" there. Every other database folds case in LIKE itself. Multibyte characters
-     * stay byte-identical (strtolower() on PHP 8.1 could corrupt them, see Utf8::lowerAscii()).
+     * and SQLite's LIKE folds ASCII only. DbDialect::whereLike() therefore reads the column through
+     * the package's fuzzy_lower() on SQLite for a pattern with a non-ASCII character, and lower-cases
+     * that pattern in PHP, so 'Лев' finds "лев" and "Лев" alike; every other database folds case in
+     * LIKE itself. Multibyte characters stay byte-identical here (strtolower() on PHP 8.1 could
+     * corrupt them, see Utf8::lowerAscii()).
      */
     protected function normalizeTerm(string $value): string
     {

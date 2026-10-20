@@ -3315,20 +3315,27 @@ class SearchBuilder
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
             $col = $this->quoteColumn(($own[$directColumn] ?? '') . $directColumn, $driver);
-            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else.
-            $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
+            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else; on SQLite
+            // a non-ASCII term reads the column through fuzzy_lower(), as the WHERE does.
+            $dialect = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::class;
+            $likeOf  = fn (string $pattern) => $dialect::like(
+                $dialect::likeColumn($col, $driver, $pattern, $this->query->getConnection()),
+                $driver,
+                $dialect::likeOperator($driver)
+            );
+            $prefixes = array_map(fn (string $safe) => $safe . '%', $safeTerms);
+            $contains = array_map(fn (string $safe) => '%' . $safe . '%', $safeTerms);
+            $joined   = fn (array $patterns) => implode(' OR ', array_map($likeOf, $patterns));
+            $bind     = fn (array $patterns) => array_map(fn (string $pattern) => $dialect::likePattern($pattern, $driver), $patterns);
 
-            $equals = implode(' OR ', array_fill(0, count($terms), $like));
-            $likes  = implode(' OR ', array_fill(0, count($terms), $like));
-
-            $scoreExpressions[] = "(CASE WHEN {$equals} THEN ? ELSE 0 END)";
-            $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
-            $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
+            $scoreExpressions[] = '(CASE WHEN ' . $joined($safeTerms) . ' THEN ? ELSE 0 END)';
+            $scoreExpressions[] = '(CASE WHEN ' . $joined($prefixes) . ' THEN ? ELSE 0 END)';
+            $scoreExpressions[] = '(CASE WHEN ' . $joined($contains) . ' THEN ? ELSE 0 END)';
             $bindings = array_merge(
                 $bindings,
-                $safeTerms, [(int) round($weight * $this->scoring['exact_match'])],
-                array_map(fn (string $safe) => $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['prefix_match'] * $prefixBoost)],
-                array_map(fn (string $safe) => '%' . $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['contains'])],
+                $bind($safeTerms), [(int) round($weight * $this->scoring['exact_match'])],
+                $bind($prefixes), [(int) round($weight * $this->scoring['prefix_match'] * $prefixBoost)],
+                $bind($contains), [(int) round($weight * $this->scoring['contains'])],
             );
         }
 
