@@ -1314,7 +1314,8 @@ php artisan fuzzy-search:clear "App\Models\User"
 # which takes hours on a large index: see docs/bm25.md#artisan-commands
 php artisan fuzzy-search:clear --all
 
-# Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
+# Show index statistics (total docs, tokens, avg length per model; the dictionary's unique terms for all models together)
+# and list postings that predate column weighting
 # (past 1,000,000 indexed tokens that check, which reads every posting, runs only with --legacy)
 php artisan fuzzy-search:status
 php artisan fuzzy-search:status --legacy
