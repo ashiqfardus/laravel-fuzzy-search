@@ -237,7 +237,7 @@ trait Searchable
     }
 
     /**
-     * Per-model index pipeline overrides (Phase 7): tokenizer, stemmer, stemmer_language,
+     * Per-model index pipeline overrides: tokenizer, stemmer, stemmer_language,
      * locale. Only the keys declared in $searchable are returned; IndexManager fills the rest
      * from config. Changing any of them requires `fuzzy-search:rebuild --fresh`.
      *

@@ -2,7 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Support;
 
-/** Accent folding shared by the index pipeline and the LIKE path. Task 4 adds the intl path. */
+/** Accent folding shared by the index pipeline and the LIKE path: intl's decomposition when it is loaded, then the map. */
 final class Accents
 {
     /** @internal How many strings fold() decomposed (past its ASCII shortcut): a cost guard for tests. */

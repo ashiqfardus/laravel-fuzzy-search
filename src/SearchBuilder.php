@@ -2027,7 +2027,7 @@ class SearchBuilder
             }
         }
 
-        // whereHas() needs the Eloquent builder; Query Builder sources never have relations (Task 1).
+        // whereHas() needs the Eloquent builder; Query Builder sources never have relations.
         $compileTarget = $this->query instanceof EloquentBuilder && !empty($relations)
             ? $this->query
             : ($this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query);

@@ -1301,8 +1301,8 @@ class IndexManager
 
     /**
      * The pipeline (tokenizer, stemmer, stop words, accent folding) for one model class.
-     * Resolves $searchable['tokenizer'|'stemmer'|'stemmer_language'|'locale'] overrides
-     * (Phase 7), cached per class; non-Searchable classes and null get the default pipeline.
+     * Resolves $searchable['tokenizer'|'stemmer'|'stemmer_language'|'locale'] overrides,
+     * cached per class; non-Searchable classes and null get the default pipeline.
      */
     public function pipelineFor(?string $modelClass): Pipeline
     {
@@ -1375,7 +1375,7 @@ class IndexManager
      * (SearchBuilder::ignoreStopWords() on the inverted-index path). Adding rather than
      * replacing is the only useful behaviour here: a term dropped at index time cannot match
      * anyway, so restoring a configured stop word would only feed typo expansion with noise.
-     * $modelClass selects the pipeline (Task 3 adds per-model overrides); null uses the default.
+     * $modelClass selects the pipeline (its per-model overrides); null uses the default.
      *
      * @return string[]
      */
