@@ -196,6 +196,38 @@ class IndexAfterCommitTest extends TestCase
         $this->assertSame(0, AfterCommitNote::reindexRelated('author_id', 0), 'no related row');
     }
 
+    /**
+     * Each chunk of related keys is scheduled as it is read, not every key first: a category with
+     * 1M products held 1M keys before the first dispatch. The count and the rows are those of one
+     * read.
+     */
+    public function test_reindex_related_schedules_each_chunk_as_it_reads_it(): void
+    {
+        config(['fuzzy-search.indexing.async' => true]);
+        Queue::fake();
+        $author = AfterCommitAuthor::query()->create(['name' => 'Quill']);
+        foreach (array_chunk(range(1, 1001), 250) as $chunk) {
+            DB::table('after_commit_notes')->insert(array_map(fn ($i) => ['title' => "Harbor {$i}", 'author_id' => $author->id], $chunk));
+        }
+
+        $pushedAtReads = [];
+        DB::listen(function ($query) use (&$pushedAtReads) {
+            if (str_contains($query->sql, 'after_commit_notes') && stripos($query->sql, 'select') === 0) {
+                $pushedAtReads[] = count(Queue::pushed(IndexModelJob::class));
+            }
+        });
+
+        $scheduled = AfterCommitNote::reindexRelated('author_id', $author->id);
+        DB::getEventDispatcher()->forget(\Illuminate\Database\Events\QueryExecuted::class);
+
+        $this->assertSame(1001, $scheduled);
+        $this->assertSame([0, 500, 1000], $pushedAtReads, 'each chunk is queued before the next one is read');
+
+        $keys = Queue::pushed(IndexModelJob::class)->map(fn (IndexModelJob $job) => [$job->modelClass, (int) $job->modelId])->all();
+        $ids  = DB::table('after_commit_notes')->orderBy('id')->pluck('id')->map(fn ($id) => [AfterCommitNote::class, (int) $id])->all();
+        $this->assertSame($ids, $keys);
+    }
+
     public function test_a_failed_related_write_is_reported_with_its_model_and_key_not_thrown(): void
     {
         config(['fuzzy-search.indexing.async' => false]);

@@ -159,20 +159,17 @@ trait Searchable
     public static function reindexRelated(string $foreignKey, int|string $id): int
     {
         $model = new static;
-        $keys  = [];
+        $count = 0;
 
+        // Each chunk as it is read: outside a transaction its writes run, and its keys are freed,
+        // before the next chunk is read.
         static::query()->where($foreignKey, $id)->select($model->getKeyName())
-            ->chunkById(500, function ($rows) use (&$keys) {
-                foreach ($rows as $row) {
-                    $keys[] = $row->getKey();
-                }
+            ->chunkById(500, function ($rows) use ($model, &$count) {
+                SearchableIndexingObserver::indexAfterCommit($model->getConnection(), fn () => [static::class], $rows->modelKeys());
+                $count += $rows->count();
             });
 
-        if ($keys !== []) {
-            SearchableIndexingObserver::indexAfterCommit($model->getConnection(), fn () => [static::class], $keys);
-        }
-
-        return count($keys);
+        return $count;
     }
 
     /**
