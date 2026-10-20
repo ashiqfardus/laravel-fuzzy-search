@@ -1346,6 +1346,8 @@ php artisan fuzzy-search:benchmark "App\Models\User" --term="john" --iterations=
 php artisan fuzzy-search:explain User --term="john"
 ```
 
+`benchmark` and `explain` run real searches, but turn `analytics.enabled` and `cache.enabled` off for the run (and restore them), so they write no analytics row and a cache hit is never timed as a search. An unknown `--algorithm` or an empty `--term` prints the message and exits with 1.
+
 ---
 
 ## Performance & Scaling
