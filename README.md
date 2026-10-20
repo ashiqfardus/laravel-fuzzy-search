@@ -1394,11 +1394,15 @@ For the LIKE/Levenshtein paths, SQL candidates are fetched then re-scored in PHP
 ### Recommended Optimizations
 
 ```php
-// For 100k+ rows: enable BM25 index + cache + limit columns
+// For 100k+ rows: the BM25 index, plus a cache for repeated searches
 User::search('john')
     ->useInvertedIndex()
     ->cache(60)
-    ->searchIn(['name', 'email'])
+    ->get();
+
+// On the LIKE path, fewer columns and fewer patterns: searchOn() replaces the model's
+// column list for this search (searchIn() after Model::search() only adds columns)
+User::searchOn(User::query(), 'john', ['name' => 10])
     ->maxPatterns(50)
     ->get();
 ```
@@ -1406,7 +1410,7 @@ User::search('john')
 Key tips:
 1. **Use the BM25 index** for tables with 10k+ rows
 2. **Enable caching** for repeated searches
-3. **Limit columns** — only search relevant fields
+3. **Limit columns** — declare only the fields worth searching in `$searchable['columns']`, or pass a shorter list to `Model::searchOn(Model::query(), $term, [...])` for one search. `searchIn()` cannot narrow a `Searchable` model's search: it adds columns, and its list form sets their weight to 1
 4. **Use `simple` algorithm** when typo tolerance isn't needed
 5. **Set `max_candidates`** to prevent excessive memory usage on large tables
 6. **Use `take()`** to cap result sets
