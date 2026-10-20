@@ -3,7 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
 /**
- * @internal This class is not part of the public API and may change without notice.
+ * Leaves every word as it is: the default stemmer (config('fuzzy-search.indexing.stemmer')).
  */
 class NullStemmer implements StemmerInterface
 {

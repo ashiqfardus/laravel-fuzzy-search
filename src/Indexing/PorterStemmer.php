@@ -8,7 +8,10 @@ namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 use Wamania\Snowball\English as StemmerFactory;
 
 /**
- * @internal This class is not part of the public API and may change without notice.
+ * Snowball stemming through wamania/php-stemmer ^1.3: English by default, another of its
+ * languages through $searchable['stemmer_language'].
+ *
+ * Opt-in: config('fuzzy-search.indexing.stemmer') or $searchable['stemmer'].
  */
 class PorterStemmer implements StemmerInterface
 {
