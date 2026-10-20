@@ -23,7 +23,7 @@ class StatusCommand extends Command
 
     public function handle(): int
     {
-        $rows = DB::table('fuzzy_index_meta')->get();
+        $rows = DB::table('fuzzy_index_meta')->get()->map(fn ($r) => (object) $r); // an app-wide array fetch mode returns arrays
 
         if ($rows->isEmpty()) {
             $this->warn('Index is empty. Run: php artisan fuzzy-search:rebuild {Model}');

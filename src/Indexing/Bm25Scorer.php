@@ -264,6 +264,7 @@ class Bm25Scorer
                 . ' where table_schema = database() and table_name = ? and column_name = ?',
                 [$connection->getTablePrefix() . $table, $column]
             );
+            $row = $row === null ? null : (object) $row; // an app-wide array fetch mode returns arrays
 
             self::$collations[$id] = $row !== null && preg_match('/^\w+$/', (string) $row->charset) && preg_match('/^\w+$/', (string) $row->collation)
                 ? [(string) $row->charset, (string) $row->collation]
@@ -323,6 +324,7 @@ class Bm25Scorer
         $meta = DB::table('fuzzy_index_meta')
             ->where('model_type', $modelType)
             ->first();
+        $meta = $meta === null ? null : (object) $meta; // an app-wide array fetch mode returns arrays
 
         if (!$meta || $meta->total_docs == 0) {
             return [];
@@ -340,6 +342,7 @@ class Bm25Scorer
             ->whereIn('term', $this->termBindings($weights))
             ->select('id', 'term')
             ->get()
+            ->map(fn ($row) => (object) $row) // an app-wide array fetch mode returns arrays
             ->keyBy('id');
 
         if ($termData->isEmpty()) {
@@ -400,7 +403,8 @@ class Bm25Scorer
 
         $scores = [];
         foreach ($postings as $row) {
-            $f = (float) $row->wf;
+            $row = (object) $row; // an app-wide array fetch mode returns arrays
+            $f   = (float) $row->wf;
             if ($f <= 0) {
                 continue;
             }

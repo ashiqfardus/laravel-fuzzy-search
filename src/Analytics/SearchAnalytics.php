@@ -103,6 +103,7 @@ class SearchAnalytics
             ->orderByDesc('searches')->orderBy('normalized_term')
             ->limit($limit)
             ->get()
+            ->map(fn ($r) => (object) $r) // an app-wide array fetch mode returns arrays
             ->map(fn ($r) => ['term' => (string) $r->normalized_term, 'searches' => (int) $r->searches, 'avg_results' => (float) $r->avg_results])
             ->all();
     }
@@ -118,6 +119,7 @@ class SearchAnalytics
             ->orderByDesc('searches')->orderBy('normalized_term')
             ->limit($limit)
             ->get()
+            ->map(fn ($r) => (object) $r) // an app-wide array fetch mode returns arrays
             ->map(fn ($r) => ['term' => (string) $r->normalized_term, 'searches' => (int) $r->searches])
             ->all();
     }
@@ -131,6 +133,7 @@ class SearchAnalytics
             ->selectRaw('path, AVG(latency_ms) as avg_ms')
             ->orderBy('path')
             ->get()
+            ->map(fn ($r) => (object) $r) // an app-wide array fetch mode returns arrays
             ->mapWithKeys(fn ($r) => [(string) $r->path => round((float) $r->avg_ms, 2)])
             ->all();
     }
@@ -144,6 +147,7 @@ class SearchAnalytics
             ->selectRaw('day, COUNT(*) as searches')
             ->orderBy('day')
             ->get()
+            ->map(fn ($r) => (object) $r) // an app-wide array fetch mode returns arrays
             ->mapWithKeys(fn ($r) => [substr((string) $r->day, 0, 10) => (int) $r->searches])
             ->all();
     }
