@@ -206,7 +206,7 @@ class FederatedSearch
     /**
      * Fetch up to $perModelCeiling rows from every model — never more than max_candidates, the
      * most a ranked search reads (see countPerModel()) — tag them, and return the merged,
-     * ranked collection (score DESC, then orderByModel() rank, then model type, then key).
+     * ranked collection (score DESC, then orderByModel() rank, then model type, then each model's own order: by key, as its database orders it).
      */
     protected function fetchRanked(int $perModelCeiling): Collection
     {
@@ -250,8 +250,12 @@ class FederatedSearch
                     return $cmp;
                 }
             }
-            return [$rank($a), $a->_model_type, (string) $a->getKey()]
-                <=> [$rank($b), $b->_model_type, (string) $b->getKey()];
+            // Within one model, the order its own search returned (PHP's sort is stable): by key
+            // in the database's own order, which a comparison of the keys here disagreed with for
+            // string keys (numeric strings of different lengths, mixed case under a
+            // case-insensitive collation, a native uuid column), so a page repeated or skipped
+            // rows (P7R-1).
+            return [$rank($a), $a->_model_type] <=> [$rank($b), $b->_model_type];
         })->values();
     }
 
@@ -305,6 +309,17 @@ class FederatedSearch
 
             if ($this->useInvertedIndex) {
                 $builder->useInvertedIndex();
+
+                // Without relevance the merge keeps each model's rows in the order its search
+                // returns, so a model must hand over its first rows by key. On the index it handed
+                // over its best ranked ones, a set that changed as the limit grew with the page:
+                // page 2 repeated page 1, and some rows were never served (P6C-1). Here, not in
+                // searchModel(), so count() reads the same ordered path and paginate()'s total
+                // counts every match, not a ranking cut at max_postings_per_term (P7R-2). The
+                // LIKE path's stableRanking() reads them by key already.
+                if (!$this->withRelevance) {
+                    $builder->orderBy((new $modelClass())->getKeyName());
+                }
             }
 
             return $builder;
@@ -351,14 +366,6 @@ class FederatedSearch
         }
 
         if ($query instanceof SearchBuilder) {
-            // Without relevance fetchRanked() orders by key, so a model must hand over its first
-            // rows by key. On the index it handed over its best ranked ones, a set that changed as
-            // the limit grew with the page: page 2 repeated page 1, and some rows were never served
-            // (P6C-1). The LIKE path's stableRanking() reads them by key there already.
-            if ($this->useInvertedIndex && !$this->withRelevance) {
-                $query->orderBy((new $modelClass())->getKeyName());
-            }
-
             return $query->withRelevance($this->withRelevance)
                 ->stableRanking()
                 ->limit($limit)
