@@ -98,6 +98,8 @@ class SearchBuilder
     private array $indexedOwnTerms = [];
     /** @var list<list<string>>|null Under tokenize()->matchAll(), each word's terms among $indexedTermWeights (itself, its synonyms and expansions), of which a match holds one each — see indexedQueryTerms(). */
     private ?array $indexedTermGroups = null;
+    /** @var array<string, string> Each typo expansion among $indexedTermWeights => the word it expands, whose idf caps its own (Bm25Scorer::rank()) — see indexedQueryTerms(). */
+    private array $indexedTermSources = [];
     protected ?string $extendedQuery = null;
     /** @var string[] Positive leaf terms of the compiled extended query — see positiveLeafTerms(). */
     protected array $extendedLeafTerms = [];
@@ -1677,7 +1679,8 @@ class SearchBuilder
      * The weighted terms the inverted index is queried with: the processed tokens at 1.0
      * plus, when typoTolerance() > 0 (and typo_tolerance.enabled), dictionary neighbours
      * within that many edits, damped so an expansion contributes less than the exact term
-     * would (a rare expansion can still outscore a common exact term — BM25 weighs rarity).
+     * would, each with the word it expands ($indexedTermSources), whose idf caps its own when the
+     * index holds that word (Bm25Scorer::rank()).
      * Remembered so highlighting and getDebugInfo() can see what actually ran.
      *
      * @return array<string, float>
@@ -1730,18 +1733,25 @@ class SearchBuilder
         }
 
         $distance = $this->typoDistance();
+        $sources  = []; // typo expansion => the word it expands (see TermExpander::expand())
 
         if ($distance > 0 && $terms !== []) {
             $fuzzy  = (array) config('fuzzy-search.bm25.fuzzy', []);
-            $expand = fn (array $terms) => app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->expand(
-                array_map('strval', $terms),
-                $distance,
-                (int) config('fuzzy-search.typo_tolerance.min_word_length', 4),
-                (int) ($fuzzy['max_expansions'] ?? 5),
-                (int) ($fuzzy['candidate_pool'] ?? 500),
-                (bool) ($fuzzy['damping'] ?? true),
-                \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass),
-            );
+            $expand = function (array $terms) use ($distance, $fuzzy, $modelClass, &$sources) {
+                $weights = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->expand(
+                    array_map('strval', $terms),
+                    $distance,
+                    (int) config('fuzzy-search.typo_tolerance.min_word_length', 4),
+                    (int) ($fuzzy['max_expansions'] ?? 5),
+                    (int) ($fuzzy['candidate_pool'] ?? 500),
+                    (bool) ($fuzzy['damping'] ?? true),
+                    \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass),
+                    $found,
+                );
+                $sources += $found;
+
+                return $weights;
+            };
 
             if ($groups === null) {
                 $weights = $expand($terms);
@@ -1781,8 +1791,11 @@ class SearchBuilder
 
                 // A term reached twice keeps the higher weight (a prefix hit at 1.0 beats a
                 // damped typo expansion of the same term; `+=` would have kept the lower one).
+                // A completion of what the user is typing keeps its own idf, as a typo expansion
+                // of it would not.
                 foreach ($prefixed as $term => $weight) {
                     $weights[$term] = max($weights[$term] ?? 0.0, $weight);
+                    unset($sources[$term]);
                     if (isset($groups[(string) end($lastTerms)])) {
                         $groups[(string) end($lastTerms)][(string) $term] = true;
                     }
@@ -1790,8 +1803,9 @@ class SearchBuilder
             }
         }
 
-        $this->indexedOwnTerms   = array_map('strval', $terms); // the processed words and synonyms, before any expansion
-        $this->indexedTermGroups = $groups === null ? null : array_values(array_map(fn (array $group) => array_map('strval', array_keys($group)), $groups));
+        $this->indexedOwnTerms    = array_map('strval', $terms); // the processed words and synonyms, before any expansion
+        $this->indexedTermGroups  = $groups === null ? null : array_values(array_map(fn (array $group) => array_map('strval', array_keys($group)), $groups));
+        $this->indexedTermSources = array_map('strval', $sources);
 
         return $this->indexedTermWeights = $weights;
     }
@@ -2372,7 +2386,8 @@ class SearchBuilder
         $indexManager = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class);
         $scorer       = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class);
 
-        $ranked = $scorer->rank($this->indexedQueryTerms($indexManager), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass), $read); // model_id => score, best first
+        $terms  = $this->indexedQueryTerms($indexManager);
+        $ranked = $scorer->rank($terms, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $this->indexColumnWeights($modelClass), $read, $this->indexedTermSources); // model_id => score, best first
         $base   = $this->indexedBaseQuery($modelClass);
 
         if ($ranked === []) {

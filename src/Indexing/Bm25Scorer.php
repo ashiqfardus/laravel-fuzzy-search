@@ -307,12 +307,20 @@ class Bm25Scorer
      *  - cut: whether its read reached bm25.max_postings_per_term, so that the ranking may lack
      *    matches (TF-9).
      *
+     * A typo expansion in $sources counts the documents of the word it expands, when the type holds
+     * that word and more of them (the blended document frequency Lucene's FuzzyQuery scores with):
+     * scored with its own, a common word's rare misspellings outranked every exact hit of it (two
+     * misspelled rows over 200 exact ones, at more than twice the best exact score). Its idf is then
+     * the word's, and its weight (1 - distance / length, bm25.fuzzy.damping) puts it below them. A
+     * word the type lacks (the user typed the misspelling) leaves its expansions their own idf.
+     *
      * @param  array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param  array<string, int|float>                $columnWeights column => weight; '' and unknown names weigh 1
      * @param  array{share: float, cut: bool}|null     $read          set to what the ranking read (see above)
+     * @param  array<string, string>                   $sources       typo expansion => the word among $terms it expands (TermExpander::expand())
      * @return array<int|string, float>
      */
-    public function rank(array $terms, string $modelType, array $columnWeights = [], ?array &$read = null): array
+    public function rank(array $terms, string $modelType, array $columnWeights = [], ?array &$read = null, array $sources = []): array
     {
         $read    = null;
         $weights = $this->weights($terms);
@@ -398,6 +406,18 @@ class Bm25Scorer
 
         $read = ['share' => array_sum(array_map('intval', $df)) / $N, 'cut' => $postings->count() >= $maxPostings];
 
+        // The idf's document frequency: an expansion's, at least its word's (see above).
+        $idfDf = $df;
+        $ids   = [];
+        foreach ($termData as $id => $term) {
+            $ids[(string) $term->term] = $id;
+        }
+        foreach ($sources as $term => $source) {
+            if (isset($ids[(string) $term], $ids[(string) $source], $df[$ids[(string) $source]])) {
+                $idfDf[$ids[(string) $term]] = max((int) ($df[$ids[(string) $term]] ?? 0), (int) $df[$ids[(string) $source]]);
+            }
+        }
+
         $scores = [];
         foreach ($postings as $row) {
             $f = (float) $row->wf;
@@ -406,7 +426,7 @@ class Bm25Scorer
             }
             $td     = $termData[$row->term_id];
             $weight = (float) ($weights[$td->term] ?? 1.0);
-            $n      = min((float) ($df[$row->term_id] ?? 1), $N); // never above N: the idf stays positive
+            $n      = min((float) ($idfDf[$row->term_id] ?? 1), $N); // never above N: the idf stays positive
             $idf    = log(($N - $n + 0.5) / ($n + 0.5) + 1);
             $tf     = ($f * ($this->k1 + 1))
                     / ($f + $this->k1 * (1 - $this->b + $this->b * (float) $row->doc_len / $avgdl));

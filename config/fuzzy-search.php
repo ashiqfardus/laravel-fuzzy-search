@@ -269,9 +269,9 @@ return [
          * candidate_pool most common of the searched model's own terms of a similar length, by
          * its own document count, equal counts newest first (a term outside that window is never
          * reached — raise the pool for catalogs of rare terms). With damping on, an
-         * expansion contributes 1 - distance / length of what the exact term would; it always
-         * counts for less, but BM25 weighs rarity (idf), so a rare expansion can still outscore
-         * a common exact term.
+         * expansion contributes 1 - distance / length of what the exact term would, and it is
+         * scored with the idf of the word it expands when the index holds that word, so its rows
+         * rank below the exact hits; an expansion of a word the index lacks keeps its own idf.
          */
         'fuzzy' => [
             'candidate_pool' => 500,
