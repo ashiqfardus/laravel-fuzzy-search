@@ -7,7 +7,8 @@
          displayDetailsOnTestsThatTriggerDeprecations="true"
          displayDetailsOnTestsThatTriggerWarnings="true"
          failOnWarning="true"
-         failOnDeprecation="true">
+         failOnDeprecation="true"
+         defaultTestSuite="Unit,Feature,Legacy,Security,Integration">
     <testsuites>
         <testsuite name="Unit">
             <directory suffix="Test.php">./tests/Unit</directory>
@@ -21,6 +22,7 @@
         <testsuite name="Security">
             <directory suffix="Test.php">./tests/Security</directory>
         </testsuite>
+        <!-- Wall-clock timings, out of the default run as in CI: composer benchmark runs them. -->
         <testsuite name="Performance">
             <directory suffix="Test.php">./tests/Performance</directory>
         </testsuite>

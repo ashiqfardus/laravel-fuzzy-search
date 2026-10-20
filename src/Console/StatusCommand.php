@@ -62,9 +62,11 @@ class StatusCommand extends Command
             ->selectRaw('COUNT(*) as cnt')
             ->pluck('cnt', 'model_type');
 
+        // A plain rebuild is enough: re-indexing a row replaces every posting it held, a legacy
+        // one included, and it runs while the app writes the index, which --fresh may not.
         foreach ($legacy as $modelType => $cnt) {
             $this->warn(sprintf(
-                '%s: %s posting(s) predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "%s" --fresh',
+                '%s: %s posting(s) predate column weighting and rank at weight 1 — run: php artisan fuzzy-search:rebuild "%s"',
                 class_basename($modelType), number_format($cnt), $modelType
             ));
         }

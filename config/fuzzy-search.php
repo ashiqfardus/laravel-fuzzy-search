@@ -111,6 +111,17 @@ return [
     |--------------------------------------------------------------------------
     | Typo Tolerance
     |--------------------------------------------------------------------------
+    |
+    | enabled: false stops every typo match. The fuzzy and levenshtein
+    |   algorithms, the inverted index, extended ~ and the whereFuzzy-style
+    |   macros then match the term itself, whatever a distance says.
+    | max_distance: the edits a typo may take by default, on the fuzzy
+    |   algorithm, the inverted index and extended ~, for every model.
+    |   typoTolerance(), $searchable['typo_tolerance'] or a preset override it.
+    |   The levenshtein algorithm reads levenshtein.max_distance instead.
+    | min_word_length: a shorter word gets no typo tolerance (it still matches
+    |   exactly), on the fuzzy algorithm, extended ~ and the inverted index.
+    |
     */
     'typo_tolerance' => [
         'enabled' => true,
@@ -367,18 +378,25 @@ return [
     |--------------------------------------------------------------------------
     | Levenshtein Settings
     |--------------------------------------------------------------------------
+    |
+    | max_distance: the levenshtein algorithm's default distance.
+    | typoTolerance(), $searchable['typo_tolerance'] or a preset override it,
+    | and typo_tolerance.enabled = false makes it 0.
+    |
     */
     'levenshtein' => [
         'max_distance' => 2,
-        'cost_insert' => 1,
-        'cost_replace' => 1,
-        'cost_delete' => 1,
     ],
 
     /*
     |--------------------------------------------------------------------------
     | Trigram Settings
     |--------------------------------------------------------------------------
+    |
+    | min_similarity (0-100): pg_trgm's similarity() threshold, read only on
+    | PostgreSQL with use_native_functions on. The LIKE-pattern fallback that
+    | trigram runs everywhere else does not use it.
+    |
     */
     'trigram' => [
         'min_similarity' => 30,  // 0-100
@@ -443,6 +461,12 @@ return [
     |--------------------------------------------------------------------------
     | Default Locale
     |--------------------------------------------------------------------------
+    |
+    | Picks the stop_words list the inverted index drops for every model (one
+    | whose $searchable['locale'] names another uses that), and the list a
+    | preset's stop_words_enabled drops. A locale with no stop_words entry
+    | drops none. Rebuild the index (rebuild --fresh) after changing it.
+    |
     */
     'locale' => 'en',
 

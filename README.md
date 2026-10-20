@@ -481,7 +481,8 @@ multiplier in between is
 ```
 
 so with `boostRecent(1.5, 'created_at', 30)` a row created today scores x1.5, a 15-day-old row
-x1.25 and a 29-day-old row x1.0167. Rows older than the window are untouched (x1.0).
+x1.25 and a 29-day-old row x1.0167. Rows older than the window are untouched (x1.0). A date in
+the future (a scheduled `published_at`, or clock skew) counts as age 0: the full multiplier.
 
 ```php
 // Newest rows get 1.5x, decaying to 1.0x at 30 days old

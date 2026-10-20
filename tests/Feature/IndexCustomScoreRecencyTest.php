@@ -201,4 +201,39 @@ class IndexCustomScoreRecencyTest extends TestCase
             $this->assertSame(1.0, (float) $make()->simplePaginate(5)->items()[0]->_score, "{$label}: simplePaginate() page 1");
         }
     }
+
+    /**
+     * ER-206: a date in the future counts as age 0, so it gets the full multiplier, never the boost
+     * of a row as old as it is far ahead (+10 days was boosted as 10 days old, +60 days not at all).
+     * Clock skew counts as now, and a newer row never gets less boost than an older one.
+     */
+    public function test_a_future_date_counts_as_age_zero_on_every_path(): void
+    {
+        DB::table('users')->insert(['name' => 'Zed Alpha', 'email' => 'a@example.com', 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('users')->insert(['name' => 'Zed Beta', 'email' => 'b@example.com', 'created_at' => now()->addDays(10), 'updated_at' => now()]);
+        DB::table('users')->insert(['name' => 'Zed Gamma', 'email' => 'c@example.com', 'created_at' => now()->addDays(60), 'updated_at' => now()]);
+        app(IndexManager::class)->indexBatch(RankHookFreeUser::all());
+
+        $paths = [
+            'like'     => fn () => RankHookFreeUser::search('zed')->boostRecent(5.0, 'created_at', 30),
+            'extended' => fn () => RankHookFreeUser::search('')->extended('zed')->boostRecent(5.0, 'created_at', 30),
+            'index'    => fn () => RankHookFreeUser::search('zed')->useInvertedIndex()->boostRecent(5.0, 'created_at', 30),
+        ];
+        $scores = fn (iterable $rows) => collect($rows)->mapWithKeys(fn ($r) => [$r->name => round((float) $r->_score, 4)])->sortKeys()->all();
+        $even   = ['Zed Alpha' => 1.0, 'Zed Beta' => 1.0, 'Zed Gamma' => 1.0];
+
+        foreach ($paths as $path => $make) {
+            $this->assertSame($even, $scores($make()->get()), "{$path} get");
+            $this->assertSame($even, $scores($make()->paginate(5)->items()), "{$path} paginate");
+            $this->assertSame($even, $scores($make()->simplePaginate(5)->items()), "{$path} simplePaginate");
+            $this->assertSame(1.0, round((float) $make()->first()->_score, 4), "{$path} first");
+        }
+
+        $builder = RankHookFreeUser::search('zed')->boostRecent(1.5, 'created_at', 30);
+        $boost   = new \ReflectionMethod($builder, 'calculateRecencyBoost');
+        $boost->setAccessible(true);
+        foreach ([1, 10, 29, 60, 400] as $ahead) {
+            $this->assertSame(1.5, round($boost->invoke($builder, (object) ['created_at' => now()->addDays($ahead)->toDateTimeString()]), 4), "+{$ahead} days");
+        }
+    }
 }

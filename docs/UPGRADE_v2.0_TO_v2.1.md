@@ -112,6 +112,7 @@ analytics, `suggest()` and the tokenizers.
 - **A `SearchBuilder` is reusable.** Terminal calls compile onto a clone and no longer add the search's conditions to your base query, so `first()` followed by `get()` returns every match (it returned one row), and `suggest()` on a builder that already ran `get()` is no longer narrowed by that search.
 - **`paginate()` ranks across up to `max_candidates` rows before slicing** (2.0 ranked within the page), and works with `extended()`/`searchBoolean()`.
 - **`typoTolerance(0)` and `typoTolerance(1)` now apply to the default `fuzzy` algorithm**, which generated every typo pattern whatever the level, so those searches match fewer rows.
+- **`typo_tolerance.enabled = false` now also stops typo matches on the `fuzzy` and `levenshtein` algorithms**, and in the `whereFuzzy`-style macros and the `Fuzzy` scopes. It used to turn off only the inverted index's typo expansion and `extended()`'s `~`. With it off, every search matches the term itself, whatever `typoTolerance()`, `$searchable['typo_tolerance']` or `levenshtein.max_distance` say, so those searches return fewer rows. Two smaller changes come with it, and neither shows at the shipped values: `typo_tolerance.max_distance` is now the default distance on the inverted index and `~` for every search (a model that declared `$searchable` without `typo_tolerance` used 2 there), and a zero-config model searched with `levenshtein` reads `levenshtein.max_distance`, as a declared model does (it read `typo_tolerance.max_distance`).
 - **`search('0')` is a real search** for a one-character term. It threw `EmptySearchTermException` from `get()` and listed every row from `paginate()`/`count()`; at the default `min_search_length` of 2 it now matches nothing.
 - **`min_search_length` and `query.max_term_length` count characters, not bytes**, so a one-character multibyte term is below the default minimum of 2, and a long non-Latin term keeps more of its characters.
 - **The `searchFuzzy()` scope weighs the configured columns** with their `$searchable['columns']` weights (it weighed every column 1), so its ranking changes, and list-form columns no longer throw.
@@ -323,6 +324,9 @@ normalization.
   below).
 - `indexing.table` — the v1 `search_index` table name, unread by v2 outside the deprecated
   `performReindex()` path (which keeps its own default).
+- `levenshtein.cost_insert`, `levenshtein.cost_replace` and `levenshtein.cost_delete` — never
+  read; no search or score used them. `FuzzySearch::levenshteinDistance()` still takes these costs
+  in its own `$options` argument.
 
 Removing these keys from your published config is safe — they had no effect.
 

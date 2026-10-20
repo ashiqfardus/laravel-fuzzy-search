@@ -27,6 +27,16 @@ class ShippedConfigTest extends TestCase
         $this->assertSame(array_replace_recursive($shipped, self::OVERRIDES), config('fuzzy-search'));
     }
 
+    public function test_the_levenshtein_block_holds_only_its_max_distance(): void
+    {
+        // levenshtein.cost_insert, cost_replace and cost_delete shipped and nothing read them:
+        // a cost of 9 or 50 left every score unchanged (N4-1). FuzzySearch::levenshteinDistance()
+        // still takes costs through its own $options argument.
+        $shipped = require __DIR__ . '/../../config/fuzzy-search.php';
+
+        $this->assertSame(['max_distance'], array_keys($shipped['levenshtein']));
+    }
+
     public function test_the_shipped_indexing_async_indexes_a_save_before_it_returns(): void
     {
         // Why indexing.async needs no override: TestCase pins the sync queue connection, so the

@@ -3,7 +3,8 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Indexing;
 
 /**
- * @internal This class is not part of the public API and may change without notice.
+ * Lower-cased runs of letters, marks and digits, split on everything else; a run shorter than
+ * two characters is dropped. The default tokenizer (config('fuzzy-search.indexing.tokenizer')).
  */
 class WhitespaceTokenizer implements TokenizerInterface
 {

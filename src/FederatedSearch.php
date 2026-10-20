@@ -89,7 +89,7 @@ class FederatedSearch
 
     /**
      * Set typo tolerance for every model. Without it, each model uses its own
-     * $searchable['typo_tolerance'].
+     * $searchable['typo_tolerance'], else typo_tolerance.max_distance.
      */
     public function typoTolerance(int $level): self
     {

@@ -237,7 +237,7 @@ trait Searchable
     }
 
     /**
-     * Per-model index pipeline overrides (Phase 7): tokenizer, stemmer, stemmer_language,
+     * Per-model index pipeline overrides: tokenizer, stemmer, stemmer_language,
      * locale. Only the keys declared in $searchable are returned; IndexManager fills the rest
      * from config. Changing any of them requires `fuzzy-search:rebuild --fresh`.
      *
@@ -282,11 +282,11 @@ trait Searchable
             return $config;
         }
 
-        // Zero-config: auto-detect columns
+        // Zero-config: auto-detect columns. The algorithm and typo tolerance are the builder's own
+        // defaults (default_algorithm, typo_tolerance.max_distance), as for a model that declares
+        // none: through using(), default_algorithm 'like' was reported as 'simple'.
         return [
             'columns' => $this->getAutoDetectedColumns(),
-            'algorithm' => config('fuzzy-search.default_algorithm', 'fuzzy'),
-            'typo_tolerance' => config('fuzzy-search.typo_tolerance.max_distance', 2),
         ];
     }
 
@@ -494,11 +494,15 @@ trait Searchable
     {
         $config  = $this->getSearchableConfig();
         $columns ??= $config['columns'] ?? [];
+        // A declared model without an algorithm gets fuzzy here; a zero-config one the builder's
+        // default_algorithm, as search() gives it.
+        $algorithm ??= $config['algorithm'] ?? ($this->searchableDeclaration() === null ? null : 'fuzzy');
 
-        return (new SearchBuilder($query, app(FuzzySearch::class)))
+        $builder = (new SearchBuilder($query, app(FuzzySearch::class)))
             ->search($term)
-            ->searchIn($columns)
-            ->using($algorithm ?? ($config['algorithm'] ?? 'fuzzy'));
+            ->searchIn($columns);
+
+        return $algorithm === null ? $builder : $builder->using($algorithm);
     }
 }
 

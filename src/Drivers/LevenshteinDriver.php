@@ -17,7 +17,11 @@ class LevenshteinDriver extends BaseDriver
     public function __construct(array $config, string $driver)
     {
         parent::__construct($config, $driver);
-        $this->maxDistance = $config['levenshtein']['max_distance'] ?? 3;
+        // Its own key (or a max_distance option), but typo_tolerance.enabled = false stops typo
+        // patterns whatever the distance, as on the index.
+        $this->maxDistance = ($config['typo_tolerance']['enabled'] ?? true)
+            ? (int) ($config['levenshtein']['max_distance'] ?? 3)
+            : 0;
     }
 
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder

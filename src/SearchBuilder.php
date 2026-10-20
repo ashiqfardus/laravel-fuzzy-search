@@ -78,7 +78,6 @@ class SearchBuilder
     protected array $stopWords = [];
 
     protected bool $stopWordsOverridden = false;
-    protected ?string $stopWordLocale = null;
     protected array $synonyms = [];
     protected array $synonymGroups = [];
     protected ?string $locale = null;
@@ -116,7 +115,6 @@ class SearchBuilder
     private bool $matched = false;
     protected bool $stableRankingEnabled = false;
     protected array $fallbackAlgorithms = [];
-    protected ?int $debounceMs = null;
     protected int $maxPatterns = 100;
     protected array $scoring = ['exact_match' => 100, 'prefix_match' => 80, 'contains' => 60, 'fuzzy_match' => 50];
 
@@ -139,10 +137,12 @@ class SearchBuilder
         $this->withSynonyms((array) config('fuzzy-search.synonyms', []));
         $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
         $this->maxPatterns = (int) config('fuzzy-search.performance.max_patterns', 100);
-        // Forwarded through $options (merged into every applyFuzzyWhere() call) rather than
-        // left to BaseDriver::capPatterns()'s own config fallback: the FuzzySearch singleton
-        // is resolved eagerly at service-provider boot, so its config snapshot predates any
-        // config() override made later inside a test or request.
+        // The default distance of every path (LIKE fuzzy, the index, extended ~), as typoTolerance()
+        // clamps it. Not put in $options: levenshtein keeps its own levenshtein.max_distance.
+        $this->typoTolerance = max(0, min(5, (int) config('fuzzy-search.typo_tolerance.max_distance', 2)));
+        // Forwarded through $options (merged into every applyFuzzyWhere() call), which
+        // BaseDriver::firstPatterns() reads before its own performance.max_patterns fallback:
+        // maxPatterns() and the binding budget (prepareQuery()) set it per search.
         $this->options['max_patterns'] = $this->maxPatterns;
 
         if (config('fuzzy-search.highlighting.enabled', false)) {
@@ -158,8 +158,8 @@ class SearchBuilder
      * using the extended()/searchBoolean() pattern can override the term
      * before execution:
      *
-     *   User::search('')->extended('=John ^Doe')->get();  // safe
-     *   User::search('=John ^Doe')->extended()->get();    // also safe (preferred)
+     *   User::search('')->extended('^John !banned')->get();  // safe
+     *   User::search('^John !banned')->extended()->get();    // also safe (preferred)
      *
      * @param string $term
      * @return self
@@ -508,7 +508,9 @@ class SearchBuilder
     }
 
     /**
-     * Set typo tolerance level
+     * How many edits a typo may take (0 to 5), on every path: it replaces typo_tolerance.max_distance,
+     * the default, and on the levenshtein algorithm its own levenshtein.max_distance.
+     * typo_tolerance.enabled = false makes it 0 everywhere (see typoDistance()).
      */
     public function typoTolerance(int $level): self
     {
@@ -603,7 +605,6 @@ class SearchBuilder
         $this->stopWordsOverridden = true;
         if (is_string($stopWords)) {
             // Locale code
-            $this->stopWordLocale = $stopWords;
             $this->stopWords = config()->has("fuzzy-search.stop_words.{$stopWords}")
                 ? \Ashiqfardus\LaravelFuzzySearch\Support\StopWords::forLocale($stopWords)
                 : ($this->defaultStopWords[$stopWords] ?? []);
@@ -647,12 +648,13 @@ class SearchBuilder
      *             key: no stop-word list, stemmer or collation was ever selected from it. Pass
      *             the locale where it is actually read — `ignoreStopWords('de')` for a
      *             query-time stop-word list, `$searchable['locale']` for a model's index
-     *             pipeline. This method is a no-op and will be removed in v3.0.0.
+     *             pipeline, the top-level `locale` config key for every other model's index
+     *             stop-word list. This method is a no-op and will be removed in v3.0.0.
      */
     public function locale(string $locale): self
     {
         trigger_error(
-            "SearchBuilder::locale() is deprecated since 2.1.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list or \$searchable['locale'] for a model's index pipeline. It will be removed in v3.0.0.",
+            "SearchBuilder::locale() is deprecated since 2.1.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list, \$searchable['locale'] for a model's index pipeline, or the locale config key for every other model's index stop-word list. It will be removed in v3.0.0.",
             E_USER_DEPRECATED
         );
 
@@ -887,7 +889,6 @@ class SearchBuilder
             E_USER_DEPRECATED
         );
 
-        $this->debounceMs = $ms;
         return $this;
     }
 
@@ -897,7 +898,7 @@ class SearchBuilder
     public function maxPatterns(int $max): self
     {
         $this->maxPatterns = max(1, $max);
-        $this->options['max_patterns'] = $this->maxPatterns; // read by BaseDriver::capPatterns()
+        $this->options['max_patterns'] = $this->maxPatterns; // read by BaseDriver::firstPatterns()
         return $this;
     }
 
@@ -1663,6 +1664,16 @@ class SearchBuilder
     }
 
     /**
+     * The edits a typo may take on the index and extended ~ paths: typoTolerance(), or 0 under
+     * typo_tolerance.enabled = false. The fuzzy and levenshtein drivers apply the same switch to
+     * the LIKE path (and the query-builder macros) themselves.
+     */
+    private function typoDistance(): int
+    {
+        return config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+    }
+
+    /**
      * The weighted terms the inverted index is queried with: the processed tokens at 1.0
      * plus, when typoTolerance() > 0 (and typo_tolerance.enabled), dictionary neighbours
      * within that many edits, damped so an expansion contributes less than the exact term
@@ -1718,7 +1729,7 @@ class SearchBuilder
             $terms = array_keys($weights);
         }
 
-        $distance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+        $distance = $this->typoDistance();
 
         if ($distance > 0 && $terms !== []) {
             $fuzzy  = (array) config('fuzzy-search.bm25.fuzzy', []);
@@ -2017,12 +2028,12 @@ class SearchBuilder
             }
         }
 
-        // whereHas() needs the Eloquent builder; Query Builder sources never have relations (Task 1).
+        // whereHas() needs the Eloquent builder; Query Builder sources never have relations.
         $compileTarget = $this->query instanceof EloquentBuilder && !empty($relations)
             ? $this->query
             : ($this->query instanceof EloquentBuilder ? $this->query->getQuery() : $this->query);
 
-        $typoDistance = config('fuzzy-search.typo_tolerance.enabled', true) ? $this->typoTolerance : 0;
+        $typoDistance = $this->typoDistance();
 
         // The caller's where(A)->orWhere(B) as one group, before the query and the filters (RE-1).
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
@@ -4647,8 +4658,10 @@ class SearchBuilder
                 ? $dateValue
                 : new \DateTime($dateValue);
 
-            $now = new \DateTime();
-            $daysDiff = $now->diff($date)->days;
+            // The age in whole days. A date in the future (a scheduled post, clock skew) counts as
+            // age 0: diff() alone is absolute, and boosted a row 10 days ahead as if 10 days old.
+            $diff     = (new \DateTime())->diff($date);
+            $daysDiff = $diff->invert ? $diff->days : 0;
 
             if ($daysDiff <= $this->recencyDays) {
                 // Linear decay: full boost at day 0, no boost at recencyDays
