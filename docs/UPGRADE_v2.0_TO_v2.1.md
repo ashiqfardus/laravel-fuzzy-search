@@ -391,6 +391,12 @@ No code changes required — these are bug fixes in the package itself:
 - **MariaDB:** connections reporting driver name `"mariadb"` (Laravel 11+) now use native
   `SOUNDEX()`, the Levenshtein UDF path, quoted identifiers and the MySQL flush branch —
   previously every MySQL-only branch silently fell back to generic SQL on MariaDB.
+- **Several prefixed installs in one schema (PostgreSQL, SQLite, SQL Server):** the index names
+  the migrations give themselves now carry the connection's table prefix when `prefix_indexes` is
+  on (Laravel's default for MySQL, PostgreSQL and SQL Server; add it to an SQLite connection), so a
+  second install with another prefix migrates; it stopped at `relation "postings_unique_idx" already
+  exists`. Without a prefix the names are unchanged, and an existing install keeps its own: the
+  migrations find each index under either name.
 
 ## Relationship search
 

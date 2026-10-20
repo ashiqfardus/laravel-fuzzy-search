@@ -362,6 +362,7 @@ final class RankedCandidates
         $accepted = [];
 
         foreach (self::keyRead(self::whereMatches($base, $terms, $modelType, $columnWeights))->cursor() as $row) {
+            $row = (object) $row; // an app-wide array fetch mode returns arrays
             if ($row->{self::KEY_ALIAS} !== null && isset($ranked[$row->{self::KEY_ALIAS}])) {
                 $accepted[$row->{self::KEY_ALIAS}] = true;
             }
@@ -451,6 +452,7 @@ final class RankedCandidates
         $keys = [];
 
         foreach ($query->lazy(1000) as $row) {
+            $row = (object) $row; // an app-wide array fetch mode returns arrays
             if ($row->{self::KEY_ALIAS} !== null) {
                 $keys[$row->{self::KEY_ALIAS}] = true;
             }
