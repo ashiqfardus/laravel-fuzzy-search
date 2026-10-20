@@ -76,6 +76,23 @@ class JsonResourcesTest extends TestCase
         $this->assertSame([], $data['meta']['suggestions']);
     }
 
+    public function test_a_page_past_the_last_one_offers_no_suggestions_beside_a_non_zero_total(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all()); // didYouMean() reads the dictionary
+        request()->merge(['page' => 99]);
+
+        $data = $this->resourceJson(FuzzySearchCollection::fromBuilder(User::search('john'), perPage: 2));
+
+        $this->assertSame([], $data['data']);
+        $this->assertSame([], $data['meta']['suggestions']);
+
+        // A search that matches nothing still suggests, on its first page.
+        request()->merge(['page' => 1]);
+        $none = $this->resourceJson(FuzzySearchCollection::fromBuilder(User::search('jonhh')->typoTolerance(0), perPage: 2));
+        $this->assertSame([], $none['data']);
+        $this->assertContains('john', $none['meta']['suggestions']);
+    }
+
     public function test_an_empty_collection_suggests_from_the_dictionary(): void
     {
         app(IndexManager::class)->indexBatch(User::all());

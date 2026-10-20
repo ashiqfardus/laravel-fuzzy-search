@@ -892,7 +892,7 @@ abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.'); // an em
 return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
 ```
 
-The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestions` (populated only when the page is empty). `_highlighted` values are already HTML-escaped — render them directly, don't escape again.
+The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestions` (populated only when the search matched nothing: an empty page past the last one beside a non-zero total gets none). `_highlighted` values are already HTML-escaped — render them directly, don't escape again.
 
 → Full guide: [docs/integrations.md](docs/integrations.md#json-api-resources)
 
