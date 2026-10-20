@@ -34,10 +34,12 @@ return new class extends Migration
     public function up(): void
     {
         // `migrate --pretend` runs no select: the index as 2026_10_01_000001 leaves it.
-        $indexes = DB::connection()->pretending() ? [self::LENGTH_COUNT_ID] : $this->indexes();
+        // Each under the name the dictionary has: led by the table prefix under prefix_indexes, or as
+        // written in an install made before index names carried it (ER-216).
+        $indexes = DB::connection()->pretending() ? [DbDialect::indexName(self::LENGTH_COUNT_ID)] : $this->indexes();
         foreach ([self::LENGTH_COUNT_ID, self::LENGTH_COUNT] as $index) {
-            if (in_array($index, $indexes, true)) {
-                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($index));
+            if (($present = DbDialect::presentIndexName($index, $indexes)) !== null) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($present));
             }
         }
     }
@@ -47,8 +49,8 @@ return new class extends Migration
         // A column a test removed (as 2026_09_17_000001's down() allows) has nothing to index.
         // `migrate:rollback --pretend` runs no select: the dictionary as up() left it.
         if (DB::connection()->pretending()
-            || (Schema::hasColumn('fuzzy_index_terms', 'term_length') && !in_array(self::LENGTH_COUNT_ID, $this->indexes(), true))) {
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], self::LENGTH_COUNT_ID));
+            || (Schema::hasColumn('fuzzy_index_terms', 'term_length') && DbDialect::presentIndexName(self::LENGTH_COUNT_ID, $this->indexes()) === null)) {
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], DbDialect::indexName(self::LENGTH_COUNT_ID)));
         }
     }
 

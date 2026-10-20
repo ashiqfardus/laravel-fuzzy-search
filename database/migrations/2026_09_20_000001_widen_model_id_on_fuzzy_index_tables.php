@@ -150,6 +150,24 @@ return new class extends Migration
         };
     }
 
+    /**
+     * SQL Server: the name the postings table has for $index, led by the table prefix under
+     * prefix_indexes or as written in an install made before (ER-216). Under --pretend, which runs
+     * no select, the prefixed one.
+     */
+    private function postingsIndex(string $index): string
+    {
+        if (DB::connection()->pretending()) {
+            return DbDialect::indexName($index);
+        }
+        $names = array_map(
+            fn ($row) => (string) ((object) $row)->name,
+            DB::select('select name from sys.indexes where object_id = object_id(?) and name is not null', [DB::connection()->getTablePrefix() . 'fuzzy_index_postings'])
+        );
+
+        return DbDialect::presentIndexName($index, $names) ?? DbDialect::indexName($index);
+    }
+
     /** @param list<string> $tables */
     private function resize(int $length, array $tables): void
     {
@@ -160,9 +178,10 @@ return new class extends Migration
         $postings  = in_array('fuzzy_index_postings', $tables, true) && $length < 191;
 
         if ($driver === DbDialect::SQLSRV && $postings) {
-            Schema::table('fuzzy_index_postings', function (Blueprint $table) {
-                $table->dropUnique('postings_unique_idx');
-                $table->dropIndex('postings_model_idx');
+            [$uniqueName, $modelName] = [$this->postingsIndex('postings_unique_idx'), $this->postingsIndex('postings_model_idx')];
+            Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($uniqueName, $modelName) {
+                $table->dropUnique($uniqueName);
+                $table->dropIndex($modelName);
             });
         }
         if ($driver === DbDialect::SQLSRV && $documents) {
@@ -194,8 +213,8 @@ return new class extends Migration
                 ? ['term_id', 'model_type', 'model_id', 'column_name']
                 : ['term_id', 'model_type', 'model_id'];
             Schema::table('fuzzy_index_postings', function (Blueprint $table) use ($unique) {
-                $table->unique($unique, 'postings_unique_idx');
-                $table->index(['model_type', 'model_id'], 'postings_model_idx');
+                $table->unique($unique, DbDialect::indexName('postings_unique_idx'));
+                $table->index(['model_type', 'model_id'], DbDialect::indexName('postings_model_idx'));
             });
         }
         if ($driver === DbDialect::SQLSRV && $documents) {

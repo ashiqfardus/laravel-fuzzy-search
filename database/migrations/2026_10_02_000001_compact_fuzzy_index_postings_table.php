@@ -155,16 +155,19 @@ return new class extends Migration
         // The tail built it already, under a name of its own while the earlier table's held this
         // one (an index name is unique per schema on PostgreSQL, per database on SQLite): renamed
         // now, but on SQLite, which renames no index, dropped and built again.
-        $indexes = $pretending ? [] : $this->indexes('fuzzy_index_postings');
-        if (in_array(self::BY_DOCUMENT, $indexes, true)) {
-            $rename = !in_array(self::BY_MODEL, $indexes, true) && DB::connection()->getDriverName() !== DbDialect::SQLITE;
+        // Each name led by the table prefix under prefix_indexes; an install made before index names
+        // carried it has them as written (ER-216).
+        $indexes    = $pretending ? [] : $this->indexes('fuzzy_index_postings');
+        $byDocument = DbDialect::presentIndexName(self::BY_DOCUMENT, $indexes);
+        if ($byDocument !== null) {
+            $rename = DbDialect::presentIndexName(self::BY_MODEL, $indexes) === null && DB::connection()->getDriverName() !== DbDialect::SQLITE;
             Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $rename
-                ? $table->renameIndex(self::BY_DOCUMENT, self::BY_MODEL)
-                : $table->dropIndex(self::BY_DOCUMENT));
-            $indexes[] = $rename ? self::BY_MODEL : '';
+                ? $table->renameIndex($byDocument, DbDialect::indexName(self::BY_MODEL))
+                : $table->dropIndex($byDocument));
+            $indexes[] = $rename ? strtolower(DbDialect::indexName(self::BY_MODEL)) : '';
         }
-        if ($pretending || !in_array(self::BY_MODEL, $indexes, true)) {
-            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_MODEL));
+        if ($pretending || DbDialect::presentIndexName(self::BY_MODEL, $indexes) === null) {
+            Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], DbDialect::indexName(self::BY_MODEL)));
         }
         if ($orphans) {
             $this->deleteOrphans();
@@ -233,11 +236,11 @@ return new class extends Migration
         // 2026_10_01_000001 left them, then its foreign key.
         if ($pretending || Schema::hasTable('fuzzy_index_postings')) {
             $indexes = $pretending ? [] : $this->indexes('fuzzy_index_postings');
-            if (!in_array(self::UNIQUE, $indexes, true)) {
-                Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->unique(['term_id', 'model_type', 'model_id', 'column_name'], self::UNIQUE));
+            if (DbDialect::presentIndexName(self::UNIQUE, $indexes) === null) {
+                Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->unique(['term_id', 'model_type', 'model_id', 'column_name'], DbDialect::indexName(self::UNIQUE)));
             }
-            if (!in_array(self::BY_MODEL, $indexes, true)) {
-                Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type', 'model_id'], self::BY_MODEL));
+            if (DbDialect::presentIndexName(self::BY_MODEL, $indexes) === null) {
+                Schema::table('fuzzy_index_postings', fn (Blueprint $table) => $table->index(['model_type', 'model_id'], DbDialect::indexName(self::BY_MODEL)));
             }
             $this->addForeignKeys($pretending, ['term_id' => ['fuzzy_index_terms', true]]);
         }
@@ -276,11 +279,11 @@ return new class extends Migration
         }
 
         $terms = $this->indexes('fuzzy_index_terms');
-        if (in_array(self::LENGTH_COUNT, $terms, true)) {
-            if (!in_array(self::LENGTH_COUNT_ID, $terms, true)) {
-                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], self::LENGTH_COUNT_ID));
+        if (($lengthCount = DbDialect::presentIndexName(self::LENGTH_COUNT, $terms)) !== null) {
+            if (DbDialect::presentIndexName(self::LENGTH_COUNT_ID, $terms) === null) {
+                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], DbDialect::indexName(self::LENGTH_COUNT_ID)));
             }
-            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex(self::LENGTH_COUNT));
+            Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($lengthCount));
         }
     }
 
@@ -392,8 +395,8 @@ return new class extends Migration
             // VA-6: each re-copy deletes by document, which scanned the whole compact table. BY_MODEL's
             // index is built here instead, before the first round, and kept by the swap (renamed);
             // a copy no write followed builds it after the swap, as before.
-            if ($round === 0 && !in_array(self::BY_DOCUMENT, $this->indexes(self::COMPACT), true)) {
-                Schema::table(self::COMPACT, fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], self::BY_DOCUMENT));
+            if ($round === 0 && DbDialect::presentIndexName(self::BY_DOCUMENT, $this->indexes(self::COMPACT)) === null) {
+                Schema::table(self::COMPACT, fn (Blueprint $table) => $table->index(['model_type_id', 'model_id'], DbDialect::indexName(self::BY_DOCUMENT)));
             }
             $written = []; // model type => model ids
             foreach ((clone $postings)->where('id', '>', $max)->where('id', '<=', $last)->distinct()->get(['model_type', 'model_id']) as $row) {
@@ -672,7 +675,7 @@ return new class extends Migration
 
         // Prefixed as Laravel prefixes its own index names (prefix_indexes): SQL Server names a
         // primary key once per schema, so two prefixes in one database collided on it (VJ-5).
-        $primary = (DB::connection()->getConfig('prefix_indexes') ? DB::connection()->getTablePrefix() : '') . self::PRIMARY;
+        $primary = DbDialect::indexName(self::PRIMARY);
 
         if ($driver === DbDialect::PGSQL) {
             DB::statement("create table {$table} (term_id bigint not null, model_type_id smallint not null, model_id varchar(191) not null,"
