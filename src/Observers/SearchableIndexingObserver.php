@@ -2,6 +2,7 @@
 
 namespace Ashiqfardus\LaravelFuzzySearch\Observers;
 
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
 use Illuminate\Database\Eloquent\Model;
@@ -103,16 +104,28 @@ class SearchableIndexingObserver
             // (R11-M1) and stayed there when the instance was deleted, and a type change through
             // the child's instance left the child's index and joined no other (UB-1, UD-3, UD-4).
             foreach (IndexManager::rowTypes($row) as $type) {
-                if ($async) {
-                    IndexModelJob::dispatch($type, $key)->onQueue($queue);
-                    continue;
-                }
+                try {
+                    if ($async) {
+                        IndexModelJob::dispatch($type, $key)->onQueue($queue);
+                        continue;
+                    }
 
-                // Run the job in-process rather than indexing $model directly: the job reloads the
-                // row from the database, so accessors that read relations see the current related
-                // rows instead of whatever was already loaded on this instance before the change,
-                // and a deleted row leaves the index only if it is still gone or trashed.
-                (new IndexModelJob($type, $key))->handle(app(IndexManager::class));
+                    // Run the job in-process rather than indexing $model directly: the job reloads the
+                    // row from the database, so accessors that read relations see the current related
+                    // rows instead of whatever was already loaded on this instance before the change,
+                    // and a deleted row leaves the index only if it is still gone or trashed.
+                    (new IndexModelJob($type, $key))->handle(app(IndexManager::class));
+                } catch (\Throwable $e) {
+                    // Named, so the row can be repaired on its own: a deadlock's error names neither,
+                    // and a plain rebuild reads only the rows the query returns, so it leaves a
+                    // deleted row in the index (P7W-2).
+                    report(new LaravelFuzzySearchException(
+                        "Indexing {$type} {$key} failed: {$e->getMessage()} IndexModelJob::dispatch() of that type and key repairs its index entry, and removes it if the row is gone.",
+                        ['model' => $type, 'key' => $key],
+                        0,
+                        $e,
+                    ));
+                }
             }
         });
     }
@@ -125,7 +138,8 @@ class SearchableIndexingObserver
      *
      * An error in it (a deadlock or lock-wait timeout on the sync path, an unreachable queue) is
      * reported, not thrown: the caller's write has committed, and a throw here would also skip
-     * the application's own after-commit callbacks. fuzzy-search:rebuild repairs the index.
+     * the application's own after-commit callbacks. reindex() reports a failed write naming the
+     * model and key, which IndexModelJob::dispatch() repairs.
      */
     private function afterCommit(Model $model, \Closure $callback): void
     {

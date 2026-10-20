@@ -851,6 +851,36 @@ class SingleTableInheritanceRebuildTest extends TestCase
     }
 
     /**
+     * P7W-2. A row that changes type is written once per type. A failed write is reported naming its
+     * type and key, and no longer skips the row's other types: here the child's write still runs,
+     * takes the row out of the child's index and files it under the parent (VB-1). Before, the row
+     * stayed under the child and was missing from the parent.
+     */
+    public function test_a_failed_write_of_one_type_is_reported_by_its_type_and_key_and_the_others_still_run(): void
+    {
+        $this->rebuild(StiParent::class);
+        config(['fuzzy-search.indexing.enabled' => true, 'fuzzy-search.indexing.async' => false]);
+        $this->app->instance(IndexManager::class, new class(new \Ashiqfardus\LaravelFuzzySearch\Indexing\WhitespaceTokenizer(), new \Ashiqfardus\LaravelFuzzySearch\Indexing\NullStemmer()) extends IndexManager {
+            public function syncModel(string $modelClass, int|string $key): void
+            {
+                if ($modelClass === StiParent::class) {
+                    throw new \RuntimeException('the parent\'s index write failed');
+                }
+                parent::syncModel($modelClass, $key);
+            }
+        });
+        $reported = $this->reports();
+
+        StiChild::query()->find(1)->update(['kind' => 'parent']); // written as a parent, removed as a child
+
+        $this->assertCount(1, $reported);
+        $this->assertSame(['model' => StiParent::class, 'key' => 1], $reported[0]->context());
+        $this->assertSame('the parent\'s index write failed', $reported[0]->getPrevious()->getMessage());
+        $this->assertSame([3], $this->indexedIds(StiChild::class));
+        $this->assertSame([1, 2, 4, 5], $this->indexedIds(StiParent::class));
+    }
+
+    /**
      * UD-3 (R12-M2 a). A row saved through a parent instance is filed under its child class (R11-M1),
      * but deleting that instance named the parent's index, where the row was not: the child's index
      * kept the deleted row, its words were still suggested, and its BM25 totals counted it.

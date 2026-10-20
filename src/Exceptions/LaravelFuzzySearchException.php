@@ -64,6 +64,14 @@ class LaravelFuzzySearchException extends Exception
     }
 
     /**
+     * The context Laravel's exception handler adds to the log entry
+     */
+    public function context(): array
+    {
+        return $this->context;
+    }
+
+    /**
      * Add context to the exception
      *
      * @param string $key
