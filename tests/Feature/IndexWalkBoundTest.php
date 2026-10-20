@@ -157,7 +157,8 @@ class IndexWalkBoundTest extends TestCase
      * integer ids inlined, on every database but SQL Server; there, and for a ranking capped at
      * bm25.max_postings_per_term, the postings restrict it, binding the model type and the terms and
      * no id, and they let through the matches past the cap (under a where() as a subquery on every
-     * database, R11-M4: S3's join of the matched ids is for a read with no constraint).
+     * database, R11-M4: S3's join of the matched ids is for a read with no constraint). SQL Server
+     * reads the terms' ids first and inlines them (ER-224), so it binds no term either.
      */
     public function test_the_ordered_query_past_one_chunk_serves_every_match(): void
     {
@@ -181,10 +182,11 @@ class IndexWalkBoundTest extends TestCase
             $this->assertNotSame([], $walks, $ranking);
 
             $subquery = $ranking === 'capped ranking' || $this->dbDriver === 'sqlsrv';
+            $terms    = $this->dbDriver === 'sqlsrv' ? [] : ['zebra'];
             foreach ($walks as $walk) {
                 if ($subquery) {
                     $this->assertStringContainsString('fuzzy_index_postings', $walk['query'], $ranking);
-                    $this->assertSame(['%@tenant-b.test', IndexManager::modelTypeId(User::class), 'zebra'], $walk['bindings'], $ranking);
+                    $this->assertSame(['%@tenant-b.test', IndexManager::modelTypeId(User::class), ...$terms], $walk['bindings'], $ranking);
                 } else {
                     $this->assertStringNotContainsString('fuzzy_index_postings', $walk['query'], $ranking);
                     $this->assertSame(['%@tenant-b.test'], $walk['bindings'], $ranking);
