@@ -23,7 +23,7 @@ Thank you for considering contributing to Laravel Fuzzy Search! This guide will 
 
 ### Reporting Bugs
 
-If you discover a bug, please [create an issue](https://github.com/ashiqfardus/laravel-fuzzy-search/issues/new?template=bug_report.yml) with:
+If you discover a bug, please [create an issue](https://github.com/ashiqfardus/laravel-fuzzy-search/issues/new) with:
 
 1. A clear, descriptive title
 2. Steps to reproduce the issue
@@ -33,7 +33,7 @@ If you discover a bug, please [create an issue](https://github.com/ashiqfardus/l
 
 ### Suggesting Features
 
-Feature requests are welcome! Please [create a feature request](https://github.com/ashiqfardus/laravel-fuzzy-search/issues/new?template=feature_request.yml) with:
+Feature requests are welcome! Please [create a feature request](https://github.com/ashiqfardus/laravel-fuzzy-search/issues/new) with:
 
 1. A clear description of the feature
 2. The problem it solves
@@ -159,7 +159,8 @@ src/
 │   ├── Lexer.php
 │   └── Token.php
 ├── Scout/                # Laravel Scout engine adapter
-│   └── FuzzySearchEngine.php
+│   ├── FuzzySearchEngine.php
+│   └── GroupedQueryCallback.php
 ├── Support/              # Shared helpers (dialects, accents, UTF-8, stop words, columns)
 │   ├── Accents.php
 │   ├── DbDialect.php
@@ -194,7 +195,7 @@ Each search algorithm is implemented as a driver extending `BaseDriver`:
 - `like`: Alias for SimpleDriver
 
 #### Indexing (BM25)
-`IndexManager` tokenizes, stems, and persists an inverted index to six tables (`fuzzy_index_terms`, `fuzzy_index_documents`, `fuzzy_index_postings`, `fuzzy_index_meta`, and the `fuzzy_index_model_types` and `fuzzy_index_columns` dictionaries). `Bm25Scorer` builds the scoring SQL from those tables.
+`IndexManager` tokenizes, stems, and persists an inverted index to seven tables (`fuzzy_index_terms`, `fuzzy_index_documents`, `fuzzy_index_postings`, `fuzzy_index_meta`, `fuzzy_index_model_terms` with each model's own words and counts, and the `fuzzy_index_model_types` and `fuzzy_index_columns` dictionaries). `Bm25Scorer` builds the scoring SQL from those tables.
 
 #### Query (Extended Syntax)
 `Lexer` tokenizes the query string, `ExtendedQueryParser` builds an AST, and `AstCompiler` converts it to SQL WHERE clauses. Supports operators: `=`, `^`, `$`, `!`, `'`, `|`, `( )`, `"..."`.
@@ -287,7 +288,7 @@ if ($this->isMySqlFamily()) {
 Follow [PSR-12](https://www.php-fig.org/psr/psr-12/) coding standards:
 
 - Use 4 spaces for indentation
-- Opening braces on same line for methods
+- Opening braces on the next line for classes and methods
 - One statement per line
 - Proper spacing around operators
 
@@ -495,7 +496,7 @@ Aim for:
 2. **Check code style**: Ensure PSR-12 compliance
 3. **Update docs**: If adding features
 4. **Add tests**: For new functionality
-5. **Update CHANGELOG**: Add entry under "Unreleased"
+5. **Update CHANGELOG**: Add an entry under the top section
 
 ### Submitting
 
@@ -569,7 +570,7 @@ is a tag plus release notes, not a file edit.
 
 - 📖 Check the [documentation](docs/)
 - 💬 Join [discussions](https://github.com/ashiqfardus/laravel-fuzzy-search/discussions)
-- ❓ [Ask a question](https://github.com/ashiqfardus/laravel-fuzzy-search/issues/new?template=question.yml)
+- ❓ [Ask a question](https://github.com/ashiqfardus/laravel-fuzzy-search/issues/new)
 
 ## Recognition
 

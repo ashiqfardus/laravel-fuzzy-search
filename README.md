@@ -24,9 +24,9 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 | **Results** | Highlighted results • Custom scoring hooks • Debug/explain-score mode |
 | **Performance** | BM25 inverted index • Async indexing (queue) • Redis/cache support |
 | **Pagination** | Stable ranking • Offset pagination • Simple (look-ahead) pagination |
-| **Reliability** | Fallback search strategy • DB-agnostic • Rate-limit friendly • SQL-injection safe |
+| **Reliability** | Fallback search strategy • DB-agnostic • SQL-injection safe |
 | **Configuration** | Config file support • Per-model customization |
-| **Developer Tools** | CLI indexing • Benchmark tools • Built-in test suite • Performance utilities |
+| **Developer Tools** | CLI indexing • Benchmark tools • Performance utilities |
 | **Smart Search** | Autocomplete suggestions (dictionary-backed on indexed models) • "Did you mean" spell correction • Multi-model federation • Persisted search analytics |
 | **Integrations** | Filament global search & table search • Scout driver • JSON API resources |
 
@@ -91,24 +91,26 @@ On PostgreSQL and SQLite, install the package once per schema (or database file)
 > php artisan fuzzy-search:upgrade-v1   # scans your app/ for v1-era API usage
 > ```
 >
-> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md)
+> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md): every behaviour change there applies to you too.
 
 > **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
-> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`, while nothing is
-> indexing: see [Artisan Commands](docs/bm25.md#artisan-commands)) to pick up weighted BM25
-> ranking. Read the guide's behaviour-changes list first: some calls now return
+> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`) to pick up weighted BM25
+> ranking; a plain rebuild can run while the app indexes, and only `--fresh` needs nothing
+> indexing (see [Artisan Commands](docs/bm25.md#artisan-commands)). Read the guide's behaviour-changes list first: some calls now return
 > other rows, throw, or cache where 2.0 did not. Before you deploy:
 >
-> - **A large index takes a while to migrate.** The postings are rewritten into a compact layout
->   (about 22 minutes for 6M rows on MySQL, 1 hour 45 minutes for 24M rows on PostgreSQL), then
->   each model's words are counted (about 3 minutes more on MySQL; on PostgreSQL about 45 cold, 10 with a warm cache); from 2.0.x,
->   MySQL and MariaDB first rewrite the table for two earlier migrations too (about 10 s per million
->   postings each, some 30 minutes more at 6M rows). Index
+> - **On MySQL and MariaDB a large index takes a while to migrate.** The postings are rewritten
+>   into a compact layout (about 22 minutes for 6M rows on MySQL), then each model's words are
+>   counted (about 3 minutes more); from 2.0.x, the table is first rewritten for two earlier
+>   migrations too (about 10 s per million postings each, some 30 minutes more at 6M rows). Index
 >   searches fail until it finishes: migrate under `php artisan down`, or empty the index and
 >   rebuild it instead (see the guide's [Inverted index](docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-bm25) section, "A large index").
+>   On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty
+>   and take seconds: build each model's index once afterwards (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`).
 > - **Restart the queue workers right after migrating** (`php artisan queue:restart`,
 >   `horizon:terminate` under Horizon, `octane:reload` under Octane), and keep them from indexing
->   until the new code serves.
+>   until the new code serves. A `rebuild --fresh` a migration's warning asks for runs before the
+>   restart, since it needs nothing indexing.
 > - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit` to `true`;
 >   otherwise an index write inside one of your transactions can deadlock with your other
 >   transactions and reads of the same rows (see the guide's
@@ -145,7 +147,7 @@ Without `take()` (or `limit()`), `get()` returns only the first 15 matches: on `
 - `bio`, `summary`, `excerpt` (weight: 3)
 - `slug`, `sku`, `code` (weight: 2-6)
 
-If none of these exist, it falls back to the model's `$fillable` columns, then to the first remaining column. Only text columns qualify (char, varchar, text of any size, nvarchar, citext, and MySQL enum/set, matched by the exact type name): a numeric, boolean or date column, or a PostgreSQL enum, is never auto-detected, in any branch, so a `$fillable` `user_id` or `total` is skipped. JSON and UUID columns are skipped where the database has a JSON or UUID type, and detected where it stores them as text (JSON on SQLite, MariaDB and SQL Server; a `char(36)` UUID on MySQL and SQLite). A column the model casts to a JSON type (`array`, `json`, `object`, `collection`, `AsArrayObject`, `AsCollection`, or an `encrypted:` form of them) is never detected, on any database. On SQLite, MariaDB and SQL Server, cast a JSON column, or declare `$searchable['columns']`, to keep its JSON text out of a zero-config search and the index. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), a secret-named column (any name containing `password`; `token` or a name ending in `_token`; `secret`, `api_key` or `private_key` as a whole underscore-separated part of the name (`secret_note`, `stripe_api_key`, `webhook_secret` — not `secretary_name`); or a name ending in `recovery_codes`; a broad `*_key` rule is deliberately left out, so `sort_key` stays searchable), `id` or the timestamps. Names match in any letter case. It reads the model class's default `$hidden` and `$visible`, so a column hidden at runtime with `makeHidden()` is still searched and indexed. A model where no column qualifies (every text column hidden, say) has nothing to search: its search matches nothing (no rows, a count of 0, no event), and so does `FuzzySearch::tableSearch()` on it, while `extended()` throws `SearchableColumnsNotFoundException`. Declare `$searchable['columns']` to search it.
+If none of these exist, it falls back to the first five text columns of the model's `$fillable`, in its order (declare `$searchable['columns']` for more), then to the first remaining column. Only text columns qualify (char, varchar, text of any size, nvarchar, citext, and MySQL enum/set, matched by the exact type name): a numeric, boolean or date column, or a PostgreSQL enum, is never auto-detected, in any branch, so a `$fillable` `user_id` or `total` is skipped. JSON and UUID columns are skipped where the database has a JSON or UUID type, and detected where it stores them as text (JSON on SQLite, MariaDB and SQL Server; a `char(36)` UUID on MySQL and SQLite). A column the model casts to a JSON type (`array`, `json`, `object`, `collection`, `AsArrayObject`, `AsCollection`, or an `encrypted:` form of them) is never detected, on any database. On SQLite, MariaDB and SQL Server, cast a JSON column, or declare `$searchable['columns']`, to keep its JSON text out of a zero-config search and the index. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), a secret-named column (any name containing `password`; `token` or a name ending in `_token`; `secret`, `api_key` or `private_key` as a whole underscore-separated part of the name (`secret_note`, `stripe_api_key`, `webhook_secret` — not `secretary_name`); or a name ending in `recovery_codes`; a broad `*_key` rule is deliberately left out, so `sort_key` stays searchable), `id` or the timestamps. Names match in any letter case. It reads the model class's default `$hidden` and `$visible`, so a column hidden at runtime with `makeHidden()` is still searched and indexed. A model where no column qualifies (every text column hidden, say) has nothing to search: its search matches nothing (no rows, a count of 0, no event), and so does `FuzzySearch::tableSearch()` on it, while `extended()` throws `SearchableColumnsNotFoundException`. Declare `$searchable['columns']` to search it.
 
 ### Manual Column Configuration
 
@@ -510,7 +512,7 @@ $suggestions = User::search('joh')
 // Returns: ['John', 'Johnny', 'Johanna', ...]
 ```
 
-**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own dictionary, scoped to its postings and ordered by document count across all indexed models (the dictionary's `doc_count` is global, so a term that is common in another indexed model can head the list); any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
+**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own words, ordered by how many of this model's rows hold each word (`fuzzy_index_model_terms`), equal counts newest word first; any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
 
 ```php
 // Product is indexed; only "mo" is completed, "wireless " is kept as typed
@@ -671,7 +673,7 @@ $analytics = User::search('john')
 
 - **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale. An `extended()`/`searchBoolean()` query drops no stop words: every word in it stays a term of the query.
 - **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (word => its synonyms; case is ignored, so `'Laptop'` and `'laptop'`, or `'Ägypten'` and `'ägypten'`, are the same word, and the later one set wins; `synonymGroup()` words ignore case too) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
-- **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
+- **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. The top-level `locale` config key (`'en'` by default) picks the list every other model's index drops (and the query-time list of a preset with `stop_words_enabled`), so out of the box the index drops the 14 English words of `stop_words.en`; to index every word, set `locale` to a code with no `stop_words` entry, or empty that locale's list, and rebuild. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
 - **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. Where the database folded the match, scoring and highlighting fold the value too, so `jose` ranks `José Ramírez` as the prefix match it is and highlights `José` (the fold also takes `ł`, `đ`, `æ`, `œ` and `þ` to `l`, `d`, `ae`, `oe` and `th`, as MySQL 8's `utf8mb4_0900_ai_ci`, MariaDB's `uca1400_ai_ci` or `unaccent()` does, so `lukasz` highlights `Łukasz`): on MySQL/MariaDB when the connection's `collation` is accent-insensitive (any but a `_bin`, `_cs` or `_as_` one; it is the connection's setting that is read, not each column's), and on PostgreSQL with that opt-in. On SQL Server an `_AI` collation is not read, so a row it matched that way is scored and highlighted against the term as typed: it ranks lower and is untagged. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
 
@@ -828,10 +830,10 @@ Post::search('tolkien')->useInvertedIndex()->get();
 `->extended()` opts a search string into Fuse.js-style query operators for precise matching, instead of a plain substring search.
 
 ```php
-User::search('=John ^Doe !banned')->extended()->get();
+User::search('^John !banned')->extended()->get();
 ```
 
-Operators: `'include`, `=exact`, `^prefix`, `suffix$`, `!exclude`, `|` (OR), `( )` (grouping), `~typo`, `field:term`, and quoted `"phrases"`.
+Operators: `'include`, `=exact`, `^prefix`, `suffix$` (each of the whole column value), `!exclude`, `|` (OR), `( )` (grouping), `~typo`, `field:term`, and quoted `"phrases"`.
 
 Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignored when combined with `->extended()`, and `getDebugInfo()['index_ignored']` reports it. They apply no synonyms and drop no stop words: every word stays a term of the query. A `field:` scope reaches any searchable column, a hidden one included, so for untrusted input declare only public columns searchable or check the fields against an allowlist.
 
@@ -1315,7 +1317,8 @@ php artisan fuzzy-search:clear "App\Models\User"
 # which takes hours on a large index: see docs/bm25.md#artisan-commands
 php artisan fuzzy-search:clear --all
 
-# Show index status (row counts, avg doc length, term count per model) and list postings that predate column weighting
+# Show index statistics (total docs, tokens, avg length per model; the dictionary's unique terms for all models together)
+# and list postings that predate column weighting
 # (past 1,000,000 indexed tokens that check, which reads every posting, runs only with --legacy)
 php artisan fuzzy-search:status
 php artisan fuzzy-search:status --legacy
@@ -1369,9 +1372,9 @@ Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a war
 
 **At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast (see [Sizing the index](#sizing-the-index)). Three reads grow with the data:
 
-- **Common words.** Every posting of a matched word is read and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. A word's postings are one range of the postings table, read in order, each with its document's length, so no other table is read, and the word's document count within the model comes from the per-model dictionary (`fuzzy_index_model_terms`), one keyed read, not a count over those postings: on MySQL with a 4 GB buffer pool, one such word (in 7% of 6M rows of about 16 indexed words each) takes about 0.5 s and three together about 2 s, where the earlier layout took 22 s and 61 s; PostgreSQL about 1 s and 2.7 s at 24M rows (measured on a prototype of the layout). A `where()` does not shorten that read: the word's postings are read for the whole model before the `where()` and the cap apply. `typoTolerance(0)` and Scout's exact terms skip only the typo expansion. For a selective filter over a common word, the LIKE path with an index on the filtered column is the fast path (17 ms at 1M rows on MySQL, for a filter holding 0.1% of them).
+- **Common words.** Every posting of a matched word is read and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. A word's postings are one range of the postings table, read in order, each with its document's length, so no other table is read, and the word's document count within the model comes from the per-model dictionary (`fuzzy_index_model_terms`), one keyed read, not a count over those postings: on MySQL with a 4 GB buffer pool, one such word (in 7% of 6M rows of about 16 indexed words each) takes 0.81 s for its first page and three together 5.5 s, where the earlier layout took 43 s and timed out; on PostgreSQL a prototype of the layout took about 1 s and 2.7 s at 24M rows. A `where()` does not shorten that read: the word's postings are read for the whole model before the `where()` and the cap apply. `typoTolerance(0)` and Scout's exact terms skip only the typo expansion. For a selective filter over a common word, the LIKE path with an index on the filtered column is the fast path (17 ms at 1M rows on MySQL, for a filter holding 0.1% of them).
 - **Typo expansion** takes each query term's most common neighbours from the searched model's own words, by its own document count (`fuzzy_index_model_terms`): one index read per word length in the window around the term, each stopping at `bm25.fuzzy.candidate_pool` (500) of the model's words or at the last of them. Another model's words never enter it, however many share a length. On MySQL at 3M words, where 1M six-digit product SKUs filled length 6, a users typo search for `smith` takes 43 ms for the whole page, where the read through the shared dictionary walked all of them (1.2 s), and an article search for `kubernetes` 24 ms (2.05 s before). `asYouType()` and `suggest()` read the model's own words under the prefix the same way, through `(model_type_id, term)`: `suggest('sm')` there takes 3 ms (93 ms before), and a 4-letter `asYouType()` search at 24M rows on PostgreSQL 2.3 s (40 s before; the ranking read is now most of it). `typoTolerance(0)` skips the expansion.
-- **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (when `rank()` reads that many rows, one per matched document and word, typo expansions included: 50,000 matches for a word that expands to nothing) restricts the ordered read through the postings: a subquery that reads the rows the query accepts (0.15 to 1.1 s at 1M–3M rows on PostgreSQL, 0.7 to 4 s at 1M rows on MariaDB and MySQL; milliseconds under a selective, indexed `where()`). On MySQL and MariaDB a query with no constraint whose words are in at most a tenth of the rows joins the matched ids on the model's key instead, one key lookup per match. On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default; 70 to 110 ms at 200k rows). See [docs/bm25.md](docs/bm25.md#usage).
+- **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (when `rank()` reads that many rows, one per matched document and word, typo expansions included: 50,000 matches for a word that expands to nothing) restricts the ordered read through the postings: a subquery that reads the rows the query accepts (40 to 100 ms at 1M rows on PostgreSQL, 0.7 to 4 s on MariaDB and MySQL; milliseconds under a selective, indexed `where()`; a whole ordered search on PostgreSQL took 0.15 to 1.1 s at 1M–3M rows, measured before the compact postings layout). On MySQL and MariaDB a query with no constraint whose words are in at most a tenth of the rows joins the matched ids on the model's key instead, one key lookup per match. On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default; 70 to 110 ms at 200k rows). See [docs/bm25.md](docs/bm25.md#usage).
 
 ### When to Use BM25 vs LIKE
 
@@ -1395,11 +1398,15 @@ For the LIKE/Levenshtein paths, SQL candidates are fetched then re-scored in PHP
 ### Recommended Optimizations
 
 ```php
-// For 100k+ rows: enable BM25 index + cache + limit columns
+// For 100k+ rows: the BM25 index, plus a cache for repeated searches
 User::search('john')
     ->useInvertedIndex()
     ->cache(60)
-    ->searchIn(['name', 'email'])
+    ->get();
+
+// On the LIKE path, fewer columns and fewer patterns: searchOn() replaces the model's
+// column list for this search (searchIn() after Model::search() only adds columns)
+User::searchOn(User::query(), 'john', ['name' => 10])
     ->maxPatterns(50)
     ->get();
 ```
@@ -1407,7 +1414,7 @@ User::search('john')
 Key tips:
 1. **Use the BM25 index** for tables with 10k+ rows
 2. **Enable caching** for repeated searches
-3. **Limit columns** — only search relevant fields
+3. **Limit columns** — declare only the fields worth searching in `$searchable['columns']`, or pass a shorter list to `Model::searchOn(Model::query(), $term, [...])` for one search. `searchIn()` cannot narrow a `Searchable` model's search: it adds columns, and its list form sets their weight to 1
 4. **Use `simple` algorithm** when typo tolerance isn't needed
 5. **Set `max_candidates`** to prevent excessive memory usage on large tables
 6. **Use `take()`** to cap result sets
@@ -1419,7 +1426,7 @@ Measured on one laptop database at a time, with rows of about 16 indexed words e
 
 - **Size:** about 1.5 GB of index per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows; the earlier postings layout took 2.6 times as much on MySQL and 1.4 times on PostgreSQL), several times the table it indexes. The postings table is most of it. `fuzzy_index_model_terms` holds one row per model and word it indexes: about the dictionary's size where models share few words (734 MB at 6M rows on MySQL, beside the dictionary's 615 MB; 5.8 GB at 24M rows on PostgreSQL, beside 4.4 GB).
 - **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MySQL at 3M rows, before the compact postings layout, four searchers managed 1.1 searches a second with a p95 of 18 s.
-- **Upgrading to 2.1:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL, then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL, about 45 minutes for 24M on PostgreSQL (about 10 with a warm cache), about 70 s for 1M on SQL Server); the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2.0_TO_v2.1.md) (`php artisan down`, or flush and rebuild a large index instead).
+- **Upgrading to 2.1:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL, then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL, about 45 minutes for 24M on PostgreSQL (about 10 with a warm cache), about 70 s for 1M on SQL Server); the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2.0_TO_v2.1.md) (`php artisan down`, or flush and rebuild a large index instead). From 2.0.x only MySQL and MariaDB have an index to copy: on PostgreSQL and SQL Server 2.0.x could not write one, so the PostgreSQL and SQL Server times are for an index a pre-release 2.1 build wrote, and from 2.0.x the migrations take seconds there.
 - **Index builds:** one process indexed about 2,800 rows a second at 1M rows on MySQL and 1,100 at 3M. More rebuild processes help (four gave 2.2× one on MySQL, 1.6× on PostgreSQL); `indexing.chunk_size` does not.
 
 | Database (memory for the engine) | Index searches under 1 s | Every search and command finishes | First failure |

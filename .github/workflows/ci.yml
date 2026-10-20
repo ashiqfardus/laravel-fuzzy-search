@@ -63,7 +63,7 @@ jobs:
           if echo "$out" | grep -Ei 'deprecated|(parse|fatal) error|^Errors parsing'; then exit 1; fi
 
   # ── MySQL 8 ───────────────────────────────────────────────────────────────
-  # Representative subset: PHP 8.2/8.3/8.4 × Laravel 10/12/13
+  # Representative subset: PHP 8.2–8.5 × Laravel 10/12/13
   test-mysql:
     name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / MySQL 8"
     runs-on: ubuntu-latest
@@ -116,7 +116,7 @@ jobs:
         run: vendor/bin/phpunit --testsuite Unit,Feature,Legacy,Security,Integration
 
   # ── PostgreSQL 14 ─────────────────────────────────────────────────────────
-  # Representative subset: PHP 8.2/8.3/8.4 × Laravel 10/12/13
+  # Representative subset: PHP 8.2–8.5 × Laravel 10/12/13
   test-pgsql:
     name: "PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / PostgreSQL 14${{ matrix.scout && format(' / Scout {0}', matrix.scout) || '' }}"
     runs-on: ubuntu-latest

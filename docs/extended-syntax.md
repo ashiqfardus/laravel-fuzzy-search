@@ -14,18 +14,20 @@ Use Fuse.js-style operators inside your search string for precise control over m
 | --- | --- | --- |
 | `word` | Substring match (default) | `john` |
 | `'word` | Explicit substring include | `'admin` |
-| `=word` | Exact equality | `=John` |
-| `^word` | Prefix match | `^Doe` |
-| `word$` | Suffix match | `Sr$` |
+| `=word` | Exact equality (of the whole column value) | `=jon@example.com` |
+| `^word` | Prefix match (of the whole column value) | `^John` |
+| `word$` | Suffix match (of the whole column value) | `Sr$` |
 | `!word` | Exclude (NOT); a row whose searchable columns are NULL is kept | `!banned` |
 | `!^word` | Inverse prefix | `!^test` |
 | `!word$` | Inverse suffix | `!@spam.com$` |
 | `\|` | OR | `john \| jane` |
-| ` ` (whitespace) | AND (implicit) | `=John ^Doe` |
+| ` ` (whitespace) | AND (implicit) | `^John Doe$` |
 | `( ... )` | Grouping | `admin (john \| jane)` |
 | `"phrase"` | Quoted single token | `"hello world"` |
 | `~word` | Typo-tolerant match (uses typoTolerance()) | `~jonh` |
 | `field:word` | Limit a term to one column (any operator after the colon except `!`, which goes before the field) | `email:^admin`, `author.name:smith`, `!name:bob` |
+
+`=`, `^` and `$` compare with the whole value of a column, not with each word in it: in a `name` of "John Doe", `^John` and `Doe$` match, `^Doe` does not.
 
 ### Typo-tolerant and field-scoped terms
 
@@ -42,8 +44,11 @@ The extended syntax always runs on the LIKE path; `->useInvertedIndex()` is igno
 ### Usage
 
 ```php
-// Exact first name + prefix last name + exclude banned
-$users = User::search('=John ^Doe !banned')->extended()->get();
+// A name (or email) that starts with "John", excluding rows that contain "banned"
+$users = User::search('^John !banned')->extended()->get();
+
+// A whole column value, exactly
+$users = User::search('=jon@example.com')->extended()->get();
 
 // OR semantics with grouping
 $users = User::search('admin (john | jane)')->extended()->get();
@@ -77,12 +82,12 @@ A query's LIKE patterns share one budget: a search binds at most 2,000 values of
 
 ```php
 // ✓ Works
-User::search('=John ^Doe')->extended()->paginate(15);
-User::search('=John ^Doe')->extended()->simplePaginate(15);
-User::search('=John ^Doe')->extended()->get();
+User::search('^John !banned')->extended()->paginate(15);
+User::search('^John !banned')->extended()->simplePaginate(15);
+User::search('^John !banned')->extended()->get();
 
 // ✗ Throws BadMethodCallException
-User::search('=John ^Doe')->extended()->cursorPaginate(15);
+User::search('^John !banned')->extended()->cursorPaginate(15);
 ```
 
 ### Match Offsets & Blade Directive
