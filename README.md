@@ -1219,7 +1219,7 @@ Contact::search('steven')->preset('phonetic')->get();  // Finds "Stephen"
 Product::search('SKU-12345')->preset('exact')->get();
 ```
 
-A preset's `columns` are added to the search's columns, the way `searchIn()` adds them, so every column it names must exist on the table: `blog` needs `title`, `body` and `excerpt`; `ecommerce` needs `name`, `description`, `sku` and `brand`; `users` needs `name`, `email` and `username`; `phonetic` needs `name`. On a table without one of them the query fails with an unknown-column error, and a `searchIn()` after the preset cannot take the column away, because `searchIn()` only adds. Publish the config and change the preset's `columns` to your table's, or drop its `columns` key and pass the columns with `searchIn()`:
+A preset's `columns` are added to the search's columns, the way `searchIn()` adds them, but only the ones the table has: `users` names `name`, `email` and `username`, and on a table of `name` and `email` it searches those two. A preset with none of its columns on the table adds none, and its algorithm and other settings still apply. A column you name with `searchIn()` is never dropped, so a wrong one still fails with an unknown-column error. A dotted column, and every column when the query joins another table or the table cannot be listed, is kept as given. To search other columns than the preset names, publish the config and change its `columns`, or drop its `columns` key and pass the columns with `searchIn()`:
 
 ```php
 // config/fuzzy-search.php — the users preset without its columns

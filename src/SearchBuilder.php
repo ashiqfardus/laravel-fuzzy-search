@@ -965,7 +965,7 @@ class SearchBuilder
 
         // Apply columns if specified
         if (isset($preset['columns']) && is_array($preset['columns'])) {
-            $this->searchIn($preset['columns']);
+            $this->searchIn($this->presetColumnsOnTable($preset['columns']));
         }
 
         // Apply algorithm
@@ -995,6 +995,36 @@ class SearchBuilder
         }
 
         return $this;
+    }
+
+    /**
+     * A preset's columns that the table has: one it lacks (the shipped `users` preset's `username`
+     * on a table of name and email) would be an unknown-column error on every database but SQLite.
+     * A column already named with searchIn(), a dotted (relation or qualified) one, and every
+     * column when the table cannot be listed or the query joins another, are kept as given.
+     *
+     * @param  array<string|int, string|int> $columns
+     * @return array<string|int, string|int>
+     */
+    protected function presetColumnsOnTable(array $columns): array
+    {
+        $base = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
+        $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+        if ($from === null || !empty($base->joins)) {
+            return $columns;
+        }
+
+        $has = array_map('strtolower', SearchableColumns::onTable($this->query->getConnection(), $from[0]));
+        if ($has === []) {
+            return $columns;
+        }
+
+        return array_filter(
+            $columns,
+            fn ($value, $key) => ($name = is_int($key) ? (string) $value : $key)
+                && (str_contains($name, '.') || in_array($name, $this->searchableColumns, true) || in_array(strtolower($name), $has, true)),
+            ARRAY_FILTER_USE_BOTH
+        );
     }
 
     /**
