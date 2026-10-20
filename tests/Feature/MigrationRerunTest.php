@@ -314,22 +314,29 @@ class MigrationRerunTest extends TestCase
      * failed at its first statement on every database ("index does not exist"), and dropping the
      * column under the new index would fail on SQLite and SQL Server, cut the index to (doc_count,
      * id) on MySQL and MariaDB, or drop it on PostgreSQL, while 2026_10_01 stayed recorded. down()
-     * now refuses, naming the migration to roll back first, and changes nothing.
+     * now refuses, naming the migration to roll back first, and changes nothing: under that index
+     * (an install before 2026_10_20_000001), and once 2026_10_20_000001 has dropped it (ER-211).
      */
     public function test_the_term_length_migration_rolled_back_on_its_own_names_the_migration_to_roll_back_first(): void
     {
         $migration = '2026_09_17_000001_add_term_length_to_fuzzy_index_terms_table';
-        $before    = $this->schema('fuzzy_index_terms');
 
-        try {
-            $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true, '--step' => 50])->run();
-            $this->fail('the rollback ran');
-        } catch (\RuntimeException $e) {
-            $this->assertStringContainsString('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first', $e->getMessage());
+        foreach (['the head' => null, 'before 2026_10_20_000001' => '2026_10_20_000001_drop_term_length_index_from_fuzzy_index_terms_table'] as $case => $later) {
+            if ($later !== null) {
+                $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$later}.php"), '--realpath' => true, '--step' => 50])->assertExitCode(0);
+            }
+            $before = $this->schema('fuzzy_index_terms');
+
+            try {
+                $this->artisan('migrate:rollback', ['--path' => realpath(self::PATH . "/{$migration}.php"), '--realpath' => true, '--step' => 50])->run();
+                $this->fail("{$case}: the rollback ran");
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('Roll back 2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes first', $e->getMessage(), $case);
+            }
+
+            $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists(), $case);
+            $this->assertSame($before, $this->schema('fuzzy_index_terms'), $case);
         }
-
-        $this->assertTrue(DB::table('migrations')->where('migration', $migration)->exists());
-        $this->assertSame($before, $this->schema('fuzzy_index_terms'));
     }
 
     /** A term_length column an earlier run added: migrate fills the words it left at 0. */

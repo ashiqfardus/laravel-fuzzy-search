@@ -66,12 +66,14 @@ class MigrationPretendTest extends TestCase
         $this->assertNotEmpty(preg_grep('/postings_unique_idx/i', preg_grep('/\bdrop\b/i', $ran)), 'the key swap drops the old key');
         $this->assertNotEmpty(preg_grep('/\bdrop\b.*postings_term_model_idx/i', $ran));
         $this->assertNotEmpty(preg_grep('/\bdrop\b.*fuzzy_index_terms_term_length_index/i', $ran));
+        $this->assertNotEmpty(preg_grep('/\bdrop\b.*fuzzy_index_terms_term_length_doc_count_id_index/i', $ran), '2026_10_20_000001 drops the unread dictionary index (ER-211)');
 
         $pretended = $this->statements(fn () => $this->migrations('migrate:rollback', ['--step' => $steps, '--pretend' => true]));
         $ran       = $this->statements(fn () => $this->migrations('migrate:rollback', ['--step' => $steps]));
 
         $this->assertSame($ran, $pretended);
         $this->assertNotEmpty(preg_grep('/\bdrop\b( column)?\s+[`"\[]?term_length\b/i', $ran), 'the rollback drops term_length');
+        $this->assertNotEmpty(preg_grep('/\b(create|add)\b.*fuzzy_index_terms_term_length_doc_count_id_index/i', $ran), '2026_10_20_000001\'s down() builds it back');
 
         $this->migrations('migrate');
     }
