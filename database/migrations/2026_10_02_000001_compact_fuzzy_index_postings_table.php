@@ -55,8 +55,7 @@ return new class extends Migration
     private const BY_DOCUMENT = 'postings_compact_model_idx'; // BY_MODEL's columns on the compact table, for the tail
     private const UNIQUE  = 'postings_unique_idx';
 
-    private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
-    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // 2026_10_01_000001's before round 12
+    private const LENGTH_COUNT = 'fuzzy_index_terms_term_length_doc_count_index'; // 2026_10_01_000001's in an earlier 3.0 build
 
     /**
      * The span of one copy statement: up() copies the earlier table's ids ($chunk of them), down()
@@ -271,8 +270,9 @@ return new class extends Migration
      * doc_count, id), where an earlier build left out the id. Every install runs this migration, so
      * it converges here: the documents' model_id (the postings were created with the collation, and
      * their copy compared the old columns, so this comes after it; a stricter collation joins no two
-     * keys), then the dictionary's index. Under --pretend nothing: the upgrade from 2.0.1 runs the
-     * migrations as they are now.
+     * keys), then the dictionary's index: the earlier build's is dropped, and the one with the id is
+     * not built, as 2026_10_20_000001 drops it in the same migrate (building it read the whole
+     * dictionary). Under --pretend nothing: the upgrade from 2.0.1 runs the migrations as they are now.
      */
     private function converge(): void
     {
@@ -291,9 +291,6 @@ return new class extends Migration
 
         $terms = $this->indexes('fuzzy_index_terms');
         if (($lengthCount = DbDialect::presentIndexName(self::LENGTH_COUNT, $terms)) !== null) {
-            if (DbDialect::presentIndexName(self::LENGTH_COUNT_ID, $terms) === null) {
-                Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], DbDialect::indexName(self::LENGTH_COUNT_ID)));
-            }
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex($lengthCount));
         }
     }

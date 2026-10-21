@@ -821,9 +821,9 @@ class IndexManager
      * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
      * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
      * from its one writer, each held to the commit: `clear --all` ran its DELETEs autocommitted,
-     * one by one, and lost the meta the same way. flushAll() keeps it on every path it takes,
-     * but for the batched DELETEs of MySQL/MariaDB outside a transaction of yours (clearInBatches(),
-     * flushInBatches()), which run while nothing indexes.
+     * one by one, and lost the meta the same way. flushAll() keeps it on every path it takes; the
+     * batched DELETEs of MySQL/MariaDB outside a transaction of yours (clearInBatches(),
+     * flushInBatches()) from their last transaction, which deletes what a write between the batches left.
      *
      * SQL Server: the index write lock first (lockIndexForWrite()), as every index write
      * takes it, so the flush waits for the writes in flight and new ones wait for its commit. Its
@@ -901,7 +901,32 @@ class IndexManager
      */
     public function flushAll(): bool
     {
-        return $this->clearIndex(null);
+        return self::readingTheWriteConnection(DB::connection(), fn () => $this->clearIndex(null));
+    }
+
+    /**
+     * Run $run with every read of $connection on its write session (Laravel's
+     * useWriteConnectionWhenReading()), and the connection's own setting put back after. The
+     * clears run so: on a read/write split without sticky, MySQL/MariaDB's reads outside a
+     * transaction went to the read connection, another session. Pointed at a replica behind the
+     * primary, it told the clear that no other model had a document, and the TRUNCATE emptied that
+     * model's index; it hid another session's lock on the index tables and the app's foreign key to
+     * the words, listed fewer rows for the batches than the primary held, and gave the write session
+     * the other session's foreign_key_checks and lock_wait_timeout back. Pointed at the primary, its
+     * read waited behind the write session's own LOCK TABLES, for lock_wait_timeout (a year by
+     * default). A rebuild --fresh reads the rows it indexes so too (RebuildCommand).
+     *
+     * @internal public for RebuildCommand
+     */
+    public static function readingTheWriteConnection(\Illuminate\Database\Connection $connection, \Closure $run): mixed
+    {
+        $before = (fn () => $this->readOnWriteConnection)->call($connection);
+        $connection->useWriteConnectionWhenReading();
+        try {
+            return $run();
+        } finally {
+            $connection->useWriteConnectionWhenReading($before);
+        }
     }
 
     /**
@@ -912,6 +937,8 @@ class IndexManager
      * PostgreSQL, the index write lock on SQL Server), so no write of another type lands between
      * the check and the TRUNCATE. Otherwise $byType (flush()'s DELETE by type) runs in flushing(),
      * or on MySQL/MariaDB outside a transaction of yours flushInBatches() does.
+     *
+     * Its callers run it with every read on the write session (readingTheWriteConnection()).
      */
     private function clearIndex(?string $only, ?\Closure $byType = null): bool
     {
@@ -1148,8 +1175,10 @@ class IndexManager
      * clearIndex()'s DELETE of every row on MySQL/MariaDB outside a transaction of yours, in
      * bounded transactions as flushInBatches() deletes a model's (see there): the postings, the
      * models' words and the documents, each model's FLUSH_ROWS at a time, the meta rows, then the
-     * words. Not atomic: a write during it can survive it in part, and an interrupted one leaves the
-     * index partly emptied; run it again, when the index is idle, so it truncates.
+     * words. Then one transaction deletes what a write between the batches left, the documents
+     * first, as flushInBatches() ends: the index ends empty, as one DELETE would leave it. A search
+     * meanwhile finds it partly emptied, and an interrupted one leaves it so; run it again, when the
+     * index is idle, so it truncates.
      *
      * @param  list<string>  $tables  the index tables there are (no model terms before 2026_10_13_000001)
      */
@@ -1169,6 +1198,12 @@ class IndexManager
         }
         DB::table('fuzzy_index_meta')->delete();
         $this->deleteInBatches('fuzzy_index_terms', [], 'id');
+
+        DB::transaction(function () use ($tables) {
+            foreach (['fuzzy_index_documents', ...array_diff($tables, ['fuzzy_index_documents'])] as $table) {
+                DB::table($table)->delete();
+            }
+        }, self::ATTEMPTS);
     }
 
     /**
@@ -1178,8 +1213,9 @@ class IndexManager
      * the postings, FLUSH_ROWS a transaction by model_id; the model's words, 1,000 a transaction in
      * id order, each word's row locked as every write locks it (adjustDocCounts()), the model's
      * count of it deleted and doc_count recounted from the other models' counts
-     * (recountDictionary()); the documents by model_id; the meta row; then the words no posting
-     * holds any more (deleteUnpostedWords()).
+     * (recountDictionary()); the documents by model_id; then, in one transaction, what is left of
+     * the type and its meta row (below); then the words no posting holds any more
+     * (deleteUnpostedWords()).
      *
      * doc_count is recounted once a word, after the postings, not adjusted per batch of them: a
      * write of another model changes its own count of a word and doc_count together, in one
@@ -1188,10 +1224,16 @@ class IndexManager
      * none is lost or counted twice. Adjusting per batch would read every deleted posting's words
      * and lock them while the postings go.
      *
-     * Not atomic: a search during it finds the model partly emptied, and a write of the model during
-     * it can survive it in part (a document without its meta row), which is why the flushes run
-     * while nothing indexes the model, as rebuild --fresh must. Interrupted part way, it is finished
-     * by running it again, before any rebuild: each step goes on from what is left.
+     * A write of the model between two batches (a queue worker's) kept the rows the later batches had
+     * passed and raised the counts for good, where 2.0.1's one transaction held it off. So the flush
+     * ends with one transaction: it deletes the type's documents first, as every write of the type
+     * claims them (claimDocuments()), so the DELETE waits for the writes in flight and its locks hold
+     * new ones off to its commit; then the postings and model terms those writes left, their words
+     * locked in id order and recounted; then the meta row. Its plain reads come after that DELETE,
+     * so they see every write it waited for. The type ends empty and every count exact, as after
+     * one DELETE; the transaction touches only what was written meanwhile. A search during the
+     * flush still finds the model partly emptied. Interrupted part way, it is finished by running
+     * it again, before any rebuild: each step goes on from what is left.
      */
     private function flushInBatches(string $modelType): void
     {
@@ -1211,7 +1253,26 @@ class IndexManager
             }
         }
         $this->deleteInBatches('fuzzy_index_documents', ['model_type' => $modelType], 'model_id');
-        DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
+
+        DB::transaction(function () use ($modelType) {
+            DB::table('fuzzy_index_documents')->where('model_type', $modelType)->delete();
+            $typeId = self::modelTypeId($modelType);
+            if ($typeId !== null) {
+                $words = DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->pluck('term_id')
+                    ->merge(DB::table('fuzzy_index_postings')->where('model_type_id', $typeId)->distinct()->pluck('term_id'))
+                    ->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
+                foreach (array_chunk($words, 1000) as $ids) {
+                    DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
+                }
+                DB::table('fuzzy_index_postings')->where('model_type_id', $typeId)->delete();
+                DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->delete();
+                foreach (array_chunk($words, 1000) as $ids) {
+                    self::recountDictionary(fn ($terms) => $terms->whereIn('id', $ids));
+                }
+            }
+            DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
+        }, self::ATTEMPTS);
+
         $this->deleteUnpostedWords();
     }
 
@@ -1266,14 +1327,14 @@ class IndexManager
      * the big tables are truncated as flushAll() does, on every database it truncates on (see
      * clearIndex()); this type's meta row goes and the others' stay. Otherwise, or when the tables are
      * busy, its rows are deleted by type: in one transaction, but on MySQL/MariaDB outside a
-     * transaction of yours in bounded ones (flushInBatches()), so it is not atomic there: a search
-     * meanwhile finds the type partly emptied (rebuild --fresh needs the type's writers stopped
-     * anyway), and a flush interrupted part way is finished by running it again.
+     * transaction of yours in bounded ones (flushInBatches()), the last of which deletes what a write
+     * between them left: a search meanwhile finds the type partly emptied, and a flush interrupted
+     * part way is finished by running it again.
      */
     public function flush(string $modelClass): void
     {
-        // The only model type indexed: the index is truncated as clear --all does (clearIndex()).
-        $this->clearIndex($modelClass, function () use ($modelClass) {
+        // The DELETE by type, where another model type is indexed (clearIndex()).
+        $byType = function () use ($modelClass) {
             // None: nothing is posted under the type. Its row stays (see dictionaryIds()).
             $typeId = self::modelTypeId($modelClass);
 
@@ -1331,7 +1392,9 @@ class IndexManager
                     })
                     ->delete();
             }
-        });
+        };
+        // The only model type indexed: the index is truncated as clear --all does (clearIndex()).
+        self::readingTheWriteConnection(DB::connection(), fn () => $this->clearIndex($modelClass, $byType));
     }
 
     /** @var array<string, Pipeline|false> model class → resolved override pipeline, or false = "uses the default" */
@@ -1351,9 +1414,10 @@ class IndexManager
 
     /**
      * Forget the per-process caches: the pipelines, which PostgreSQL index tables have statistics,
-     * and the model types' and columns' ids. The migrations that create those tables call this, and
-     * so does the service provider for each new application (each test of an app's suite) and after
-     * migrations or a schema dump ran in the process.
+     * the model types' and columns' ids, and the column types and collations the BM25 scorer reads
+     * (Bm25Scorer::resetColumnCache()). The migrations that create those tables call this, and so
+     * does the service provider for each new application (each test of an app's suite) and
+     * after migrations or a schema dump ran in the process.
      */
     public static function resetPipelineCache(): void
     {
@@ -1362,6 +1426,7 @@ class IndexManager
         self::$pendingChecks = [];
         self::$dictionary    = [];
         self::$watched       = [];
+        Bm25Scorer::resetColumnCache();
     }
 
     /**

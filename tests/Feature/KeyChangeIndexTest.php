@@ -53,6 +53,19 @@ class KeyChangeIndexTest extends TestCase
         $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_id', (string) $old)->count());
     }
 
+    /** N-B7: with indexing off, a save that changed the key lets go of the old key it noted at updating. */
+    public function test_a_key_change_with_indexing_off_keeps_no_old_key(): void
+    {
+        $user = User::query()->create(['name' => 'Zzkey Alphaword', 'email' => 'k@example.com']);
+        config(['fuzzy-search.indexing.enabled' => false]);
+
+        $user->id += 1000;
+        $user->save();
+
+        $oldKeys = (new \ReflectionProperty(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class, 'oldKeys'))->getValue();
+        $this->assertFalse(isset($oldKeys[$user]));
+    }
+
     public function test_a_key_change_queues_a_sync_for_both_keys(): void
     {
         config(['fuzzy-search.indexing.async' => true]);

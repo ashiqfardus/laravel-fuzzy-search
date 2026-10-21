@@ -23,7 +23,10 @@ final class TermExpander
      * Dictionary terms within $maxDistance edits of $term, most common first.
      *
      * @param  ?string     $modelType   Only the words this model_type posts, by its own document count
-     *                                  (see ownTerms()); null: the whole dictionary, by its doc_count.
+     *                                  (see ownTerms()); null: the whole dictionary, by its doc_count,
+     *                                  which has no index on term_length: each length of the window
+     *                                  reads the whole dictionary, a cost that grows with it. The
+     *                                  package itself always passes a model type.
      * @param  bool|string $visibleOnly Leave out the columns the model hides (see visibleColumnsOnly()):
      *                                  on for didYouMean(), which hands the words back; off for the typo
      *                                  expansion, which only matches. True judges them on $modelType's

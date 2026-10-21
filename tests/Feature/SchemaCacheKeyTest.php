@@ -304,6 +304,30 @@ class SchemaCacheKeyTest extends TestCase
     }
 
     /**
+     * N-B3: Bm25Scorer keeps the column types and collations it reads from information_schema
+     * (SQL Server's key and model_id, MySQL's model_id) for the process. A migration that changes
+     * model_id (the compact postings migration calls resetPipelineCache()) left a long-lived worker
+     * comparing the key with model_id as the old collations allowed: SQL Server then refuses every
+     * ranked search (468, a collation conflict). resetPipelineCache() forgets them.
+     */
+    public function test_reset_pipeline_cache_forgets_the_scorers_column_types(): void
+    {
+        $remembered = [
+            'sqlServerColumns' => ['key|fuzzy_index_postings|model_id' => ['nvarchar', 'Latin1_General_CI_AS']],
+            'collations'       => ['key|fuzzy_index_postings|model_id' => ['utf8mb4', 'utf8mb4_bin']],
+        ];
+        foreach ($remembered as $name => $value) {
+            (new \ReflectionProperty(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class, $name))->setValue(null, $value);
+        }
+
+        \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
+
+        foreach (array_keys($remembered) as $name) {
+            $this->assertSame([], (new \ReflectionProperty(\Ashiqfardus\LaravelFuzzySearch\Indexing\Bm25Scorer::class, $name))->getValue(), $name);
+        }
+    }
+
+    /**
      * TC-2's addendum. Three more per-process caches built "name|database|prefix" by hand: the
      * collation Bm25Scorer reads for its string-key lookups, and the PostgreSQL statistics check's
      * memory and its pending after-commit check. They take connectionKey() too. The collation's
