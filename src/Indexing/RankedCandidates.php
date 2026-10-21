@@ -15,7 +15,8 @@ use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
  * rank order, so a selective filter fills its page from lower-ranked matches instead of
  * coming back short, and totals reflect the constraints. The ranking is checked by id (in one read
  * for an integer key, see accepted() and matches()); on the index's own connection an ordered read
- * of a capped ranking, and on SQL Server a long ranking, is restricted through the postings
+ * of a capped ranking, and on SQL Server a long ranking (for a string key on PostgreSQL, a denser
+ * word's), is restricted through the postings
  * (matches(), accepted(); Bm25Scorer::whereRanked()); otherwise ids are visited best-first in chunks
  * and only rows the query returns are kept.
  *
@@ -238,8 +239,9 @@ final class RankedCandidates
      * key, as accepted() checks one, so the rows read are bounded by the ranking, however large the
      * table:
      *  - an integer key, on every database but SQL Server: the whole ranking, inlined;
-     *  - a string key on MySQL or MariaDB, but over a union (see listsWhole()), or on SQLite: the
-     *    whole ranking, bound, while the statement stays under the database's placeholder limit
+     *  - a string key on MySQL or MariaDB, or on PostgreSQL for a sparse word (its postings at most
+     *    JOIN_SHARE of the model's documents), but over a union (see listsWhole()), or on SQLite:
+     *    the whole ranking, bound, while the statement stays under the database's placeholder limit
      *    (65,535; SQLite's 32,766, or 999 before 3.32);
      *  - any key: a ranking of at most one bm25.candidate_chunk.
      * Otherwise, on the index's own connection, the postings restrict it (Bm25Scorer::whereRanked()):
@@ -249,10 +251,15 @@ final class RankedCandidates
      * match (whereMatches()); the subquery used elsewhere compares the postings with a cast of the
      * key, so it reads every row the query accepts (a SoftDeletes table whole). SQL Server keeps
      * it for a longer ranking: it compiles every new inlined list slowly, and at 200k rows a bound
-     * list of 2,000 integer ids took 3.4 s where the subquery takes 70 to 110 ms. So does a string
-     * key on PostgreSQL, where it costs what a listed read does. On another connection, where the
-     * postings cannot be read, the top max_candidates ranked ids (at least one chunk) are listed,
-     * and deeper matches are not served.
+     * list of 2,000 integer ids took 3.4 s. There the subquery also compares model_id with the key
+     * in the key's type (Bm25Scorer::sqlServerMatch()), so the optimizer can look the matched
+     * postings up by key: with the cast alone it read the table whole (a page of a word in 395 of 3M
+     * rows: 4.7 s, and 1.5 ms looked up by key). A string key on PostgreSQL keeps it for a denser
+     * word, whose first page walks the order column's index (3 ms for a word in a quarter of 300k
+     * rows, where its ranking of 50,000 bound took 19 ms); for a sparse word it read the table whole
+     * under a key the cast keeps off its index, a native uuid (17 ms at 300k rows for a word in 400
+     * of them, 1.2 ms bound). On another connection, where the postings cannot be read, the top
+     * max_candidates ranked ids (at least one chunk) are listed, and deeper matches are not served.
      *
      * @param array<int|string, float>                $ranked        model_id => score, as rank() returned it
      * @param array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -271,11 +278,12 @@ final class RankedCandidates
         // max_postings_per_term of them: the ranking holds every match unless a term's read reached
         // the cap. A term that reaches it ranks that many documents, so a ranking of fewer
         // stands in for one whose read is not given.
-        $whole = $read === null ? count($ids) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
+        $whole  = $read === null ? count($ids) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
+        $sparse = $read !== null && $read['share'] <= self::JOIN_SHARE;
 
         if ((count($ids) > $chunk || !$whole) && self::subqueryRuns($base)) {
-            if (!$whole || !self::listsWhole($base, $int, count($ids))) {
-                return self::whereMatches($base, $terms, $modelType, $columnWeights, $read !== null && $read['share'] <= self::JOIN_SHARE, $read['share'] ?? null);
+            if (!$whole || !self::listsWhole($base, $int, count($ids), $sparse)) {
+                return self::whereMatches($base, $terms, $modelType, $columnWeights, $sparse, $read['share'] ?? null);
             }
         } else {
             $ids = array_slice($ids, 0, max($chunk, (int) config('fuzzy-search.max_candidates', 1000)));
@@ -293,10 +301,11 @@ final class RankedCandidates
     /**
      * Whether matches() lists a ranking of $count ids that holds every match, past one chunk: an
      * integer key but on SQL Server, or a string key whose bound list keeps the statement under the
-     * placeholder limit, with the query's own bindings and the one orderedKeys() may add. Not a
-     * string key over a union on MySQL or MariaDB (see readsUnion()).
+     * placeholder limit, with the query's own bindings and the one orderedKeys() may add, on
+     * PostgreSQL only for a $sparse word. Not a string key over a union on MySQL, MariaDB or
+     * PostgreSQL (see readsUnion()).
      */
-    private static function listsWhole(Builder $base, bool $int, int $count): bool
+    private static function listsWhole(Builder $base, bool $int, int $count, bool $sparse): bool
     {
         $connection = $base->getQuery()->getConnection();
         $driver     = $connection->getDriverName();
@@ -307,6 +316,7 @@ final class RankedCandidates
 
         $limit = match (true) {
             DbDialect::isMySqlFamily($driver) => self::readsUnion($base) ? 0 : 65535,
+            $driver === DbDialect::PGSQL      => $sparse && !self::readsUnion($base) ? 65535 : 0,
             $driver === DbDialect::SQLITE     => version_compare((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), '3.32.0', '>=') ? 32766 : 999,
             default                           => 0,
         };
@@ -327,12 +337,13 @@ final class RankedCandidates
      *    time (keys()). A longer one, on the index's own connection, is read in one query through the
      *    postings subquery (Bm25Scorer::whereRanked()), however many rows match, streamed (cursor())
      *    and kept where the ranking holds them. That subquery compares the postings with a cast of the
-     *    key, so no database can drive the read from them: it reads every row the constraint accepts
-     *    (a SoftDeletes table whole). SQL Server compiles every new inlined list (8.7 s for 50,000
-     *    ids) and caps a statement's expressions, and its 2,100 bindings allow no long bound list;
-     *    there, and for a string key on PostgreSQL and SQLite, this is the shape it had before. On
-     *    another connection, where the subquery cannot run, the ranked ids are checked a chunk at a
-     *    time.
+     *    key, so a database cannot drive the read from them: it reads every row the constraint accepts
+     *    (a SoftDeletes table whole), but for an integer key on SQL Server, where it also compares
+     *    model_id in the key's type, and the optimizer can look the matched postings up by key. SQL Server
+     *    compiles every new inlined list (8.7 s for 50,000 ids) and caps a statement's expressions,
+     *    and its 2,100 bindings allow no long bound list; there, and for a string key on PostgreSQL
+     *    and SQLite, this is the shape it had before. On another connection, where the subquery
+     *    cannot run, the ranked ids are checked a chunk at a time.
      *
      * @param  array<int|string, float>                $ranked        model_id => score, best first
      * @param  array<int, string>|array<string, float> $terms         the terms it was ranked for
@@ -554,12 +565,21 @@ final class RankedCandidates
      * where the join took 3.3 s for a word in every row; and for a dense word it reads the table
      * once (0.7 s, where the join took 4.3 s on MySQL). A union, which the servers materialize
      * without an index on the key, read slower through the join too (4.8 s for 3.7 s at 1M rows on
-     * MariaDB).
+     * MariaDB). On SQL Server whereRanked() is given the model for every read of an integer key, and
+     * for a $sparse word's of a string key, and compares model_id with the key in the key's type,
+     * which leaves the read to the optimizer: the matched postings looked up by key, or a probe of
+     * the postings per row the query reads (a selective where(), a denser word's first page walking
+     * the order column's index). A denser word keeps a string key's cast alone: compared as it is,
+     * an nvarchar key's first page merged the table whole with the word's postings (47 ms at 200k
+     * rows for a word in a quarter of them, 0.5 ms walking the order column's index).
      */
     private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights, bool $sparse = false, ?float $share = null): Builder
     {
         $key   = self::keyColumn($base);
-        $model = $sparse && self::unconstrained($base) ? $base->getModel() : null;
+        $model = $base->getModel();
+        $model = $base->getQuery()->getConnection()->getDriverName() === DbDialect::SQLSRV
+            ? ($sparse || in_array($model->getKeyType(), ['int', 'integer'], true) ? $model : null)
+            : ($sparse && self::unconstrained($base) ? $model : null);
 
         return (clone $base)->withGlobalScope(self::MATCHES, function (Builder $query) use ($key, $terms, $modelType, $columnWeights, $model, $share) {
             app(Bm25Scorer::class)->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model);
