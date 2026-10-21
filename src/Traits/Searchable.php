@@ -152,7 +152,7 @@ trait Searchable
      * job queued before the commit could run first and index the old related text, and a write
      * inside the transaction held its shared locks on every related row until the commit. A
      * failed in-process write is reported, naming the model and key, not thrown. Returns the
-     * number of rows scheduled.
+     * number of rows scheduled, not of rows indexed: a failed write is not taken off it.
      *
      *   // in Author::saved (or an observer):
      *   Post::reindexRelated('author_id', $author->id);
