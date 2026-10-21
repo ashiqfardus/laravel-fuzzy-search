@@ -1331,6 +1331,14 @@ class SearchBuilder
         return $this->decorate($results, $decoration);
     }
 
+    /** The attributes the database returned for a model, less what it hides: its $hidden ones and, with a $visible list, everything outside it. */
+    private function visibleAttributes(Model $row): array
+    {
+        $attributes = array_diff_key($row->getRawOriginal(), array_flip($row->getHidden()));
+
+        return $row->getVisible() === [] ? $attributes : array_intersect_key($attributes, array_flip($row->getVisible()));
+    }
+
     /**
      * What get() caches: scalars and arrays only, so it unserialises under Laravel
      * 13's cache.serializable_classes = false — each model's key and scores, or a plain query
@@ -1345,7 +1353,7 @@ class SearchBuilder
      * row than the one cached, even when the key is cached once (first(), take(), a page, a search
      * on the joined column). A fromSub() can hold such a join where $base->joins does not show it,
      * so a FROM other than the model's own table counts as one (CacheAliasedFromTest). Any other rows
-     * are stored as the attributes the database returned for them, less the model's $hidden ones: the
+     * are stored as the attributes the database returned for them, less the model's $hidden ones and, with a $visible list, those outside it: the
      * cache store is shared, and a hit never serialises them.
      */
     private function cachePayload(Collection $results, array $decoration): array
@@ -1370,7 +1378,7 @@ class SearchBuilder
             'more'       => $this->morePages,
             'rows'       => $results->map(fn ($row) => match ($models) {
                 'key'        => ['key' => $row->getKey(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
-                'attributes' => ['attributes' => array_diff_key($row->getRawOriginal(), array_flip($row->getHidden())), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
+                'attributes' => ['attributes' => $this->visibleAttributes($row), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
                 default      => (array) $row,
             })->all(),
         ];
