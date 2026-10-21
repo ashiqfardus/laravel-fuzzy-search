@@ -139,4 +139,43 @@ class PostingCapPerTermTest extends TestCase
             $this->assertCount(2, $make()->paginate(10, 'page', 3)->items(), "cap {$cap}: the last page");
         }
     }
+
+    /**
+     * ER-225b-perf. rank() streamed its rows through the query builder's cursor(), a LazyCollection
+     * that wraps every row in a Collection and two closures: about 0.45 µs a row, 20 ms of PHP for a
+     * common word's 50,000 rows, 15 to 20% of a mid-term search. It reads them from the
+     * connection's own cursor, as cheap per row as get(), and still holds a score per document, not
+     * the rows. The caller of the connection's cursor() tells the two apart; the read is the same
+     * on every driver, so SQLite pins it.
+     */
+    public function test_the_ranking_streams_its_rows_from_the_connections_own_cursor(): void
+    {
+        if ($this->dbDriver !== 'sqlite') {
+            $this->markTestSkipped('The read shape is the same on every driver; the SQLite jobs pin it.');
+        }
+
+        $connection = DB::connection();
+        $pdo        = $connection->getPdo(); // held: the in-memory database lives with it
+        $recording  = new class ($pdo, $connection->getDatabaseName(), $connection->getTablePrefix(), $connection->getConfig()) extends \Illuminate\Database\SQLiteConnection {
+            /** @var list<string|null> the class of each cursor() caller */
+            public array $callers = [];
+
+            public function cursor($query, $bindings = [], $useReadPdo = true)
+            {
+                $this->callers[] = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1]['class'] ?? null;
+
+                return parent::cursor($query, $bindings, $useReadPdo);
+            }
+        };
+        $name = $connection->getName();
+        DB::purge($name);
+        DB::extend($name, fn () => $recording);
+
+        config(['fuzzy-search.bm25.max_postings_per_term' => 5]);
+        foreach ([['zygote'], ['common'], ['common', 'zygote']] as $terms) { // whole, capped, both
+            $recording->callers = [];
+            $this->assertNotSame([], self::rank($terms)[0]);
+            $this->assertSame([Bm25Scorer::class], $recording->callers, json_encode($terms));
+        }
+    }
 }

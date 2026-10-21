@@ -410,7 +410,9 @@ class Bm25Scorer
         // rarer term's rows out, the best match holding both included. A term in no more documents
         // than the cap is read whole, unordered. Each read is one part of a UNION ALL, so the
         // ranking stays one statement, and its rows are scored as they arrive: PHP holds a score
-        // per document, not the rows. The cap is over (document, term) rows — exactly what v2.0
+        // per document, not the rows. They come from the connection's own cursor, as cheap a row as
+        // get(): the query builder's cursor() wraps each row in a Collection and two closures, 20 ms
+        // of PHP for a common word's 50,000 rows. The cap is over (document, term) rows — exactly what v2.0
         // capped, which ordered by raw frequency — so a document is never partially cut across its
         // columns. Rows of equal weight are cut by model_id: the weight takes few values, so
         // the cap usually falls inside a group of equal rows, and which of them the database kept
@@ -434,7 +436,7 @@ class Bm25Scorer
         foreach ($parts as $part) {
             $query->unionAll($part);
         }
-        $postings = $query->cursor();
+        $postings = $query->getConnection()->cursor($query->toSql(), $query->getBindings());
 
         // The idf's document frequency: an expansion's, at least its word's (see above).
         $idfDf = $df;
