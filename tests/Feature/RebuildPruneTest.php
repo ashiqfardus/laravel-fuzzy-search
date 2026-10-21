@@ -77,6 +77,21 @@ class PruneKindChild extends PruneKindParent
     }
 }
 
+/** Indexed through Scout (its trait and a searchableText() hook), on the prune_articles rows. */
+class PruneScoutArticle extends Model
+{
+    use \Laravel\Scout\Searchable, SoftDeletes;
+
+    protected $table   = 'prune_articles';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    public function searchableText(): array
+    {
+        return ['title' => $this->title];
+    }
+}
+
 /** A tenant scope bound to the request or the command's context: a static flag here. */
 class PruneTenantArticle extends Model
 {
@@ -408,6 +423,41 @@ class RebuildPruneTest extends TestCase
         $this->rebuild(PruneSepParent::class, $options);
         $this->assertSame(['2', '3', '4'], $this->indexed(PruneSepParent::class));
         $this->assertSame(['1'], $this->indexed(PruneSepChild::class));
+    }
+
+    /**
+     * With scout.soft_delete on, Scout keeps a trashed row in the index (its __soft_deleted
+     * constraint serves withTrashed() and onlyTrashed()), so a plain rebuild of a model on Scout's
+     * trait keeps it too. A model without Scout's trait, or scout.soft_delete off, has it pruned.
+     */
+    public function test_a_scout_model_keeps_its_trashed_rows_while_scout_soft_delete_is_on(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+        config(['scout.driver' => 'fuzzy-search', 'scout.queue' => false, 'scout.after_commit' => false, 'scout.soft_delete' => true]);
+
+        PruneScoutArticle::all()->searchable();
+        PruneScoutArticle::query()->find(2)->delete(); // Scout's observer re-indexes it as trashed
+        $this->assertContains('2', $this->indexed(PruneScoutArticle::class));
+        $this->assertSame(['quartz birch'], PruneScoutArticle::search('birch')->withTrashed()->get()->pluck('title')->all());
+
+        $this->rebuild(PruneScoutArticle::class);
+
+        $this->assertSame(['1', '2', '3', '4', '5', '6'], $this->indexed(PruneScoutArticle::class));
+        $this->assertSame(['quartz birch'], PruneScoutArticle::search('birch')->withTrashed()->get()->pluck('title')->all());
+        $this->assertSame([], PruneScoutArticle::search('birch')->get()->all());
+
+        // A model without Scout's trait has its trashed rows pruned, whatever scout.soft_delete says.
+        $this->rebuild(PruneArticle::class);
+        DB::table('prune_articles')->where('id', 3)->update(['deleted_at' => now()]);
+        $this->rebuild(PruneArticle::class);
+        $this->assertSame(['1', '4', '5', '6'], $this->indexed(PruneArticle::class)); // 2 trashed above, 3 now
+
+        // scout.soft_delete off: Scout does not keep them, and neither does the rebuild.
+        config(['scout.soft_delete' => false]);
+        $this->rebuild(PruneScoutArticle::class);
+        $this->assertSame(['1', '4', '5', '6'], $this->indexed(PruneScoutArticle::class));
     }
 
     public function test_the_rebuild_says_how_many_documents_it_removed(): void
