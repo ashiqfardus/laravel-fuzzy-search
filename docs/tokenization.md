@@ -211,13 +211,15 @@ The LIKE path's accent handling (the `unicode.accent_insensitive` default and `-
 
 Default: no stemming (`NullStemmer`). With `NullStemmer`, `running` only matches `running`, not `run` or `ran`.
 
-To enable Porter stemming, install the 1.x line of `wamania/php-stemmer`, 1.3 or later (1.2 is a fatal error on PHP 8; a bare `composer require wamania/php-stemmer` installs 4.x, whose classes `PorterStemmer` cannot load):
+To enable Porter stemming, install `wamania/php-stemmer`: 1.3, or 2.0 and later (tested with 1.3 and 4.0; 1.2 is a fatal error on PHP 8):
 
 ```bash
-composer require "wamania/php-stemmer:^1.3"
+composer require "wamania/php-stemmer:^1.3|^4.0"
 ```
 
-> **PHP 8.2+ deprecations:** 1.3 is the last 1.x release, and it calls `utf8_decode()`, which is deprecated since PHP 8.2 and removed in PHP 9. Stemming works, but every word it stems, when indexing and when searching, raises dozens of `E_DEPRECATED` notices. Laravel sends them to the log channel `LOG_DEPRECATIONS_CHANNEL` names, `null` by default, which drops them; if yours logs deprecations, set it back to `null` to silence these. The package plans to replace this stemmer before PHP 9.
+4.0 depends on `joomla/string`, whose latest release needs PHP 8.3; on PHP 8.1 and 8.2 composer picks an older one that 4.0 accepts, so the line above installs 4.0 on every PHP this package supports. 1.3 has no dependencies; 2.x and 3.x bring `voku/portable-utf8` (Apache-2.0 or GPL-2.0) and 4.0 brings `joomla/string` (GPL-2.0-or-later), so check those licences against your app's policy. The stems are the same in 1.3 and 4.0 for all twelve languages below (checked on about 370,000 words), so moving between them needs no rebuild.
+
+> **PHP 8.2+ deprecations (1.3 only):** 1.3 is the last 1.x release, and it calls `utf8_decode()`, which is deprecated since PHP 8.2 and removed in PHP 9. Stemming works, but every word it stems, when indexing and when searching, raises dozens of `E_DEPRECATED` notices. Laravel sends them to the log channel `LOG_DEPRECATIONS_CHANNEL` names, `null` by default, which drops them; if yours logs deprecations, set it back to `null` to silence these. 4.0 raises none on PHP 8.4 or 8.5, so install it there.
 
 ```php
 // config/fuzzy-search.php
@@ -226,5 +228,5 @@ composer require "wamania/php-stemmer:^1.3"
 ],
 ```
 
-Supported languages: English, French, German, Spanish, Italian, Russian, Romanian, Dutch, Portuguese, Swedish, Danish, Norwegian. You must rebuild the index after changing the stemmer.
+Supported languages: English, French, German, Spanish, Italian, Russian, Romanian, Dutch, Portuguese, Swedish, Danish, Norwegian. The language is a name (`'French'`, any case) or, with php-stemmer 2.0 and later, an ISO code (`'fr'`). You must rebuild the index after changing the stemmer.
 
