@@ -74,7 +74,7 @@ Optionally publish the config file:
 php artisan vendor:publish --tag=fuzzy-search-config
 ```
 
-If you plan to use the **BM25 inverted index** (recommended for 10k+ rows), also run:
+If you plan to use the **BM25 inverted index**, also run:
 
 ```bash
 php artisan migrate
@@ -100,9 +100,9 @@ Installs with different table prefixes can share a schema (or SQLite file): with
 > other rows, throw, or cache where 2.0 did not. Before you deploy:
 >
 > - **On MySQL and MariaDB a large index takes a while to migrate.** The postings are rewritten
->   into a compact layout (about 22 minutes for 6M rows on MySQL), then each model's words are
->   counted (about 3 minutes more); from 2.0.x, the table is first rewritten for two earlier
->   migrations too (about 10 s per million postings each, some 30 minutes more at 6M rows). Index
+>   into a compact layout (about 22 minutes for 6M rows on MySQL, on 67be9e1), then each model's words are
+>   counted (about 3 minutes more, on 81bedf8); from 2.0.x, the table is first rewritten for two
+>   earlier migrations too (at 1M rows, 15.9M postings, on MySQL: 14 s and 3 minutes, dfa3737). Index
 >   searches fail until it finishes: migrate under `php artisan down`, or empty the index and
 >   rebuild it instead (see the guide's [Inverted index](docs/UPGRADE_v2_TO_v3.md#inverted-index-bm25) section, "A large index").
 >   On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty
@@ -820,7 +820,7 @@ Post::search('tolkien')->useInvertedIndex()->get();
 
 - **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
-- BM25 tends to beat LIKE once a table passes roughly 10k+ rows; below that, LIKE is simpler to operate.
+- On MariaDB at 1M rows (fb82c82) an index search for a common word took 0.12 s where `fuzzy` LIKE took 17 s; on a small table, LIKE is simpler to operate.
 - **Single-table inheritance** — each row is indexed under its own class; return the parent from each child's `searchIndexType()` to index the hierarchy once ([docs/bm25.md](docs/bm25.md#single-table-inheritance)).
 - **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, naming the model and key (`IndexModelJob::dispatch($model, $key)` repairs it), not thrown from `save()`. Indexing inside an open transaction (Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`) can deadlock: on MySQL, MariaDB and PostgreSQL once the transaction holds two or more index writes, and on SQL Server under its default locking read committed even with one (turn on `READ_COMMITTED_SNAPSHOT` or set `scout.after_commit`), and such a deadlock is thrown from `save()`, not retried: set `scout.after_commit` to `true`; see [Production Setup](docs/bm25.md#production-setup). On MySQL/MariaDB one such write does not deadlock with a neighbouring row's (it deletes and writes only the postings that change, by primary key), and it reads the row with a shared lock held until your transaction ends; but while a transaction with two or more runs, its deadlock can roll back either side, the one-write transaction too. On PostgreSQL the package analyzes the index tables after a rebuild and as they grow, and a failure to analyze is reported, not thrown (a connection lost inside an open transaction is thrown); after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
 
@@ -1362,30 +1362,32 @@ php artisan fuzzy-search:explain User --term="john"
 
 ### Algorithm Comparison
 
-| Algorithm | Speed | Typo Tolerance | Best For | Dataset Size |
-|-----------|-------|----------------|----------|--------------|
-| **simple** | Fastest | None | Exact matches, SKUs | Any size |
-| **fuzzy** | Very Fast | High | General purpose | < 100K rows |
-| **soundex** | Very Fast | Phonetic | Name searches | < 100K rows |
-| **trigram** | Fast | Medium (a shared three-letter run) | Similarity matching | < 50K rows |
-| **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
-| **BM25 index** | Fast at scale | Native (dictionary expansion) | Large tables, ranked results | 10K+ rows |
+| Algorithm | Typo Tolerance | Best For |
+|-----------|----------------|----------|
+| **simple** | None | Exact matches, SKUs |
+| **fuzzy** | High | General purpose |
+| **soundex** | Phonetic | Name searches |
+| **trigram** | Medium (a shared three-letter run) | Similarity matching |
+| **levenshtein** | Configurable | Precise typo matching |
+| **BM25 index** | Native (dictionary expansion) | Large tables, ranked results |
+
+The LIKE algorithms scan the table, the index reads only the matched words' postings: on MariaDB at 1M rows (fb82c82), `simple` took 0.79 s, `fuzzy` 17 s and `levenshtein` 44 s, and an index search for a common word 0.12 s (see [Sizing the index](#sizing-the-index)).
 
 **At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast. For measured numbers, see [Sizing the index](#sizing-the-index); `php artisan fuzzy-search:benchmark` times the LIKE algorithms on your own tables, and `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()` times an index search in your app. Three reads grow with the data:
 
 - **Common words.** Every posting of a matched word is read and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. A word's postings are one range of the postings table, read in order, each with its document's length, so no other table is read, and the word's document count within the model comes from the per-model dictionary (`fuzzy_index_model_terms`), one keyed read, not a count over those postings: on MySQL with a 4 GB buffer pool, one such word (in 7% of 12M rows of about 16 indexed words each, 5dc853c) takes 0.59 s for its first page and three together 1.6 s; on PostgreSQL with 4 GB of `shared_buffers` at 24M rows (0a05120), 0.93 s and 2.7 s. A `where()` does not shorten that read: the word's postings are read for the whole model before the `where()` and the cap apply. `typoTolerance(0)` and Scout's exact terms skip only the typo expansion. For a selective filter over a common word, the LIKE path with an index on the filtered column is the fast path (20 ms on MariaDB at 1M rows, fb82c82, for a filter holding 0.1% of them).
-- **Typo expansion** takes each query term's most common neighbours from the searched model's own words, by its own document count (`fuzzy_index_model_terms`): one index read per word length in the window around the term, each stopping at `bm25.fuzzy.candidate_pool` (500) of the model's words or at the last of them. Once the model has more rows than `bm25.max_postings_per_term`, a word in more than half of them is never an expansion, so a misspelling never reads a stop word's postings (`smith` into `with`, in 999,967 of 1M rows, took 2.0 to 2.5 s). Another model's words never enter it, however many share a length. On MySQL at 3M words, where 1M six-digit product SKUs filled length 6, a users typo search for `smith` takes 43 ms for the whole page, where the read through the shared dictionary walked all of them (1.2 s), and an article search for `kubernetes` 24 ms (2.05 s before). `asYouType()` and `suggest()` read the model's own words under the prefix the same way, through `(model_type_id, term)`: `suggest('sm')` there takes 3 ms (93 ms before), and a 4-letter `asYouType()` search at 24M rows on PostgreSQL 2.1 s (0a05120; 40 s before; the ranking read is now most of it). `typoTolerance(0)` skips the expansion.
-- **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (when one word's read reaches that many rows, one per document holding it: a word in more than 50,000 of the model's rows) restricts the ordered read through the postings: a subquery that reads the rows the query accepts (a common word's first ordered page took 4.3 s on MySQL at 12M rows, 1.4 s on MariaDB at 6M and 3.0 s on PostgreSQL at 24M; milliseconds under a selective, indexed `where()`; on PostgreSQL at 24M rows (0a05120) a whole ordered search took 21 ms for a rare word to 3.2 s for page 500 of a mid word). On MySQL and MariaDB a query with no constraint whose words are in at most a tenth of the rows joins the matched ids on the model's key instead, one key lookup per match. On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default), and compares `model_id` with the key in the key's own type too, so the matches are looked up by key: at 3M rows a page of a word in 395 of them takes 1.5 ms, where the subquery read the whole table in 4.7 s. See [docs/bm25.md](docs/bm25.md#usage).
+- **Typo expansion** takes each query term's most common neighbours from the searched model's own words, by its own document count (`fuzzy_index_model_terms`): one index read per word length in the window around the term, each stopping at `bm25.fuzzy.candidate_pool` (500) of the model's words or at the last of them. Once the model has more rows than `bm25.max_postings_per_term`, a word in more than half of them is never an expansion, so a misspelling never reads a stop word's postings (`smith` into `with`, a word in 999,967 of 1M rows). Another model's words never enter it, however many share a length. On MySQL at 3M words, where 1M six-digit product SKUs filled length 6, a users typo search for `smith` takes 43 ms for the whole page, where the read through the shared dictionary walked all of them (1.2 s), and an article search for `kubernetes` 24 ms (2.05 s before). `asYouType()` and `suggest()` read the model's own words under the prefix the same way, through `(model_type_id, term)`: `suggest('sm')` there takes 3 ms (93 ms before), and a 4-letter `asYouType()` search at 24M rows on PostgreSQL 2.1 s (0a05120; 40 s before; the ranking read is now most of it). `typoTolerance(0)` skips the expansion.
+- **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (when one word's read reaches that many rows, one per document holding it: a word in more than 50,000 of the model's rows) restricts the ordered read through the postings: a subquery that reads the rows the query accepts (a common word's first ordered page took 4.3 s on MySQL at 12M rows, 1.4 s on MariaDB at 6M and 3.0 s on PostgreSQL at 24M; milliseconds under a selective, indexed `where()`; on PostgreSQL at 24M rows (0a05120) a whole ordered search took 21 ms for a rare word to 3.2 s for page 500 of a mid word). On MySQL and MariaDB a query with no constraint whose words are in at most a tenth of the rows joins the matched ids on the model's key instead, one key lookup per match. On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default), and compares `model_id` with the key in the key's own type too, so the matches are looked up by key: on SQL Server 2022 RTM at 3M rows, the page statement for a word in 395 of them took 2.9 ms (1fd04b9), where the subquery read the whole table in 4,625 ms (e0b475d); the whole search 29 ms and 4.8 s. See [docs/bm25.md](docs/bm25.md#usage).
 
 ### When to Use BM25 vs LIKE
 
 **Use BM25 (`useInvertedIndex()`) when:**
-- Table has 10k+ rows
+- The table is large enough that a LIKE scan is slow (see [Sizing the index](#sizing-the-index))
 - Result ranking/relevance quality matters
 - You have queue workers running
 
 **Use LIKE / fuzzy when:**
-- Small tables (< 10k rows) — LIKE can be faster due to BM25 scoring overhead
+- Small tables, where a LIKE scan is already quick and the index only adds writes to every save
 
 ### `max_candidates` Tuning
 
@@ -1399,7 +1401,7 @@ For the LIKE/Levenshtein paths, SQL candidates are fetched then re-scored in PHP
 ### Recommended Optimizations
 
 ```php
-// For 100k+ rows: the BM25 index, plus a cache for repeated searches
+// For large tables: the BM25 index, plus a cache for repeated searches
 User::search('john')
     ->useInvertedIndex()
     ->cache(60)
@@ -1425,10 +1427,10 @@ Key tips:
 
 Measured on one laptop database at a time, with rows of about 16 indexed words each (a short name, a description, a brand and a unique SKU, so the dictionary grows with the table). Your words, columns and hardware will move these numbers: time your own index searches, a common word and a rare one, through `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()` (`fuzzy-search:benchmark` times only the LIKE algorithms).
 
-- **Size:** about 1.5 GB of index per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows; the earlier postings layout took 2.6 times as much on MySQL and 1.4 times on PostgreSQL), several times the table it indexes. The postings table is most of it. `fuzzy_index_model_terms` holds one row per model and word it indexes, so where models share few words it has about as many rows as the dictionary (5.8 GB at 24M rows on PostgreSQL, 0a05120, beside the dictionary's 3.4 GB; 734 MB at 6M rows on MySQL).
-- **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MariaDB with a 2 GB buffer pool, sixteen searchers managed 198 searches a second at 1M rows and 48 at 3M, once the index outgrew the pool.
-- **Upgrading to 3.0:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL, then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL, about 45 minutes for 24M on PostgreSQL (about 10 with a warm cache), about 70 s for 1M on SQL Server); the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) (`php artisan down`, or flush and rebuild a large index instead). From 2.0.x only MySQL and MariaDB have an index to copy: on PostgreSQL and SQL Server 2.0.x could not write one, so the PostgreSQL and SQL Server times are for an index a pre-release 3.0 build wrote, and from 2.0.x the migrations take seconds there.
-- **Index builds:** one process rebuilt 1M rows on MariaDB in 199 s, and four built 12M rows on MySQL in 1 hour 55 minutes (1,742 rows a second). SQL Server writes one index chunk at a time per database, so four processes indexed 209 to 225 rows a second there at 1M rows. `rebuild --async` only queues the work: at 3M rows on SQL Server it queued 6,001 jobs in 21 s.
+- **Size:** about 1.5 GB of index per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows; the earlier postings layout took 2.6 times as much on MySQL and 1.4 times on PostgreSQL), several times the table it indexes. The postings table is most of it. `fuzzy_index_model_terms` holds one row per model and word it indexes, so where models share few words it has about as many rows as the dictionary (5,817 MB at 24M rows on PostgreSQL, 0a05120, beside the dictionary's 3,477 MB; 734 MB at 6M rows on MySQL).
+- **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MariaDB with a 2 GB buffer pool, sixteen searchers managed 198 searches a second at 1M rows and 48 at 3M (fb82c82), once the index outgrew the pool.
+- **Upgrading to 3.0:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL (both on 67be9e1, before the migration's later fixes), then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL and 70 s for 1M on SQL Server, on 81bedf8; 33 minutes for 24M rows on PostgreSQL with a cold cache, on c2b2c1d, and 11 with a warm one, on 81bedf8; all before 8274a49 changed how it sets a range's words left at length 0); the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) (`php artisan down`, or flush and rebuild a large index instead). From 2.0.x only MySQL and MariaDB have an index to copy: on PostgreSQL and SQL Server 2.0.x could not write one, so the PostgreSQL and SQL Server times are for an index a pre-release 3.0 build wrote, and from 2.0.x the migrations take seconds there.
+- **Index builds:** one process rebuilt 1M rows on MariaDB in 199 s (fb82c82), and four built 12M rows on MySQL in 1 hour 55 minutes (1,742 rows a second; 5dc853c). SQL Server writes one index chunk at a time per database, so four processes indexed 209 to 225 rows a second there at 1M rows (999ee0d, before the change to how a write reads a batch's postings there). `rebuild --async` only queues the work: at 3M rows on SQL Server it queued 6,001 jobs in 21 s (47918e9).
 
 | Database (memory for the engine) | Largest table measured | First page of a rare, mid or common word | Slowest search | Searches or commands past 120 s |
 |---|---|---|---|---|
