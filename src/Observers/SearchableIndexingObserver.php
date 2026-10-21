@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Observers;
 use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
 use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 
 class SearchableIndexingObserver
@@ -91,64 +92,101 @@ class SearchableIndexingObserver
 
     protected function reindex(Model $model): void
     {
-        $row   = clone $model; // as saved or deleted: a later save can change this instance before the commit
-        $key   = $model->getKey();
+        $row = clone $model; // as saved or deleted: a later save can change this instance before the commit
+
+        // The types are resolved after the commit, so a searchIndexType() that names no valid type
+        // is reported like any failed index write, not thrown from the save (R11-L1). Named by the
+        // row's kind, now and before the save, not by the instance's class alone: under single-table
+        // inheritance a parent instance can hold a child row, which was filed under the child
+        // (R11-M1) and stayed there when the instance was deleted, and a type change through the
+        // child's instance left the child's index and joined no other (UB-1, UD-3, UD-4).
+        self::indexAfterCommit($model->getConnection(), fn () => IndexManager::rowTypes($row), [$model->getKey()]);
+    }
+
+    /**
+     * Index each of $keys under each type $types() returns, once $connection's transaction commits
+     * (see afterCommit()): queued when indexing.async is on, else run in-process. A failed write
+     * (a deadlock, an unreachable queue) is reported naming the model and key, and the rest go on.
+     *
+     * @internal Searchable::reindexRelated() schedules its rows through it too.
+     *
+     * @param \Closure(): iterable<int, string> $types
+     * @param array<int, int|string>            $keys
+     */
+    public static function indexAfterCommit(Connection $connection, \Closure $types, array $keys): void
+    {
         $async = config('fuzzy-search.indexing.async', true);
         $queue = config('fuzzy-search.indexing.queue', 'default');
 
-        $this->afterCommit($model, function () use ($row, $key, $async, $queue) {
-            // Resolved here, so a searchIndexType() that names no valid type is reported like any
-            // failed index write, not thrown from the save (R11-L1). Named by the row's kind, now
-            // and before the save, not by the instance's class alone: under single-table
-            // inheritance a parent instance can hold a child row, which was filed under the child
-            // (R11-M1) and stayed there when the instance was deleted, and a type change through
-            // the child's instance left the child's index and joined no other (UB-1, UD-3, UD-4).
-            foreach (IndexManager::rowTypes($row) as $type) {
-                try {
-                    if ($async) {
-                        IndexModelJob::dispatch($type, $key)->onQueue($queue);
-                        continue;
-                    }
+        self::afterCommit($connection, function () use ($types, $keys, $async, $queue) {
+            foreach ($types() as $type) {
+                foreach ($keys as $key) {
+                    try {
+                        if ($async) {
+                            IndexModelJob::dispatch($type, $key)->onQueue($queue);
+                            continue;
+                        }
 
-                    // Run the job in-process rather than indexing $model directly: the job reloads the
-                    // row from the database, so accessors that read relations see the current related
-                    // rows instead of whatever was already loaded on this instance before the change,
-                    // and a deleted row leaves the index only if it is still gone or trashed.
-                    (new IndexModelJob($type, $key))->handle(app(IndexManager::class));
-                } catch (\Throwable $e) {
-                    // Named, so the row can be repaired on its own: a deadlock's error names neither,
-                    // and a plain rebuild reads only the rows the query returns, so it leaves a
-                    // deleted row in the index (P7W-2).
-                    report(new LaravelFuzzySearchException(
-                        "Indexing {$type} {$key} failed: {$e->getMessage()} IndexModelJob::dispatch() of that type and key repairs its index entry, and removes it if the row is gone.",
-                        ['model' => $type, 'key' => $key],
-                        0,
-                        $e,
-                    ));
+                        // Run the job in-process rather than indexing a model directly: the job reloads
+                        // the row from the database, so accessors that read relations see the current
+                        // related rows instead of whatever was already loaded on an instance before the
+                        // change, and a deleted row leaves the index only if it is still gone or trashed.
+                        (new IndexModelJob($type, $key))->handle(app(IndexManager::class));
+                    } catch (\Throwable $e) {
+                        // Named, so the row can be repaired on its own, without a rebuild of the whole
+                        // model: a deadlock's error names neither.
+                        report(new LaravelFuzzySearchException(
+                            "Indexing {$type} {$key} failed: {$e->getMessage()} IndexModelJob::dispatch() of that type and key repairs its index entry, and removes it if the row is gone.",
+                            ['model' => $type, 'key' => $key],
+                            0,
+                            $e,
+                        ));
+                    }
                 }
             }
         });
     }
 
     /**
-     * Run $callback once the model's transaction commits, at once outside a transaction.
+     * Run $callback once $connection's transaction commits, at once when it has none open.
      * A rolled-back transaction discards it, so a rolled-back row is never indexed (the index may
      * sit on another connection, whose writes the rollback would not undo), and a queued job is
      * never pushed before the row it reloads is committed, where a worker could run it first.
      *
+     * Only a transaction of $connection's own: Laravel attaches an after-commit callback to the
+     * newest open transaction of any connection, so a save committed at once on this one, while
+     * another connection had a transaction open, was indexed only when that one committed, and
+     * never if it rolled back; and a save inside this connection's transaction, with another
+     * connection's opened inside it, was indexed when that inner one committed, while the save's
+     * own could still roll back. The callback goes to the newest transaction of $connection that
+     * Laravel's manager applies callbacks to (callbackApplicableTransactions(), Laravel 10.0 on:
+     * RefreshDatabase's wrapping transaction is not one, so a test runs it at once, as Laravel
+     * does), and runs at once when there is none.
+     *
      * An error in it (a deadlock or lock-wait timeout on the sync path, an unreachable queue) is
      * reported, not thrown: the caller's write has committed, and a throw here would also skip
-     * the application's own after-commit callbacks. reindex() reports a failed write naming the
-     * model and key, which IndexModelJob::dispatch() repairs.
+     * the application's own after-commit callbacks. indexAfterCommit() reports a failed write
+     * naming the model and key, which IndexModelJob::dispatch() repairs.
      */
-    private function afterCommit(Model $model, \Closure $callback): void
+    private static function afterCommit(Connection $connection, \Closure $callback): void
     {
-        $model->getConnection()->afterCommit(function () use ($callback) {
+        $run = function () use ($callback) {
             try {
                 $callback();
             } catch (\Throwable $e) {
                 report($e);
             }
-        });
+        };
+
+        $manager = app()->bound('db.transactions') ? app('db.transactions') : null;
+
+        if ($manager === null || !method_exists($manager, 'callbackApplicableTransactions')) {
+            $connection->transactionLevel() > 0 ? $connection->afterCommit($run) : $run();
+
+            return;
+        }
+
+        $transaction = $manager->callbackApplicableTransactions()->where('connection', $connection->getName())->last();
+        $transaction === null ? $run() : $transaction->addCallback($run);
     }
 }

@@ -136,8 +136,9 @@ class RebuildIndexJobTest extends TestCase
         $this->artisan('fuzzy-search:rebuild', ['model' => RebuildHookTestUser::class, '--async' => true])->assertExitCode(0);
 
         \Illuminate\Support\Facades\Bus::assertBatched(function (\Illuminate\Bus\PendingBatch $batch) use ($hooked) {
-            $ids = collect($batch->jobs)->flatMap(fn (RebuildIndexJob $job) => $job->modelIds)->all();
-            return $ids === [$hooked->id]; // only the hooked row was chunked into jobs
+            $ids = collect($batch->jobs)->whereInstanceOf(RebuildIndexJob::class)->flatMap(fn (RebuildIndexJob $job) => $job->modelIds)->all();
+            // only the hooked row was chunked into jobs; the last job removes the documents of rows the hook no longer returns
+            return $ids === [$hooked->id] && $batch->jobs->last() instanceof \Ashiqfardus\LaravelFuzzySearch\Jobs\PruneIndexJob;
         });
     }
 

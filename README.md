@@ -625,7 +625,8 @@ $page = FederatedSearch::across([User::class, Product::class])
     ->limitPerModel(5)
     ->paginate(15);
 
-// Cursor-less "load more" pagination — cheaper than paginate() when you only need hasMorePages()
+// Cursor-less "load more" pagination — on LIKE, cheaper than paginate() when you only need hasMorePages()
+// (it skips the count); on the index both rank each model once, and paginate()'s total comes with it
 $page = FederatedSearch::across([User::class, Product::class])
     ->search('laptop')
     ->simplePaginate(15);
@@ -809,7 +810,7 @@ A real inverted index for large tables, across seven tables: `fuzzy_index_terms`
 php artisan fuzzy-search:rebuild "App\Models\Post"    # build once; with indexing.enabled on, saves keep it in sync
 ```
 
-With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild only reads the rows the model's query returns, so it does not remove a row such a write deleted, trashed or moved out of a global scope. For those, run `fuzzy-search:rebuild "App\Models\Post" --fresh`, or `IndexModelJob::dispatch(Post::class, $id)` per row: the job removes a row that is gone.
+With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild also removes the documents of rows such a write deleted or trashed, or that the model's `searchIndexQuery()` leaves out. A row moved out of a global scope keeps its document until `IndexModelJob::dispatch(Post::class, $id)` repairs it (the job removes a row that is gone or hidden) or a `rebuild --fresh`.
 
 ```php
 Post::search('tolkien')->useInvertedIndex()->get();

@@ -84,17 +84,22 @@ final class TermExpander
      * Weighted query terms: every input term at 1.0 plus, for terms of at least $minWordLength
      * characters, up to $maxExpansions dictionary neighbours within $maxDistance edits, closest
      * first. With $damping an expansion contributes 1 - distance / length of what the exact term
-     * would, so it always counts for less — but it is not outranked automatically: BM25 weighs
-     * rarity (idf), so a rare expansion can still outscore a common exact term. Without $damping
-     * every expansion is 1.0. A term reached more than once keeps its highest weight.
-     * Neighbours come from $modelType's own terms when given (see candidates()).
+     * would, so it always counts for less. Without $damping every expansion is 1.0. A term reached
+     * more than once keeps its highest weight. Neighbours come from $modelType's own terms when
+     * given (see candidates()).
      *
-     * @param  string[] $terms
+     * $sources is set to each expansion's input term (the one its weight came from), which
+     * Bm25Scorer::rank() caps the expansion's idf at: a misspelling is rare, so its own idf put
+     * the misspelled rows of a common word above every exact hit.
+     *
+     * @param  string[]                   $terms
+     * @param  array<string, string>|null $sources set to expansion => the input term it expands
      * @return array<string, float>
      */
-    public function expand(array $terms, int $maxDistance, int $minWordLength, int $maxExpansions, int $pool, bool $damping, ?string $modelType = null): array
+    public function expand(array $terms, int $maxDistance, int $minWordLength, int $maxExpansions, int $pool, bool $damping, ?string $modelType = null, ?array &$sources = null): array
     {
         $weights = array_fill_keys($terms, 1.0);
+        $sources = [];
 
         if ($maxDistance <= 0 || $maxExpansions <= 0) {
             return $weights;
@@ -119,7 +124,10 @@ final class TermExpander
                 if ($weight <= 0) {
                     continue;
                 }
-                $weights[$candidate['term']] = max($weights[$candidate['term']] ?? 0.0, $weight);
+                if ($weight > ($weights[$candidate['term']] ?? 0.0)) {
+                    $weights[$candidate['term']] = $weight;
+                    $sources[$candidate['term']] = (string) $term;
+                }
                 $taken++;
             }
         }
