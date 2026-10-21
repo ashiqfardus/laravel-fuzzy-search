@@ -320,8 +320,9 @@ class IndexManagerTest extends TestCase
 
             return [
                 // The UPDATEs adjustDocCounts() sends, and the locking read before them, by the term
-                // ids it binds (FOR UPDATE, a table hint on SQL Server, nothing on SQLite).
-                array_values(array_filter($queries, fn ($q) => preg_match('/^\s*update\b.*fuzzy_index_terms\W+set doc_count = case/i', $q->sql))),
+                // ids it binds (FOR UPDATE, a table hint on SQL Server, nothing on SQLite). SQL Server
+                // binds (id, delta) rows in an UPDATE … FROM (VALUES …) (ER-227).
+                array_values(array_filter($queries, fn ($q) => preg_match('/^\s*update\b.*fuzzy_index_terms\W+set doc_count = case|^\s*update t set doc_count = .* from fuzzy_index_terms as t\b/is', $q->sql))),
                 array_values(array_filter($queries, fn ($q) => preg_match('/^\s*select\b.*fuzzy_index_terms\b.*\bwhere\W+id\W+in\b/i', $q->sql))),
             ];
         };
@@ -339,7 +340,11 @@ class IndexManagerTest extends TestCase
         [$updates, $locks] = $statements(fn () => $manager->indexModel($model));
         $changed = $this->dbDriver === 'pgsql' ? ['gamma', 'delta'] : ['gamma'];
         $this->assertCount(1, $updates);
-        $this->assertStringContainsString('WHERE id IN (' . implode(',', $ids($changed)) . ')', $updates[0]->sql);
+        if ($this->dbDriver === 'sqlsrv') {
+            $this->assertSame($ids($changed), array_map('intval', array_values(array_filter($updates[0]->bindings, fn (int $i) => $i % 2 === 0, ARRAY_FILTER_USE_KEY))));
+        } else {
+            $this->assertStringContainsString('WHERE id IN (' . implode(',', $ids($changed)) . ')', $updates[0]->sql);
+        }
         $this->assertSame($ids($this->dbDriver === 'pgsql' ? ['alpha', 'beta', 'delta', 'gamma'] : ['alpha', 'beta', 'gamma']), array_map('intval', $locks[0]->bindings ?? []));
         $this->assertSame(['alpha' => 1, 'beta' => 1, 'delta' => 1, 'gamma' => 0], DB::table('fuzzy_index_terms')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->sortKeys()->all());
     }
@@ -511,13 +516,17 @@ class IndexManagerTest extends TestCase
         $manager->indexModel($model);
         DB::purge('sweep');
 
-        // The upsert that inserts new terms and, on a conflict, raises doc_count: an INSERT, or
-        // on SQL Server a MERGE.
+        // The upsert that inserts new terms and, on a conflict, raises doc_count. SQL Server
+        // inserts them with a plain INSERT under its index write lock (ER-227): no conflict branch.
         $termUpserts = array_values(array_filter($queries, fn ($q) =>
             preg_match('/^\s*(insert|merge)\b/i', $q['query']) && str_contains($q['query'], 'fuzzy_index_terms') && str_contains($q['query'], 'doc_count + ')
         ));
 
-        $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
+        if ($this->dbDriver === 'sqlsrv') {
+            $this->assertSame([], $termUpserts);
+        } else {
+            $this->assertNotEmpty($termUpserts, 'expected a terms upsert');
+        }
         foreach ($termUpserts as $q) {
             $this->assertStringContainsString('fuzzy_index_terms.doc_count + ', $q['query']);
             $this->assertStringNotContainsString('= doc_count + ', $q['query']);
@@ -542,37 +551,32 @@ class IndexManagerTest extends TestCase
     }
 
     /**
-     * SQL Server re-runs a MERGE that lost a race for a new key (2601/2627), but only while
-     * XACT_ABORT is off. With it on, the error has rolled back the whole write already, and the
-     * driver silently opens a new transaction at the next statement: a re-run and everything
-     * after it would commit without what ran before. So the error must reach the caller, and
-     * nothing may commit. A MERGE whose source holds one new key twice fails this way every time.
+     * SQL Server: a dictionary name another write inserted first fails its own statement
+     * (2601/2627), and insertDictionary() goes on to the next name, but only while XACT_ABORT is
+     * off. With it on, the error has rolled back the whole write already, and the driver silently
+     * opens a new transaction at the next statement: going on would commit everything after it
+     * without what ran before. So the error must reach the caller, and nothing may commit. A name
+     * listed twice fails this way every time. (Its MERGE upserts, which this guarded before
+     * ER-227, are gone: under the index write lock no other write inserts a row meanwhile.)
      */
-    public function test_a_duplicate_key_under_xact_abort_fails_the_write_instead_of_rerunning(): void
+    public function test_a_duplicate_key_under_xact_abort_fails_the_write_instead_of_going_on(): void
     {
         if ($this->dbDriver !== 'sqlsrv') {
             $this->markTestSkipped('XACT_ABORT is SQL Server only.');
         }
 
-        $upsert = new \ReflectionMethod(IndexManager::class, 'upsertShared');
-        $upsert->setAccessible(true); // a no-op since PHP 8.1, kept for readers
-        $merges = 0; // counted before each run: a failed statement fires no QueryExecuted
-        DB::connection()->beforeExecuting(function (string $sql) use (&$merges) {
-            $merges += (int) (bool) preg_match('/^\s*merge\b.*fuzzy_index_terms/is', $sql);
+        $insert  = new \ReflectionMethod(IndexManager::class, 'insertDictionary');
+        $inserts = 0; // counted before each run: a failed statement fires no QueryExecuted
+        DB::connection()->beforeExecuting(function (string $sql) use (&$inserts) {
+            $inserts += (int) (bool) preg_match('/^\s*insert\b.*fuzzy_index_columns/is', $sql);
         });
 
         DB::unprepared('SET XACT_ABORT ON');
         $reached = false;
         try {
-            DB::transaction(function () use ($upsert, &$reached) {
+            DB::transaction(function () use ($insert, &$reached) {
                 DB::table('fuzzy_index_terms')->insert(['term' => 'before', 'doc_count' => 1, 'term_length' => 6]);
-                $upsert->invoke(
-                    $this->makeIndexManager(),
-                    'fuzzy_index_terms',
-                    [['term' => 'twice', 'doc_count' => 1, 'term_length' => 5], ['term' => 'twice', 'doc_count' => 1, 'term_length' => 5]],
-                    ['term'],
-                    ['doc_count' => DB::raw('fuzzy_index_terms.doc_count + 1')],
-                );
+                $insert->invoke(null, 'fuzzy_index_columns', 'name', ['twice', 'twice', 'zzafter']);
                 $reached = true;
                 DB::table('fuzzy_index_terms')->insert(['term' => 'after', 'doc_count' => 1, 'term_length' => 5]);
             });
@@ -583,9 +587,10 @@ class IndexManagerTest extends TestCase
             DB::unprepared('SET XACT_ABORT OFF');
         }
 
-        $this->assertSame(1, $merges, 'the MERGE was re-run');
+        $this->assertSame(2, $inserts, 'the insert went on past the duplicate');
         $this->assertFalse($reached);
-        $this->assertSame([], DB::table('fuzzy_index_terms')->whereIn('term', ['before', 'twice', 'after'])->pluck('term')->all());
+        $this->assertSame([], DB::table('fuzzy_index_terms')->whereIn('term', ['before', 'after'])->pluck('term')->all());
+        $this->assertSame([], DB::table('fuzzy_index_columns')->whereIn('name', ['twice', 'zzafter'])->pluck('name')->all());
     }
 
     public function test_meta_row_creation_does_not_use_insert_or_ignore(): void
