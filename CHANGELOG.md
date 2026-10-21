@@ -92,6 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FuzzySearchExecuted` carries `resultCount`, `path` and `modelClass`, and in-memory searches fire it too. Five-argument listeners keep working. ([guide][u-analytics])
 - Dictionary-backed `suggest()` on indexed models, and `suggestFrom('index'|'table')`. ([guide][u-suggest])
 - `NgramTokenizer` and `ScriptAwareTokenizer`, per-model index pipelines (`$searchable['tokenizer']`, `['stemmer']`, `['stemmer_language']`, `['locale']`), `indexing.accent_insensitive`, and stop-word lists for it, pt, nl and ru, from config or from a file. ([docs][d-tokenizers])
+- `PorterStemmer` works with `wamania/php-stemmer` 2.0 and later (tested with 4.0) as well as 1.3; 2.0.1 loaded only 1.x, though its install hint installed 4.x. It takes an ISO code (`'fr'`) on 2.0 and later, and the stems are the same in 1.3 and 4.0. ([docs][d-stemming])
 - Filament (v3–v5) global search (`HasFuzzyGlobalSearch`) and `FuzzySearch::tableSearch()` for Filament tables. ([docs][d-filament])
 - JSON API resources `FuzzySearchResource` and `FuzzySearchCollection::fromBuilder()`, and `SearchBuilder::lastExecution()`. ([docs][d-resources])
 - `fuzzy-search:status --legacy` lists postings that predate column weighting; without it, that check is skipped past 1,000,000 indexed tokens. ([docs][d-bm25-commands])
@@ -228,7 +229,6 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - SQL Server: `didYouMean()` used `LENGTH()`, the dictionary folded words such as `straße`/`strasse`, and long `extended()`, `tokenize()` or accented searches passed 2,100 bindings. ([guide][u-dbfixes])
 - MySQL/MariaDB: the dictionary folded `café` and `cafe` into one word, and indexing a document with both failed. ([guide][u-bm25])
 - MariaDB connections (driver `mariadb`, Laravel 11+) fell back to generic SQL on every MySQL-only branch. ([guide][u-dbfixes])
-- `PorterStemmer`'s install hint named a version it cannot load; it names `wamania/php-stemmer:^1.3`. ([docs][d-stemming])
 
 ### Security
 

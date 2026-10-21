@@ -460,13 +460,13 @@ class IndexManagerTest extends TestCase
 
     public function test_porter_stemmer_throws_clear_error_when_wamania_missing(): void
     {
-        // We can't actually uninstall wamania for this test — just verify the guard exists
+        // We can't actually uninstall wamania for this test: verify the guard and its message.
         $reflection = new \ReflectionMethod(\Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer::class, '__construct');
         $body = file_get_contents($reflection->getFileName());
-        $this->assertStringContainsString('class_exists(StemmerFactory::class)', $body);
-        // A bare `composer require wamania/php-stemmer` installs v4, which has no Wamania\Snowball\English,
-        // and 1.2 is a fatal error on PHP 8 (a `$str{0}` string offset).
-        $this->assertStringContainsString('composer require "wamania/php-stemmer:^1.3"', $body);
+        $this->assertStringContainsString("class_exists('Wamania\\\\Snowball\\\\StemmerFactory')", $body);
+        $this->assertStringContainsString("class_exists('Wamania\\\\Snowball\\\\English')", $body);
+        // 1.2 is a fatal error on PHP 8 (a `$str{0}` string offset), so the hint names 1.3.
+        $this->assertStringContainsString('composer require "wamania/php-stemmer:^1.3|^4.0"', $body);
     }
 
     public function test_term_upsert_increment_is_table_qualified_for_postgres(): void
