@@ -796,7 +796,7 @@ A cached entry holds only arrays and scalars. By default that is each model's ke
 A hit re-reads models stored by key, in the cached order, through the current query. That applies its global scopes, its eager loads with their constraints, and its `retrieved` listeners, so `with(['reviews' => fn ($q) => $q->where('user_id', auth()->id())])` is never served to another user. Models stored as attributes are rebuilt from them instead: their `retrieved` listeners and the current eager loads run the same way, but the query does not read them again.
 
 On a hit:
-- A model deleted since the entry was written is left out when the rows were stored by key. Rows stored as attributes (a join, a union, an aliased FROM) and a plain query builder's rows are served as they were stored until the entry expires: a deleted row is served until the TTL ends. Attributes in the model's `$hidden` are not stored.
+- A model deleted since the entry was written is left out when the rows were stored by key. Rows stored as attributes (a join, a union, an aliased FROM) and a plain query builder's rows are served as they were stored until the entry expires: a deleted row is served until the TTL ends. A cached join or union row is stored without the model's `$hidden` attributes, so after a cache hit `makeVisible()` finds them empty; don't cache such a query if you show hidden columns from it.
 - `_highlighted`, `_matches` and `_debug` are computed for the current request, so each viewer sees their own `makeVisible()`/`makeHidden()`.
 - The rows are still the ones the cached search found: a row that no longer matches stays until the entry expires.
 
