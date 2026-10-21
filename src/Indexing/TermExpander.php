@@ -92,6 +92,14 @@ final class TermExpander
      * Bm25Scorer::rank() caps the expansion's idf at: a misspelling is rare, so its own idf put
      * the misspelled rows of a common word above every exact hit.
      *
+     * In an index of more of $modelType's documents than bm25.max_postings_per_term, a neighbour in
+     * more than half of them is no expansion: a stop word there, with no signal for a misspelling
+     * (its Robertson–Spärck Jones idf is at most 0), yet the ranking read every one of its
+     * postings: "smith" expanded into "with", in 999,967 of 1M rows, and its read took 2.0 to
+     * 2.5 s. A smaller index keeps every expansion (on 10 rows, "phnoe" still finds "phone" in 6),
+     * and so does a word in no more than half of the documents, however many ("jhon" finds "john"
+     * in more rows than the cap). The words in $terms keep matching at any frequency.
+     *
      * @param  string[]                   $terms
      * @param  array<string, string>|null $sources set to expansion => the input term it expands
      * @return array<string, float>
@@ -104,6 +112,16 @@ final class TermExpander
         if ($maxDistance <= 0 || $maxExpansions <= 0) {
             return $weights;
         }
+
+        // The most documents an expansion may hold: half of the model's, in an index of more than
+        // the cap; read once a neighbour needs it (one keyed read of the model's total). A smaller
+        // index, and the whole dictionary (no $modelType), keep every expansion.
+        $most = function () use ($modelType): int {
+            $total = $modelType === null ? 0 : (int) DB::table('fuzzy_index_meta')->where('model_type', $modelType)->value('total_docs');
+
+            return $total > (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) ? intdiv($total, 2) : PHP_INT_MAX;
+        };
+        $limit = null;
 
         foreach ($terms as $term) {
             $length = mb_strlen((string) $term);
@@ -119,6 +137,9 @@ final class TermExpander
             foreach ($candidates as $candidate) {
                 if ($taken >= $maxExpansions) {
                     break;
+                }
+                if ($candidate['doc_count'] > ($limit ??= $most())) {
+                    continue;
                 }
                 $weight = $damping ? 1 - $candidate['distance'] / max($length, 1) : 1.0;
                 if ($weight <= 0) {

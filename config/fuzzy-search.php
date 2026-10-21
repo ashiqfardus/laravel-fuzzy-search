@@ -236,14 +236,17 @@ return [
         'k1' => 1.5,
         'b'  => 0.75,
         /*
-         * max_postings_per_term: SQL-side top-K cutoff shared by all the matched terms of a
-         * query. The cap applies to (document, term) rows — the per-column postings are summed
-         * in SQL first — ordered by weighted frequency DESC, then model_id and term (so the cut
-         * is the same on every request), so the highest-signal rows are always retained and a
-         * document is never partially cut across its columns. It bounds
-         * memory when a term matches tens of thousands of documents. In relevance order the
-         * results and their total()/count() stop at the cap, which applies to the whole model
-         * before any where() or scope; orderBy() still serves and counts every match.
+         * max_postings_per_term: SQL-side top-K cutoff of each matched term of a query, on its
+         * own, so a common term never pushes a rarer term's matches out. It applies to a term's
+         * (document, term) rows — the per-column postings are summed in SQL first — ordered by
+         * weighted frequency DESC, then model_id (so the cut is the same on every request), so
+         * the highest-signal rows are always retained and a document is never partially cut
+         * across its columns; a term in no more of the model's documents than the cap is read
+         * whole. A search reads at most terms × cap rows (typo and prefix expansions and
+         * synonyms count as terms), and PHP keeps a score per document, not the rows. In
+         * relevance order the results and their total()/count() stop where a term was cut, which
+         * applies to the whole model before any where() or scope; orderBy() still serves and
+         * counts every match.
          */
         'max_postings_per_term' => 50000,
         /*
@@ -268,7 +271,11 @@ return [
          * dictionary terms within typoTolerance() edits, closest first, chosen from the
          * candidate_pool most common of the searched model's own terms of a similar length, by
          * its own document count, equal counts newest first (a term outside that window is never
-         * reached — raise the pool for catalogs of rare terms). With damping on, an
+         * reached — raise the pool for catalogs of rare terms). In an index of more documents
+         * than max_postings_per_term, a term in more than half of them is never an expansion (a
+         * stop word there, with no signal for a misspelling, and its read is the costly one); a
+         * smaller index keeps every expansion, and the words typed, prefix completions and
+         * synonyms match at any frequency. With damping on, an
          * expansion contributes 1 - distance / length of what the exact term would, and it is
          * scored with the idf of the word it expands when the index holds that word, so its rows
          * rank below the exact hits; an expansion of a word the index lacks keeps its own idf.
