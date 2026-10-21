@@ -1076,6 +1076,128 @@ class CompactPostingsMigrationTest extends TestCase
         $this->assertSame($names, $this->namedPostings()->where('column_name', 'like', 'attr_%')->count());
     }
 
+    /**
+     * Postings in the earlier layout: one word, one document, $names columns (attr_1 …), in id
+     * order. @return list<string> every posting of the earlier table, as rowsOf() reads it
+     */
+    private function manyColumnPostings(int $names): array
+    {
+        $term = DB::table('fuzzy_index_terms')->insertGetId(['term' => 'zzmany', 'doc_count' => 1, 'term_length' => 6]);
+        DB::table('fuzzy_index_documents')->insert(['model_type' => MigratedNote::class, 'model_id' => '1', 'doc_length' => $names]);
+        foreach (array_chunk(range(1, $names), 400) as $chunk) { // 2,000 bindings a statement
+            DB::table('fuzzy_index_postings')->insert(array_map(fn (int $i) => ['term_id' => $term, 'model_type' => MigratedNote::class, 'model_id' => '1', 'frequency' => $i % 7 + 1, 'column_name' => "attr_{$i}"], $chunk));
+        }
+
+        return $this->rowsOf(DB::table('fuzzy_index_postings'));
+    }
+
+    /** @return list<string> $query's postings, each as term|type|key|column|frequency, sorted */
+    private function rowsOf(\Illuminate\Database\Query\Builder $query): array
+    {
+        $rows = $query->get(['term_id', 'model_type', 'model_id', 'column_name', 'frequency'])
+            ->map(fn ($row) => implode('|', [(int) $row->term_id, $row->model_type, (string) $row->model_id, $row->column_name, (int) $row->frequency]))->all();
+        sort($rows);
+
+        return $rows;
+    }
+
+    /**
+     * ER-231. SQL Server 2022 RTM's optimizer ran out of stack space (8621) on the one CASE that
+     * maps a range's column names, at 2,500 branches, where CU27 compiles it: the upgrade stopped
+     * in that range on every run. 10,000 names in one range, up and back down, every row as it was.
+     */
+    public function test_ten_thousand_column_names_in_one_range_migrate_both_ways_row_for_row(): void
+    {
+        $names = 10000;
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
+        $before = $this->manyColumnPostings($names);
+
+        $this->artisanOk('migrate');
+        $this->assertSame($before, $this->rowsOf($this->namedPostings()));
+        $this->assertSame([$names], $this->namedPostings()->distinct()->pluck('doc_length')->map(fn ($length) => (int) $length)->all());
+
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
+        $this->assertSame($before, $this->rowsOf(DB::table('fuzzy_index_postings')));
+    }
+
+    /**
+     * ER-231. A range that fails leaves the ranges before it and their mark, and `migrate` run
+     * again goes on after them: three ranges of 3,000 column names each, more than one CASE takes on
+     * SQL Server 2022 RTM (there each range is several statements, in its transaction), the second
+     * range failing after its first statement ran.
+     */
+    public function test_migrate_run_again_after_a_failed_range_ends_with_every_row(): void
+    {
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
+        $before = $this->manyColumnPostings(9000);
+
+        $migration             = require self::PATH . '/' . self::MIGRATION . '.php';
+        $migration->chunk      = 3000;
+        $ranges                = 0;
+        $migration->afterRange = function () use (&$ranges) {
+            $ranges++;
+        };
+        DB::listen(function (QueryExecuted $query) use (&$ranges) {
+            if ($ranges === 1 && preg_match('/^\s*insert\s+into\s+\S*fuzzy_index_postings_compact/i', $query->sql)) {
+                throw new \RuntimeException('failed in the second range');
+            }
+        });
+        try {
+            $migration->up();
+            $this->fail('the second range did not fail');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('failed in the second range', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $mark = (int) DB::table('fuzzy_index_postings_copied')->value('copied_id');
+        $this->assertSame(3000, DB::table('fuzzy_index_postings')->where('id', '<=', $mark)->count(), 'the first range\'s mark');
+        $this->assertSame(3000, DB::table('fuzzy_index_postings_compact')->count(), 'the first range\'s rows, none of the second\'s');
+
+        Log::spy();
+        $this->artisanOk('migrate');
+
+        $this->assertFalse(Schema::hasTable('fuzzy_index_postings_copied'));
+        $this->assertSame($before, $this->rowsOf($this->namedPostings()));
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => str_contains($message, 'resumed after an interrupted run'));
+    }
+
+    /**
+     * ER-231. The copy back of a range is several statements on SQL Server, in one transaction: a
+     * range that fails after its first one leaves none of its rows, so `migrate:rollback` run again,
+     * which goes on after the highest word the earlier table holds, copies the whole range. One
+     * word in 9,000 columns, one range.
+     */
+    public function test_migrate_rollback_run_again_after_a_failed_range_ends_with_every_row(): void
+    {
+        $this->artisanOk('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION)]);
+        $before = $this->manyColumnPostings(9000);
+        $this->artisanOk('migrate');
+
+        $armed = true;
+        DB::listen(function (QueryExecuted $query) use (&$armed) {
+            if ($armed && preg_match('/^\s*insert\s+into\s+\S*fuzzy_index_postings[\]"`]?\s/i', $query->sql)) {
+                $armed = false;
+                throw new \RuntimeException('failed in the range');
+            }
+        });
+        try {
+            $this->artisan('migrate:rollback', ['--step' => $this->stepsFrom(self::MIGRATION), '--path' => realpath(self::PATH), '--realpath' => true])->run();
+            $this->fail('the range did not fail');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('failed in the range', $e->getMessage());
+        } finally {
+            DB::getEventDispatcher()->forget(QueryExecuted::class);
+        }
+        $this->assertTrue(Schema::hasTable('fuzzy_index_postings_compact'), 'stopped in the copy back');
+
+        // The later migrations rolled back already: only this one is left to roll back.
+        $this->artisanOk('migrate:rollback', ['--step' => DB::table('migrations')->where('migration', '>=', self::MIGRATION)->count()]);
+
+        $this->assertFalse(Schema::hasTable('fuzzy_index_postings_compact'));
+        $this->assertSame($before, $this->rowsOf(DB::table('fuzzy_index_postings')));
+    }
+
     /** `migrate` with the first statement matching $after throwing once it has run, as a killed deploy leaves it. */
     private function migrateFailingAfter(string $after): void
     {
