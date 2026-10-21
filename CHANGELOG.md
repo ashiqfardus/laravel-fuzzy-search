@@ -215,6 +215,7 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 **Commands**
 
 - `rebuild --fresh --async` on the database queue flushed the index, then failed to queue past the database's bound-parameter limit. Without the `job_batches` table it failed after flushing. ([docs][d-bm25-commands])
+- `rebuild --async` reads the model's keys 10,000 at a time; 2.0.1 loaded every key in one query before it queued a job, which on a large table ran the command out of memory. ([docs][d-bm25-commands])
 - `rebuild` did not fill metaphone shadow columns, and printed "Done." for a model that produced no terms; it also chunks by key now (`chunkById()`). ([guide][u-bm25])
 - A class named with a leading backslash (`"\App\Models\Post"`) flushed and cleared nothing, and `clear` or `flush` refused a class that no longer exists. ([guide][u-indexing])
 - The deprecated `fuzzy-search:index` died on SQLite and SQL Server, ignored declared columns and threw on a Scout dual-trait model.
