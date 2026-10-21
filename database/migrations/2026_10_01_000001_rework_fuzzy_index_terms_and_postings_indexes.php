@@ -9,16 +9,17 @@ use Illuminate\Support\Facades\Schema;
 /**
  * Two index changes for large indexes.
  *
- * fuzzy_index_terms reads by (term_length, doc_count, id), in place of the term_length index of
- * 2026_09_17_000001. The typo expansion and didYouMean() (TermExpander::candidates()) take the most
- * common words of each length within reach of a search term, equal counts by id. Through term_length
- * alone the database read every word of that length window and sorted them all, on every search
- * term; the window grows with the dictionary (1.3 s a term at 6M rows on MySQL). Through this index
- * it reads each length's most common words in index order. The id is in the key for PostgreSQL:
- * InnoDB, SQL Server and SQLite carry the row id in every index already, but PostgreSQL would sort
- * the whole tie group at the cut, usually most words of a length. An earlier 2.1 build of this
- * migration made the index without the id (fuzzy_index_terms_term_length_doc_count_index); it is
- * replaced. Nothing else filters on term_length.
+ * fuzzy_index_terms gets a (term_length, doc_count, id) index, in place of the term_length index of
+ * 2026_09_17_000001. The typo expansion and didYouMean() took the most common words of each length
+ * within reach of a search term, equal counts by id. Through term_length alone the database read
+ * every word of that length window and sorted them all, on every search term; the window grows with
+ * the dictionary (1.3 s a term at 6M rows on MySQL). Through this index it read each length's most
+ * common words in index order. The id is in the key for PostgreSQL: InnoDB, SQL Server and SQLite
+ * carry the row id in every index already, but PostgreSQL would sort the whole tie group at the
+ * cut, usually most words of a length. An earlier 2.1 build of this migration made the index
+ * without the id (fuzzy_index_terms_term_length_doc_count_index); it is replaced. Nothing else
+ * filters on term_length. Since 2026_10_20_000001 nothing reads this index either: every
+ * model-scoped dictionary read goes to fuzzy_index_model_terms, and that migration drops it.
  *
  * postings_term_model_idx (term_id, model_type) goes: postings_unique_idx (term_id, model_type,
  * model_id, column_name) starts with the same columns, so it serves every read the smaller one did,
@@ -51,7 +52,7 @@ return new class extends Migration
 
         // The new index first, so the dictionary is never without a length index. Each name led by
         // the table prefix under prefix_indexes; an install made before index names carried it has
-        // them as written (ER-216).
+        // them as written.
         $terms = $pretending ? [DbDialect::indexName(self::LENGTH)] : $this->indexes('fuzzy_index_terms');
         if (DbDialect::presentIndexName(self::LENGTH_COUNT_ID, $terms) === null) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count', 'id'], DbDialect::indexName(self::LENGTH_COUNT_ID)));

@@ -47,7 +47,7 @@ class MetaphoneDriver extends BaseDriver
         // "Иван", "東京", "H2O", "Hy" and "W2" all encode as '', the code of every value without
         // an encodable letter and of an empty one, so the shadow column would return all of those
         // rows. A term whose code is empty is searched as a contains LIKE on the column itself, as
-        // SoundexDriver sends a term it cannot encode to its pattern fallback (RB-1).
+        // SoundexDriver sends a term it cannot encode to its pattern fallback.
         $code = self::code($value);
         if ($code === '') {
             DbDialect::whereLike($query, $column, '%' . $this->escapeLike($this->normalizeTerm($value)) . '%', $this->driver, $boolean);

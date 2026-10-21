@@ -35,7 +35,7 @@ return new class extends Migration
     {
         // `migrate --pretend` runs no select: the index as 2026_10_01_000001 leaves it.
         // Each under the name the dictionary has: led by the table prefix under prefix_indexes, or as
-        // written in an install made before index names carried it (ER-216).
+        // written in an install made before index names carried it.
         $indexes = DB::connection()->pretending() ? [DbDialect::indexName(self::LENGTH_COUNT_ID)] : $this->indexes();
         foreach ([self::LENGTH_COUNT_ID, self::LENGTH_COUNT] as $index) {
             if (($present = DbDialect::presentIndexName($index, $indexes)) !== null) {

@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 /**
  * The legacy-postings query at the end of handle() is a full table scan by design: there is no
  * index on column_id, and this is an admin command run by hand, not on a request path. It took
- * 100 s, or a statement timeout, at 6M rows on MySQL (S4), so past LEGACY_SCAN_TOKENS indexed
+ * 100 s, or a statement timeout, at 6M rows on MySQL, so past LEGACY_SCAN_TOKENS indexed
  * tokens it runs only under --legacy. Postings from before column weighting are those under the
  * column '' (fuzzy_index_columns); an index that never had one has none to look for.
  */

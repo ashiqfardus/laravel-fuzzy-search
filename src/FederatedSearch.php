@@ -267,7 +267,7 @@ class FederatedSearch
             // in the database's own order, which a comparison of the keys here disagreed with for
             // string keys (numeric strings of different lengths, mixed case under a
             // case-insensitive collation, a native uuid column), so a page repeated or skipped
-            // rows (P7R-1).
+            // rows.
             return [$rank($a), $a->_model_type] <=> [$rank($b), $b->_model_type];
         })->values();
     }
@@ -294,7 +294,7 @@ class FederatedSearch
             $weighted = $this->weightedColumnsExistingOn(new $modelClass());
 
             // searchIn() named columns, but this model's table has none of them: contribute
-            // nothing, exactly as the non-Searchable branch below does (ruling L10) — instead
+            // nothing, exactly as the non-Searchable branch below does — instead
             // of silently falling back to the model's own configured columns.
             if (!empty($this->columnWeights) && empty($weighted)) {
                 return null;
@@ -326,9 +326,9 @@ class FederatedSearch
                 // Without relevance the merge keeps each model's rows in the order its search
                 // returns, so a model must hand over its first rows by key. On the index it handed
                 // over its best ranked ones, a set that changed as the limit grew with the page:
-                // page 2 repeated page 1, and some rows were never served (P6C-1). Here, not in
+                // page 2 repeated page 1, and some rows were never served. Here, not in
                 // searchModel(), so count() reads the same ordered path and paginate()'s total
-                // counts every match, not a ranking cut at max_postings_per_term (P7R-2). The
+                // counts every match, not a ranking cut at max_postings_per_term. The
                 // LIKE path's stableRanking() reads them by key already.
                 if (!$this->withRelevance) {
                     $builder->orderBy((new $modelClass())->getKeyName());
@@ -339,7 +339,7 @@ class FederatedSearch
         }
 
         // Fall back to query builder approach. A column weighted 0 is not searched, as on
-        // Model::search() (SearchBuilder::searchedTargets(), TE-8).
+        // Model::search() (SearchBuilder::searchedTargets()).
         $instance = new $modelClass();
         $weighted = $this->weightedColumnsExistingOn($instance);
         $columns = !empty($weighted)

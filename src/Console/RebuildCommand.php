@@ -36,7 +36,7 @@ class RebuildCommand extends Command
 
         // A class indexed under another type (searchIndexType(): a single-table-inheritance child
         // names its parent) shares that type's index, which --fresh flushes whole: the rebuild reads
-        // every row of it, through the type's own query, or the type's other rows were lost (SA-1).
+        // every row of it, through the type's own query, or the type's other rows were lost.
         $type = IndexManager::indexType($modelClass);
         if ($type !== $modelClass) {
             if (!$this->validModel($type, 'indexable')) {
@@ -54,7 +54,7 @@ class RebuildCommand extends Command
         if ($this->option('fresh')) {
             $this->info("Flushing existing index for [{$modelClass}]...");
             $indexManager->flush($modelClass);
-            // Single-table inheritance: a deleted row leaves the other kinds' indexes too (R13-L5).
+            // Single-table inheritance: a deleted row leaves the other kinds' indexes too.
             $indexManager->unfileGone($modelClass);
         }
 
@@ -84,7 +84,7 @@ class RebuildCommand extends Command
         // chunkById() is keyset-based: rows inserted or deleted while the rebuild runs cannot
         // shift the window, unlike offset chunking. Works for integer, UUID and ULID keys.
         IndexQuery::for($modelClass)->chunkById($chunkSize, function ($models) use ($indexManager, $bar, &$indexed, $shadows) {
-            $indexed += $indexManager->indexBatch($models); // each row under its index type, not the chunk's first model's class (RC-3, SA-1)
+            $indexed += $indexManager->indexBatch($models); // each row under its index type, not the chunk's first model's class
             $shadows->backfillShadowColumns($models); // fills *_metaphone for rows saved before it existed
             $bar->advance($models->count());
         }, $keyName);

@@ -27,7 +27,7 @@ class AstCompiler
      *                                            field scopes still resolve against the bare names
      * @param string[]|null         $listed       the fields the unknown-field message may name, as it
      *                                            names them ("email", "author.name"): SearchBuilder
-     *                                            leaves out those the model hides (ruling ER-95). It
+     *                                            leaves out those the model hides. It
      *                                            narrows the message only; null names every field
      */
     public function __construct(
@@ -130,7 +130,7 @@ class AstCompiler
         ));
 
         if (in_array($field, $matches, true)) {
-            return [[$field], []]; // an exact bare-name declaration wins outright (P5-R15a)
+            return [[$field], []]; // an exact bare-name declaration wins outright
         }
 
         if (count($matches) > 1) {

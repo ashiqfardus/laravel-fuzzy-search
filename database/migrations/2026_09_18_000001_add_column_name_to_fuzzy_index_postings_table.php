@@ -29,7 +29,7 @@ return new class extends Migration
         $pretending = DB::connection()->pretending();
         $add        = $pretending || !Schema::hasColumn('fuzzy_index_postings', 'column_name');
         // The key under the name the table has: led by the table prefix under prefix_indexes, or as
-        // written in an install made before index names carried it (ER-216). It is added back under
+        // written in an install made before index names carried it. It is added back under
         // the prefixed name.
         [$present, $key] = $pretending ? [DbDialect::indexName(self::KEY), ['term_id', 'model_type', 'model_id']] : $this->uniqueKey();
         $swap            = !in_array('column_name', $key, true);

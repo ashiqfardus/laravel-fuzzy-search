@@ -37,7 +37,7 @@ class RebuildIndexJob implements ShouldQueue
         $models  = \Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery::for($this->modelClass)
             ->whereIn($keyName, $this->modelIds)
             ->get();
-        $indexManager->indexBatch($models); // each row under its index type (RC-3, SA-1)
+        $indexManager->indexBatch($models); // each row under its index type
 
         // Fill *_metaphone shadow columns for rows saved before they existed, as the sync rebuild does.
         $shadows = app(\Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class);

@@ -38,7 +38,7 @@ class SimilarTextDriver extends BaseDriver
     /**
      * The min_percentage length bound (see maxValueLength()), or null when it is off. t is the
      * term's length or, under tokenize(), the whole search term's, which SearchBuilder hands
-     * FuzzySearch::applyTermWhere() as an argument (ruling ER-59; no option can set it).
+     * FuzzySearch::applyTermWhere() as an argument (no option can set it).
      */
     public function matchBound(Builder $query, string $column, string $value): ?array
     {

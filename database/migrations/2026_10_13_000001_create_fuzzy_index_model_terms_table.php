@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * Per-model term statistics (ruling ER-197, T-1): one row per model type and dictionary word it
+ * Per-model term statistics: one row per model type and dictionary word it
  * posts, with the number of its documents holding the word (doc_count), the word's text and its
  * length, copied from fuzzy_index_terms. Every index write keeps it in step with the dictionary's
  * doc_count, in the same transaction (IndexManager). The typo expansion and the as-you-type prefix
@@ -27,7 +27,7 @@ use Illuminate\Support\Facades\Schema;
  * Latin1_General_100_BIN2 on SQL Server (2026_09_30_000001), the database's own elsewhere.
  *
  * The index names carry the table prefix as Laravel prefixes its own (prefix_indexes): PostgreSQL
- * and SQLite name an index once per schema, SQL Server a primary key (VJ-5).
+ * and SQLite name an index once per schema, SQL Server a primary key.
  *
  * This creates the table only; 2026_10_13_000002 fills it from an existing index. Its state is
  * BACKFILL, created here, before any index write can add a row to the table: one row, the last
@@ -55,7 +55,7 @@ return new class extends Migration
         Schema::dropIfExists(self::BACKFILL);
         Schema::dropIfExists('fuzzy_index_model_terms');
 
-        // A primary key, as every table needs under MySQL's sql_require_primary_key (VA-3); its one row is updated in place.
+        // A primary key, as every table needs under MySQL's sql_require_primary_key; its one row is updated in place.
         Schema::create(self::BACKFILL, function (Blueprint $table) {
             $table->unsignedTinyInteger('id')->primary();
             $table->unsignedBigInteger('last_term_id')->default(0);

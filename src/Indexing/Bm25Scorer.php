@@ -49,7 +49,7 @@ class Bm25Scorer
      * In $columnWeights, the weight of every column it does not name: 0 restricts a read to the
      * named columns weighted above 0, and to postings written before column weighting ('', weight
      * 1): a search the builder restricted to some of the model's columns (searchOn() with columns,
-     * a plain query builder's searchIn()) matches those alone, as on the LIKE paths (TE-12).
+     * a plain query builder's searchIn()) matches those alone, as on the LIKE paths.
      */
     public const OTHER_COLUMNS = '*';
 
@@ -131,7 +131,7 @@ class Bm25Scorer
 
     /**
      * Restrict $query, a query on $modelType's table, to the documents that hold $terms, those past
-     * rank()'s max_postings_per_term too, without binding their ids (ruling ER-82): those with one of
+     * rank()'s max_postings_per_term too, without binding their ids: those with one of
      * their postings under a column that is not weighted out, matched on $qualifiedKey. The bindings
      * are the model type and the terms, so an ordered index page reads only matches, however many
      * there are. model_id is a string column, so the key is compared as a string (PostgreSQL has no
@@ -139,7 +139,7 @@ class Bm25Scorer
      * default one.
      *
      * On MySQL and MariaDB, given the $model whose key $qualifiedKey names, the read is driven from
-     * the postings (S3): an inner join to the distinct model_ids of the matched terms (a range of the
+     * the postings: an inner join to the distinct model_ids of the matched terms (a range of the
      * postings' primary key per term), as the derived table MATCHES, looked up on the key's index (see
      * keyLookup()), one lookup per match. As an EXISTS per row of the model table, the ordered page
      * and its COUNT read the table whole on both servers (8.7–11 s at 6M rows on MySQL for a word in
@@ -147,7 +147,7 @@ class Bm25Scorer
      * does, so a model_id that matches the key only under the key's collation (aBc for a row ABC) is
      * no match, and a model is joined once. But it reads every matched posting, however few rows the
      * query accepts, so RankedCandidates::whereMatches() gives $model only for a read with no
-     * constraint and a sparse word (ruling ER-162). Without $model, or with a key no index serves,
+     * constraint and a sparse word. Without $model, or with a key no index serves,
      * the read stays the EXISTS below. PostgreSQL and SQL Server keep it too: they read the table
      * whole in tens of milliseconds at 1M rows (a hash semi-join), where the join measured slower.
      *
@@ -221,7 +221,7 @@ class Bm25Scorer
     }
 
     /**
-     * SQL Server: the dictionary ids of $terms, for whereRanked() to inline (ruling ER-224). From the
+     * SQL Server: the dictionary ids of $terms, for whereRanked() to inline. From the
      * subquery's terms the optimizer can only estimate their postings at the average (804 for 13,305
      * at 1M rows), and an ordered page past the first one then read the model table whole through a
      * hash semi-join: 1.6 to 2.2 s for pages 30 and 500, where page 1 walked the order column's
@@ -323,13 +323,13 @@ class Bm25Scorer
      * score exactly as before column weights existed.
      *
      * $read is set to what the ranking read, for RankedCandidates::matches() to choose the ordered
-     * read of the same search (UD-1: a memo on the scorer, read back from the container, missed under
+     * read of the same search (a memo on the scorer, read back from the container, missed under
      * Octane, where a Scout engine keeps the scorer of the request it was made in); null when it read
      * no postings:
      *  - share: the terms' document frequencies summed over the model's total_docs (a document that
      *    holds two of the terms counts twice);
      *  - cut: whether a term's read reached bm25.max_postings_per_term, so that the ranking may
-     *    lack matches (TF-9).
+     *    lack matches.
      *
      * A typo expansion in $sources counts the documents of the word it expands, when the type holds
      * that word and more of them (the blended document frequency Lucene's FuzzyQuery scores with):
@@ -385,7 +385,7 @@ class Bm25Scorer
         // Document frequency within $modelType, the population N counts. The dictionary's
         // doc_count spans every model, so a word another model used more often than this one
         // has rows gave a negative idf and ranked the best match last. The type's own count of its
-        // documents holding the word (fuzzy_index_model_terms, ruling ER-197), which every index
+        // documents holding the word (fuzzy_index_model_terms), which every index
         // write keeps with the postings in its transaction and a rebuild derives again: the
         // COUNT(DISTINCT model_id) of the word's postings read every one of them (554 ms for a word
         // in 1M rows on MySQL). Read by its primary key, chunked under SQL Server's 2,100
@@ -400,7 +400,7 @@ class Bm25Scorer
         }
 
 
-        // One range of the postings' primary key per term (S2, S8): a term's postings are
+        // One range of the postings' primary key per term: a term's postings are
         // contiguous, and each carries its document's length, so no other table is read; a
         // document's postings of a term all carry the same length, MAX() takes it.
         // One row per (document, term), weighted in SQL. A term in more of the type's documents than
@@ -412,7 +412,7 @@ class Bm25Scorer
         // ranking stays one statement, and its rows are scored as they arrive: PHP holds a score
         // per document, not the rows. The cap is over (document, term) rows — exactly what v2.0
         // capped, which ordered by raw frequency — so a document is never partially cut across its
-        // columns. Rows of equal weight are cut by model_id (SE-3): the weight takes few values, so
+        // columns. Rows of equal weight are cut by model_id: the weight takes few values, so
         // the cap usually falls inside a group of equal rows, and which of them the database kept
         // changed with its plan (a statistics refresh, the ANALYZE after a rebuild): a user paging a
         // capped search was served pages cut from different rankings.

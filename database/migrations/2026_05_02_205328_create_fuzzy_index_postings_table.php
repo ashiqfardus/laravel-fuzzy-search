@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('model_id', 36); // supports both integer PKs and UUID/ULID
             $table->unsignedInteger('frequency')->default(1);
 
-            $table->unique(['term_id', 'model_type', 'model_id'], DbDialect::indexName('postings_unique_idx')); // prefixed under prefix_indexes (ER-216)
+            $table->unique(['term_id', 'model_type', 'model_id'], DbDialect::indexName('postings_unique_idx')); // prefixed under prefix_indexes
             $table->index(['term_id', 'model_type'], DbDialect::indexName('postings_term_model_idx'));
             $table->index(['model_type', 'model_id'], DbDialect::indexName('postings_model_idx'));
             $table->foreign('term_id')

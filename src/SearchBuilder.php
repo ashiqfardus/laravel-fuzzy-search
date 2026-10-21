@@ -56,10 +56,10 @@ class SearchBuilder
     protected ?int $reportedResultCap = null;
     /**
      * simplePaginate()'s answer from the index path, on get()'s last run or cache hit: whether
-     * matches follow the page (ruling ER-133). null where its look-ahead row answers.
+     * matches follow the page. null where its look-ahead row answers.
      */
     private ?bool $morePages = null;
-    /** first() is reading: the index path reads on past a ranked id whose row is gone (ruling ER-133). */
+    /** first() is reading: the index path reads on past a ranked id whose row is gone. */
     private bool $firstReadsOn = false;
     protected array $filters = [];
     protected array $facets = [];
@@ -137,7 +137,7 @@ class SearchBuilder
         $this->fuzzySearch = $fuzzySearch;
         $this->accentFoldingDefault     = (bool) config('fuzzy-search.unicode.accent_insensitive', false);
         $this->unicodeNormalizeEnabled  = (bool) config('fuzzy-search.unicode.normalize', false);
-        // Ruling ER-80: the global synonyms, as if withSynonyms() came first; the model's
+        // The global synonyms, as if withSynonyms() came first; the model's
         // $searchable['synonyms'] and the query's withSynonyms() merge on top of them.
         $this->withSynonyms((array) config('fuzzy-search.synonyms', []));
         $this->scoring     = array_merge($this->scoring, array_filter(config('fuzzy-search.scoring', []), 'is_numeric'));
@@ -197,11 +197,11 @@ class SearchBuilder
     /**
      * Resolve every searchIn() column into either a direct column or a relation path.
      *
-     * Decision D2: `a.b[.c]` is a relation path only when `a` (and each further segment)
+     * `a.b[.c]` is a relation path only when `a` (and each further segment)
      * is a relation method on the model; otherwise a two-segment name is the v2.0
      * table-qualified column `table.column` and is passed through untouched. A head that names
      * a table of the query — the FROM table, a joined one, or either's alias — is always that
-     * table's column (ruling ER-57), and no method is looked at.
+     * table's column, and no method is looked at.
      *
      * @return array<string, array{relation: ?string, column: string}> keyed by the searchIn() column
      */
@@ -242,7 +242,7 @@ class SearchBuilder
         }
 
         if (in_array($segments[0], $tables, true)) {
-            return ['relation' => null, 'column' => $column]; // a table of the query (ER-57)
+            return ['relation' => null, 'column' => $column]; // a table of the query
         }
 
         if ($model !== null && ($relation = $this->relationPath($model, $segments, $column)) !== null) {
@@ -291,7 +291,7 @@ class SearchBuilder
      * The relation path when every segment is a relation method, following the chain model by
      * model; null when the first segment names no method (a two-segment name is then table.column).
      * Any other segment is called only when isReachableRelation() allows it, and must return a
-     * Relation; anything else throws, naming that segment, without calling it (ruling ER-50):
+     * Relation; anything else throws, naming that segment, without calling it:
      * searchIn() can carry request input, and `unguard.body` or `save.body` would otherwise run
      * that method.
      *
@@ -395,7 +395,7 @@ class SearchBuilder
      * The targets a search matches: every searchIn() column but one weighted 0 or less, which the
      * index search leaves out too (Bm25Scorer::readColumns()). A weight of 0 takes a column out of
      * the search on every path, its matching and counting, suggest()'s table scan and an extended()
-     * field scope included, not only out of _score (TE-8).
+     * field scope included, not only out of _score.
      *
      * @return array<string, array{relation: ?string, column: string}> keyed by the searchIn() column
      */
@@ -625,7 +625,7 @@ class SearchBuilder
     /**
      * Add synonyms (word => its synonyms), on top of config('fuzzy-search.synonyms'); a word set
      * again replaces its earlier synonyms. Each word is folded as expandWithSynonyms() folds the
-     * term it looks up, with mb_strtolower() (ruling ER-100: a PHP lookup, so D1's ASCII-only SQL
+     * term it looks up, with mb_strtolower() (a PHP lookup, so the ASCII-only SQL
      * rule does not apply), so 'Laptop' is the word 'laptop' and 'Ägypten' the word 'ägypten' — the
      * config, the model's $searchable['synonyms'] and the query all come through here. The
      * synonyms are kept as written: they are searched like the user's own words.
@@ -764,11 +764,11 @@ class SearchBuilder
     }
 
     /**
-     * The last index query's weighted terms for the debug output (ruling ER-87, amended): the user's
+     * The last index query's weighted terms for the debug output: the user's
      * own words and their synonyms always, since that is what they asked for; an expansion (a typo,
      * prefix or as-you-type word) only when it is posted under a column the model shows, as
      * didYouMean() and suggest() offer words. Only expansions come from the index, so only they can
-     * reveal a hidden column. The search matched them all (ER-66); only this copy is filtered.
+     * reveal a hidden column. The search matched them all; only this copy is filtered.
      *
      * @return array<string, float>
      */
@@ -779,7 +779,7 @@ class SearchBuilder
 
         $class   = (string) $this->resolveIndexModelClass();
         $visible = $expansions === [] ? [] : app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)
-            ->visible(array_map('strval', array_keys($expansions)), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($class), $class); // judged on the searched class (TA-1)
+            ->visible(array_map('strval', array_keys($expansions)), \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($class), $class); // judged on the searched class
 
         return array_intersect_key($this->indexedTermWeights, $own + array_flip($visible));
     }
@@ -1194,7 +1194,7 @@ class SearchBuilder
     }
 
     /**
-     * The empty-term guard every terminal applies after matchesNothing() (ruling ER-46): '' (or
+     * The empty-term guard every terminal applies after matchesNothing(): '' (or
      * whitespace, which search() trims to '') throws EmptySearchTermException unless
      * allow_empty_search is on, and then every terminal lists every row. Deferred from search()
      * so extended()/searchBoolean() can still supply the query: `search('')->extended('=John')`.
@@ -1283,14 +1283,14 @@ class SearchBuilder
     }
 
     /**
-     * What get() caches (ruling ER-83): scalars and arrays only, so it unserialises under Laravel
+     * What get() caches: scalars and arrays only, so it unserialises under Laravel
      * 13's cache.serializable_classes = false — each model's key and scores, or a plain query
      * builder's rows as arrays — plus the columns searched, how the rows are decorated, and whether
      * matches follow simplePaginate()'s page on the index path ($morePages). No row visibility,
      * highlighting or relation is stored: those belong to the request that reads it.
      *
      * Models are stored by key only when a re-read by key gives back exactly the cached rows: every
-     * row has a key of its own (ruling ER-92), the query has no join and no union (ER-93; toBase(),
+     * row has a key of its own, the query has no join and no union (toBase(),
      * so a global scope's join counts), and it reads the model's table by its own name. A re-read
      * returns every row the query holds for a key, and under a join or a union that can be another
      * row than the one cached, even when the key is cached once (first(), take(), a page, a search
@@ -1327,8 +1327,8 @@ class SearchBuilder
     }
 
     /**
-     * A cached result for this request (rulings ER-58, ER-83, ER-92): rows that are not models as
-     * the miss served them, stdClass or arrays (UA-3); models re-read by key, in the cached order,
+     * A cached result for this request: rows that are not models as
+     * the miss served them, stdClass or arrays; models re-read by key, in the cached order,
      * through the current query — its global scopes, and its eager loads with their constraint
      * closures plus the relation paths searchIn() reads — so a row deleted since is dropped and
      * retrieved listeners run for this viewer. Models stored as attributes (see cachePayload()) are hydrated as the miss read them —
@@ -1345,7 +1345,7 @@ class SearchBuilder
             $this->searchIn($payload['columns']);
         }
 
-        // Rows in the miss's shape (UA-3): arrays under an array fetch mode or an afterQuery() that
+        // Rows in the miss's shape: arrays under an array fetch mode or an afterQuery() that
         // maps to arrays, else stdClass; in a base collection, as Eloquent's map() serves non-models.
         if (!$payload['models']) {
             return $this->decorate(collect(empty($payload['arrays']) ? array_map(fn (array $row) => (object) $row, $payload['rows']) : $payload['rows']), $payload['decoration']);
@@ -1625,7 +1625,7 @@ class SearchBuilder
 
         // simplePaginate() reads its page alone, and the ranking says whether matches follow: a
         // look-ahead row whose id is stale ended the pages early, and a stale id in the page made
-        // the look-ahead row one of its rows, served again on the next page (ruling ER-133).
+        // the look-ahead row one of its rows, served again on the next page.
         $limit = $this->reportedResultCap ?? $this->limit;
 
         // fallback() decides on whether the search matched a row at all, not on this page's rows.
@@ -1662,7 +1662,7 @@ class SearchBuilder
             $this->eagerLoadRelationPaths($base, $this->relationPaths());
         }
 
-        // The caller's where(A)->orWhere(B) as one group before the filters (RE-1); the ranking's
+        // The caller's where(A)->orWhere(B) as one group before the filters; the ranking's
         // own restriction is a global scope, which Eloquent groups itself.
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($base);
 
@@ -1674,7 +1674,7 @@ class SearchBuilder
             }
         }
 
-        // tokenize()->matchAll() (TE-11): a match holds one term of each word's group
+        // tokenize()->matchAll(): a match holds one term of each word's group
         // (indexedQueryTerms(), which runs first), in a column the search reads, restricted
         // through the postings as a constraint, so every terminal and total sees it. The ranking
         // ranks any word's matches; the base keeps those that hold every word. Only on the
@@ -1695,7 +1695,7 @@ class SearchBuilder
     }
 
     /**
-     * The column weights the index path reads with (TE-12): the builder's, and, when its columns
+     * The column weights the index path reads with: the builder's, and, when its columns
      * leave out one the model searches (searchOn() with columns, a plain query builder's
      * searchIn()), every other column at 0 (Bm25Scorer::OTHER_COLUMNS), so a match is in the
      * builder's columns, as on the LIKE paths. A Model::search() builder searches the model's
@@ -1741,7 +1741,7 @@ class SearchBuilder
         $terms      = $indexManager->processTerms($this->searchTerm, $override, $modelClass);
         $weights    = array_fill_keys($terms, 1.0);
 
-        // tokenize()->matchAll() (TE-11): each word's terms, which the LIKE paths read as "every
+        // tokenize()->matchAll(): each word's terms, which the LIKE paths read as "every
         // word matches": the word, its synonyms, its typo and prefix expansions. term => true each.
         $groups = $this->tokenizeSearch && $this->tokenMatchMode === 'all' ? [] : null;
         foreach ($groups === null ? [] : $terms as $term) {
@@ -1833,7 +1833,7 @@ class SearchBuilder
                     (string) end($lastTerms),
                     (int) config('fuzzy-search.bm25.prefix.max_expansions', 10),
                     \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass),
-                    visibleOnly: false, // matching keeps hidden columns (ER-66); suggest() leaves them out
+                    visibleOnly: false, // matching keeps hidden columns; suggest() leaves them out
                 );
 
                 // A term reached twice keeps the higher weight (a prefix hit at 1.0 beats a
@@ -1918,9 +1918,9 @@ class SearchBuilder
      *
      * Only the first $rerank rows are re-ranked by their scores; the rest keep their order: BM25
      * past the hooks' window (see bm25Window()), and the explicit order for orderBy() (0). A row
-     * past the window scores no more than the window's last (ruling ER-171): scaled against the rows
+     * past the window scores no more than the window's last: scaled against the rows
      * a terminal read, a row past the window that outscored it set the scale, so get() scored the
-     * top result below 1 and a deeper page scored its own first row 1 (TE-4).
+     * top result below 1 and a deeper page scored its own first row 1.
      *
      * @param array<int|string, float> $ranked model_id => score, best first
      */
@@ -1929,7 +1929,7 @@ class SearchBuilder
         $scores = $models->map(fn ($item, $id) => $this->hookedScore($item, (float) ($ranked[$id] ?? 0)));
         $window = $rerank > 0 ? $scores->take($rerank) : $scores;
         $top    = max($anchor ?? 0.0, (float) ($window->max() ?? 0));
-        $score  = fn (float $raw) => $top > 0 ? round($raw / $top, 6) : round($raw, 6); // unrounded: the top row scores exactly 1 (VC-3)
+        $score  = fn (float $raw) => $top > 0 ? round($raw / $top, 6) : round($raw, 6); // unrounded: the top row scores exactly 1
         $floor  = $rerank > 0 && $window->isNotEmpty() ? $score((float) $window->min()) : INF;
         $attach = function (float $raw, $i, float $cap) use ($models, $score) {
             $item             = $models[$i];
@@ -1941,7 +1941,7 @@ class SearchBuilder
         // arsort() is stable: rows the hooks left tied keep their BM25 rank. In the models' own
         // collection (the query's newCollection(), as the LIKE path and a cache hit serve them):
         // Eloquent's map() to the scores made it a base collection, without load() and with
-        // another only(), find() and contains() (VC-4).
+        // another only(), find() and contains().
         return $models::make($scores->take($rerank)->sortDesc()->map(fn (float $raw, $i) => $attach($raw, $i, INF))
             ->union($scores->slice($rerank)->map(fn (float $raw, $i) => $attach($raw, $i, $floor)))
             ->values()->all());
@@ -1953,7 +1953,7 @@ class SearchBuilder
      * (RankedCandidates::matches(): on the index's connection every one, past
      * bm25.max_postings_per_term too), so its count is the total, a page past it reads no row, and
      * the page is one offset/limit read however deep (RankedCandidates::orderedKeys()). A match past
-     * the cap has no BM25 score, so its _score is 0 (ruling ER-96: scoring the page's ids would
+     * the cap has no BM25 score, so its _score is 0 (scoring the page's ids would
      * repeat rank()'s statistics queries); _score is normalised against the page's best row.
      *
      * @param  array<int|string, float>            $ranked model_id => score
@@ -1976,7 +1976,7 @@ class SearchBuilder
 
         // When the order tells apart the rows a join repeats a model in, the page's models are read
         // in it: each is served with its first row by the order, the row that placed it, not the row
-        // the database returns first (TE-6). Not as SELECT DISTINCT, which rejects an order on a
+        // the database returns first. Not as SELECT DISTINCT, which rejects an order on a
         // column it does not select (orderedKeys() pages such an order): models() keeps one row per
         // key, so DISTINCT changes nothing it serves.
         $page = $base;
@@ -1991,8 +1991,8 @@ class SearchBuilder
 
     /**
      * How many of the first ranked rows the scoring hooks re-rank: max_candidates when the model
-     * overrides getSearchScore() or the search sets customScore() or boostRecent() (ruling ER-149),
-     * the window the LIKE path rescores, so every page is cut from one ordering (ruling ER-88); rows
+     * overrides getSearchScore() or the search sets customScore() or boostRecent(),
+     * the window the LIKE path rescores, so every page is cut from one ordering; rows
      * past it keep the BM25 order, as the LIKE path serves its deeper pages in database order. None
      * without a hook: the scores are the BM25 order already.
      */
@@ -2006,7 +2006,7 @@ class SearchBuilder
     /**
      * How many of the first ranked rows $modelClass's getSearchScore() override re-ranks:
      * max_candidates when it overrides it, else none. bm25Window()'s read, which the Scout engine
-     * shares, so a Scout search ranks a hook model as useInvertedIndex() does (TE-5).
+     * shares, so a Scout search ranks a hook model as useInvertedIndex() does.
      *
      * @internal
      */
@@ -2067,7 +2067,7 @@ class SearchBuilder
             throw new \Ashiqfardus\LaravelFuzzySearch\Exceptions\SearchableColumnsNotFoundException();
         }
 
-        // A union as one table, before the query and the filters go onto it (SE-2).
+        // A union as one table, before the query and the filters go onto it.
         $this->query = self::unionAsTable($this->query);
 
         $tokens = (new \Ashiqfardus\LaravelFuzzySearch\Query\Lexer())->tokenize($this->extendedQuery);
@@ -2077,7 +2077,7 @@ class SearchBuilder
 
         $dbDriver = $this->query->getConnection()->getDriverName();
 
-        // Group the searched targets (a column weighted 0 is none, TE-8): direct columns as before;
+        // Group the searched targets (a column weighted 0 is none): direct columns as before;
         // relation columns by path.
         $direct    = [];
         $relations = [];
@@ -2096,17 +2096,17 @@ class SearchBuilder
 
         $typoDistance = $this->typoDistance();
 
-        // The caller's where(A)->orWhere(B) as one group, before the query and the filters (RE-1).
+        // The caller's where(A)->orWhere(B) as one group, before the query and the filters.
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
-        // Ruling ER-95: an unknown field's message, shown to whoever typed the query, names only the
-        // fields the model shows. Every column is still matched, hidden ones included (ER-66).
+        // An unknown field's message, shown to whoever typed the query, names only the
+        // fields the model shows. Every column is still matched, hidden ones included.
         $listed = array_values(array_map(
             fn (array $t) => $t['relation'] === null ? self::lastSegment($t['column']) : $t['relation'] . '.' . $t['column'],
             $this->suggestTargets()
         ));
 
-        // Every column weighted 0: nothing is searched, so nothing matches, as on the index (TE-8).
+        // Every column weighted 0: nothing is searched, so nothing matches, as on the index.
         $direct === [] && $relations === []
             ? $this->query->whereRaw('0 = 1')
             : (new \Ashiqfardus\LaravelFuzzySearch\Query\AstCompiler($dbDriver, $typoDistance, $this->options, $this->qualifiedColumnMap($this->query), $listed))
@@ -2422,8 +2422,8 @@ class SearchBuilder
      *  - with orderBy(), every match the base query accepts, in that order (orderedIndexedPage()).
      * Constraints (filters, wheres, scopes) apply before the cut, so a selective filter fills its
      * page from lower-ranked matches instead of coming back short or empty. A page past the total is
-     * empty and reads no row (ruling ER-82). more says whether matches follow the page, which
-     * simplePaginate() reads (ruling ER-133).
+     * empty and reads no row. more says whether matches follow the page, which
+     * simplePaginate() reads.
      *
      * @return array{ranked: array<int|string, float>, total: int, more: bool, page: Collection}
      */
@@ -2457,7 +2457,7 @@ class SearchBuilder
         // page inside it is cut from that ordering. A page past it reads the window too, for the
         // scale of _score. An id whose row is gone is skipped: past the window its page comes back
         // one row short (inside it, the id holds no place), and first() reads on to the next row
-        // that exists (ruling ER-133).
+        // that exists.
         if ($offset < count($accepted) && $limit > 0) {
             $limit      = min($limit, count($accepted)); // take(PHP_INT_MAX): $offset + $limit stays an int
             $keys       = array_keys($accepted);
@@ -2467,7 +2467,7 @@ class SearchBuilder
             $models     = $window->union(\Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::models($base, array_slice($keys, $start, max(0, $offset + $limit - $start))));
 
             // Pages inside the window are cut from the rows it holds, pages past it from the ranks
-            // (RA-1): matches follow while either region has a place left after this page.
+            //: matches follow while either region has a place left after this page.
             $more = $offset + $limit < $window->count() || max($offset + $limit, min($rerank, count($keys))) < count($keys);
 
             // first() found no row: the keys that follow, a chunk at a time until one has a row, then that row.
@@ -2655,11 +2655,11 @@ class SearchBuilder
      * needs a prepared query calls this, so none of them can run the raw extended
      * string — "name:john" — through the LIKE path as if it were a plain term.
      *
-     * Ruling ER-86: the search binds at most FuzzySearch::MAX_BINDINGS values of its own, so SQL
+     * The search binds at most FuzzySearch::MAX_BINDINGS values of its own, so SQL
      * Server's 2,100-parameter limit holds. Every leaf, token, accent variant and synonym is matched
      * on every column with up to max_patterns LIKE patterns; past the budget each condition gets an
      * equal share, and always its first pattern (the plain contains one) — see
-     * FuzzySearch::withinBindingBudget(), which also budgets the multi-column macros (ER-91). A
+     * FuzzySearch::withinBindingBudget(), which also budgets the multi-column macros. A
      * search within the budget builds exactly as before. The caller's where() and filter()
      * bindings are not the search's and are left out; a rebuild starts from the caller's query.
      *
@@ -2715,7 +2715,7 @@ class SearchBuilder
         $this->capSearchTerm(); // see capSearchTerm(): the LIKE path's one call
 
         // A union as one table, then the caller's where(A)->orWhere(B) as one group, before the
-        // search and the filters (SE-2, RE-1).
+        // search and the filters.
         $this->query = self::unionAsTable($this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($this->query);
 
@@ -2747,7 +2747,7 @@ class SearchBuilder
         // Apply sorting: an explicit orderBy() replaces the relevance order. A SELECT DISTINCT may
         // be ordered only by what it selects, and the relevance CASE never is (PostgreSQL, SQL Server;
         // MySQL when a searched column is not selected): under distinct() the window is the first
-        // max_candidates distinct rows, and PHP rescoring orders it, as on the extended path (SE-1).
+        // max_candidates distinct rows, and PHP rescoring orders it, as on the extended path.
         if (empty($this->sortBy) && $this->withRelevance && $this->searchTerm !== '' && !self::isDistinct($this->query)) {
             $this->applyRelevanceOrdering();
         }
@@ -2758,7 +2758,7 @@ class SearchBuilder
     /**
      * orderBy()'s columns, in the order the calls were made, then stableRanking()'s key as the
      * tiebreak ($endOnKey: always — the index path's offset/limit page needs a total order), and on
-     * the LIKE and extended paths, under a join, the selected columns after it (VC-7). On
+     * the LIKE and extended paths, under a join, the selected columns after it. On
      * every path (LIKE, extended, index) an explicit order is the result order: PHP rescoring still
      * sets _score but does not re-sort by it (calculateRelevanceScores()), and the index path reads
      * its matches in this order (orderedIndexedPage()).
@@ -2793,18 +2793,18 @@ class SearchBuilder
         $keyShown = self::selectsAny($query, [...$names, $keyColumn]);
 
         // A SELECT DISTINCT left unordered (no orderBy(), and no relevance order: see buildQuery())
-        // is read by what it selects (R11-M3, UA-5, UF-6): the key when the select holds it; a query
+        // is read by what it selects: the key when the select holds it; a query
         // builder's `*` (or `table.*`) over a table with no `id`, every column of the table; else
         // every column it selects (selectedColumns()), an aliased one by its alias, or by its column
-        // where another selected column has the alias's name (UF-6). A distinct row is unique over its
+        // where another selected column has the alias's name. A distinct row is unique over its
         // selected columns, so each is a total order: paginate()'s window and its pages past
         // max_candidates (one OFFSET read each) are read in that one order and partition the matches.
         // Under a join, which repeats the key once per joined row, the key is followed by the other
-        // selected columns (selectedColumns(), VC-7), and a select of the joined table's `table.*`
+        // selected columns (selectedColumns()), and a select of the joined table's `table.*`
         // is read by that table's columns. Unordered, SQL Server's grammar ordered the OFFSET by
         // (SELECT 0), which a SELECT DISTINCT rejects (145), and elsewhere the pages could overlap. A
         // select of raw expressions only stays unordered. PostgreSQL's distinct('col') (DISTINCT ON)
-        // is ordered by its own columns first, as PostgreSQL requires (42P10, UA-1): one row each,
+        // is ordered by its own columns first, as PostgreSQL requires (42P10): one row each,
         // and the order above picks which.
         if ($distinct && $orders === []) {
             $from    = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
@@ -2836,16 +2836,16 @@ class SearchBuilder
             return;
         }
 
-        // Not by a key a SELECT DISTINCT does not select: the database rejects it (SE-1).
+        // Not by a key a SELECT DISTINCT does not select: the database rejects it.
         $keyed = !$distinct || $keyShown;
         $taken = array_filter(array_column($orders, 'column'), 'is_string');
 
-        // Once (ruling ER-52): SQL Server rejects a column named twice in ORDER BY.
+        // Once: SQL Server rejects a column named twice in ORDER BY.
         if ($keyed && array_intersect($taken, $names) === []) {
             $query->orderBy($keyColumn, 'asc');
         }
 
-        // Under a join, which repeats the key, then the selected columns (VC-7). Not on the index
+        // Under a join, which repeats the key, then the selected columns. Not on the index
         // path: it serves each model once, at its first row by the order (orderedIndexedPage()).
         if (!$endOnKey) {
             foreach (self::notNamedIn([...$taken, ...($keyed ? [$keyColumn] : [])], $this->selectedColumns($query, true, $keyed)) as $column) {
@@ -2856,13 +2856,13 @@ class SearchBuilder
 
     /**
      * $query with a union read as one derived table named as its FROM table, as the index path reads
-     * it (RankedCandidates::rows(), rulings ER-125, ER-127), so the search predicate, filter() and the
+     * it (RankedCandidates::rows()), so the search predicate, filter() and the
      * order hold for every part: on the union they went into its first part's wheres and became the
-     * union's ORDER BY, and the other parts were never searched (SE-2). Unlike rows() it needs no key:
+     * union's ORDER BY, and the other parts were never searched. Unlike rows() it needs no key:
      * the LIKE path serves rows without one. Read as the query was, its callbacks and its own order
      * included (RankedCandidates::unionAsTable()). $query itself when it has no union. A
      * schema-qualified table (billing.invoices) names it by its last segment: no database takes a
-     * qualified alias (TE-7).
+     * qualified alias.
      */
     private static function unionAsTable(Builder|EloquentBuilder $query): Builder|EloquentBuilder
     {
@@ -2910,7 +2910,7 @@ class SearchBuilder
     /**
      * Types no ORDER BY takes, by driver: selectedColumns() leaves such a column out, and on PostgreSQL
      * an array of one too (its type name is the element's with a leading `_`). PostgreSQL's are those
-     * without a default btree operator class: json, xml and the geometric types (ER-195); PostGIS's
+     * without a default btree operator class: json, xml and the geometric types; PostGIS's
      * geometry and geography have one.
      */
     private const UNORDERED_TYPES = [
@@ -2921,11 +2921,11 @@ class SearchBuilder
     /**
      * The columns $query selects, as an ORDER BY names them: a column as written, an aliased one by
      * its alias (by its column when another selected column has that name: the alias would be
-     * ambiguous, UF-6), and every column of each table a `*` or `table.*` select reads
+     * ambiguous), and every column of each table a `*` or `table.*` select reads
      * (SearchableColumns::onTable()). Not a raw expression, nor a derived table's columns (they
      * cannot be listed).
      *
-     * $joined (VC-7): only under a join, or a FROM that is not the model's own table (a fromSub(),
+     * $joined: only under a join, or a FROM that is not the model's own table (a fromSub(),
      * a union read as one table), where the key repeats once per joined row and leaves those rows
      * tied: these are the columns that break the tie, [] without a join; $afterKey leaves out the
      * FROM table's own columns, which the key decides. Outside a SELECT DISTINCT (which compares
@@ -2998,7 +2998,7 @@ class SearchBuilder
 
     /**
      * The ORDER BY names of $columns (selectedColumns()) whose column none of $taken names, nor one
-     * before them, by its name or, for an alias, its column (ruling ER-52: SQL Server rejects a
+     * before them, by its name or, for an alias, its column (SQL Server rejects a
      * column named twice in ORDER BY, under an alias too). A bare name and a dotted one name the
      * same column when their last segments match.
      *
@@ -3036,7 +3036,7 @@ class SearchBuilder
         }
 
         // Remove stop words. A PHP lookup, so word and list fold with mb_strtolower(), as the synonym
-        // keys do (ruling ER-100) and the index pipeline does: "Не" and "À" are stop words too.
+        // keys do and the index pipeline does: "Не" and "À" are stop words too.
         if (!empty($this->stopWords)) {
             $stop  = array_map(fn ($word) => mb_strtolower((string) $word, 'UTF-8'), $this->stopWords);
             $words = preg_split(self::WHITESPACE, $term);
@@ -3079,7 +3079,7 @@ class SearchBuilder
 
     /**
      * Whether the SQL this search runs compares accents away, so a row it returns for "cafe" may
-     * hold "Café" (TF-8, ruling ER-166): on MySQL and MariaDB under an accent-insensitive connection
+     * hold "Café": on MySQL and MariaDB under an accent-insensitive connection
      * collation (Laravel's utf8mb4_unicode_ci, MySQL 8's and MariaDB's defaults: any but a _bin, _cs
      * or _as_ one), and on PostgreSQL where an explicit accentInsensitive() ORs unaccent() in
      * (use_native_functions). PHP scoring and highlighting then compare the accent-folded value as
@@ -3106,14 +3106,14 @@ class SearchBuilder
     }
 
     /**
-     * Letters the databases sqlFoldsAccents() trusts fold and Accents::fold() leaves as they are
-     * (UF-2): MySQL 8's utf8mb4_0900_ai_ci and MariaDB's uca1400_ai_ci fold ł and đ in LIKE, and
-     * PostgreSQL's unaccent() also æ, œ and þ. Only for TF-8's scoring and highlighting (sqlFold()):
+     * Letters the databases sqlFoldsAccents() trusts fold and Accents::fold() leaves as they are:
+     * MySQL 8's utf8mb4_0900_ai_ci and MariaDB's uca1400_ai_ci fold ł and đ in LIKE, and
+     * PostgreSQL's unaccent() also æ, œ and þ. Only for the scoring and highlighting (sqlFold()):
      * the index pipeline and the LIKE term variants keep Accents::fold() as it is.
      */
     private const SQL_FOLDS = ['Ł' => 'L', 'ł' => 'l', 'Đ' => 'D', 'đ' => 'd', 'Æ' => 'AE', 'æ' => 'ae', 'Œ' => 'OE', 'œ' => 'oe', 'Þ' => 'TH', 'þ' => 'th'];
 
-    /** $value as TF-8 compares it where the SQL folded accents: Accents::fold(), then SQL_FOLDS. */
+    /** $value as the scoring and highlighting compare it where the SQL folded accents: Accents::fold(), then SQL_FOLDS. */
     private static function sqlFold(string $value): string
     {
         return strtr(Accents::fold($value), self::SQL_FOLDS);
@@ -3170,7 +3170,7 @@ class SearchBuilder
     protected function expandWithSynonyms(string $term): array
     {
         $terms = [$term];
-        $lowerTerm = mb_strtolower($term, 'UTF-8'); // as withSynonyms() and synonymGroup() fold their words (ER-100)
+        $lowerTerm = mb_strtolower($term, 'UTF-8'); // as withSynonyms() and synonymGroup() fold their words
 
         // Check direct synonyms
         if (isset($this->synonyms[$lowerTerm])) {
@@ -3199,7 +3199,7 @@ class SearchBuilder
             $tokens = [$searchTerm];
         }
 
-        // Under tokenize(), similar_text bounds each token by the whole term's length (ER-59).
+        // Under tokenize(), similar_text bounds each token by the whole term's length.
         $wholeTermLength = $this->tokenizeSearch ? mb_strlen($searchTerm, 'UTF-8') : null;
 
         // Expand with the folded variant and synonyms
@@ -3213,7 +3213,7 @@ class SearchBuilder
         $this->likeTerms = count($allTerms) > 1 ? array_values($allTerms) : null;
 
         // The SQL names a direct column qualified under a join; the targets themselves (scoring,
-        // highlighting) keep the logical name. A column weighted 0 is not searched (TE-8).
+        // highlighting) keep the logical name. A column weighted 0 is not searched.
         $own     = $this->qualifiedColumnMap($this->query);
         $targets = array_map(
             fn (array $t) => $t['relation'] === null ? ['relation' => null, 'column' => ($own[$t['column']] ?? '') . $t['column']] : $t,
@@ -3290,7 +3290,7 @@ class SearchBuilder
      * @param array{relation: ?string, column: string} $target
      * @param array<string, mixed> $termOptions this term's own driver options (termConditions())
      * @param int|null $wholeTermLength under tokenize(), the whole search term's length, which
-     *                 similar_text's min_percentage bound measures (ruling ER-59)
+     *                 similar_text's min_percentage bound measures
      */
     protected function applyColumnCondition($query, array $target, string $term, string $boolean, array $termOptions = [], ?int $wholeTermLength = null): void
     {
@@ -3374,7 +3374,7 @@ class SearchBuilder
      * exactly as the search term does. $terms are an extended query's leaf terms; null scores the
      * search term in every form it was searched in (termVariants()).
      *
-     * Ruling ER-65: while accent folding is on for the query (foldsAccents()), a group is the terms
+     * While accent folding is on for the query (foldsAccents()), a group is the terms
      * with one accent-folded form — the search term and its folded form, or an extended leaf and
      * the folded twin withTermVariants() adds — so a twin never counts twice. With folding off,
      * each distinct term is its own group: a typed "müller" and "muller" add up.
@@ -3393,12 +3393,12 @@ class SearchBuilder
             $twin   = $foldsValues ? trim(self::sqlFold($term)) : '';
             $groups[$key === '' ? $term : $key][] = $term;
             if ($twin !== '' && $twin !== $term) {
-                $groups[$key === '' ? $term : $key][] = $twin; // compared with the folded values (TF-8)
+                $groups[$key === '' ? $term : $key][] = $twin; // compared with the folded values
             }
         }
         $groups = array_values($groups);
 
-        // Ruling ER-55, the per-row similarity budget: a group gets the similarity/Levenshtein floor
+        // The per-row similarity budget: a group gets the similarity/Levenshtein floor
         // only while the groups' total length, each counted by its longest member, stays within
         // Utf8::SCORING_MAX_CHARS (the first always does, so one term scores as it always has); the
         // rest score by tier alone. It bounds a many-leaf extended query to about one capped
@@ -3443,8 +3443,8 @@ class SearchBuilder
                     foreach ($values as $k => [$lower, $cut]) {
                         $forms = [[$lower, $cut]];
                         // Where the SQL compared accents away (sqlFoldsAccents()), the value is compared
-                        // folded too, so "José" scores as "jose" does (TF-8): the better of the two forms,
-                        // each value folded no further than a tier needs, and once (R12-M1, R13-M1: a long
+                        // folded too, so "José" scores as "jose" does: the better of the two forms,
+                        // each value folded no further than a tier needs, and once (a long
                         // value folded whole cost 3-4 times the scoring). Not at all when it starts with
                         // a term as written (its fold has no better tier, unless a mark follows the term:
                         // a decomposed "Café" folds to the term), nor when it holds one as written and its
@@ -3556,8 +3556,8 @@ class SearchBuilder
                 return []; // a qualified column (teams.name) is the row's attribute "name"
             }
             // Never through getAttribute(): its relation fallback calls a model method named like the
-            // column (ER-84: searchIn(['reindex']) must not run reindex()), or like the table of a
-            // table.column name, which is read off the attributes (ER-57: items.name must not run items()).
+            // column (searchIn(['reindex']) must not run reindex()), or like the table of a
+            // table.column name, which is read off the attributes (items.name must not run items()).
             $source = $item instanceof Model && str_contains($target['column'], '.') ? $item->getAttributes() : $item;
             $value  = (string) SearchableColumns::read($source, $target['column']);
             return $value === '' ? [] : [$value];
@@ -3603,7 +3603,7 @@ class SearchBuilder
     /**
      * Where a relation path's leaf is read on a related row: the row itself, or, for a column the
      * row has no attribute for that a loaded pivot holds, that pivot and the relation name it is
-     * under (TF-5). Eloquent moves a belongsToMany's withPivot() columns off the related model into
+     * under. Eloquent moves a belongsToMany's withPivot() columns off the related model into
      * its `pivot` relation (or the as() name), while the search matches the leaf through the pivot
      * table's join, so `tags.note` is read where it was matched.
      *
@@ -3820,10 +3820,10 @@ class SearchBuilder
         // repeats the term cost megabytes a row (15 rows of 60 KB: 57 MB, and 8 MB of JSON).
         $max = max(0, (int) config('fuzzy-search.highlighting.max_matches', 100));
 
-        // Where the SQL compared accents away, the folded term is found in the folded value (TF-8):
+        // Where the SQL compared accents away, the folded term is found in the folded value:
         // each value folded once for every needle, each distinct character once a pass ($memo).
         // Folding a long value's every character for every needle cost 16-39 times the
-        // highlighting (R12-M1).
+        // highlighting.
         $folds = $this->sqlFoldsAccents();
         $memo  = [];
 
@@ -3869,7 +3869,7 @@ class SearchBuilder
                     $matches[] = ['column' => $column, 'value' => $chosen, 'indices' => $indices];
                     $highlighted[$column] = $this->wrapWithTags($chosen, $indices, $open, $close);
                 } else {
-                    // Ruling P8-R10: escaped like the matched branch, so _highlighted is
+                    // Escaped like the matched branch, so _highlighted is
                     // uniformly safe HTML — not just the columns wrapWithTags() touched.
                     $highlighted[$column] = e($chosen);
                 }
@@ -3939,7 +3939,7 @@ class SearchBuilder
     }
 
     /**
-     * $value accent-folded for foldedMatchOffsets() (TF-8): each character folded on its own
+     * $value accent-folded for foldedMatchOffsets(): each character folded on its own
      * (sqlFold()), once a pass however often it recurs ($memo), and the anchors that map the
      * folded text back to $value: one per character whose fold is not one character of its own byte
      * length ("é" → "e", "ß" → "ss", a combining mark → ""), as [its first byte in the folded text,
@@ -3956,7 +3956,7 @@ class SearchBuilder
             return [$value, []];
         }
 
-        // Only the characters the fold changes are replaced (R13-L2: a scan and a strtr() that
+        // Only the characters the fold changes are replaced (a scan and a strtr() that
         // changed nothing cost Cyrillic and CJK highlighting).
         $forms   = [];
         $resized = [];
@@ -3988,7 +3988,7 @@ class SearchBuilder
     }
 
     /**
-     * findMatchOffsets() of the folded $term in the folded $value (TF-8), each match mapped back to
+     * findMatchOffsets() of the folded $term in the folded $value, each match mapped back to
      * the bytes of the characters it covers in $value, so "muller" marks "Müller" and "strasse"
      * marks "Straße". A combining mark, which folds to nothing, stays inside the range of the letter
      * it follows; two matches that meet inside one letter folded to two (ß) become one range. A
@@ -4004,7 +4004,7 @@ class SearchBuilder
         [$folded, $anchors] = $text ?? $this->foldedText($value, $memo);
         $needle            = self::sqlFold($term);
         if ($anchors === []) {
-            return $this->findMatchOffsets($folded, $needle, $max); // R13-L2: no mapping to pay for
+            return $this->findMatchOffsets($folded, $needle, $max); // no mapping to pay for
         }
 
         // The index of the last anchor at or before folded byte $at (-1: none), and $at's byte in $value.
@@ -4115,7 +4115,7 @@ class SearchBuilder
         }
 
         // displayValueFor() already returns safe HTML (the _highlighted branch is
-        // pre-escaped per P8-R10; the column-read fallback escapes itself) — wrapping it in
+        // pre-escaped; the column-read fallback escapes itself) — wrapping it in
         // e() again here would double-escape entities like "&lt;" into "&amp;lt;".
         return self::displayValueFor($result, $column);
     }
@@ -4123,10 +4123,10 @@ class SearchBuilder
     /**
      * Plain (unhighlighted) display value for a column: `_highlighted` when the search
      * produced one, otherwise the column read with SearchableColumns::read(): never
-     * getAttribute()'s relation fallback, which calls a model method named like the column
-     * (ruling ER-148), so a relation shows only once it is loaded. Always HTML-safe: the
+     * getAttribute()'s relation fallback, which calls a model method named like the column,
+     * so a relation shows only once it is loaded. Always HTML-safe: the
      * `_highlighted` branch is pre-escaped by applyHighlighting() (matched values via
-     * wrapWithTags(), non-matching ones via e() — P8-R10), and the fallback escapes here. A
+     * wrapWithTags(), non-matching ones via e()), and the fallback escapes here. A
      * Collection value is reduced to its first item; anything that isn't a scalar at that point —
      * including a model instance, or a to-many relation collection the path couldn't resolve to
      * one — renders as an empty string rather than a warning.
@@ -4270,14 +4270,14 @@ class SearchBuilder
                 $connection->getName(), $connection->getDriverName(), $connection->getConfig('host'), $connection->getConfig('port'),
                 $connection->getDatabaseName(), $connection->getTablePrefix(),
                 // Schema-per-tenant on PostgreSQL switches search_path on one connection and database.
-                // scalar(): an app-wide array fetch mode makes selectOne() return an array (TC-3).
+                // scalar(): an app-wide array fetch mode makes selectOne() return an array.
                 $connection->getDriverName() === 'pgsql'
                     ? $connection->scalar("select current_setting('search_path')")
                     : null,
             ],
             'base_sql'               => $this->query->toSql(),
             'base_bindings'          => $this->query->getBindings(),
-            // Ruling ER-70: every query-time setting (min_percentage, max_candidates, driver
+            // Every query-time setting (min_percentage, max_candidates, driver
             // options, ...) at once, keys sorted so that an equal config gives the same key.
             'config'                 => self::sortedKeys(config('fuzzy-search', [])),
         ];
@@ -4360,7 +4360,7 @@ class SearchBuilder
             return [];
         }
 
-        // NF-1: with every searchable column hidden there is nothing to suggest (ER-51) — no query.
+        // With every searchable column hidden there is nothing to suggest — no query.
         $targets = $this->suggestTargets();
         if ($targets === []) {
             return [];
@@ -4397,7 +4397,7 @@ class SearchBuilder
         // Extract unique suggestions from results
         foreach ($results as $result) {
             foreach ($targets as $column => $target) {
-                // Ruling ER-51: never a word from a column the row hides (the #5 rule) — this also
+                // Never a word from a column the row hides (the #5 rule) — this also
                 // catches a runtime makeHidden(), which suggestTargets() cannot see.
                 foreach ($this->columnValues($result, $column, $target, true) as $value) {
                     // Extract the matching word/phrase
@@ -4440,7 +4440,7 @@ class SearchBuilder
      * suggest() can fall back to the table scan. The meta row — not the postings table — is the "is this model indexed" signal:
      * IndexManager keeps it even after every document is individually removed (total_docs
      * decrements to 0; only flush() deletes the row), so a model that was indexed and is now
-     * empty still returns [] from the dictionary (P6-R6's documented auto semantics) instead
+     * empty still returns [] from the dictionary (the documented auto semantics) instead
      * of silently reverting to the table scan.
      */
     protected function suggestFromIndex(int $limit): ?array
@@ -4466,7 +4466,7 @@ class SearchBuilder
             if (!$indexed) {
                 return null;
             }
-            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $modelClass); // hidden columns judged on the searched class (TA-1)
+            $rows = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->prefix($last, $limit, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $modelClass); // hidden columns judged on the searched class
         } catch (\Illuminate\Database\QueryException $e) {
             // Same rule as didYouMean(): a missing dictionary means "not migrated" and hands the
             // query back to the table scan; anything else is a real database error and must
@@ -4490,8 +4490,8 @@ class SearchBuilder
     {
         $driver = $this->query->getConnection()->getDriverName();
 
-        // Clone query to avoid modifying the original: a union as one table (SE-2), the caller's
-        // where(A)->orWhere(B) as one group (RE-1)
+        // Clone query to avoid modifying the original: a union as one table, the caller's
+        // where(A)->orWhere(B) as one group
         $suggestQuery = self::unionAsTable(clone $this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($suggestQuery);
 
@@ -4530,12 +4530,12 @@ class SearchBuilder
 
     /**
      * suggest()'s table scan reads only the first limit × 3 rows: the shortest values of the first
-     * column it reads come first, then by value (TE-9), so the shortest completions are in them,
+     * column it reads come first, then by value, so the shortest completions are in them,
      * whatever plan the database takes (rowid, heap or index order; on PostgreSQL an UPDATE that
      * changed no value changed the suggestions). The database sorts every matching row for it. Not
      * where the query orders itself, or where a DISTINCT or a GROUP BY would reject the expression,
      * a global scope's included: read from the scoped query (toBase()), or a scope's distinct() got
-     * the order, which PostgreSQL and SQL Server reject (VC-2).
+     * the order, which PostgreSQL and SQL Server reject.
      *
      * @param array<string, array{relation: ?string, column: string}> $targets suggestTargets()
      */
@@ -4559,9 +4559,9 @@ class SearchBuilder
      * message names: those searched (searchedTargets(): a column weighted 0 is not) that the model
      * does not hide by its class-level $hidden/$visible (for a relation column, each segment on the
      * model that holds it, then the leaf on the related model).
-     * For suggest(): a row that matches only through a hidden column can yield no suggestion
-     * (ER-51), so matching it would only use up the rows the scan fetches (NF-1). Only the WHERE
-     * narrows (ruling ER-67): the SELECT stays as it is, so an accessor that reads a hidden
+     * For suggest(): a row that matches only through a hidden column can yield no suggestion,
+     * so matching it would only use up the rows the scan fetches. Only the WHERE
+     * narrows: the SELECT stays as it is, so an accessor that reads a hidden
      * attribute still has it (Q13).
      *
      * @return array<string, array{relation: ?string, column: string}>
@@ -4695,7 +4695,7 @@ class SearchBuilder
         // path costs one query instead of two. A missing table (migrations not run) means
         // "nothing to suggest"; anything else is a real SQL error and must surface.
         try {
-            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $modelClass); // hidden columns judged on the searched class (TA-1)
+            $candidates = app(\Ashiqfardus\LaravelFuzzySearch\Indexing\TermExpander::class)->candidates($term, $maxDistance, 300, \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::indexType($modelClass), $modelClass); // hidden columns judged on the searched class
         } catch (\Illuminate\Database\QueryException $e) {
             if (\Illuminate\Support\Facades\DB::getSchemaBuilder()->hasTable('fuzzy_index_terms')) {
                 throw $e; // a real database error — surface it
@@ -4779,8 +4779,8 @@ class SearchBuilder
 
     /**
      * Calculate recency boost score. The column may come from a request, so it is read without
-     * getAttribute()'s relation fallback, which would call a model method named like it (ruling
-     * ER-148): an attribute, cast or accessor, or a relation already loaded.
+     * getAttribute()'s relation fallback, which would call a model method named like it:
+     * an attribute, cast or accessor, or a relation already loaded.
      */
     protected function calculateRecencyBoost($item): float
     {
@@ -4791,7 +4791,7 @@ class SearchBuilder
         $dateValue = SearchableColumns::read($item, $this->recencyColumn);
 
         // Only what DateTime can parse: an array (a JSON or array cast) or an object without
-        // __toString() throws a TypeError there, which the catch below does not take (TF-2).
+        // __toString() throws a TypeError there, which the catch below does not take.
         if (empty($dateValue) || !($dateValue instanceof \DateTimeInterface || is_string($dateValue) || is_int($dateValue) || $dateValue instanceof \Stringable)) {
             return 1.0;
         }

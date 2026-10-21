@@ -28,7 +28,7 @@ return new class extends Migration
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->unsignedSmallInteger('term_length')->default(0));
         }
         // Its name led by the table prefix under prefix_indexes; an install made before index names
-        // carried it has the name as written (ER-216).
+        // carried it has the name as written.
         if ($pretending || DbDialect::presentIndexName(self::INDEX, $this->indexes()) === null) {
             Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index('term_length', DbDialect::indexName(self::INDEX)));
         }

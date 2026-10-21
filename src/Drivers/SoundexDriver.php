@@ -79,10 +79,10 @@ class SoundexDriver extends BaseDriver
             // SPLIT_PART(col, ' ', -1) requires PostgreSQL 14+. Use SUBSTRING with a
             // POSIX regex to extract the last space-delimited token — works on all versions.
             // A stored word reaches soundex() only under the term's rule (above): an ASCII letter
-            // led by ASCII non-letters only ("(Mila)", "2Mila", UA-4). fuzzystrmatch skipped a
+            // led by ASCII non-letters only ("(Mila)", "2Mila"). fuzzystrmatch skipped a
             // leading non-ASCII letter under glibc ("Émile" encoded as M400 and matched "Mila") and
             // returned a code that is not UTF-8 on macOS. Inside a CASE, so PostgreSQL never
-            // evaluates soundex() before the guard (ruling ER-172).
+            // evaluates soundex() before the guard.
             $firstWord = "SPLIT_PART({$col}, ' ', 1)";
             $lastWord  = "TRIM(SUBSTRING({$col} FROM '[^ ]+$'))";
             $code  = fn (string $word) => "CASE WHEN {$word} ~ '^" . self::PG_LEAD . "' THEN SOUNDEX({$word}) END";
