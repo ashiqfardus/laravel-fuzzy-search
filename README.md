@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md) • [Upgrade v2.0→v3.0](docs/UPGRADE_v2_TO_v3.md)
+**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md) • [Upgrade v2→v3](docs/UPGRADE_v2_TO_v3.md)
 
 ## Features
 
@@ -91,7 +91,7 @@ Installs with different table prefixes can share a schema (or SQLite file): with
 > php artisan fuzzy-search:upgrade-v1   # scans your app/ for v1-era API usage
 > ```
 >
-> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2.0→v3.0 guide](docs/UPGRADE_v2_TO_v3.md): every behaviour change there applies to you too.
+> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2→v3 guide](docs/UPGRADE_v2_TO_v3.md): every behaviour change there applies to you too.
 
 > **Upgrading from v2.0.x?** 3.0 is a major release: it breaks code and configs written for 2.0, so read the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0` (a `^2.0` constraint never installs 3.0). Run the new migrations (`php artisan migrate`), then rebuild once
 > per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`) to pick up weighted BM25
@@ -116,7 +116,7 @@ Installs with different table prefixes can share a schema (or SQLite file): with
 >   until the new code serves. A `rebuild --fresh` a migration's warning asks for runs before the
 >   restart, since it needs nothing indexing.
 >
-> → [Upgrade v2.0→v3.0 guide](docs/UPGRADE_v2_TO_v3.md)
+> → [Upgrade v2→v3 guide](docs/UPGRADE_v2_TO_v3.md)
 
 ---
 
