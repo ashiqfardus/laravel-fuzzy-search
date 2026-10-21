@@ -160,6 +160,12 @@ class ModelTermsTest extends TestCase
         $upserts = '/^\s*(insert|merge)\b.*\bfuzzy_index_model_terms\b/is';
         $manager = app(IndexManager::class);
         $codes   = fn () => ModelTermsCode::query()->orderBy('id')->get();
+        // SQL Server, under its index write lock (ER-227): one UPDATE per 666 words and one INSERT …
+        // WHERE NOT EXISTS per 400 of the raised ones, whatever the changes; a removal raises none.
+        $sqlsrv = $this->dbDriver === 'sqlsrv';
+        if ($sqlsrv) {
+            $upserts = '/^\s*(insert|update)\b.*\bfuzzy_index_model_terms\b/is';
+        }
 
         $this->assertCount(2, $this->reads($upserts, fn () => $manager->indexBatch($codes())), 'the first index');
         $this->assertModelTermsMirrorPostings('the first index');
@@ -168,7 +174,7 @@ class ModelTermsTest extends TestCase
         foreach (range(1, 12) as $i) {
             DB::table('model_terms_codes')->where('id', ModelTermsCode::query()->orderBy('id')->skip($i - 1)->value('id'))->update(['code' => implode(' ', array_slice($words, 12 - $i))]);
         }
-        $this->assertCount(1, $this->reads($upserts, fn () => $manager->indexBatch($codes()->take(12))), 'a re-index');
+        $this->assertCount($sqlsrv ? 2 : 1, $this->reads($upserts, fn () => $manager->indexBatch($codes()->take(12))), 'a re-index');
         $this->assertModelTermsMirrorPostings('the re-index');
 
         $this->assertCount(1, $this->reads($upserts, fn () => $manager->removeFromIndex(ModelTermsCode::class, (string) $codes()->last()->id)), 'a removal');

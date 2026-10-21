@@ -320,8 +320,9 @@ class IndexManagerTest extends TestCase
 
             return [
                 // The UPDATEs adjustDocCounts() sends, and the locking read before them, by the term
-                // ids it binds (FOR UPDATE, a table hint on SQL Server, nothing on SQLite).
-                array_values(array_filter($queries, fn ($q) => preg_match('/^\s*update\b.*fuzzy_index_terms\W+set doc_count = case/i', $q->sql))),
+                // ids it binds (FOR UPDATE, a table hint on SQL Server, nothing on SQLite). SQL Server
+                // binds (id, delta) rows in an UPDATE … FROM (VALUES …) (ER-227).
+                array_values(array_filter($queries, fn ($q) => preg_match('/^\s*update\b.*fuzzy_index_terms\W+set doc_count = case|^\s*update t set doc_count = .* from fuzzy_index_terms as t\b/is', $q->sql))),
                 array_values(array_filter($queries, fn ($q) => preg_match('/^\s*select\b.*fuzzy_index_terms\b.*\bwhere\W+id\W+in\b/i', $q->sql))),
             ];
         };
@@ -339,7 +340,11 @@ class IndexManagerTest extends TestCase
         [$updates, $locks] = $statements(fn () => $manager->indexModel($model));
         $changed = $this->dbDriver === 'pgsql' ? ['gamma', 'delta'] : ['gamma'];
         $this->assertCount(1, $updates);
-        $this->assertStringContainsString('WHERE id IN (' . implode(',', $ids($changed)) . ')', $updates[0]->sql);
+        if ($this->dbDriver === 'sqlsrv') {
+            $this->assertSame($ids($changed), array_map('intval', array_values(array_filter($updates[0]->bindings, fn (int $i) => $i % 2 === 0, ARRAY_FILTER_USE_KEY))));
+        } else {
+            $this->assertStringContainsString('WHERE id IN (' . implode(',', $ids($changed)) . ')', $updates[0]->sql);
+        }
         $this->assertSame($ids($this->dbDriver === 'pgsql' ? ['alpha', 'beta', 'delta', 'gamma'] : ['alpha', 'beta', 'gamma']), array_map('intval', $locks[0]->bindings ?? []));
         $this->assertSame(['alpha' => 1, 'beta' => 1, 'delta' => 1, 'gamma' => 0], DB::table('fuzzy_index_terms')->pluck('doc_count', 'term')->map(fn ($c) => (int) $c)->sortKeys()->all());
     }

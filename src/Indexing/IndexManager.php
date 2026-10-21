@@ -2178,7 +2178,8 @@ class IndexManager
      * no gap lock on MySQL/MariaDB, where another write's new row of the type would otherwise wait.
      *
      * SQL Server, under the index write lock: the rows the type holds change by key (updateByKey()),
-     * then the ones it lacks are inserted (insertMissing()), at the change, or 0 for a decrease.
+     * then the raised ones it lacks are inserted (insertMissing()), at the change. A decrease of a
+     * row it lacks inserts nothing: elsewhere that row goes in at 0, and the DELETE below takes it.
      *
      * @param array<int, array{string, int}> $deltas see termDeltas()
      */
@@ -2192,7 +2193,9 @@ class IndexManager
             $changes = $rows = [];
             foreach ($deltas as $termId => [$term, $delta]) {
                 $changes[] = [$typeId, (int) $termId, (int) $delta];
-                $rows[]    = [$typeId, (int) $termId, (string) $term, mb_strlen((string) $term), max((int) $delta, 0)];
+                if ($delta > 0) {
+                    $rows[] = [$typeId, (int) $termId, (string) $term, mb_strlen((string) $term), (int) $delta];
+                }
             }
             self::updateByKey('fuzzy_index_model_terms', ['model_type_id', 'term_id', 'delta'], $changes, ['model_type_id', 'term_id'], ['doc_count' => 'CASE WHEN t.doc_count + v.delta < 0 THEN 0 ELSE t.doc_count + v.delta END']);
             self::insertMissing('fuzzy_index_model_terms', ['model_type_id', 'term_id', 'term', 'term_length', 'doc_count'], $rows, ['model_type_id', 'term_id']);

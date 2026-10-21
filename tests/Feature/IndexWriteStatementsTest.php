@@ -5,13 +5,18 @@ namespace Ashiqfardus\LaravelFuzzySearch\Tests\Feature;
 require_once __DIR__ . '/../TestModels.php';
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager;
+use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
+use Ashiqfardus\LaravelFuzzySearch\Scout\FuzzySearchEngine;
 use Ashiqfardus\LaravelFuzzySearch\Support\DbDialect;
 use Ashiqfardus\LaravelFuzzySearch\Tests\ListColumnsUser;
 use Ashiqfardus\LaravelFuzzySearch\Tests\TestCase;
 use Ashiqfardus\LaravelFuzzySearch\Tests\User;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 
 /**
  * ER-227. On SQL Server every index write holds its index's application lock (ER-180) from its
@@ -183,5 +188,65 @@ class IndexWriteStatementsTest extends TestCase
         $manager->indexBatch(ListColumnsUser::whereKey([$ids[4]])->get());
 
         $this->assertSame($this->tables(), $reindexed);
+    }
+
+    /**
+     * SQL Server: the plain INSERTs above hold only while no other write runs, so every write to
+     * an index table, by every way in, runs inside a transaction that took the index write lock
+     * first: a rebuild's batch, a save's IndexModelJob, Scout's update() and delete(), a re-index,
+     * the removal of one model, the prune after a plain rebuild, a flush.
+     */
+    public function test_every_write_to_the_index_on_sql_server_runs_under_the_index_write_lock(): void
+    {
+        if ($this->dbDriver !== 'sqlsrv') {
+            $this->markTestSkipped('The index write lock is SQL Server\'s; the other databases keep their upserts.');
+        }
+
+        $locked   = false;
+        $unlocked = [];
+        $writes   = 0;
+        DB::listen(function (QueryExecuted $query) use (&$locked, &$unlocked, &$writes) {
+            if (str_contains($query->sql, 'sp_getapplock')) {
+                $locked = DB::transactionLevel() > 0;
+            } elseif (preg_match('/^\s*(insert|update|delete|merge|truncate)\b[^;]*?fuzzy_index_\w+/is', $query->sql) === 1) {
+                $writes++;
+                if (!$locked || DB::transactionLevel() === 0) {
+                    $unlocked[] = $query->sql;
+                }
+            }
+        });
+        $released = function () use (&$locked) { // the commit or rollback of the outermost transaction releases it
+            if (DB::transactionLevel() === 0) {
+                $locked = false;
+            }
+        };
+        Event::listen(TransactionCommitted::class, $released);
+        Event::listen(TransactionRolledBack::class, $released);
+
+        $manager = app(IndexManager::class);
+        $engine  = app(FuzzySearchEngine::class);
+        $ids     = User::query()->orderBy('id')->pluck('id')->all();
+        $ways    = [
+            'a rebuild batch'         => fn () => $manager->indexBatch(User::whereKey(array_slice($ids, 0, 4))->get()),
+            'IndexModelJob'           => fn () => (new IndexModelJob(User::class, $ids[4]))->handle($manager),
+            "Scout's update()"        => fn () => $engine->update(User::whereKey([$ids[5], $ids[6]])->get()),
+            'a re-index'              => function () use ($manager, $ids) {
+                DB::table('users')->where('id', $ids[0])->update(['name' => 'Zed Changed']);
+                $manager->indexBatch(User::whereKey([$ids[0]])->get());
+            },
+            "Scout's delete()"        => fn () => $engine->delete(User::whereKey([$ids[1], $ids[2]])->get()),
+            'removeFromIndex()'       => fn () => $manager->removeFromIndex(User::class, $ids[3]),
+            'the prune of a rebuild'  => function () use ($ids) {
+                DB::table('users')->where('id', $ids[4])->delete();
+                $this->assertSame(0, Artisan::call('fuzzy-search:rebuild', ['model' => User::class]));
+            },
+            'a flush'                 => fn () => $manager->flush(User::class),
+        ];
+        foreach ($ways as $way => $run) {
+            $before = $writes;
+            $run();
+            $this->assertGreaterThan($before, $writes, "{$way} wrote nothing");
+        }
+        $this->assertSame([], $unlocked, 'written without the index write lock');
     }
 }
