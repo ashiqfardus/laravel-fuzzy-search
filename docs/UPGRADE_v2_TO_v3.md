@@ -1,6 +1,6 @@
 # Upgrading from v2 to v3
 
-3.0 is a major release. It breaks code and configs written for 2.0: some calls now throw, return other rows or cache, a published 2.0 `config/fuzzy-search.php` takes effect for keys 2.0 ignored, and the migrations rewrite the index tables. Read this guide before you run `composer update` on a `^2.0` constraint. It covers every behaviour change that can affect an existing v2.0 install.
+3.0 is a major release. It breaks code and configs written for 2.0: some calls now throw, return other rows or cache, a published 2.0 `config/fuzzy-search.php` takes effect for keys 2.0 ignored, and the migrations rewrite the index tables. Read this guide before you change your constraint to `^3.0` (a `^2.0` constraint never installs 3.0). It covers every behaviour change that can affect an existing v2.0 install.
 
 ## Upgrade checklist
 
