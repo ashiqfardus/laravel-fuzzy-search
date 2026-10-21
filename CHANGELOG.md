@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Extended syntax:** `~word` and `field:` are operators, and `!` negates only at the start of a token. `""` is skipped, a `!` term keeps rows with NULL columns, and a query may have exactly `query.max_tokens` tokens. ([guide][u-extended])
 - **BM25 changes rankings.** The index is typo-tolerant by default (`typoTolerance(0)` for exact terms). Constraints apply before the page is cut, and `_score` has one scale across pages. Idf and dictionary are per model, ties come back by key, and column weights apply after a rebuild, in the Scout engine too. ([guide][u-bm25])
 - **Index-path totals count what the pages serve.** In relevance order, past `bm25.max_postings_per_term`, `total()` and `count()` count the matches the ranking holds. ([guide][u-indexing])
-- **Indexing runs after the save's transaction commits** and indexes the row as stored. With `indexing.async` off, an index error is reported to your exception handler, naming the model and key, instead of thrown from `save()`. ([guide][u-bm25])
+- **Indexing runs after the transaction on the model's own connection commits** and indexes the row as stored. With `indexing.async` off, an index error is reported to your exception handler, naming the model and key, instead of thrown from `save()`. ([guide][u-bm25])
 - **Index writes inside your own transaction are not retried.** That means Scout with `scout.after_commit` off and no queue, or `searchable()` inside `DB::transaction()`. Two or more such writes in one transaction can deadlock (`DeadlockException`). Set `scout.after_commit` to `true`, or index after the commit. ([guide][u-bm25], [setup][d-bm25-setup])
 - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit`. Index writes to one index run one at a time. ([guide][u-bm25])
 - **PostgreSQL:** `fuzzy-search:rebuild` and index writes run `ANALYZE` on the index tables, and a synchronous rebuild runs `VACUUM (ANALYZE)` on the postings. ([guide][u-indexing])
@@ -116,10 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An extended query throws `QuerySyntaxException` for a `!` with nothing after it (it was ignored). ([guide][u-extended])
 - The LIKE and extended paths read only the page's rows under `orderBy()` or `withRelevance(false)`; `_score` is normalised over the rows read. ([guide][u-search])
 - A plain `fuzzy-search:rebuild` removes the documents of rows that were deleted, trashed or left out by `searchIndexQuery()` without model events. Rows a global scope hides keep theirs, and a Scout model keeps the trashed rows Scout indexed while `scout.soft_delete` is on. `--async` does it in the batch's last job, the new `PruneIndexJob`. ([guide][u-indexing])
-- `FederatedSearch::paginate()` reads fresh under `cache.enabled`, like `paginate()`, and its analytics event per `Searchable` model reports the total match count as `candidateCount`. ([guide][u-federated])
 - Index names the migrations create carry the table prefix when the connection's `prefix_indexes` is on, so installs with different prefixes can share one schema (or one SQLite file); existing installs keep their names.
-- Performance: on a large index (more documents than `bm25.max_postings_per_term`), a typo expansion no longer reaches a word in more than half of the model's documents. Such a word is a stop word there, and reading its postings was most of the search (`smith` matching `with` at 1M rows: 2.0 to 2.5 s). Smaller indexes keep every expansion. ([guide][u-bm25])
-- Performance: an `orderBy()` index search with a capped ranking reads only its page. PostgreSQL walks the order column's index instead of a hash semi-join over the whole table (24M rows: 3.3 s warm, up to 86 s cold, down to 7 to 12 ms), and SQL Server inlines the matched term ids so it can estimate them from statistics (deep pages at 1M rows: 2.5 s to 0.76 s).
 
 ### Deprecated
 
@@ -174,12 +171,9 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - BM25 idf compared a word's count across every model with the searched model's own total, so a word another model used often ranked the best match last, with a negative `_score`. Every `rebuild --fresh` inflated the counts of words other models still use. ([guide][u-bm25])
 - A ranking capped at `bm25.max_postings_per_term` changed between requests with no data change. ([guide][u-indexing])
 - `bm25.max_postings_per_term` capped all the words of a search together, so a common word's rows could push a rarer word's matches out of a relevance search, the best match holding both words included. It now caps each word on its own. ([guide][u-indexing])
-- A typo expansion of a word the model's index holds is scored with that word's idf when its own is higher, so a common word's rare misspellings no longer outrank every exact hit of it. ([guide][u-bm25])
-- `Searchable::reindexRelated()` queued its jobs inside the transaction and after a rollback, or wrote them there holding shared locks on every related row. It now writes after the commit, as the observer does; a failed in-process write is reported, naming the model and key. ([guide][u-bm25])
-- An index write waited for a transaction of any connection: a save committed on its own was indexed when another connection's transaction ended, and a save inside its own transaction was indexed at the inner commit of another connection's. It waits only for its model's own connection. ([guide][u-bm25])
 - A primary-key change left the old key's index entries behind.
 - A job of a cancelled `rebuild --async` batch still indexed rows.
-- Under an app-wide array fetch mode (a `StatementPrepared` listener setting `PDO::FETCH_ASSOC`), index searches, `didYouMean()`, `asYouType()`, `fuzzy-search:status` and the search log's reads threw "Attempt to read property on array". The package now reads its own rows as objects.
+- Under an app-wide array fetch mode (a `StatementPrepared` listener setting `PDO::FETCH_ASSOC`), index searches, `didYouMean()` and `fuzzy-search:status` threw "Attempt to read property on array". The package now reads its own rows as objects.
 - Concurrent index writes: two writes for one row counted it twice, a write that read before a newer save indexed the older text, and writes whose words crossed could deadlock. A re-index also rewrote the dictionary row of every word it kept. ([setup][d-bm25-setup])
 - MySQL/MariaDB, an index write inside your transaction: it could leave word counts wrong, put a deleted row back or index older text, and lose a deadlock to a write of a neighbouring row. ([setup][d-bm25-setup])
 - `fuzzy-search:clear --all` could leave a model's totals short when a write committed during it, and a flush could fail another model's write on the postings' foreign key. ([docs][d-bm25-commands])
@@ -209,7 +203,6 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 
 - `getCounts()` counted the page, not the matches. ([guide][u-federated])
 - `searchIn()` was ignored for `Searchable` models, and a column a table lacks raised an SQL error. ([guide][u-federated])
-- `FederatedSearch::paginate()` ranked each model twice on the index, once to count and once for the page. It ranks once; totals and rows are unchanged.
 - `options()` was never applied, a negative `limit()` sliced from the end, and the declared columns of a model without the `Searchable` trait were never seen (on a Scout model, reading them ran an index write). ([guide][u-federated])
 
 **In-memory (`FuzzySearch::on()`)**
@@ -223,7 +216,7 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `rebuild` did not fill metaphone shadow columns, and printed "Done." for a model that produced no terms; it also chunks by key now (`chunkById()`). ([guide][u-bm25])
 - A class named with a leading backslash (`"\App\Models\Post"`) flushed and cleared nothing, and `clear` or `flush` refused a class that no longer exists. ([guide][u-indexing])
 - The deprecated `fuzzy-search:index` died on SQLite and SQL Server, ignored declared columns and threw on a Scout dual-trait model.
-- `fuzzy-search:benchmark` and `:explain` wrote analytics rows, timed the cache instead of the search, and did not exit 1 with a message for a bad algorithm or an empty term.
+- `fuzzy-search:benchmark` and `:explain` timed the cache instead of the search, and did not exit 1 with a message for a bad algorithm or an empty term.
 - `fuzzy-search:explain` printed a hand-built "Pattern Analysis" that did not match the search; it prints the search's SQL and bindings.
 
 **Per database**
