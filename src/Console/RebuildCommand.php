@@ -46,6 +46,16 @@ class RebuildCommand extends Command
             $modelClass = $type;
         }
 
+        // A flush or clear of the model that died part way left documents whose postings are gone, and
+        // indexing them counts their words a second time: only running the flush again finishes it.
+        if (!$this->option('fresh') && Schema::hasColumn('fuzzy_index_meta', 'flushing_since')
+            && DB::table('fuzzy_index_meta')->useWritePdo()->where('model_type', $modelClass)->whereNotNull('flushing_since')->exists()) {
+            $this->error("A flush or clear of [{$modelClass}] did not finish, and a rebuild now would count its documents twice.");
+            $this->line("Run the command that failed again before any other index command: <comment>php artisan fuzzy-search:clear \"{$modelClass}\"</comment> or <comment>php artisan fuzzy-search:rebuild \"{$modelClass}\" --fresh</comment>. Keep the queue workers that index it stopped until then: the mark does not hold saves off.");
+
+            return self::FAILURE;
+        }
+
         // Before --fresh flushes anything: an --async run that cannot dispatch leaves no index.
         if ($this->option('async') && !$this->batchTableExists()) {
             return self::FAILURE;

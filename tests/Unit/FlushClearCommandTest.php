@@ -82,7 +82,7 @@ class FlushClearCommandTest extends TestCase
         app(IndexManager::class)->indexBatch(User::all());
         $failing = true;
         DB::connection()->beforeExecuting(function (string $sql) use (&$failing) {
-            if ($failing && preg_match('/^\s*delete from [`"\[]?fuzzy_index_/i', $sql)) {
+            if ($failing && preg_match('/^\s*(delete from|truncate( table)?) [`"\[]?fuzzy_index_/i', $sql)) {
                 throw new \RuntimeException('connection lost');
             }
         });
@@ -99,5 +99,42 @@ class FlushClearCommandTest extends TestCase
             ->expectsOutputToContain('fuzzy-search:rebuild "' . User::class . '" --fresh again before any other index command')
             ->assertExitCode(1);
         $failing = false;
+    }
+
+    /**
+     * A batched flush marks the model's meta row first (fuzzy_index_meta.flushing_since) and the
+     * transaction that ends it deletes the row. A mark that is still set belongs to a flush that
+     * died: a plain rebuild refuses, status says so, and the flush run again clears it.
+     */
+    public function test_a_plain_rebuild_refuses_while_a_flush_of_the_model_is_unfinished(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        DB::table('fuzzy_index_meta')->where('model_type', User::class)->update(['flushing_since' => now()]);
+        $postings = DB::table('fuzzy_index_postings')->count();
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])
+            ->expectsOutputToContain('did not finish')
+            ->expectsOutputToContain('before any other index command')
+            ->assertExitCode(1);
+        $this->artisan('fuzzy-search:status')
+            ->expectsOutputToContain('did not finish')
+            ->assertExitCode(0);
+
+        $this->artisan('fuzzy-search:clear', ['model' => User::class])->assertExitCode(0);
+        $this->assertSame(0, DB::table('fuzzy_index_meta')->whereNotNull('flushing_since')->count());
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
+        $this->assertSame($postings, DB::table('fuzzy_index_postings')->count());
+    }
+
+    public function test_the_flushing_since_migration_runs_down_and_up(): void
+    {
+        $migration = require __DIR__ . '/../../database/migrations/2026_10_22_000001_add_flushing_since_to_fuzzy_index_meta_table.php';
+
+        $migration->down();
+        $this->assertFalse(\Illuminate\Support\Facades\Schema::hasColumn('fuzzy_index_meta', 'flushing_since'));
+        $migration->down(); // a second run finds nothing to drop
+        $migration->up();
+        $migration->up();
+        $this->assertTrue(\Illuminate\Support\Facades\Schema::hasColumn('fuzzy_index_meta', 'flushing_since'));
     }
 }
