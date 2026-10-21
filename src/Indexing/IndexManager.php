@@ -1038,11 +1038,15 @@ class IndexManager
     }
 
     /**
-     * Flush (delete) the entire index for a model class.
+     * Flush (delete) the entire index for a model class. When no other model type has a document,
+     * the big tables are truncated as flushAll() does, on every database it truncates on (see
+     * clearIndex()); this type's meta row goes and the others' stay. Otherwise, or when the tables are
+     * busy, its rows are deleted by type.
      */
     public function flush(string $modelClass): void
     {
-        $this->flushing(function () use ($modelClass) {
+        // The only model type indexed: the index is truncated as clear --all does (clearIndex()).
+        $this->clearIndex($modelClass, function () use ($modelClass) {
             // None: nothing is posted under the type. Its row stays (see dictionaryIds()).
             $typeId = self::modelTypeId($modelClass);
 

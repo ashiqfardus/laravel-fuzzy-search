@@ -410,6 +410,54 @@ class ClearAllTest extends TestCase
     }
 
     /**
+     * flush($model), which `rebuild --fresh` runs, truncates the big tables when its type is the only
+     * one with documents, checked under the lock the truncation holds; SQLite deletes. The model
+     * types stay, and the type's meta row goes as it always did.
+     */
+    public function test_flush_truncates_when_the_model_is_the_only_one_indexed(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $dictionaries = $this->dictionaries();
+
+        $statements = $this->statements(fn () => app(IndexManager::class)->flush(User::class));
+
+        foreach (self::TABLES as $table) {
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+        $this->assertSame($dictionaries, $this->dictionaries());
+        $this->assertSame($this->dbDriver !== 'sqlite', (bool) preg_grep('/^truncate /', $statements), implode("\n", $statements));
+        app(IndexManager::class)->indexBatch(User::all());
+        $this->assertGreaterThan(0, User::search('john')->useInvertedIndex()->get()->count());
+    }
+
+    /** With a second type indexed, flush($model) deletes only its own rows. */
+    public function test_flush_deletes_only_its_own_rows_when_another_model_is_indexed(): void
+    {
+        $this->indexBoth();
+        $productType = DB::table('fuzzy_index_model_types')->where('model_type', Product::class)->value('id');
+        $keep        = [
+            'documents'   => DB::table('fuzzy_index_documents')->where('model_type', Product::class)->count(),
+            'postings'    => DB::table('fuzzy_index_postings')->where('model_type_id', $productType)->count(),
+            'model_terms' => DB::table('fuzzy_index_model_terms')->where('model_type_id', $productType)->count(),
+            'meta'        => DB::table('fuzzy_index_meta')->where('model_type', Product::class)->count(),
+        ];
+        $this->assertGreaterThan(0, min($keep));
+
+        $statements = $this->statements(fn () => app(IndexManager::class)->flush(User::class));
+
+        $this->assertEmpty(preg_grep('/^truncate /', $statements), implode("\n", $statements));
+        $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_type', User::class)->count());
+        $this->assertSame(0, DB::table('fuzzy_index_meta')->where('model_type', User::class)->count());
+        $this->assertSame($keep, [
+            'documents'   => DB::table('fuzzy_index_documents')->where('model_type', Product::class)->count(),
+            'postings'    => DB::table('fuzzy_index_postings')->where('model_type_id', $productType)->count(),
+            'model_terms' => DB::table('fuzzy_index_model_terms')->where('model_type_id', $productType)->count(),
+            'meta'        => DB::table('fuzzy_index_meta')->where('model_type', Product::class)->count(),
+        ]);
+        $this->assertSame(DB::table('fuzzy_index_postings')->count(), DB::table('fuzzy_index_postings')->where('model_type_id', $productType)->count());
+    }
+
+    /**
      * On MySQL a reader's open transaction holds a metadata lock on the postings, which LOCK TABLES
      * waits for: only for one second, then clear --all deletes row by row. The reader is not
      * killed (it commits afterwards), and the session's lock_wait_timeout is back where it was,
