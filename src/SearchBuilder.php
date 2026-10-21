@@ -1109,6 +1109,8 @@ class SearchBuilder
         'cursorPaginate', 'cursor', 'lazy', 'chunk', 'chunkById', 'each', 'delete', 'forceDelete',
         'update', 'increment', 'decrement', 'insert', 'insertGetId', 'upsert', 'truncate', 'toBase',
         'toRawSql', 'dd', 'dump', 'sole',
+        // from*() builds the query, but fromQuery() runs the SQL it is given and returns the models.
+        'fromQuery',
     ];
 
     /**
@@ -1296,7 +1298,8 @@ class SearchBuilder
      * row than the one cached, even when the key is cached once (first(), take(), a page, a search
      * on the joined column). A fromSub() can hold such a join where $base->joins does not show it,
      * so a FROM other than the model's own table counts as one (CacheAliasedFromTest). Any other rows
-     * are stored as the attributes the database returned for them.
+     * are stored as the attributes the database returned for them, less the model's $hidden ones: the
+     * cache store is shared, and a hit never serialises them.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
@@ -1320,7 +1323,7 @@ class SearchBuilder
             'more'       => $this->morePages,
             'rows'       => $results->map(fn ($row) => match ($models) {
                 'key'        => ['key' => $row->getKey(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
-                'attributes' => ['attributes' => $row->getRawOriginal(), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
+                'attributes' => ['attributes' => array_diff_key($row->getRawOriginal(), array_flip($row->getHidden())), 'scores' => array_intersect_key($row->getAttributes(), $scores)],
                 default      => (array) $row,
             })->all(),
         ];
@@ -1666,13 +1669,7 @@ class SearchBuilder
         // own restriction is a global scope, which Eloquent groups itself.
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($base);
 
-        foreach ($this->filters as $filter) {
-            if ($filter['operator'] === 'IN') {
-                $base->whereIn($filter['column'], $filter['value']);
-            } else {
-                $base->where($filter['column'], $filter['operator'], $filter['value']);
-            }
-        }
+        $this->applyFilters($base);
 
         // tokenize()->matchAll(): a match holds one term of each word's group
         // (indexedQueryTerms(), which runs first), in a column the search reads, restricted
@@ -1693,6 +1690,36 @@ class SearchBuilder
 
         return $base;
     }
+
+    /** The filter()/filterIn() constraints, as a where() each, on a query whose own wheres are already one group. */
+    private function applyFilters(Builder|EloquentBuilder $query): void
+    {
+        foreach ($this->filters as $filter) {
+            if ($filter['operator'] === 'IN') {
+                $query->whereIn($filter['column'], $filter['value']);
+            } else {
+                $query->where($filter['column'], $filter['operator'], $filter['value']);
+            }
+        }
+    }
+
+    /**
+     * suggest() and didYouMean() offer what the search can return, so the filter()/filterIn()
+     * constraints narrow them as a where() does: a tenant written as filter('tenant_id', $id)
+     * must not be offered another tenant's words.
+     */
+    private function suggestionBase(Builder|EloquentBuilder $query): Builder|EloquentBuilder
+    {
+        if ($this->filters !== []) {
+            \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($query);
+            $this->applyFilters($query);
+        }
+
+        return $query;
+    }
+
+    /** The most results suggest() and didYouMean() are asked for: a ?limit= from the request multiplies queries. */
+    private const MAX_SUGGESTIONS = 50;
 
     /**
      * The column weights the index path reads with: the builder's, and, when its columns
@@ -1738,7 +1765,9 @@ class SearchBuilder
 
         $modelClass = $this->resolveIndexModelClass();
         $override   = $this->stopWordsOverridden ? $this->stopWords : null;
-        $terms      = $indexManager->processTerms($this->searchTerm, $override, $modelClass);
+        // The first query.max_tokens distinct terms, as an extended() query is bounded: every term
+        // reads up to max_postings_per_term rows and is typo-expanded. The rest are ignored, none throws.
+        $terms      = array_slice(array_values(array_unique($indexManager->processTerms($this->searchTerm, $override, $modelClass))), 0, max(1, (int) config('fuzzy-search.query.max_tokens', 32)));
         $weights    = array_fill_keys($terms, 1.0);
 
         // tokenize()->matchAll(): each word's terms, which the LIKE paths read as "every
@@ -4369,7 +4398,8 @@ class SearchBuilder
         // 'auto' leaves a constrained query (a where(), a join, a tenant scope) to the table scan:
         // the dictionary is scoped to the model, not to the query. suggestFrom('index') opts back
         // in. The check reads the query the table scan runs on, so it only switches when that helps.
-        $constrained = $this->suggestSource === 'auto' && $this->hasSuggestionConstraints($this->query);
+        $limit       = max(0, min($limit, self::MAX_SUGGESTIONS));
+        $constrained = $this->suggestSource === 'auto' && $this->hasSuggestionConstraints($this->suggestionBase(clone $this->query));
 
         if ($this->suggestSource !== 'table' && !$constrained) {
             $fromIndex = $this->suggestFromIndex($limit);
@@ -4494,6 +4524,7 @@ class SearchBuilder
         // where(A)->orWhere(B) as one group
         $suggestQuery = self::unionAsTable(clone $this->query);
         \Ashiqfardus\LaravelFuzzySearch\Indexing\RankedCandidates::groupOrWheres($suggestQuery);
+        $this->suggestionBase($suggestQuery);
 
         $targets = $this->suggestTargets();
         $paths   = array_values(array_unique(array_column(array_filter($targets, fn (array $t) => $t['relation'] !== null), 'relation')));
@@ -4600,6 +4631,8 @@ class SearchBuilder
      */
     public function didYouMean(int $limit = 3): array
     {
+        $limit = max(0, min($limit, self::MAX_SUGGESTIONS));
+
         if ($this->searchTerm === '' || mb_strlen($this->searchTerm) < 2) {
             return [];
         }
@@ -4726,7 +4759,7 @@ class SearchBuilder
         usort($alternatives, fn ($a, $b) => ([$a['distance'], $b['_doc_count'], $b['confidence']]
             <=> [$b['distance'], $a['_doc_count'], $a['confidence']]) ?: strcmp($a['term'], $b['term']));
 
-        if ($alternatives !== [] && $this->hasSuggestionConstraints($base = $this->modelBaseQuery($modelClass))) {
+        if ($alternatives !== [] && $this->hasSuggestionConstraints($base = $this->suggestionBase($this->modelBaseQuery($modelClass)))) {
             $alternatives = $this->visibleAlternatives($alternatives, $base, $modelClass, $limit);
         }
 

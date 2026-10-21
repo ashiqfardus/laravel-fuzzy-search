@@ -107,7 +107,7 @@ class ConstrainedSmallRankingTest extends TestCase
             'SoftDeletes get'        => [fn ($term) => count($trashed($term)->take(50)->get()), 29],
             'SoftDeletes count'      => [fn ($term) => $trashed($term)->count(), 29],
             'Scout where() get'      => [fn ($term) => $names($scout($term)->where('email', 'z0@tenant-a.test')->get()), ['Zebra 00']],
-            'Scout soft_delete get'  => [fn ($term) => count($scout($term)->take(50)->get()), 29],
+            'Scout soft_delete get'  => [fn ($term) => count($scout($term)->take(50)->get()), min(29, (int) config('fuzzy-search.max_candidates'))], // the engine cuts take() to max_candidates
             'Scout paginate'         => [fn ($term) => $scout($term)->paginate(10)->total(), 29],
         ];
     }
