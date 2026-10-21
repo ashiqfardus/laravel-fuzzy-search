@@ -14,7 +14,8 @@ use Illuminate\Support\Facades\DB;
  * SQL Server: a write reads and deletes a model's postings by (model_type_id, model_id in (...)) and
  * must seek postings_model_idx. After an automatic statistics update with a sampled scan the optimizer
  * estimated the key's density 50 times too high and scanned the clustered index instead, about 13 s
- * a chunk (6M rows). The statements carry FORCESEEK there; the other databases' SQL is unchanged.
+ * for one read of 500 keys (4.8M documents). The read carries FORCESEEK there; the delete cannot
+ * (SQL Server refuses FORCESEEK on a DELETE's target). The other databases' SQL is unchanged.
  */
 class SqlServerPostingsSeekTest extends TestCase
 {
