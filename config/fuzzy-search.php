@@ -37,7 +37,10 @@ return [
     | Also the largest page size on every path (paginate/simplePaginate clamp
     | perPage to it) and the most rows one model contributes to a federated search.
     |
-    | Recommendation: lower to 200-500 on tables with 100k+ rows.
+    | Lower it if fetching and re-scoring the candidate window is slow or uses
+    | too much memory on your data. It lowers everything above with it: the
+    | largest page, the re-ranked window, and how far the LIKE and extended
+    | paths rank (rows past it come in database order).
     |
     */
     'max_candidates' => 1000,
