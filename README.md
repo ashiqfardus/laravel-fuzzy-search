@@ -799,7 +799,7 @@ A cached entry holds only arrays and scalars. By default that is each model's ke
 A hit re-reads models stored by key, in the cached order, through the current query. That applies its global scopes, its eager loads with their constraints, and its `retrieved` listeners, so `with(['reviews' => fn ($q) => $q->where('user_id', auth()->id())])` is never served to another user. Models stored as attributes are rebuilt from them instead: their `retrieved` listeners and the current eager loads run the same way, but the query does not read them again.
 
 On a hit:
-- A model deleted since the entry was written is left out when the rows were stored by key. Rows stored as attributes (a join, a union, an aliased FROM) and a plain query builder's rows are served as they were stored until the entry expires: a deleted row is served until the TTL ends. A row stored as attributes (a join, a union, an aliased FROM, a `fromSub()` or a select without the key) is stored without the model's `$hidden` attributes and, when the model has a `$visible` list, without the attributes outside it, so after a cache hit `makeVisible()` finds them empty; don't cache such a query if you show hidden columns from it.
+- A model deleted since the entry was written is left out when the rows were stored by key. Rows stored as attributes (a join, a union, an aliased FROM) and a plain query builder's rows are served as they were stored until the entry expires: a deleted row is served until the TTL ends. A row stored as attributes (a join, a union, an aliased FROM, a `fromSub()` or a select without the key) is stored without the model's `$hidden` attributes, so after a cache hit `makeVisible()` finds them empty; don't cache such a query if you show hidden columns from it. With a `$visible` list, the attributes outside it are still stored in the cache store (it filters serialisation, and a joined or aliased column must read the same on a hit as on a miss).
 - `_highlighted`, `_matches` and `_debug` are computed for the current request, so each viewer sees their own `makeVisible()`/`makeHidden()`.
 - The rows are still the ones the cached search found: a row that no longer matches stays until the entry expires.
 
@@ -849,7 +849,7 @@ Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignor
 
 ## Scout Driver
 
-The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed — no separate driver package needed. It supports Laravel Scout 10.x and 11.x.
+The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed — no separate driver package needed. It supports Laravel Scout 10.1 or later and 11.x.
 
 ```
 SCOUT_DRIVER=fuzzy-search
