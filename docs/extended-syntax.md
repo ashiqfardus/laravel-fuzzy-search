@@ -76,6 +76,8 @@ An extended query applies no synonyms and drops no stop words. The `synonyms` co
 
 A query's LIKE patterns share one budget: a search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds. Each `~word` leaf gets up to `max_patterns` patterns per column. When the leaves together would pass the budget, each leaf and column gets an equal share, always including its plain contains pattern. A query too large even for that throws `QuerySyntaxException`. The 32-token `query.max_tokens` limit on two columns fits. The `whereFuzzyMultiple()`-style macros, the `Fuzzy` scopes and `tableSearch()` share the same budget across their columns.
 
+On the BM25 index (`useInvertedIndex()`) `query.max_tokens` bounds a plain query too, as the number of distinct terms: the first 32 are used and the rest ignored, with no exception. Each term reads up to `bm25.max_postings_per_term` rows and is typo-expanded, so the cap keeps one request from reading terms x expansions x that many rows.
+
 ### Pagination with Extended Syntax
 
 `paginate()`, `simplePaginate()` and `get()` all work with `extended()` / `searchBoolean()`. `cursorPaginate()` is still unsupported.
