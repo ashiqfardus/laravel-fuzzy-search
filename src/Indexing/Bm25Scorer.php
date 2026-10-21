@@ -146,10 +146,17 @@ class Bm25Scorer
      * 1% of them; the join takes 0.2 s). The join also compares the two byte-wise, as the subquery
      * does, so a model_id that matches the key only under the key's collation (aBc for a row ABC) is
      * no match, and a model is joined once. But it reads every matched posting, however few rows the
-     * query accepts, so RankedCandidates::whereMatches() gives $model only for a read with no
+     * query accepts, so RankedCandidates::whereMatches() gives $model there only for a read with no
      * constraint and a sparse word. Without $model, or with a key no index serves,
-     * the read stays the EXISTS below. PostgreSQL and SQL Server keep it too: they read the table
-     * whole in tens of milliseconds at 1M rows (a hash semi-join), where the join measured slower.
+     * the read stays the EXISTS below. PostgreSQL keeps it too, where the join measured slower (a
+     * hash semi-join reads the table whole in tens of milliseconds at 1M rows, and
+     * RankedCandidates::walkToPage() keeps a page's read a walk of the order column's index), and
+     * RankedCandidates::matches() lists a sparse word's string ranking, whose key the cast may keep
+     * off its index (a native uuid). SQL Server keeps it as well, but given $model it compares
+     * model_id with the key in the key's own type too (sqlServerMatch()): with the cast of the key
+     * alone no plan could look a matched posting up by key, and the table was read whole, a cast and
+     * a hash probe per row (4.7 s for a page at 3M rows for a word in 395 of them; 1.5 ms looked up
+     * by key).
      *
      * On MySQL and MariaDB a string cast takes the connection's collation, and a connection whose
      * collation differs from model_id's failed with 1267 "Illegal mix of collations". The key is
@@ -163,7 +170,7 @@ class Bm25Scorer
      *
      * @param array<int, string>|array<string, float> $terms         Processed terms, or term => weight
      * @param array<string, int|float>                $columnWeights column => weight; a weight <= 0 removes the column
-     * @param \Illuminate\Database\Eloquent\Model|null $model        the model whose key $qualifiedKey names, to join on (MySQL, MariaDB)
+     * @param \Illuminate\Database\Eloquent\Model|null $model        the model whose key $qualifiedKey names, to join on (MySQL, MariaDB) or to compare model_id in its key's type (SQL Server)
      */
     public function whereRanked(\Illuminate\Database\Query\Builder $query, string $qualifiedKey, array $terms, string $modelType, array $columnWeights = [], ?\Illuminate\Database\Eloquent\Model $model = null): void
     {
@@ -216,8 +223,82 @@ class Bm25Scorer
         // where a hash join driven by the postings took 0.04 s).
         $select = $driver === DbDialect::MYSQL ? '/*+ SEMIJOIN(FIRSTMATCH) */ 1' : '1';
 
-        $query->whereExists(fn ($subquery) => $postings($subquery->selectRaw($select))
-            ->whereRaw($subquery->getGrammar()->wrap('fzr.model_id') . " = {$cast}"));
+        // SQL Server, given $model: model_id is compared with the key in the key's own type too, so the
+        // optimizer can read the matched postings first and look each up by key (see sqlServerMatch()).
+        $match = $model !== null && $driver === DbDialect::SQLSRV ? self::sqlServerMatch($query, $model) : null;
+
+        $query->whereExists(function ($subquery) use ($postings, $select, $cast, $match, $key) {
+            $modelId = $subquery->getGrammar()->wrap('fzr.model_id');
+
+            $postings($subquery->selectRaw($select))
+                ->whereRaw(sprintf($match ?? '%1$s = %3$s', $modelId, $key, $cast));
+        });
+    }
+
+    /**
+     * SQL Server: how whereRanked() compares model_id with $model's key, as a sprintf() format of
+     * model_id (1), the key (2) and its cast (3), or null for the cast alone. The cast of the key
+     * keeps the key's index out, so no plan could look a matched posting up by key: an ordered page
+     * and its COUNT probed the postings for every row of the table, or hashed the table whole
+     * against them, a cast per row (4.7 s for a page at 3M rows for a word in 395 of them; 1.5 ms
+     * looked up by key). model_id is compared in the key's own type as well:
+     *  - an integer key, and a native uuid (uniqueidentifier): model_id TRY_CAST to it, which is NULL
+     *    for another model's model_id, beside the cast. The cast stays, as the probe of the
+     *    postings per row it allows is the faster read for a denser word's first page, which walks
+     *    the order column's index (1.3 ms at 300k rows for a word in 8% of them, 1.4 s without it);
+     *  - an nchar or nvarchar key in model_id's collation: the two columns as they are, in place of
+     *    the cast (beside it, or with a COLLATE on either side, the plan read the table whole still:
+     *    44 ms where this takes 0.7 at 200k rows for a word in 266 of them). RankedCandidates gives
+     *    $model for a string key only for a sparse word, as a denser word's first page walks the order
+     *    column's index probing the postings by the key's cast.
+     * The key column's type and collation are read from the table the FROM names (sqlServerColumn());
+     * another key keeps the cast alone.
+     */
+    private static function sqlServerMatch(\Illuminate\Database\Query\Builder $query, \Illuminate\Database\Eloquent\Model $model): ?string
+    {
+        if (in_array($model->getKeyType(), ['int', 'integer'], true)) {
+            return '%1$s = %3$s and TRY_CAST(%1$s AS BIGINT) = %2$s';
+        }
+
+        $connection = $query->getConnection();
+        $table      = DbDialect::fromTable($query->from)[0] ?? null;
+        $key        = $table === null ? null : self::sqlServerColumn($connection, $table, $model->getKeyName());
+
+        if ($key !== null && in_array($key[0], ['nvarchar', 'nchar'], true)) {
+            $modelId = self::sqlServerColumn($connection, 'fuzzy_index_postings', 'model_id');
+
+            return $key[1] !== null && $key[1] === ($modelId[1] ?? null) ? '%1$s = %2$s' : null;
+        }
+
+        return ($key[0] ?? null) === 'uniqueidentifier' ? '%1$s = %3$s and TRY_CAST(%1$s AS UNIQUEIDENTIFIER) = %2$s' : null;
+    }
+
+    /** @var array<string, array{string, ?string}|null> connection, table and column => [type, collation] */
+    private static array $sqlServerColumns = [];
+
+    /**
+     * SQL Server: the type and collation of $table.$column in the default schema, read from
+     * information_schema once per connection, database, table prefix, table and column for the
+     * process (restart long-running workers after changing either); null for a column it cannot find.
+     *
+     * @return array{string, ?string}|null
+     */
+    private static function sqlServerColumn(\Illuminate\Database\ConnectionInterface $connection, string $table, string $column): ?array
+    {
+        $id = \Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns::connectionKey($connection) . "|{$table}|{$column}";
+
+        if (!array_key_exists($id, self::$sqlServerColumns)) {
+            $row = $connection->selectOne(
+                'select data_type as type, collation_name as collation from information_schema.columns'
+                . ' where table_schema = schema_name() and table_name = ? and column_name = ?',
+                [$connection->getTablePrefix() . $table, $column]
+            );
+            $row = $row === null ? null : (object) $row; // an app-wide array fetch mode returns arrays
+
+            self::$sqlServerColumns[$id] = $row === null ? null : [strtolower((string) $row->type), $row->collation === null ? null : (string) $row->collation];
+        }
+
+        return self::$sqlServerColumns[$id];
     }
 
     /**
