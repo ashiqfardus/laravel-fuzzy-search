@@ -107,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-term `extended()` queries score each leaf term on its own, and an accented term and its folded form count once (the better of the two). ([guide][u-search])
 - `FederatedSearch` searches a `Fuzzy`-trait model with its own `$fuzzyAlgorithm` and `$fuzzyOptions`. A model without the `Searchable` trait contributes at most `max_candidates` rows. ([guide][u-federated])
 - The Scout engine's `update()` writes a collection in one transaction. ([guide][u-federated])
-- The Scout engine cuts `paginate()`, `simplePaginate()` and `take()` to `max_candidates`, as `SearchBuilder` and `FederatedSearch` cut a page size; 2.0 hydrated any size it was given. ([guide][u-federated])
+- The Scout engine cuts `take()`, and on Scout 10.1 and later `paginate()` and `simplePaginate()`, to `max_candidates`, as `SearchBuilder` and `FederatedSearch` cut a page size; 2.0 hydrated any size it was given. Scout 10.0 builds those paginators itself, so its pages are not cut. ([guide][u-federated])
 - An index-path query uses its first `query.max_tokens` distinct terms (32) and ignores the rest, without an exception; each term reads up to `bm25.max_postings_per_term` rows. ([guide][u-bm25])
 - `suggest()` and `didYouMean()` cut their limit to 50. ([guide][u-search])
 - The FuzzySearch singleton reads `config('fuzzy-search')` live, so runtime overrides reach the drivers. ([guide][u-api])

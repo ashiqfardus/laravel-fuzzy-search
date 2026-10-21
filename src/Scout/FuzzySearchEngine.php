@@ -112,7 +112,13 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     {
         // Scout resolves ?page to any whole number of at least 1. Capped as SearchBuilder::resolvePage()
         // caps it, so that no offset (plus one page) overflows into a float: past that, every page is empty.
-        $perPage = SearchBuilder::clampPerPage((int) $perPage);
+        // Cut to max_candidates where the engine builds the paginator (Scout 10.1 and later, through
+        // paginateUsingDatabase() and simplePaginateUsingDatabase()). Scout 10.0 builds paginate()'s and
+        // simplePaginate()'s paginator itself with the page size it was given, so a cut page there would
+        // claim no next page and leave the rest of the matches unreachable: it is not cut.
+        $perPage = interface_exists(PaginatesEloquentModelsUsingDatabase::class)
+            ? SearchBuilder::clampPerPage((int) $perPage)
+            : max(1, (int) $perPage);
         $page    = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
 
         // Scout 10.0 (no PaginatesEloquentModelsUsingDatabase) counts paginate()'s and paginateRaw()'s
