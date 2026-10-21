@@ -75,8 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `2026_10_13_000002_backfill_fuzzy_index_model_terms_table` | Fills it from an existing index | reads every posting (about 3 minutes for 6M rows on MySQL) |
 | `2026_10_20_000001_drop_term_length_index_from_fuzzy_index_terms_table` | Drops the dictionary index `2026_10_01_000001` built, which no search reads | instant |
 
-<!-- PENDING (round 14): a migration line from lanes F/G or the peer branches goes here, if any. Remove this comment before release. -->
-
 ### Added
 
 - PHP 8.5 support.
@@ -112,7 +110,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `composer.json` requires `illuminate/http` directly. ([guide][u-filament])
 - CI runs the full suite against SQLite, MySQL 8, MariaDB 11.4, PostgreSQL 14 and SQL Server 2022.
 
-<!-- PENDING (round 14): Changed lines from lanes F/G and the peer branches go here: the PostgreSQL/SQL Server ordered index search performance improvement, and any others. Remove this comment before release. -->
+- `using('levenshtein')` makes no typo patterns for a term shorter than `typo_tolerance.min_word_length` (4), so `jo` no longer finds most of a table. ([guide][u-search])
+- An empty or NULL column scores 0 for a short term; it no longer earns the typo floor. ([guide][u-search])
+- `preset()` leaves out the columns the table doesn't have; explicit columns are untouched. ([guide][u-search])
+- An extended query throws `QuerySyntaxException` for a `!` with nothing after it (it was ignored). ([guide][u-extended])
+- The LIKE and extended paths read only the page's rows under `orderBy()` or `withRelevance(false)`; `_score` is normalised over the rows read. ([guide][u-search])
+- A plain `fuzzy-search:rebuild` removes the documents of rows that were deleted, trashed or left out by `searchIndexQuery()` without model events. Rows a global scope hides keep theirs, and a Scout model keeps the trashed rows Scout indexed while `scout.soft_delete` is on. `--async` does it in the batch's last job, the new `PruneIndexJob`. ([guide][u-indexing])
+- `FederatedSearch::paginate()` reads fresh under `cache.enabled`, like `paginate()`, and its analytics event per `Searchable` model reports the total match count as `candidateCount`. ([guide][u-federated])
+- Index names the migrations create carry the table prefix when the connection's `prefix_indexes` is on, so installs with different prefixes can share one schema (or one SQLite file); existing installs keep their names.
+- Performance: on a large index (more documents than `bm25.max_postings_per_term`), a typo expansion no longer reaches a word in more than half of the model's documents. Such a word is a stop word there, and reading its postings was most of the search (`smith` matching `with` at 1M rows: 2.0 to 2.5 s). Smaller indexes keep every expansion. ([guide][u-bm25])
+- Performance: an `orderBy()` index search with a capped ranking reads only its page. PostgreSQL walks the order column's index instead of a hash semi-join over the whole table (24M rows: 3.3 s warm, up to 86 s cold, down to 7 to 12 ms), and SQL Server inlines the matched term ids so it can estimate them from statistics (deep pages at 1M rows: 2.5 s to 0.76 s).
 
 ### Deprecated
 
@@ -126,8 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 These are defects in 2.0.x. Changes already listed under Upgrade notes are not repeated.
-
-<!-- PENDING (round 14): Fixed lines from lanes F/G and the peer branches go here, in their group. Remove this comment before release. -->
 
 **Search**
 
@@ -149,11 +154,18 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `?page` values such as `abc`, `0` or `-3`, and `page(0)` or `skip(-n)`, threw or served the wrong rows. ([guide][u-search])
 - `boostRecent()` threw on a column that reads as an array or object, and boosted a future date as if it were past. ([docs][r-recency])
 - `metaphone` with a term that encodes to an empty code returned every row whose code is empty. ([docs][r-shadow])
-- `soundex`: a term without letters matched unrelated rows, and on PostgreSQL a leading non-ASCII letter was skipped, and capitalised names were missed without fuzzystrmatch.
+- `soundex`: a term without letters matched unrelated rows, and on PostgreSQL a leading non-ASCII letter was skipped, and capitalised names were missed without fuzzystrmatch. A multi-word term did not find the full name on MySQL and MariaDB, and on SQLite and SQL Server it matched by spelling patterns, so `jon` missed "John" and `smith` missed "Smyth"; SQL Server now uses its native `SOUNDEX()` and SQLite a function the package registers.
 - A searchable column named with an SQL keyword broke `get()` on SQLite. A column name with a trailing newline passed the column check. ([guide][u-exceptions])
-- `suggest()`'s table scan missed capitalised values on PostgreSQL, and offered whichever completions it read first instead of the shortest.
+- `suggest()`'s table scan missed capitalised values on PostgreSQL, did not complete capitalised non-ASCII words, and offered whichever completions it read first instead of the shortest.
 - `first()` on a query-builder source threw a `TypeError`. ([guide][u-api])
 - `debugScore()` on the index path named `fuzzy` as the algorithm, and a zero-config model under `default_algorithm => 'like'` reported `simple`.
+- `using('levenshtein')` matched most rows for a short term and found `Monica Geller` for `john`. ([guide][u-search])
+- The exact match did not always rank first on SQLite and PostgreSQL (its case counted), so past `max_candidates` it could fall out of the window.
+- `didYouMean()` corrected a multi-word term as one word; it now corrects it word by word.
+- `highlight()` on the LIKE path did not mark tokens and synonyms.
+- On SQLite, a non-ASCII LIKE term matched only in its own case.
+- `facet()` and the other column checks accepted a trailing or doubled dot.
+- A JSON resource page past the last one carried suggestions.
 
 **Index**
 
@@ -161,6 +173,13 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - A BM25 search that matched nothing fired no `FuzzySearchExecuted`. ([guide][u-api])
 - BM25 idf compared a word's count across every model with the searched model's own total, so a word another model used often ranked the best match last, with a negative `_score`. Every `rebuild --fresh` inflated the counts of words other models still use. ([guide][u-bm25])
 - A ranking capped at `bm25.max_postings_per_term` changed between requests with no data change. ([guide][u-indexing])
+- `bm25.max_postings_per_term` capped all the words of a search together, so a common word's rows could push a rarer word's matches out of a relevance search, the best match holding both words included. It now caps each word on its own. ([guide][u-indexing])
+- A typo expansion of a word the model's index holds is scored with that word's idf when its own is higher, so a common word's rare misspellings no longer outrank every exact hit of it. ([guide][u-bm25])
+- `Searchable::reindexRelated()` queued its jobs inside the transaction and after a rollback, or wrote them there holding shared locks on every related row. It now writes after the commit, as the observer does; a failed in-process write is reported, naming the model and key. ([guide][u-bm25])
+- An index write waited for a transaction of any connection: a save committed on its own was indexed when another connection's transaction ended, and a save inside its own transaction was indexed at the inner commit of another connection's. It waits only for its model's own connection. ([guide][u-bm25])
+- A primary-key change left the old key's index entries behind.
+- A job of a cancelled `rebuild --async` batch still indexed rows.
+- Under an app-wide array fetch mode (a `StatementPrepared` listener setting `PDO::FETCH_ASSOC`), index searches, `didYouMean()`, `asYouType()`, `fuzzy-search:status` and the search log's reads threw "Attempt to read property on array". The package now reads its own rows as objects.
 - Concurrent index writes: two writes for one row counted it twice, a write that read before a newer save indexed the older text, and writes whose words crossed could deadlock. A re-index also rewrote the dictionary row of every word it kept. ([setup][d-bm25-setup])
 - MySQL/MariaDB, an index write inside your transaction: it could leave word counts wrong, put a deleted row back or index older text, and lose a deadlock to a write of a neighbouring row. ([setup][d-bm25-setup])
 - `fuzzy-search:clear --all` could leave a model's totals short when a write committed during it, and a flush could fail another model's write on the postings' foreign key. ([docs][d-bm25-commands])
@@ -168,7 +187,7 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `restore()` did not re-index a soft-deleted model, and with `indexing.async` off a soft delete's removal could land after a restore. ([guide][u-indexing])
 - A searchable column holding `"0"` was skipped, and one qualified with the model's own table (`posts.title`) was never indexed. ([guide][u-indexing])
 - On a read/write split, an index write read the row from the replica. ([docs][d-bm25-how])
-- On a connection with a table prefix, indexing and the flush's orphan sweep ran raw SQL against unprefixed tables.
+- On a connection with a table prefix, `migrate` failed on MySQL (the terms table's unique key was added to the unprefixed table), and indexing and the flush's orphan sweep ran raw SQL against unprefixed tables. A second install with its own prefix in a shared schema stopped at `relation postings_model_idx already exists`.
 - `count()` and `paginate()` on `useInvertedIndex()` did not cap the term at `query.max_term_length`. `take(PHP_INT_MAX)` threw, and `skip()->take()->get()` hydrated every model up to twice the page end.
 - An empty index result came back in a base `Collection`, not the model's collection.
 - A rebuild of a single-table-inheritance parent indexed each chunk under its first row's class. ([guide][u-indexing])
@@ -184,11 +203,13 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - The engine bound every word of a long query; it now searches the first `query.max_term_length` characters.
 - A `?page` near `PHP_INT_MAX`, or a negative `take()`, threw or sliced from the end.
 - The dual-trait model (Scout's `Searchable` with the package's, as `docs/integrations.md` shows it) threw on `search()` and every save. ([docs][d-scout])
+- `delete()` of a collection removed the models one at a time; it now uses one transaction per 500 models.
 
 **Federated**
 
 - `getCounts()` counted the page, not the matches. ([guide][u-federated])
 - `searchIn()` was ignored for `Searchable` models, and a column a table lacks raised an SQL error. ([guide][u-federated])
+- `FederatedSearch::paginate()` ranked each model twice on the index, once to count and once for the page. It ranks once; totals and rows are unchanged.
 - `options()` was never applied, a negative `limit()` sliced from the end, and the declared columns of a model without the `Searchable` trait were never seen (on a Scout model, reading them ran an index write). ([guide][u-federated])
 
 **In-memory (`FuzzySearch::on()`)**
@@ -202,6 +223,7 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `rebuild` did not fill metaphone shadow columns, and printed "Done." for a model that produced no terms; it also chunks by key now (`chunkById()`). ([guide][u-bm25])
 - A class named with a leading backslash (`"\App\Models\Post"`) flushed and cleared nothing, and `clear` or `flush` refused a class that no longer exists. ([guide][u-indexing])
 - The deprecated `fuzzy-search:index` died on SQLite and SQL Server, ignored declared columns and threw on a Scout dual-trait model.
+- `fuzzy-search:benchmark` and `:explain` wrote analytics rows, timed the cache instead of the search, and did not exit 1 with a message for a bad algorithm or an empty term.
 - `fuzzy-search:explain` printed a hand-built "Pattern Analysis" that did not match the search; it prints the search's SQL and bindings.
 
 **Per database**
@@ -213,8 +235,6 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `PorterStemmer`'s install hint named a version it cannot load; it names `wamania/php-stemmer:^1.3`. ([docs][d-stemming])
 
 ### Security
-
-<!-- PENDING (round 14): Security lines from lanes F/G and the peer branches, if any, go here. Remove this comment before release. -->
 
 - **Soundex filter bypass** (2.0.0–2.0.1; MySQL, MariaDB, PostgreSQL with native functions). `SOUNDEX(...) OR SOUNDEX(...)` was not parenthesised, so a `where()`, tenant scope or soft-delete scope chained after `using('soundex')` guarded one arm only. Check soundex searches behind a tenant or permission constraint. ([guide][u-search])
 - **The Scout engine ignored `where()`, `whereIn()`, `whereNotIn()` and soft deletes** (2.0.x): a Scout `where('tenant_id', …)` returned every tenant's matches, and trashed rows came back. Check Scout searches that rely on these constraints. ([guide][u-federated])
