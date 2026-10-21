@@ -29,12 +29,29 @@ class IndexManager
      */
     private const ATTEMPTS = 3;
 
+    /**
+     * Rows a MySQL/MariaDB flush deletes per statement, each in its own transaction, where it does
+     * not truncate (deleteInBatches()). One DELETE of a large index's postings, 207M rows at 12M
+     * documents, ran 52 minutes in one transaction, and the rebuild after it crawled behind the
+     * purge of those rows. At the 65,000 rows a second that DELETE ran, 20,000 rows take about 0.3
+     * s: a write of another model waits at most that for a batch's locks, a batch's undo is a few
+     * MB, which purge clears as the batches go, and a commit's log flush is under 1% of a batch.
+     */
+    private const FLUSH_ROWS = 20_000;
+
+    /** The truncate's tries on MySQL/MariaDB (truncateWhenFree()), and the pause between them in microseconds. */
+    private const TRUNCATE_TRIES = 3;
+    private const TRUNCATE_PAUSE = 2_000_000;
+
     // Every model id is bound as a string: model_id is a varchar, and an integer bound against it
     // makes MySQL/MariaDB compare numerically and SQL Server convert the column, so neither can
     // seek the key. The claim's FOR UPDATE then scans, and locks, every document row of the
     // model type: writes for different rows waited on each other and deadlocked (1213).
 
     private Pipeline $default;
+
+    /** FLUSH_ROWS; the tests set it lower to see several batches. */
+    private int $flushRows = self::FLUSH_ROWS;
 
     public function __construct(
         private TokenizerInterface $tokenizer,
@@ -793,7 +810,9 @@ class IndexManager
      * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
      * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
      * from its one writer, each held to the commit: `clear --all` ran its DELETEs autocommitted,
-     * one by one, and lost the meta the same way. flushAll() keeps it on every path it takes.
+     * one by one, and lost the meta the same way. flushAll() keeps it on every path it takes,
+     * but for the batched DELETEs of MySQL/MariaDB outside a transaction of yours (clearInBatches(),
+     * flushInBatches()), which run while nothing indexes.
      *
      * SQL Server: the index write lock first (lockIndexForWrite()), as every index write
      * takes it, so the flush waits for the writes in flight and new ones wait for its commit. Its
@@ -835,8 +854,11 @@ class IndexManager
      *   session may truncate a table it has write-locked: the postings, the documents and the model
      *   terms. Laravel 10 connects to it as mysql.
      * - MySQL: as MariaDB (the terms are truncated too, with foreign_key_checks off for that
-     *   statement, unless a table of the app's references them), but its LOCK TABLES has no NOWAIT, so the session's lock_wait_timeout is
-     *   set to 1 (the least it takes) for it, once, and put back after.
+     *   statement, unless a table of the app's references them), but its LOCK TABLES has no NOWAIT,
+     *   so each try waits one second at most, and only while no other session holds one of the
+     *   tables (truncateWhenFree()).
+     * MySQL and MariaDB try 3 times, 2 s apart; where they still cannot truncate, they delete in
+     * bounded transactions (clearInBatches()) rather than in one.
      * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
      * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). Every DELETE path
@@ -849,7 +871,7 @@ class IndexManager
      * one of those (a search, a sync IndexModelJob) closed the cycle. MySQL and MariaDB killed the
      * app's transaction (1213), its own rows with it; PostgreSQL the app's or the clear's (40P01,
      * which Laravel's savepoint handler turned into a DeadlockException past the fallback). Searches
-     * hold their locks for a moment, so a refusal is tried again (withoutWaiting()).
+     * hold their locks for a moment, so a refusal is tried again (withoutWaiting(), truncateWhenFree()).
      *
      * The DELETEs run instead inside a transaction of the caller's on MySQL and MariaDB (TRUNCATE and
      * LOCK TABLES would commit it), while the tables stay busy, and wherever TRUNCATE is refused: a
@@ -857,9 +879,11 @@ class IndexManager
      * TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign key to one of these
      * tables. A reader does not hold them off. If the DELETEs fail too, their error is thrown. On
      * PostgreSQL a refusal rolls back to a savepoint (the transaction would be aborted otherwise);
-     * SQL Server rolls back the whole transaction on one, so it checks both first.
+     * SQL Server rolls back the whole transaction on one, so it checks both first. On MySQL and
+     * MariaDB outside a transaction of yours the DELETEs run in bounded transactions
+     * (clearInBatches()); one interrupted part way is finished by running it again.
      *
-     * ponytail: on MariaDB each TRUNCATE commits on its own, under the table locks: no other session
+     * ponytail: on MySQL/MariaDB each TRUNCATE commits on its own, under the table locks: no other session
      * sees the index half cleared, but a clear interrupted part way leaves it so until it is run
      * again. A crash-atomic cheap clear there, and a cheap one on MySQL, would swap in empty copies
      * of the tables (RENAME TABLE), at the cost of rebuilding their foreign keys.
@@ -875,7 +899,8 @@ class IndexManager
      * truncated only if no other type has a document, which is checked after the lock that holds
      * index writes off (the table locks on MySQL/MariaDB, flushing()'s lock and the table lock on
      * PostgreSQL, the index write lock on SQL Server), so no write of another type lands between
-     * the check and the TRUNCATE. Otherwise $byType (flush()'s DELETE by type) runs in flushing().
+     * the check and the TRUNCATE. Otherwise $byType (flush()'s DELETE by type) runs in flushing(),
+     * or on MySQL/MariaDB outside a transaction of yours flushInBatches() does.
      */
     private function clearIndex(?string $only, ?\Closure $byType = null): bool
     {
@@ -940,26 +965,17 @@ class IndexManager
                     $connection->unprepared('UNLOCK TABLES');
                 }
             };
-            if ($mariadb) {
-                $this->withoutWaiting($locked);
-            } else {
-                // MySQL's LOCK TABLES has no NOWAIT: wait one second for the tables (the least
-                // lock_wait_timeout allows), once, and delete row by row if they stay busy.
-                $wait = (int) $connection->scalar('select @@session.lock_wait_timeout');
-                try {
-                    $connection->unprepared('SET SESSION lock_wait_timeout = 1');
-                    if (!$this->tablesInUse($tables)) {
-                        $locked();
-                    }
-                } catch (\Illuminate\Database\QueryException) {
-                    // refused or busy: the DELETEs below
-                } finally {
-                    $connection->unprepared("SET SESSION lock_wait_timeout = {$wait}");
-                }
+            // Another type has documents: nothing to truncate, so no table lock to take either (the
+            // check under the lock stays: this read holds nothing).
+            if ($alone()) {
+                $this->truncateWhenFree($locked, $tables, $mariadb);
             }
             if ($ran) {
                 return true;
             }
+            $only === null ? $this->clearInBatches($tables) : $this->flushInBatches($only);
+
+            return false;
         }
 
         $truncated = [];
@@ -1019,13 +1035,14 @@ class IndexManager
      * deadlock the server breaks by killing the app's transaction. So the clear does not ask. One
      * race stays, accepted: a transaction that starts reading one index table between this check and
      * LOCK TABLES, then reads another during the wait of at most a second, can be chosen as the
-     * victim (an explicit transaction across two index tables, in a window of microseconds). False
-     * when the lock table cannot be read (performance_schema off, no privilege, MySQL < 8.0.16):
-     * LOCK TABLES then waits its one second.
+     * victim (an explicit transaction across two index tables, in a window of microseconds). Null
+     * when the lock table cannot be read (performance_schema off, no privilege, MySQL < 8.0.16, any
+     * error): the caller then counts the tables as in use, as a LOCK TABLES it cannot see clear of a
+     * reader could cost the reader's transaction.
      *
      * @param  list<string>  $tables
      */
-    private function tablesInUse(array $tables): bool
+    private function tablesInUse(array $tables): ?bool
     {
         $connection = DB::connection();
         $names      = array_map(fn ($table) => $connection->getTablePrefix() . $table, $tables);
@@ -1037,18 +1054,65 @@ class IndexManager
                 $names
             ) > 0;
         } catch (\Illuminate\Database\QueryException) {
-            return false;
+            return null;
         }
     }
 
     /**
-     * Run $truncate, whose table locks are taken with NOWAIT, and tell whether it ran. Refused
-     * because the tables are busy (PostgreSQL's 55P03, MariaDB's 1205), it is tried again: a search
-     * holds its shared lock only while it runs, so under traffic one try mostly meets one. Any other
-     * refusal (a privilege, a foreign key) is final. Between tries MariaDB holds no lock; PostgreSQL
-     * holds flushing()'s lock, so index writes wait those moments too, as they wait for the clear.
-     * Anything else goes up, a DeadlockException too: Laravel rolls back no savepoint for one, so
-     * flushing()'s transaction rolls back whole and the index stays as it was.
+     * Run clearIndex()'s $truncate on MySQL/MariaDB, TRUNCATE_TRIES times TRUNCATE_PAUSE apart at
+     * most, until it ran: a reader's transaction mostly ends within them. MariaDB takes its table
+     * locks with NOWAIT, refused at once (1205) while another session holds one. MySQL's LOCK
+     * TABLES has no NOWAIT: a try waits one second at most (the least lock_wait_timeout allows; the
+     * session's own is put back after), and is made only while no other session holds one of the
+     * tables (tablesInUse()). Where that cannot be read, the tables count as in use and no try is
+     * made: clearIndex() deletes at once. So an app's transaction waits at most a second a try. A
+     * refusal other than a lock wait (a privilege, a foreign key) ends the tries.
+     *
+     * @param  list<string>  $tables
+     */
+    private function truncateWhenFree(\Closure $truncate, array $tables, bool $mariadb): void
+    {
+        $connection = DB::connection();
+        $wait       = $mariadb ? null : (int) $connection->scalar('select @@session.lock_wait_timeout');
+        try {
+            if ($wait !== null) {
+                $connection->unprepared('SET SESSION lock_wait_timeout = 1');
+            }
+            for ($try = 1; $try <= self::TRUNCATE_TRIES; $try++) {
+                $busy = $mariadb ? false : $this->tablesInUse($tables);
+                if ($busy === null) {
+                    return;
+                }
+                if (!$busy) {
+                    try {
+                        $truncate();
+
+                        return;
+                    } catch (\Illuminate\Database\QueryException $e) {
+                        if (($e->errorInfo[1] ?? null) !== 1205) {
+                            return;
+                        }
+                    }
+                }
+                if ($try < self::TRUNCATE_TRIES) {
+                    usleep(self::TRUNCATE_PAUSE);
+                }
+            }
+        } finally {
+            if ($wait !== null) {
+                $connection->unprepared("SET SESSION lock_wait_timeout = {$wait}");
+            }
+        }
+    }
+
+    /**
+     * Run $truncate, whose table locks are taken with NOWAIT (PostgreSQL), and tell whether it ran.
+     * Refused because the tables are busy (55P03), it is tried again: a search holds its shared
+     * lock only while it runs, so under traffic one try mostly meets one. Any other refusal (a
+     * privilege, a foreign key) is final. Between tries it holds flushing()'s lock, so index writes
+     * wait those moments too, as they wait for the clear. Anything else goes up, a
+     * DeadlockException too: Laravel rolls back no savepoint for one, so flushing()'s transaction
+     * rolls back whole and the index stays as it was.
      *
      * ponytail: 5 tries 200 ms apart, then the DELETEs; make them configurable if an index under
      * constant load keeps deleting row by row.
@@ -1061,7 +1125,7 @@ class IndexManager
 
                 return true;
             } catch (\Illuminate\Database\QueryException $e) {
-                if ($try === 5 || ($e->getCode() !== '55P03' && ($e->errorInfo[1] ?? null) !== 1205)) {
+                if ($try === 5 || $e->getCode() !== '55P03') {
                     return false;
                 }
                 usleep(200_000);
@@ -1070,10 +1134,130 @@ class IndexManager
     }
 
     /**
+     * clearIndex()'s DELETE of every row on MySQL/MariaDB outside a transaction of yours, in
+     * bounded transactions as flushInBatches() deletes a model's (see there): the postings, the
+     * models' words and the documents, each model's FLUSH_ROWS at a time, the meta rows, then the
+     * words. Not atomic: a write during it can survive it in part, and an interrupted one leaves the
+     * index partly emptied; run it again, when the index is idle, so it truncates.
+     *
+     * @param  list<string>  $tables  the index tables there are (no model terms before 2026_10_13_000001)
+     */
+    private function clearInBatches(array $tables): void
+    {
+        // Before the upgrade's migrations the postings name their model by class (UPGRADE: A large index).
+        $posted  = DB::connection()->getSchemaBuilder()->hasColumn('fuzzy_index_postings', 'model_type_id') ? 'model_type_id' : 'model_type';
+        $byModel = [
+            'fuzzy_index_postings'    => [$posted, 'model_id'],
+            'fuzzy_index_model_terms' => ['model_type_id', 'term_id'],
+            'fuzzy_index_documents'   => ['model_type', 'model_id'],
+        ];
+        foreach (array_intersect_key($byModel, array_flip($tables)) as $table => [$model, $key]) {
+            foreach (DB::table($table)->distinct()->pluck($model) as $type) {
+                $this->deleteInBatches($table, [$model => $type], $key);
+            }
+        }
+        DB::table('fuzzy_index_meta')->delete();
+        $this->deleteInBatches('fuzzy_index_terms', [], 'id');
+    }
+
+    /**
+     * flush()'s DELETE by type on MySQL/MariaDB outside a transaction of yours, in bounded
+     * transactions: one DELETE of a large model's postings carried their whole undo (207M rows at
+     * 12M documents ran 52 minutes), and the rebuild after it crawled behind their purge. In order:
+     * the postings, FLUSH_ROWS a transaction by model_id; the model's words, 1,000 a transaction in
+     * id order, each word's row locked as every write locks it (adjustDocCounts()), the model's
+     * count of it deleted and doc_count recounted from the other models' counts
+     * (recountDictionary()); the documents by model_id; the meta row; then the words no posting
+     * holds any more (deleteUnpostedWords()).
+     *
+     * doc_count is recounted once a word, after the postings, not adjusted per batch of them: a
+     * write of another model changes its own count of a word and doc_count together, in one
+     * transaction, holding the word's row, so the recount, which holds the row too, reads its change
+     * whole or not at all, and a write waiting for the row adds its change to the recounted value:
+     * none is lost or counted twice. Adjusting per batch would read every deleted posting's words
+     * and lock them while the postings go.
+     *
+     * Not atomic: a search during it finds the model partly emptied, and a write of the model during
+     * it can survive it in part (a document without its meta row), which is why the flushes run
+     * while nothing indexes the model, as rebuild --fresh must. Interrupted part way, it is finished
+     * by running it again, before any rebuild: each step goes on from what is left.
+     */
+    private function flushInBatches(string $modelType): void
+    {
+        $typeId = self::modelTypeId($modelType);
+        if ($typeId !== null) {
+            $this->deleteInBatches('fuzzy_index_postings', ['model_type_id' => $typeId], 'model_id');
+
+            $after = 0;
+            while (($ids = DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->where('term_id', '>', $after)
+                ->orderBy('term_id')->limit(1000)->pluck('term_id')->map(fn ($id) => (int) $id)->all()) !== []) {
+                $after = end($ids);
+                DB::transaction(function () use ($typeId, $ids) {
+                    DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
+                    DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $ids)->delete();
+                    self::recountDictionary(fn ($words) => $words->whereIn('id', $ids));
+                }, self::ATTEMPTS);
+            }
+        }
+        $this->deleteInBatches('fuzzy_index_documents', ['model_type' => $modelType], 'model_id');
+        DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
+        $this->deleteUnpostedWords();
+    }
+
+    /**
+     * Delete the rows of $table that $where selects, $flushRows a statement in $key order, each
+     * statement in its own transaction (a deadlock retries it). The key of a batch's last row is
+     * read first, from an index alone, then the rows up to it are deleted, so each batch starts past
+     * the rows the one before deleted rather than over them while purge has yet to clear them. A
+     * batch takes the rows of its last key whole: for the postings, at most one document's more.
+     *
+     * @param  array<string, int|string>  $where
+     */
+    private function deleteInBatches(string $table, array $where, string $key): void
+    {
+        $after = null;
+        do {
+            $rows = fn () => DB::table($table)->where($where)->when($after !== null, fn ($query) => $query->where($key, '>', $after));
+            $last = $rows()->orderBy($key)->offset($this->flushRows - 1)->value($key);
+            DB::transaction(fn () => $rows()->when($last !== null, fn ($query) => $query->where($key, '<=', $last))->delete(), self::ATTEMPTS);
+            $after = $last;
+        } while ($last !== null);
+    }
+
+    /**
+     * flush()'s orphan sweep on MySQL/MariaDB outside a transaction of yours: delete the words no
+     * posting holds, 1,000 a transaction. They are found by a plain read, then locked in id order,
+     * as every write locks them, and read again: that read is the transaction's first plain one,
+     * so it sees every posting committed before the lock, and none can be added while the lock is
+     * held (a posting's foreign key check locks its word). A word a write of another model has
+     * just posted stays; no posting's gap is locked.
+     */
+    private function deleteUnpostedWords(): void
+    {
+        $unposted = fn () => DB::table('fuzzy_index_terms')->whereNotExists(fn ($query) => $query->selectRaw('1')
+            ->from('fuzzy_index_postings')->whereColumn('fuzzy_index_postings.term_id', 'fuzzy_index_terms.id'));
+
+        $after = 0;
+        while (($ids = $unposted()->where('id', '>', $after)->orderBy('id')->limit(1000)->pluck('id')->map(fn ($id) => (int) $id)->all()) !== []) {
+            $after = end($ids);
+            DB::transaction(function () use ($unposted, $ids) {
+                $locked = DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id')->all();
+                $gone   = $locked === [] ? [] : $unposted()->whereIn('id', $locked)->pluck('id')->all();
+                if ($gone !== []) {
+                    DB::table('fuzzy_index_terms')->whereIn('id', $gone)->delete();
+                }
+            }, self::ATTEMPTS);
+        }
+    }
+
+    /**
      * Flush (delete) the entire index for a model class. When no other model type has a document,
      * the big tables are truncated as flushAll() does, on every database it truncates on (see
      * clearIndex()); this type's meta row goes and the others' stay. Otherwise, or when the tables are
-     * busy, its rows are deleted by type.
+     * busy, its rows are deleted by type: in one transaction, but on MySQL/MariaDB outside a
+     * transaction of yours in bounded ones (flushInBatches()), so it is not atomic there: a search
+     * meanwhile finds the type partly emptied (rebuild --fresh needs the type's writers stopped
+     * anyway), and a flush interrupted part way is finished by running it again.
      */
     public function flush(string $modelClass): void
     {
