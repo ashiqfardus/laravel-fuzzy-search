@@ -834,7 +834,8 @@ class IndexManager
      *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
      *   session may truncate a table it has write-locked: the postings, the documents and the model
      *   terms. Laravel 10 connects to it as mysql.
-     * - MySQL: as MariaDB, but its LOCK TABLES has no NOWAIT, so the session's lock_wait_timeout is
+     * - MySQL: as MariaDB (the terms are truncated too, with foreign_key_checks off for that
+     *   statement, unless a table of the app's references them), but its LOCK TABLES has no NOWAIT, so the session's lock_wait_timeout is
      *   set to 1 (the least it takes) for it, once, and put back after.
      * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
@@ -917,7 +918,22 @@ class IndexManager
                         foreach ($big as $table) {
                             DB::table($table)->truncate();
                         }
-                        $deletes($big);
+                        // The postings and model terms are empty and every index table is locked: the
+                        // words can go by TRUNCATE, which their foreign key refuses while it is checked.
+                        // Not where a table of the app's references the words: its rows would be left
+                        // pointing at nothing, where the DELETE cascades.
+                        $left = $big;
+                        if (!$this->wordsReferencedByTheApp()) {
+                            $checks = (int) $connection->scalar('select @@session.foreign_key_checks');
+                            try {
+                                $connection->unprepared('SET SESSION foreign_key_checks = 0');
+                                DB::table('fuzzy_index_terms')->truncate();
+                                $left[] = 'fuzzy_index_terms';
+                            } finally {
+                                $connection->unprepared("SET SESSION foreign_key_checks = {$checks}");
+                            }
+                        }
+                        $deletes($left);
                         $ran = true;
                     }
                 } finally {
@@ -983,11 +999,27 @@ class IndexManager
         return $truncated !== [] || $driver === DbDialect::SQLITE;
     }
 
+    /** Whether a table other than the index's own has a foreign key to the words (MySQL/MariaDB). */
+    private function wordsReferencedByTheApp(): bool
+    {
+        $connection = DB::connection();
+        $own        = array_map(fn ($table) => $connection->getTablePrefix() . $table, ['fuzzy_index_postings', 'fuzzy_index_model_terms']);
+
+        return (int) $connection->scalar(
+            'select count(*) from information_schema.referential_constraints where constraint_schema = database() and referenced_table_name = ?'
+            . ' and table_name not in (' . implode(',', array_fill(0, count($own), '?')) . ')',
+            [$connection->getTablePrefix() . 'fuzzy_index_terms', ...$own]
+        ) > 0;
+    }
+
     /**
      * Whether another MySQL session holds a metadata lock on one of $tables: a transaction of
      * the app's that has read one keeps its shared lock to its end. LOCK TABLES would queue behind
      * it, and the app's next statement on another index table then queues behind LOCK TABLES: a
-     * deadlock the server breaks by killing the app's transaction. So the clear does not ask. False
+     * deadlock the server breaks by killing the app's transaction. So the clear does not ask. One
+     * race stays, accepted: a transaction that starts reading one index table between this check and
+     * LOCK TABLES, then reads another during the wait of at most a second, can be chosen as the
+     * victim (an explicit transaction across two index tables, in a window of microseconds). False
      * when the lock table cannot be read (performance_schema off, no privilege, MySQL < 8.0.16):
      * LOCK TABLES then waits its one second.
      *

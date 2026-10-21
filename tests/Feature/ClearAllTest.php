@@ -139,8 +139,8 @@ class ClearAllTest extends TestCase
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
                 'truncate table fuzzy_index_model_terms',
+                'truncate table fuzzy_index_terms',
                 'delete from fuzzy_index_meta',
-                'delete from fuzzy_index_terms',
                 'unlock tables',
             ],
             'mysql' => [
@@ -148,8 +148,8 @@ class ClearAllTest extends TestCase
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
                 'truncate table fuzzy_index_model_terms',
+                'truncate table fuzzy_index_terms',
                 'delete from fuzzy_index_meta',
-                'delete from fuzzy_index_terms',
                 'unlock tables',
             ],
             'sqlsrv' => [
@@ -165,6 +165,9 @@ class ClearAllTest extends TestCase
         $this->assertSame($expected, $statements);
         $this->assertTrue($truncated);
         $this->assertSame(0, DB::table('fuzzy_index_postings')->count());
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertSame(1, (int) DB::scalar('select @@session.foreign_key_checks'), 'foreign_key_checks is back on');
+        }
     }
 
     /**
