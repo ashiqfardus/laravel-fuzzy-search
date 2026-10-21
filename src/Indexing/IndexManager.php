@@ -979,10 +979,12 @@ class IndexManager
 
         if (($mariadb || $driver === DbDialect::MYSQL) && DB::transactionLevel() === 0) {
             $ran    = false;
-            $locked = function () use ($connection, $tables, $big, $deletes, $alone, $mariadb, &$ran) {
+            $locked = function () use ($connection, $tables, $big, $deletes, $alone, $only, $mariadb, &$ran) {
                 $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)) . ($mariadb ? ' NOWAIT' : ''));
                 try {
                     if ($alone()) {
+                        // Each TRUNCATE commits: marked first, a clear that dies between two leaves the mark.
+                        $this->markFlushing($only);
                         foreach ($big as $table) {
                             DB::table($table)->truncate();
                         }
@@ -1189,6 +1191,7 @@ class IndexManager
      */
     private function clearInBatches(array $tables): void
     {
+        $this->markFlushing(null);
         // Before the upgrade's migrations the postings name their model by class (UPGRADE: A large index).
         $posted  = DB::connection()->getSchemaBuilder()->hasColumn('fuzzy_index_postings', 'model_type_id') ? 'model_type_id' : 'model_type';
         $byModel = [
@@ -1201,7 +1204,6 @@ class IndexManager
                 $this->deleteInBatches($table, [$model => $type], $key);
             }
         }
-        DB::table('fuzzy_index_meta')->delete();
         $this->deleteInBatches('fuzzy_index_terms', [], 'id');
 
         self::atRepeatableRead(fn () => DB::transaction(function () use ($tables) {
@@ -1271,7 +1273,8 @@ class IndexManager
      * so they see every write it waited for. The type ends empty and every count exact, as after
      * one DELETE; the transaction touches only what was written meanwhile. The DELETE's gap locks
      * are what hold the new writes off, and READ COMMITTED takes none, so the transaction runs at
-     * REPEATABLE READ whatever the session is set to (atRepeatableRead()). Once it has committed, it counts again the words of each chunk
+     * REPEATABLE READ whatever the session is set to (atRepeatableRead()). It starts by marking the
+     * meta row (markFlushing()) and, once it has committed, counts again the words of each chunk
      * the loop above handled (recountRanges()). A search during the
      * flush still finds the model partly emptied. Interrupted part way, it is finished by running
      * it again, before any rebuild or other indexing: each step goes on from what is left, but the
@@ -1280,6 +1283,7 @@ class IndexManager
      */
     private function flushInBatches(string $modelType): void
     {
+        $this->markFlushing($modelType);
         $typeId = self::modelTypeId($modelType);
         $ranges = [];
         if ($typeId !== null) {
@@ -1319,6 +1323,24 @@ class IndexManager
 
         $this->recountRanges($ranges);
         $this->deleteUnpostedWords();
+    }
+
+    /**
+     * What a batched flush or clear (MySQL/MariaDB) commits in pieces is marked on the meta rows
+     * first (all of them, or $modelType's): the transaction that ends it deletes them, so a mark
+     * that is still there belongs to one that did not finish, and `fuzzy-search:rebuild` refuses
+     * to index the model until it is run again (see RebuildCommand). Saves are not held off by the
+     * mark: the final transaction is built for them.
+     */
+    private function markFlushing(?string $modelType): void
+    {
+        // Before the upgrade's last migration there is no column to mark (a clear can run before it).
+        if (!DB::connection()->getSchemaBuilder()->hasColumn('fuzzy_index_meta', 'flushing_since')) {
+            return;
+        }
+
+        DB::table('fuzzy_index_meta')->when($modelType !== null, fn ($meta) => $meta->where('model_type', $modelType))
+            ->update(['flushing_since' => now()]);
     }
 
     /**

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrade notes (read first)
 
 - **This is a major release.** Some calls now throw, return other rows or cache where 2.0 did not, a published 2.0 config takes effect for keys 2.0 ignored, and the migrations rewrite the index tables. The upgrade guide lists every break and opens with a checklist. ([guide][u])
-- **Plan the migrations.** Eleven new migrations; ten change the index tables. On MySQL and MariaDB they take a while (the compact postings migration alone takes about 22 minutes for 6M rows on MySQL), and index searches fail until they finish: migrate under `php artisan down` with the indexing workers stopped, or empty the index and rebuild instead. On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty and take seconds; build each model's index once afterwards with `fuzzy-search:rebuild`. ([guide][u-checklist])
+- **Plan the migrations.** Twelve new migrations; eleven change the index tables. On MySQL and MariaDB they take a while (the compact postings migration alone takes about 22 minutes for 6M rows on MySQL), and index searches fail until they finish: migrate under `php artisan down` with the indexing workers stopped, or empty the index and rebuild instead. On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty and take seconds; build each model's index once afterwards with `fuzzy-search:rebuild`. ([guide][u-checklist])
 - **Upgrade order.** Stop the indexing workers and saves, `migrate`, then `rebuild --fresh` each model a migration's warning names (nothing may be indexing), then restart the workers and Octane, then run a plain `rebuild` of every other indexed model for weighted ranking (it runs with writers on). ([guide][u-checklist])
 - **Empty terms throw everywhere.** `''` or whitespace throws `EmptySearchTermException` from `count()`, `paginate()`, `getFacets()` and `FuzzySearch::on()` too, unless `allow_empty_search` is on. ([guide][u-exceptions])
 - **`min_search_length` applies on every path**, so a one-character term matches nothing on `paginate()`, `count()` and `getFacets()` as well. A model with no searchable column matches nothing instead of every row. ([guide][u-search])
@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `2026_10_13_000001_create_fuzzy_index_model_terms_table` | Creates `fuzzy_index_model_terms`, each model's own words and counts | instant |
 | `2026_10_13_000002_backfill_fuzzy_index_model_terms_table` | Fills it from an existing index | reads every posting (about 3 minutes for 6M rows on MySQL) |
 | `2026_10_20_000001_drop_term_length_index_from_fuzzy_index_terms_table` | Drops the dictionary index `2026_10_01_000001` built, which no search reads | instant |
+| `2026_10_22_000001_add_flushing_since_to_fuzzy_index_meta_table` | Adds `fuzzy_index_meta.flushing_since`, which a batched flush or clear sets and its last transaction removes | instant |
 
 ### Added
 

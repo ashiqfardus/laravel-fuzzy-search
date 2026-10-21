@@ -40,6 +40,10 @@ class StatusCommand extends Command
             ])->toArray()
         );
 
+        foreach ($rows->whereNotNull('flushing_since') as $r) {
+            $this->warn("[{$r->model_type}]: a flush or clear begun {$r->flushing_since} did not finish. Run it again before any other index command, and keep the queue workers that index it stopped until then.");
+        }
+
         $termCount = DB::table('fuzzy_index_terms')->count();
         $this->info('Total unique terms in dictionary: ' . number_format($termCount));
 

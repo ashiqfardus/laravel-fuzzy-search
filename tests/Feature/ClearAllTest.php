@@ -137,6 +137,7 @@ class ClearAllTest extends TestCase
             ],
             'mariadb' => [
                 'lock tables fuzzy_index_postings write, fuzzy_index_documents write, fuzzy_index_meta write, fuzzy_index_model_terms write, fuzzy_index_terms write nowait',
+                'update fuzzy_index_meta set flushing_since = ?',
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
                 'truncate table fuzzy_index_model_terms',
@@ -146,6 +147,7 @@ class ClearAllTest extends TestCase
             ],
             'mysql' => [
                 'lock tables fuzzy_index_postings write, fuzzy_index_documents write, fuzzy_index_meta write, fuzzy_index_model_terms write, fuzzy_index_terms write',
+                'update fuzzy_index_meta set flushing_since = ?',
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
                 'truncate table fuzzy_index_model_terms',
@@ -758,6 +760,43 @@ class ClearAllTest extends TestCase
 
         $this->assertSame('READ-COMMITTED', $this->isolation(), 'the session setting is put back');
         $this->assertCleared($dictionaries);
+    }
+
+    /**
+     * A flush interrupted in its postings phase (the process dies, a statement fails) leaves the
+     * documents and not their postings; a plain rebuild would count their words a second time. The
+     * flush marked the model's meta row first: the rebuild refuses and status says so, and once the
+     * same flush is run again the rebuild works and every count is exact.
+     */
+    public function test_a_plain_rebuild_after_an_interrupted_flush_refuses_until_the_flush_is_run_again(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB flush in batches.');
+        }
+        $this->indexShared();
+        $this->flushRows(2);
+        $seen    = 0;
+        $failing = true;
+        DB::listen(function ($query) use (&$seen, &$failing) {
+            if ($failing && preg_match('/^\s*delete from [`"\[]?fuzzy_index_postings\b/i', $query->sql) && ++$seen === 2) {
+                throw new \RuntimeException('interrupted');
+            }
+        });
+        try {
+            app(IndexManager::class)->flush(User::class);
+        } catch (\RuntimeException) {
+        }
+        $failing = false;
+        $this->assertSame(2, $seen, 'the flush was interrupted after its first batch');
+
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->expectsOutputToContain('did not finish')->assertExitCode(1);
+        $this->artisan('fuzzy-search:status')->expectsOutputToContain('did not finish')->assertExitCode(0);
+
+        app(IndexManager::class)->flush(User::class);
+        $this->assertSame(0, DB::table('fuzzy_index_meta')->whereNotNull('flushing_since')->count());
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class])->assertExitCode(0);
+
+        $this->assertCountsAreFresh();
     }
 
     /**
