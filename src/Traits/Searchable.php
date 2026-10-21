@@ -49,8 +49,8 @@ trait Searchable
         // *after* the booted event fires, so deferring with static::booted()
         // does not help — the flag is still false when the listener runs).
         //
-        // Both observers expose only `saved` and `deleted`. Registering
-        // those four events with the "Class@method" string callback avoids
+        // Both observers expose `saved` and `deleted` (the indexing one `updating` too). Registering
+        // those events with the "Class@method" string callback avoids
         // `new static` entirely and works on Laravel 10–13.
         $observer = \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableObserver::class;
         $indexing = \Ashiqfardus\LaravelFuzzySearch\Observers\SearchableIndexingObserver::class;
@@ -59,6 +59,7 @@ trait Searchable
         static::deleted($observer . '@deleted');
         static::saved($indexing . '@saved');
         static::deleted($indexing . '@deleted');
+        static::updating($indexing . '@updating'); // remembers the old key of a key change
     }
 
     /**

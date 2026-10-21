@@ -267,17 +267,19 @@ class LexerTest extends TestCase
         }
     }
 
-    public function test_a_bang_with_no_term_after_it_is_skipped_or_rejected_as_before(): void
+    public function test_a_bang_with_no_term_after_it_is_rejected(): void
     {
-        // A lone or trailing ! is skipped (a query of nothing else then has no terms: the parser
-        // throws); ! before a group throws.
-        $this->assertSame([], $this->lexer->tokenize('!'));
-        $this->assertSame([[Token::TYPE_FUZZY, 'x', null]], self::shape($this->lexer->tokenize('x !')));
-        $this->assertSame([[Token::TYPE_FUZZY, 'x', null]], self::shape($this->lexer->tokenize('! x')));
-        $this->assertSame(
-            [[Token::TYPE_LPAREN, '', null], [Token::TYPE_FUZZY, 'x', null], [Token::TYPE_RPAREN, '', null]],
-            self::shape($this->lexer->tokenize('(x !)'))
-        );
+        // A lone or trailing ! (and ! before a space, | or ")") would drop the negation and search
+        // the next word positively; ! before a group throws too. A quoted "!" is a literal.
+        foreach (['!', 'x !', '! x', '(x !)', 'x !|y', '(! x)', '!)'] as $query) {
+            try {
+                $this->lexer->tokenize($query);
+                $this->fail("{$query} should throw");
+            } catch (QuerySyntaxException $e) {
+                $this->assertStringContainsString('(!)', $e->getMessage(), $query);
+            }
+        }
+        $this->assertSame([[Token::TYPE_FUZZY, '!', null]], self::shape($this->lexer->tokenize('"!"')));
 
         // `!` is the one operator that does not follow the colon: the error says where it goes.
         try {

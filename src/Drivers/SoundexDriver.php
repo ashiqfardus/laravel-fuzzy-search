@@ -31,8 +31,22 @@ class SoundexDriver extends BaseDriver
         // leading byte its C library does not call a letter, so under glibc "Émile" encoded from
         // its "m" (M400, the code of "Mila"), and on macOS it kept the byte and returned a code
         // that is not UTF-8 (“Mila” too). ASCII punctuation and digits it skips under every locale.
-        if (preg_match($this->driver === 'pgsql' ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
+        if (preg_match(in_array($this->driver, ['pgsql', 'sqlite'], true) ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u', $value) !== 1) {
             return $this->applyFallback($query, $column, $value, $boolean);
+        }
+
+        // A multi-word term is encoded as the column is: its first word against the column's first
+        // word, its last against the column's last (SOUNDEX() of "john doe" as a whole, J530, is
+        // the code of neither "John" nor "Doe"). A word that carries no letter encodes as '' (the code
+        // of every word without one), so the side it would be bound to takes the other word.
+        $words = preg_split('/\s+/u', trim($value), -1, PREG_SPLIT_NO_EMPTY) ?: [$value];
+        $first = $words[0];
+        $last  = $words[count($words) - 1];
+        $lead  = in_array($this->driver, ['pgsql', 'sqlite'], true) ? '/^' . self::PG_LEAD . '/' : '/(?![ªºµ])\pL/u';
+        if (preg_match($lead, $first) !== 1) {
+            $first = $last;
+        } elseif (preg_match($lead, $last) !== 1) {
+            $last = $first;
         }
 
         // MySQL and PostgreSQL support native SOUNDEX.
@@ -51,7 +65,7 @@ class SoundexDriver extends BaseDriver
             // phonetic matching while supporting both first-name and last-name queries.
             return $query->$method(
                 "(SOUNDEX(SUBSTRING_INDEX({$col}, ' ', 1)) = SOUNDEX(?) OR SOUNDEX(SUBSTRING_INDEX({$col}, ' ', -1)) = SOUNDEX(?))",
-                [$value, $value]
+                [$first, $last]
             );
         }
 
@@ -69,17 +83,41 @@ class SoundexDriver extends BaseDriver
             // leading non-ASCII letter under glibc ("Émile" encoded as M400 and matched "Mila") and
             // returned a code that is not UTF-8 on macOS. Inside a CASE, so PostgreSQL never
             // evaluates soundex() before the guard (ruling ER-172).
-            $first = "SPLIT_PART({$col}, ' ', 1)";
-            $last  = "TRIM(SUBSTRING({$col} FROM '[^ ]+$'))";
+            $firstWord = "SPLIT_PART({$col}, ' ', 1)";
+            $lastWord  = "TRIM(SUBSTRING({$col} FROM '[^ ]+$'))";
             $code  = fn (string $word) => "CASE WHEN {$word} ~ '^" . self::PG_LEAD . "' THEN SOUNDEX({$word}) END";
 
             return $query->$method(
-                "({$code($first)} = SOUNDEX(?) OR {$code($last)} = SOUNDEX(?))",
-                [$value, $value]
+                "({$code($firstWord)} = SOUNDEX(?) OR {$code($lastWord)} = SOUNDEX(?))",
+                [$first, $last]
             );
         }
 
-        // SQLite and SQL Server: fallback pattern matching
+        if ($this->driver === 'sqlsrv') {
+            $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
+            // The first and the last word of the column, as T-SQL spells them (no SUBSTRING_INDEX):
+            // the value trimmed, up to its first space, and from its last.
+            $text = "LTRIM(RTRIM(CAST({$col} AS NVARCHAR(MAX))))";
+
+            return $query->$method(
+                "(SOUNDEX(LEFT({$text}, CHARINDEX(' ', {$text} + ' ') - 1)) = SOUNDEX(?)"
+                . " OR SOUNDEX(RIGHT({$text}, CHARINDEX(' ', REVERSE({$text}) + ' ') - 1)) = SOUNDEX(?))",
+                [$first, $last]
+            );
+        }
+
+        if ($this->driver === 'sqlite') {
+            // The package's own PDO function (PHP's soundex()), registered on the connection; it
+            // splits the column into its first and last word. The codes are the term's, computed here.
+            DbDialect::registerSqliteFunctions($query->getConnection());
+            $method = $boolean === 'or' ? 'orWhereRaw' : 'whereRaw';
+
+            return $query->$method(
+                "(fuzzy_soundex({$col}, 1) = ? OR fuzzy_soundex({$col}, -1) = ?)",
+                [soundex($first), soundex($last)]
+            );
+        }
+
         return $this->applyFallback($query, $column, $value, $boolean);
     }
 

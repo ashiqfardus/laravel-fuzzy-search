@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
 use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
 use Illuminate\Console\Command;
 
 class ExplainCommand extends Command
@@ -14,9 +15,19 @@ class ExplainCommand extends Command
                             {--term=test : Search term to explain}
                             {--algorithm=fuzzy : Algorithm to use}';
 
-    protected $description = 'Explain a search query for debugging';
+    protected $description = 'Explain a search query for debugging (analytics and the cache are off for the run)';
 
     public function handle(): int
+    {
+        try {
+            return $this->withoutAnalyticsOrCache(fn () => $this->explain());
+        } catch (LaravelFuzzySearchException $e) { // an unknown algorithm, an empty term
+            $this->error($e->getMessage());
+            return self::FAILURE;
+        }
+    }
+
+    private function explain(): int
     {
         $model = $this->argument('model');
 

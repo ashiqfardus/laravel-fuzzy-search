@@ -67,4 +67,22 @@ trait ValidatesInput
 
         return $value;
     }
+
+    /**
+     * Run $run as an operator's measurement, not as a user's search: no analytics row is written
+     * for it and no cache hit stands in for the search. Both settings are restored afterwards.
+     */
+    protected function withoutAnalyticsOrCache(\Closure $run): mixed
+    {
+        $keys     = ['fuzzy-search.analytics.enabled', 'fuzzy-search.cache.enabled'];
+        $previous = array_map(fn (string $key) => config($key), array_combine($keys, $keys));
+
+        config(array_fill_keys($keys, false));
+
+        try {
+            return $run();
+        } finally {
+            config($previous);
+        }
+    }
 }

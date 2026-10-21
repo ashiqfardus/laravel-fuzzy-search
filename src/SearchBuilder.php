@@ -79,6 +79,9 @@ class SearchBuilder
 
     protected bool $stopWordsOverridden = false;
     protected array $synonyms = [];
+
+    /** @var string[]|null the terms the LIKE search matched on (tokens, folded forms, synonyms), for highlight(); set by applySearchConditions() */
+    protected ?array $likeTerms = null;
     protected array $synonymGroups = [];
     protected ?string $locale = null;
     /** Explicitly asked for: accentInsensitive(), the model's $searchable or a preset — see foldsAccents(). */
@@ -964,7 +967,7 @@ class SearchBuilder
 
         // Apply columns if specified
         if (isset($preset['columns']) && is_array($preset['columns'])) {
-            $this->searchIn($preset['columns']);
+            $this->searchIn($this->presetColumnsOnTable($preset['columns']));
         }
 
         // Apply algorithm
@@ -994,6 +997,36 @@ class SearchBuilder
         }
 
         return $this;
+    }
+
+    /**
+     * A preset's columns that the table has: one it lacks (the shipped `users` preset's `username`
+     * on a table of name and email) would be an unknown-column error on every database but SQLite.
+     * A column already named with searchIn(), a dotted (relation or qualified) one, and every
+     * column when the table cannot be listed or the query joins another, are kept as given.
+     *
+     * @param  array<string|int, string|int> $columns
+     * @return array<string|int, string|int>
+     */
+    protected function presetColumnsOnTable(array $columns): array
+    {
+        $base = $this->query instanceof EloquentBuilder ? $this->query->toBase() : $this->query;
+        $from = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($base->from);
+        if ($from === null || !empty($base->joins)) {
+            return $columns;
+        }
+
+        $has = array_map('strtolower', SearchableColumns::onTable($this->query->getConnection(), $from[0]));
+        if ($has === []) {
+            return $columns;
+        }
+
+        return array_filter(
+            $columns,
+            fn ($value, $key) => ($name = is_int($key) ? (string) $value : $key)
+                && (str_contains($name, '.') || in_array($name, $this->searchableColumns, true) || in_array(strtolower($name), $has, true)),
+            ARRAY_FILTER_USE_BOTH
+        );
     }
 
     /**
@@ -1509,6 +1542,21 @@ class SearchBuilder
     }
 
     /**
+     * How many rows get() reads from the LIKE and extended paths: the max_candidates ceiling PHP
+     * rescores and ranks, or, where it keeps the SQL order (an explicit orderBy(), or
+     * withRelevance(false)), only the rows up to the end of the page. _score is then
+     * normalised over the rows read.
+     */
+    private function candidateWindow(): int
+    {
+        $ceiling = (int) config('fuzzy-search.max_candidates', 1000);
+
+        return $this->sortBy !== [] || !$this->withRelevance
+            ? max(1, min($ceiling, $this->offset + $this->limit))
+            : $ceiling;
+    }
+
+    /**
      * Execute the search
      */
     protected function executeSearch(): Collection
@@ -1529,10 +1577,9 @@ class SearchBuilder
         $this->prepareQuery();
         $startTime = microtime(true);
 
-        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
-
-        // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet
-        $candidates    = $this->query->limit($maxCandidates)->get();
+        // Fetch all candidates up to the ceiling — do NOT apply limit/offset yet, unless PHP keeps
+        // the SQL order (candidateWindow())
+        $candidates    = $this->query->limit($this->candidateWindow())->get();
         $this->matched = $candidates->isNotEmpty();
 
         // Rescore ALL candidates before slicing
@@ -1545,7 +1592,7 @@ class SearchBuilder
         $results = $candidates->slice($this->offset, $this->limit)->values();
 
         if ($this->highlightTagOpen) {
-            $results = $this->applyHighlighting($results);
+            $results = $this->applyHighlighting($results, $this->likeTerms);
         }
 
         if ($this->debugMode) {
@@ -2129,8 +2176,7 @@ class SearchBuilder
 
         $this->prepareQuery();
 
-        $maxCandidates = config('fuzzy-search.max_candidates', 1000);
-        $candidates = $this->query->limit($maxCandidates)->get();
+        $candidates = $this->query->limit($this->candidateWindow())->get();
         $this->matched = $candidates->isNotEmpty();
 
         if ($this->withRelevance) {
@@ -3163,6 +3209,9 @@ class SearchBuilder
         }
         $allTerms = array_unique($allTerms);
 
+        // highlight() marks all of them; one term alone is the null the highlighter reads as the search string.
+        $this->likeTerms = count($allTerms) > 1 ? array_values($allTerms) : null;
+
         // The SQL names a direct column qualified under a join; the targets themselves (scoring,
         // highlighting) keep the logical name. A column weighted 0 is not searched (TE-8).
         $own     = $this->qualifiedColumnMap($this->query);
@@ -3269,7 +3318,8 @@ class SearchBuilder
         // the folded form ranks as a match of it; one form (an ASCII term) compiles as before.
         $terms  = $this->termVariants($this->searchTerm);
         // Escape LIKE metacharacters so user input cannot widen the match set (consistent
-        // with all driver LIKE paths). The exact-match binding uses the raw term intentionally.
+        // with all driver LIKE paths). The exact tier is the same LIKE without a wildcard, so it
+        // folds case as the predicate does (a plain = is case-sensitive on SQLite and PostgreSQL).
         $safeTerms = array_map(fn (string $term) => \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($term, $driver), $terms);
 
         $scoreExpressions = [];
@@ -3280,20 +3330,27 @@ class SearchBuilder
             $weight = $this->columnWeights[$column] ?? 1;
             $prefixBoost = $this->prefixBoostMultiplier;
             $col = $this->quoteColumn(($own[$directColumn] ?? '') . $directColumn, $driver);
-            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else.
-            $like = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::like($col, $driver, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::likeOperator($driver));
+            // ILIKE on PostgreSQL, whose LIKE is case-sensitive; ESCAPE '!' everywhere else; on SQLite
+            // a non-ASCII term reads the column through fuzzy_lower(), as the WHERE does.
+            $dialect = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::class;
+            $likeOf  = fn (string $pattern) => $dialect::like(
+                $dialect::likeColumn($col, $driver, $pattern, $this->query->getConnection()),
+                $driver,
+                $dialect::likeOperator($driver)
+            );
+            $prefixes = array_map(fn (string $safe) => $safe . '%', $safeTerms);
+            $contains = array_map(fn (string $safe) => '%' . $safe . '%', $safeTerms);
+            $joined   = fn (array $patterns) => implode(' OR ', array_map($likeOf, $patterns));
+            $bind     = fn (array $patterns) => array_map(fn (string $pattern) => $dialect::likePattern($pattern, $driver), $patterns);
 
-            $equals = implode(' OR ', array_fill(0, count($terms), "{$col} = ?"));
-            $likes  = implode(' OR ', array_fill(0, count($terms), $like));
-
-            $scoreExpressions[] = "(CASE WHEN {$equals} THEN ? ELSE 0 END)";
-            $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
-            $scoreExpressions[] = "(CASE WHEN {$likes} THEN ? ELSE 0 END)";
+            $scoreExpressions[] = '(CASE WHEN ' . $joined($safeTerms) . ' THEN ? ELSE 0 END)';
+            $scoreExpressions[] = '(CASE WHEN ' . $joined($prefixes) . ' THEN ? ELSE 0 END)';
+            $scoreExpressions[] = '(CASE WHEN ' . $joined($contains) . ' THEN ? ELSE 0 END)';
             $bindings = array_merge(
                 $bindings,
-                $terms, [(int) round($weight * $this->scoring['exact_match'])],
-                array_map(fn (string $safe) => $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['prefix_match'] * $prefixBoost)],
-                array_map(fn (string $safe) => '%' . $safe . '%', $safeTerms), [(int) round($weight * $this->scoring['contains'])],
+                $bind($safeTerms), [(int) round($weight * $this->scoring['exact_match'])],
+                $bind($prefixes), [(int) round($weight * $this->scoring['prefix_match'] * $prefixBoost)],
+                $bind($contains), [(int) round($weight * $this->scoring['contains'])],
             );
         }
 
@@ -3703,7 +3760,8 @@ class SearchBuilder
         if (str_contains($value, $term)) {
             return $this->scoring['contains'] * $weight;
         }
-        if (!$fuzzy) {
+        // An empty or missing column is within a short term's edit distance of it by length alone
+        if (!$fuzzy || $value === '') {
             return 0.0;
         }
 
@@ -4330,6 +4388,9 @@ class SearchBuilder
         // and one past 4,000 characters threw on SQL Server, past 50,000 bytes on SQLite.
         $rawTerm  = Utf8::lowerAscii(FuzzySearch::capTerm($this->searchTerm));
         $safeTerm = \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::escapeLike($rawTerm, $this->query->getConnection()->getDriverName());
+        // What the database's LIKE found is compared in PHP with case folded in every script
+        // (lowerAscii() left "Émile" not starting with "émi").
+        $foldedTerm = mb_strtolower($rawTerm, 'UTF-8');
 
         $results = $this->shortestFirst($this->suggestCandidateQuery($safeTerm), $targets)->limit($limit * 3)->get();
 
@@ -4342,15 +4403,15 @@ class SearchBuilder
                     // Extract the matching word/phrase
                     $words = preg_split(self::WHITESPACE, $value);
                     foreach ($words as $word) {
-                        $wordLower = Utf8::lowerAscii($word);
-                        if (str_starts_with($wordLower, $rawTerm) && strlen($word) > strlen($rawTerm)) {
+                        $wordLower = mb_strtolower($word, 'UTF-8');
+                        if (str_starts_with($wordLower, $foldedTerm) && mb_strlen($word, 'UTF-8') > mb_strlen($foldedTerm, 'UTF-8')) {
                             $suggestions[$wordLower] = $word;
                         }
                     }
 
                     // Also add full column value if it starts with the raw search term
-                    $valueLower = Utf8::lowerAscii($value);
-                    if (str_starts_with($valueLower, $rawTerm)) {
+                    $valueLower = mb_strtolower($value, 'UTF-8');
+                    if (str_starts_with($valueLower, $foldedTerm)) {
                         $suggestions[$valueLower] = $value;
                     }
                 }
@@ -4551,7 +4612,79 @@ class SearchBuilder
             return [];
         }
 
-        $term    = mb_strtolower(trim($this->searchTerm));
+        $term  = mb_strtolower(trim($this->searchTerm));
+        $words = preg_split('/\s+/u', $term, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+        if (count($words) > 1) {
+            return $this->didYouMeanPhrase($words, $term, $limit, $modelClass);
+        }
+
+        $found = $this->wordCorrections($term, $limit, $modelClass);
+
+        return array_map(
+            fn ($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
+            $found['alternatives'] ?? []
+        );
+    }
+
+    /**
+     * Correct a phrase word by word: a word the model's dictionary does not hold is replaced by its
+     * closest alternatives, a word it holds stays. The first phrase takes every such word's best
+     * alternative, the next one the second best, and so on; a word with fewer alternatives keeps
+     * its best. A phrase with no word to correct, or none that has an alternative, offers nothing.
+     *
+     * @param  list<string> $words
+     * @return list<array{term: string, distance: int, confidence: float}>
+     */
+    protected function didYouMeanPhrase(array $words, string $term, int $limit, string $modelClass): array
+    {
+        $corrections = [];
+        foreach ($words as $i => $word) {
+            if (mb_strlen($word) < 2) {
+                continue;
+            }
+            $found = $this->wordCorrections($word, $limit, $modelClass);
+            if ($found === null) {
+                return []; // dictionary not migrated yet
+            }
+            if (!$found['known'] && $found['alternatives'] !== []) {
+                $corrections[$i] = $found['alternatives'];
+            }
+        }
+
+        $phrases = [];
+        for ($n = 0; $n < $limit; $n++) {
+            $out      = $words;
+            $distance = 0;
+            $moved    = false;
+            foreach ($corrections as $i => $alternatives) {
+                $pick = $alternatives[min($n, count($alternatives) - 1)];
+                $moved = $moved || $n < count($alternatives);
+                $out[$i]   = $pick['term'];
+                $distance += $pick['distance'];
+            }
+            if (!$moved) {
+                break;
+            }
+            $phrase    = implode(' ', $out);
+            $phrases[] = [
+                'term'       => $phrase,
+                'distance'   => $distance,
+                'confidence' => round(1 - ($distance / max(mb_strlen($term), mb_strlen($phrase))), 2),
+            ];
+        }
+
+        return $phrases;
+    }
+
+    /**
+     * The alternatives to one word, best first, and whether the model's dictionary holds the word
+     * itself; null when the dictionary is not migrated yet.
+     *
+     * @return array{known: bool, alternatives: list<array<string, mixed>>}|null
+     */
+    protected function wordCorrections(string $term, int $limit, string $modelClass): ?array
+    {
         $termLen = mb_strlen($term);
 
         // The reach grows with the term: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Three
@@ -4568,12 +4701,14 @@ class SearchBuilder
                 throw $e; // a real database error — surface it
             }
 
-            return []; // dictionary not migrated yet
+            return null; // dictionary not migrated yet
         }
 
+        $known        = false;
         $alternatives = [];
         foreach ($candidates as $candidate) {
             if ($candidate['distance'] === 0) {
+                $known = true;
                 continue;
             }
             $maxLen = max($termLen, mb_strlen($candidate['term']));
@@ -4595,14 +4730,7 @@ class SearchBuilder
             $alternatives = $this->visibleAlternatives($alternatives, $base, $modelClass, $limit);
         }
 
-        return array_slice(
-            array_map(
-                fn($a) => ['term' => $a['term'], 'distance' => $a['distance'], 'confidence' => $a['confidence']],
-                $alternatives
-            ),
-            0,
-            $limit
-        );
+        return ['known' => $known, 'alternatives' => array_slice($alternatives, 0, $limit)];
     }
 
     /**

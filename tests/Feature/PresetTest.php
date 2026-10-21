@@ -42,8 +42,13 @@ class PresetTest extends TestCase
         $this->assertSame($preset['algorithm'], $debug['algorithm'], "[{$name}] algorithm");
         $this->assertSame($preset['typo_tolerance'], $debug['typo_tolerance'], "[{$name}] typo tolerance");
 
-        // searchIn() appends, so the preset's columns join the model's own with their weights.
+        // searchIn() appends, so the preset's columns that the table has join the model's own with
+        // their weights; one the table lacks is left out.
         foreach ($preset['columns'] ?? [] as $column => $weight) {
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('users', $column)) {
+                $this->assertNotContains($column, $debug['searchable_columns'], "[{$name}] column {$column} is not on the table");
+                continue;
+            }
             $this->assertContains($column, $debug['searchable_columns'], "[{$name}] column {$column}");
             $this->assertSame($weight, $debug['column_weights'][$column], "[{$name}] weight for {$column}");
         }

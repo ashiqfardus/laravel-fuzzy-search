@@ -14,6 +14,8 @@ class LevenshteinDriver extends BaseDriver
 {
     protected int $maxDistance = 3;
 
+    protected int $minWordLength = 4;
+
     public function __construct(array $config, string $driver)
     {
         parent::__construct($config, $driver);
@@ -22,6 +24,7 @@ class LevenshteinDriver extends BaseDriver
         $this->maxDistance = ($config['typo_tolerance']['enabled'] ?? true)
             ? (int) ($config['levenshtein']['max_distance'] ?? 3)
             : 0;
+        $this->minWordLength = (int) ($config['typo_tolerance']['min_word_length'] ?? 4);
     }
 
     public function apply(Builder $query, string $column, string $value, string $boolean = 'and'): Builder
@@ -87,10 +90,15 @@ class LevenshteinDriver extends BaseDriver
         // Distance 0: Exact match
         yield '%' . $this->escapeLike($value) . '%';
 
-        if ($this->maxDistance >= 1) {
-            // Distance 1: Single deletion
+        // A term under typo_tolerance.min_word_length gets no typo patterns, as in FuzzyDriver: one
+        // or two letters with a wildcard match most rows.
+        if ($this->maxDistance >= 1 && $len >= $this->minWordLength) {
+            // Distance 1: Single deletion (its literal part keeps 3 characters, or `%on%` matches "Monica")
             for ($i = 0; $i < $len; $i++) {
-                yield '%' . $this->escapeLike($this->slice($chars, 0, $i) . $this->slice($chars, $i + 1)) . '%';
+                $str = $this->slice($chars, 0, $i) . $this->slice($chars, $i + 1);
+                if (mb_strlen($str, 'UTF-8') >= 3) {
+                    yield '%' . $this->escapeLike($str) . '%';
+                }
             }
 
             // Distance 1: Single insertion (wildcard)
@@ -104,12 +112,12 @@ class LevenshteinDriver extends BaseDriver
             }
         }
 
-        if ($this->maxDistance >= 2) {
+        if ($this->maxDistance >= 2 && $len >= $this->minWordLength) {
             // Distance 2: Double deletion
             for ($i = 0; $i < $len - 1; $i++) {
                 for ($j = $i + 1; $j < $len; $j++) {
                     $str = $this->slice($chars, 0, $i) . $this->slice($chars, $i + 1, $j - $i - 1) . $this->slice($chars, $j + 1);
-                    if (mb_strlen($str, 'UTF-8') >= 2) {
+                    if (mb_strlen($str, 'UTF-8') >= 3) {
                         yield '%' . $this->escapeLike($str) . '%';
                     }
                 }

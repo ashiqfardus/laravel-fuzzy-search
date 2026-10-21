@@ -35,7 +35,14 @@ class FuzzySearchCollection extends ResourceCollection
             'suggestions' => [],
         ];
 
-        if ($this->builder !== null && $this->collection->isEmpty()) {
+        // Only when nothing matched: a page past the last one is empty too, beside a total that is not.
+        $nothingMatched = $this->resource instanceof \Illuminate\Pagination\AbstractPaginator
+            ? ($this->resource instanceof \Illuminate\Contracts\Pagination\LengthAwarePaginator
+                ? $this->resource->total() === 0
+                : $this->resource->currentPage() === 1) // simplePaginate() knows no total
+            : true;
+
+        if ($this->builder !== null && $this->collection->isEmpty() && $nothingMatched) {
             $meta['suggestions'] = array_map(fn (array $s) => $s['term'], $this->builder->didYouMean());
         }
 

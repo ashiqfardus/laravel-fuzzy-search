@@ -217,7 +217,16 @@ class ExtendedSyntaxTest extends TestCase
             }
         }
 
-        // A trailing ! is skipped, as before.
-        $this->assertSame(['John Doe'], User::search('')->searchIn(['name'])->extended('"john doe" !')->get()->pluck('name')->all());
+        // A lone ! beside a term would search the term positively: it throws on every terminal.
+        foreach (['! john', 'john !', '"john doe" !'] as $query) {
+            foreach (['get', 'count', 'first'] as $terminal) {
+                try {
+                    User::search('')->searchIn(['name'])->extended($query)->$terminal();
+                    $this->fail("{$query} should throw on {$terminal}");
+                } catch (QuerySyntaxException) {
+                    $this->addToAssertionCount(1);
+                }
+            }
+        }
     }
 }

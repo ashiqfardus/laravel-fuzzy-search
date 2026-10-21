@@ -66,13 +66,17 @@ class DatabaseDriverTest extends TestCase
 
         $sql = strtolower($query->toSql());
 
-        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
-            // MySQL / MariaDB have a built-in SOUNDEX() — always used, no LIKE fallback.
+        if (in_array($this->dbDriver, ['mysql', 'mariadb', 'sqlsrv'], true)) {
+            // MySQL, MariaDB and SQL Server have a built-in SOUNDEX() — always used, no LIKE fallback.
             $this->assertStringContainsString('soundex(', $sql);
             $this->assertStringNotContainsString('like', $sql);
+        } elseif ($this->dbDriver === 'sqlite') {
+            // SQLite: the package's own fuzzy_soundex() PDO function.
+            $this->assertStringContainsString('fuzzy_soundex(', $sql);
+            $this->assertStringNotContainsString('like', $sql);
         } else {
-            // SQLite and SQL Server have no SOUNDEX(); PostgreSQL only via fuzzystrmatch,
-            // which is gated behind use_native_functions=false in the test config.
+            // PostgreSQL has soundex() only via fuzzystrmatch, which is gated behind
+            // use_native_functions=false in the test config.
             $this->assertStringContainsString('like', $sql);
             $this->assertStringNotContainsString('soundex(', $sql);
         }

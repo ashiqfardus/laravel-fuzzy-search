@@ -72,16 +72,22 @@ class DriverDialectSqlTest extends TestCase
         }
     }
 
-    public function test_soundex_falls_back_to_like_on_sqlite_and_sqlsrv(): void
+    public function test_soundex_is_phonetic_on_sqlite_and_sqlsrv(): void
     {
-        foreach (['sqlite', 'sqlsrv'] as $driver) {
-            $sql = strtolower((new SoundexDriver($this->config(), $driver))
-                ->apply($this->app['db']->table('users'), 'name', 'john')
-                ->toSql());
+        $sql = fn (string $driver) => strtolower((new SoundexDriver($this->config(), $driver))
+            ->apply($this->app['db']->table('users'), 'name', 'john')
+            ->toSql());
 
-            $this->assertStringContainsString('like', $sql, $driver);
-            $this->assertStringNotContainsString('soundex(', $sql, $driver);
-        }
+        // SQLite: the package's PDO function, on the first and the last word.
+        $this->assertStringContainsString('fuzzy_soundex("name", 1)', $sql('sqlite'));
+        $this->assertStringContainsString('fuzzy_soundex("name", -1)', $sql('sqlite'));
+        $this->assertStringNotContainsString('like', $sql('sqlite'));
+
+        // SQL Server: its own SOUNDEX() on the first and the last word, spelled in T-SQL.
+        $this->assertStringContainsString('soundex(left(', $sql('sqlsrv'));
+        $this->assertStringContainsString('soundex(right(', $sql('sqlsrv'));
+        $this->assertStringContainsString('charindex', $sql('sqlsrv'));
+        $this->assertStringNotContainsString('like', $sql('sqlsrv'));
     }
 
     public function test_soundex_fallback_uses_ilike_on_postgres(): void
@@ -148,11 +154,11 @@ class DriverDialectSqlTest extends TestCase
     public function test_relevance_ordering_quotes_identifiers_per_driver(): void
     {
         $expected = [
-            'mysql'   => 'case when `name` = ?',
-            'mariadb' => 'case when `name` = ?',
-            'pgsql'   => 'case when "name" = ?',
-            'sqlsrv'  => 'case when [name] = ?',
-            'sqlite'  => 'case when "name" = ?',
+            'mysql'   => 'case when `name` like ?',
+            'mariadb' => 'case when `name` like ?',
+            'pgsql'   => 'case when "name" ilike ?',
+            'sqlsrv'  => 'case when [name] like ?',
+            'sqlite'  => 'case when "name" like ?',
         ];
 
         $checked = 0;

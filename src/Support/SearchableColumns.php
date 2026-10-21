@@ -81,7 +81,7 @@ final class SearchableColumns
     public static function validate(array $columns, string $message = self::INVALID_NAME_QUOTED): array
     {
         foreach ($columns as $column) {
-            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/D', $column)) {
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*$/D', $column)) {
                 throw new \InvalidArgumentException(sprintf($message, $column));
             }
         }

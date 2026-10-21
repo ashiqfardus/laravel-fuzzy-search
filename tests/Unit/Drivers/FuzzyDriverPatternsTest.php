@@ -71,13 +71,14 @@ class FuzzyDriverPatternsTest extends TestCase
 
     public function test_only_ascii_letters_are_lowercased_and_boundary_patterns_use_characters(): void
     {
-        // SQLite's LIKE folds ASCII only: a lower-cased É would never match a stored É there.
-        // Every other database folds case in LIKE itself, so keeping É costs them nothing.
+        // The driver lower-cases ASCII only. SQLite's LIKE folds ASCII only too, so whereLike() reads
+        // the column through fuzzy_lower() there and binds the pattern wholly lower-cased; the other
+        // databases fold case in LIKE themselves and keep the É.
         $bindings = $this->bindingsFor(['max_distance' => 2], 'ÉLÉGANT');
 
-        $this->assertSame('%ÉlÉgant%', $bindings[0]);
-        $this->assertContains('É%nt', $bindings);  // first char + last two chars
-        $this->assertContains('Él%t', $bindings);  // first two chars + last char
+        $this->assertSame('%élégant%', $bindings[0]);
+        $this->assertContains('é%nt', $bindings);  // first char + last two chars
+        $this->assertContains('él%t', $bindings);  // first two chars + last char
     }
 
     public function test_max_patterns_caps_the_pattern_list(): void

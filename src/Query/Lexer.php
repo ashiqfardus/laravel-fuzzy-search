@@ -61,8 +61,10 @@ class Lexer
                 if ($query[$i] === '!') {
                     $isNot = true;
                     $i++;
-                    if ($i >= $len) {
-                        break;
+                    // A ! with nothing to negate would drop the operator and search the next word
+                    // positively, the opposite of what was typed.
+                    if ($i >= $len || self::isSpace($query[$i]) || in_array($query[$i], ['|', ')'], true)) {
+                        throw QuerySyntaxException::notNeedsTerm();
                     }
                     // !( is unsupported — NOT of a group would silently drop the operator
                     if ($query[$i] === '(') {

@@ -27,6 +27,12 @@ class RebuildIndexJob implements ShouldQueue
 
     public function handle(IndexManager $indexManager): void
     {
+        // Cancelling a batch stops nothing by itself: a job of a cancelled one is still run by a
+        // worker, and would write beside the rebuild that replaced it.
+        if ($this->batch()?->cancelled()) {
+            return;
+        }
+
         $keyName = (new $this->modelClass)->getKeyName();
         $models  = \Ashiqfardus\LaravelFuzzySearch\Support\IndexQuery::for($this->modelClass)
             ->whereIn($keyName, $this->modelIds)

@@ -3,6 +3,7 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Console;
 
 use Ashiqfardus\LaravelFuzzySearch\Console\Concerns\ValidatesInput;
+use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
 use Illuminate\Console\Command;
 
 class BenchmarkCommand extends Command
@@ -15,7 +16,7 @@ class BenchmarkCommand extends Command
                             {--iterations=100 : Number of iterations}
                             {--algorithm=fuzzy : Algorithm to benchmark}';
 
-    protected $description = 'Benchmark search performance for a model';
+    protected $description = 'Benchmark search performance for a model (analytics and the cache are off for the run)';
 
     public function handle(): int
     {
@@ -48,19 +49,28 @@ class BenchmarkCommand extends Command
         $bar = $this->output->createProgressBar($iterations);
         $bar->start();
 
-        for ($i = 0; $i < $iterations; $i++) {
-            $start = microtime(true);
+        // Real searches, but not a user's: no analytics row each, and no cache hit timed as a search.
+        try {
+            $this->withoutAnalyticsOrCache(function () use ($iterations, $model, $term, $algorithm, &$times, &$resultCount, $bar) {
+                for ($i = 0; $i < $iterations; $i++) {
+                    $start = microtime(true);
 
-            $results = $model::search($term)
-                ->using($algorithm)
-                ->limit(20)
-                ->get();
+                    $results = $model::search($term)
+                        ->using($algorithm)
+                        ->limit(20)
+                        ->get();
 
-            $end = microtime(true);
-            $times[] = ($end - $start) * 1000; // Convert to ms
-            $resultCount = $results->count();
+                    $end = microtime(true);
+                    $times[] = ($end - $start) * 1000; // Convert to ms
+                    $resultCount = $results->count();
 
-            $bar->advance();
+                    $bar->advance();
+                }
+            });
+        } catch (LaravelFuzzySearchException $e) { // an unknown algorithm, an empty term
+            $this->newLine(2);
+            $this->error($e->getMessage());
+            return self::FAILURE;
         }
 
         $bar->finish();

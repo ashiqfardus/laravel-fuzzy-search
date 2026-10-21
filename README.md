@@ -567,6 +567,8 @@ $alternatives = User::search('jonh')->didYouMean(3);  // Typo
 
 The closest term comes first, then the most common one. How far it reaches scales with the term's length: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. `searchIn()` does not narrow them: like dictionary completions, they are the model's terms from every indexed column. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
 
+A phrase is corrected word by word: `User::search('charli brwn')->didYouMean(1)` returns `charlie brown` with a distance of 2 (the edits of each word added up). A word the model's dictionary holds stays as typed, and a phrase with no word to correct, or none with an alternative, returns `[]`. The first phrase takes every misspelled word's closest alternative, the second the next closest, and so on.
+
 ### Multi-Model Federation Search
 
 Search across multiple models simultaneously:
@@ -891,7 +893,7 @@ abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.'); // an em
 return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
 ```
 
-The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestions` (populated only when the page is empty). `_highlighted` values are already HTML-escaped — render them directly, don't escape again.
+The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestions` (populated only when the search matched nothing: an empty page past the last one beside a non-zero total gets none). `_highlighted` values are already HTML-escaped — render them directly, don't escape again.
 
 → Full guide: [docs/integrations.md](docs/integrations.md#json-api-resources)
 
@@ -917,7 +919,7 @@ $page1 = User::search('john')->stableRanking()->paginate(10, page: 1);
 $page2 = User::search('john')->stableRanking()->paginate(10, page: 2);
 ```
 
-An explicit `orderBy()` replaces the relevance order on every path — LIKE, `extended()` and `useInvertedIndex()` — and on every terminal: rows come back in that order (several calls apply in the order given), `_score` is still attached, and `stableRanking()` adds the primary key ascending as the final tiebreak unless an `orderBy()` already names the key (on the LIKE and extended paths, under a join that repeats a model, the selected columns follow it: see the pagination note). The relevance order applies only when no `orderBy()` was set. `?page` is read as a whole number of at least 1 on every paginator: `?page=abc`, `?page=0`, `?page=-3` and `?page[]=1` are page 1; likewise `page(0)` or a negative page is page 1 and `skip(-n)` is `skip(0)`.
+An explicit `orderBy()` replaces the relevance order on every path — LIKE, `extended()` and `useInvertedIndex()` — and on every terminal: rows come back in that order (several calls apply in the order given), `_score` is still attached, and `stableRanking()` adds the primary key ascending as the final tiebreak unless an `orderBy()` already names the key (on the LIKE and extended paths, under a join that repeats a model, the selected columns follow it: see the pagination note). The relevance order applies only when no `orderBy()` was set. `?page` is read as a whole number of at least 1 on every paginator: `?page=abc`, `?page=0`, `?page=-3` and `?page[]=1` are page 1; likewise `page(0)` or a negative page is page 1 and `skip(-n)` is `skip(0)`. On the LIKE and extended paths `get()` and `first()` of such a search, and of one with `withRelevance(false)`, read only the rows up to the end of the page, where a relevance-ranked search reads up to `max_candidates` to rescore them; `_score` is then normalised over the rows read.
 
 ### Pagination Methods
 
@@ -1218,7 +1220,7 @@ Contact::search('steven')->preset('phonetic')->get();  // Finds "Stephen"
 Product::search('SKU-12345')->preset('exact')->get();
 ```
 
-A preset's `columns` are added to the search's columns, the way `searchIn()` adds them, so every column it names must exist on the table: `blog` needs `title`, `body` and `excerpt`; `ecommerce` needs `name`, `description`, `sku` and `brand`; `users` needs `name`, `email` and `username`; `phonetic` needs `name`. On a table without one of them the query fails with an unknown-column error, and a `searchIn()` after the preset cannot take the column away, because `searchIn()` only adds. Publish the config and change the preset's `columns` to your table's, or drop its `columns` key and pass the columns with `searchIn()`:
+A preset's `columns` are added to the search's columns, the way `searchIn()` adds them, but only the ones the table has: `users` names `name`, `email` and `username`, and on a table of `name` and `email` it searches those two. A preset with none of its columns on the table adds none, and its algorithm and other settings still apply. A column you name with `searchIn()` is never dropped, so a wrong one still fails with an unknown-column error. A dotted column, and every column when the query joins another table or the table cannot be listed, is kept as given. To search other columns than the preset names, publish the config and change its `columns`, or drop its `columns` key and pass the columns with `searchIn()`:
 
 ```php
 // config/fuzzy-search.php — the users preset without its columns
@@ -1345,6 +1347,8 @@ php artisan fuzzy-search:benchmark "App\Models\User" --term="john" --iterations=
 php artisan fuzzy-search:explain User --term="john"
 ```
 
+`benchmark` and `explain` run real searches, but turn `analytics.enabled` and `cache.enabled` off for the run (and restore them), so they write no analytics row and a cache hit is never timed as a search. An unknown `--algorithm` or an empty `--term` prints the message and exits with 1.
+
 ---
 
 ## Performance & Scaling
@@ -1443,7 +1447,7 @@ The LIKE algorithms scan the table: at 1M rows `simple` took 0.75 s, `fuzzy` 14 
 
 ## Algorithm × Database Compatibility
 
-This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns.
+This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns. On SQLite, whose LIKE folds ASCII letters only, a LIKE term with a non-ASCII character (`лев`, `Ünal`) is compared through the package's own `fuzzy_lower()` function, registered on the connection, so it matches whatever the case; it costs one PHP call per row and column, so it is slower than an ASCII term there. SQLite's own `lower()` and `LIKE` are not replaced.
 
 | Algorithm | MySQL 8 | MariaDB 11.4 (CI); 10.6+ expected | PostgreSQL 14 | SQLite | SQL Server |
 |---|---|---|---|---|---|
@@ -1451,7 +1455,7 @@ This table shows what each algorithm does at the SQL level on each supported dat
 | **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
 | **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | ILIKE pattern set, whatever `use_native_functions` says (pg_trgm's `similarity()` is not an edit distance) | Pattern set | Pattern set |
 | **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true`, else ILIKE pattern set | LIKE pattern set | LIKE pattern set |
-| **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true` (a term whose first letter is not ASCII, or follows a character that is not, takes the pattern fallback, and such a stored word is not compared; ASCII punctuation or digits before the first letter, as in `"Mila"`, `(Mila)` or `2Mila`, are skipped), else pattern fallback | Pattern fallback | Pattern fallback |
+| **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true` (a term whose first letter is not ASCII, or follows a character that is not, takes the pattern fallback, and such a stored word is not compared; ASCII punctuation or digits before the first letter, as in `"Mila"`, `(Mila)` or `2Mila`, are skipped), else pattern fallback | Package-registered `fuzzy_soundex()` (PHP's `soundex()`) on the first or last word | Native `SOUNDEX()` on the first or last word |
 | **metaphone** | Shadow column `{col}_metaphone` + exact `=` match. PHP's `metaphone()` encodes ASCII letters only, and drops H, W and Y before no vowel, so a term whose metaphone code is empty (`99`, `Иван`, `東京`, `H2O`, `Hy`) is matched as `LIKE '%term%'` on the column itself | Same as MySQL | Same (`ILIKE` for a term whose metaphone code is empty) | Same as MySQL | Same as MySQL |
 | **similar_text** | `LIKE '%term%'` and `CHAR_LENGTH(col) <= ?` (the `min_percentage` bound); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'` and `CHAR_LENGTH(col) <= ?`; PHP scores | `LIKE` and `LENGTH(col) <= ?` | `LIKE` and `LEN(CAST(col AS NVARCHAR(MAX)) + N'x') - 1 <= ?` |
 
@@ -1460,7 +1464,7 @@ MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths
 ### Notes
 
 - **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. PostgreSQL escapes with a backslash, its LIKE default, and escapes a backslash in the term too. SQLite and SQL Server have no default escape character, and MySQL and MariaDB lose theirs under the `NO_BACKSLASH_ESCAPES` SQL mode, so on all four the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there) and every LIKE a search writes carries `ESCAPE '!'`, which works in every SQL mode, pattern sets included (only the deprecated, unused `getRelevanceExpression()` / `getRelevanceBindings()` driver methods predate this).
-- **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. MySQL `SOUNDEX()` is built-in and always active — no flag needed. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
+- **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. `SOUNDEX()` is built in on MySQL, MariaDB and SQL Server, and SQLite uses the package's own `fuzzy_soundex()` function, all always active — no flag needed; `soundex` matches by sound on those four and on PostgreSQL with `fuzzystrmatch`, and uses the pattern fallback on PostgreSQL without it. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
 - **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager. With it, `using('levenshtein')` on MySQL and MariaDB compares the whole column value with the term: a row matches only when the value as a whole is within `levenshtein.max_distance` edits of the term, so a word inside a longer value is not found (`john` no longer finds `John Doe`), where the pattern set finds the term, or a near miss of it, anywhere in the value.
 - **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`
 - **fuzzystrmatch (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`
