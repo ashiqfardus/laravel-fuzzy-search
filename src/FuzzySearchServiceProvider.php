@@ -172,15 +172,16 @@ class FuzzySearchServiceProvider extends ServiceProvider
         $fuzzySearch = $this->app->make(FuzzySearch::class);
 
         // A request can hand these a column, and they match or order rows by its value: refuse one
-        // the model hides or names like a secret, as SearchBuilder does (SearchableColumns::guardExposed()).
-        // The column is the model's own, or a joined table's, judged by name alone. The Query
-        // Builder macros have no model to judge by and are not checked.
-        $guard = function (EloquentBuilder $builder, string $column): void {
+        // named like a secret, as SearchBuilder does (SearchableColumns::guardExposed()), and, for
+        // orderByFuzzy()'s similarity order only, one the model hides. The column is the model's
+        // own, or a joined table's, judged by name alone. The Query Builder macros have no model to
+        // judge by and are not checked.
+        $guard = function (EloquentBuilder $builder, string $column, bool $hidden = false): void {
             $model = $builder->getModel();
             $parts = explode('.', explode('->', $column, 2)[0]);
             $leaf  = array_pop($parts);
             $owner = $parts === [] || end($parts) === $model->getTable() ? $model : null;
-            SearchableColumns::guardExposed($model, $owner, $column, $leaf);
+            SearchableColumns::guardExposed($model, $owner, $column, $leaf, $hidden);
         };
 
         // Basic fuzzy where for Eloquent
@@ -206,7 +207,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
 
         // Order by fuzzy relevance for Eloquent
         EloquentBuilder::macro('orderByFuzzy', function (string $column, string $value, string $direction = 'asc') use ($fuzzySearch, $guard) {
-            $guard($this, $column);
+            $guard($this, $column, true);
             $fuzzySearch->applyFuzzyOrder($this->getQuery(), $column, $value, $direction);
             return $this;
         });

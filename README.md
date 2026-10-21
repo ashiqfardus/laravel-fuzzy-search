@@ -181,7 +181,7 @@ $users = User::search('john')
     ->get();
 ```
 
-A column name passed to `searchIn()`, `filter()`, `filterIn()`, `facet()` or `orderBy()`, or to the Eloquent `whereFuzzy()`, `orWhereFuzzy()`, `whereFuzzyMultiple()`, `orderByFuzzy()` and `fuzzySearch()` macros, may come from the request, so one the model keeps out of its output is refused: a column in its `$hidden` (or in the related model's, for a path like `author.email`) or named like a secret (`password`, `token`, `*_token`, `api_key`, …) throws `InvalidArgumentException` unless `$searchable['columns']` lists it.
+A column name passed to `searchIn()`, `filter()`, `filterIn()`, `facet()` and `orderBy()`, or to the Eloquent `whereFuzzy()`, `orWhereFuzzy()`, `whereFuzzyMultiple()`, `orderByFuzzy()` and `fuzzySearch()` macros may come from the request, so two kinds are refused with `InvalidArgumentException` unless `$searchable['columns']` lists them: a column named like a secret (`password`, `token`, `*_token`, `api_key`, …) in all of them, and a column in the model's `$hidden` (or the related model's, for a path like `author.email`) in `searchIn()`, `facet()` and `orderByFuzzy()`, whose matching, counts or similarity order reveal its content. An equality `filter()`/`filterIn()` or a plain `orderBy()` on a hidden column (a `tenant_id`, a sort field) is allowed.
 
 ### Fluent API
 

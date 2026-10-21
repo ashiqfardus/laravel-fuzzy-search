@@ -36,6 +36,21 @@ class ExposeDeclaringAuthor extends ExposeAuthor
     protected array $searchable = ['columns' => ['name' => 10, 'ssn' => 1], 'algorithm' => 'like'];
 }
 
+/** A tenant id and a sort field the model keeps out of its output, as many apps do. */
+class ExposeTenantAuthor extends ExposeAuthor
+{
+    protected $hidden = ['ssn', 'tenant_id', 'priority'];
+}
+
+/** No Searchable trait, so no $searchable['columns'] to declare anything in: the macros still apply. */
+class ExposePlainAuthor extends Model
+{
+    protected $table   = 'expose_authors';
+    protected $guarded = [];
+    public $timestamps = false;
+    protected $hidden  = ['email'];
+}
+
 class ExposePost extends Model
 {
     use Searchable;
@@ -59,10 +74,11 @@ class ExposeDeclaringPost extends ExposePost
 }
 
 /**
- * A column name passed to searchIn(), filter(), filterIn() or facet() may come from the request.
- * One the model hides, or one named like a secret, would let a caller probe its values row by
- * row (`?field=ssn&q=123-4`), so it is refused unless the model lists it in
- * $searchable['columns'].
+ * A column name passed to searchIn(), filter(), filterIn(), facet(), orderBy() or the Eloquent fuzzy
+ * macros may come from the request. One named like a secret is refused in all of them, and one the
+ * model only hides is refused where its content leaks through partial or aggregate matching
+ * (searchIn(), facet(), orderByFuzzy(): `?field=ssn&q=123-4`), unless the model lists it in
+ * $searchable['columns']. An equality filter or a plain ordering by a hidden column is allowed.
  */
 class RequestColumnExposureTest extends TestCase
 {
@@ -78,6 +94,8 @@ class RequestColumnExposureTest extends TestCase
             $table->string('email');
             $table->string('ssn');
             $table->string('api_token');
+            $table->unsignedInteger('tenant_id');
+            $table->unsignedInteger('priority');
         });
         Schema::create('expose_posts', function (Blueprint $table) {
             $table->id();
@@ -86,8 +104,8 @@ class RequestColumnExposureTest extends TestCase
         });
 
         DB::table('expose_authors')->insert([
-            ['name' => 'Ann Lee', 'email' => 'ann@site.test', 'ssn' => '123-45-6789', 'api_token' => 'tok-ann'],
-            ['name' => 'Bo Ray', 'email' => 'bo@site.test', 'ssn' => '987-65-4321', 'api_token' => 'tok-bo'],
+            ['name' => 'Ann Lee', 'email' => 'ann@site.test', 'ssn' => '123-45-6789', 'api_token' => 'tok-ann', 'tenant_id' => 7, 'priority' => 2],
+            ['name' => 'Bo Ray', 'email' => 'bo@site.test', 'ssn' => '987-65-4321', 'api_token' => 'tok-bo', 'tenant_id' => 8, 'priority' => 1],
         ]);
         DB::table('expose_posts')->insert([
             ['author_id' => 1, 'title' => 'First post'],
@@ -112,14 +130,10 @@ class RequestColumnExposureTest extends TestCase
             'searchIn hidden, upper'    => [fn (SearchBuilder $b) => $b->searchIn(['SSN']), 'SSN'],
             'searchIn table-qualified'  => [fn (SearchBuilder $b) => $b->searchIn(['expose_authors.ssn']), 'expose_authors.ssn'],
             'facet hidden'              => [fn (SearchBuilder $b) => $b->facet('ssn'), 'ssn'],
-            'filter hidden'             => [fn (SearchBuilder $b) => $b->filter('ssn', '123-45-6789'), 'ssn'],
-            'filter hidden, operator'   => [fn (SearchBuilder $b) => $b->filter('ssn', 'like', '123%'), 'ssn'],
-            'filterIn hidden'           => [fn (SearchBuilder $b) => $b->filterIn('ssn', ['123-45-6789']), 'ssn'],
             'searchIn secret'           => [fn (SearchBuilder $b) => $b->searchIn(['api_token']), 'api_token'],
             'facet secret'              => [fn (SearchBuilder $b) => $b->facet('api_token'), 'api_token'],
             'filter secret'             => [fn (SearchBuilder $b) => $b->filter('api_token', 'tok-ann'), 'api_token'],
             'filterIn secret'           => [fn (SearchBuilder $b) => $b->filterIn('api_token', ['tok-ann']), 'api_token'],
-            'orderBy hidden'            => [fn (SearchBuilder $b) => $b->orderBy('ssn'), 'ssn'],
             'orderBy secret'            => [fn (SearchBuilder $b) => $b->orderBy('api_token', 'desc'), 'api_token'],
         ];
     }
@@ -144,7 +158,7 @@ class RequestColumnExposureTest extends TestCase
             'searchIn' => [fn (SearchBuilder $b) => $b->searchIn(['author.ssn'])],
             'case'     => [fn (SearchBuilder $b) => $b->searchIn(['Author.SSN'])],
             'secret'   => [fn (SearchBuilder $b) => $b->searchIn(['author.api_token'])],
-            'filter'   => [fn (SearchBuilder $b) => $b->filter('author.ssn', '123-45-6789')],
+            'filter'   => [fn (SearchBuilder $b) => $b->filter('author.api_token', 'tok-ann')],
             'facet'    => [fn (SearchBuilder $b) => $b->facet('author.ssn')],
         ];
     }
@@ -185,10 +199,10 @@ class RequestColumnExposureTest extends TestCase
             'orderByFuzzy hidden'    => [fn ($q) => $q->orderByFuzzy('ssn', '123-45-6789'), 'ssn'],
             'orderByFuzzy secret'    => [fn ($q) => $q->orderByFuzzy('api_token', 'tok-ann'), 'api_token'],
             'orderByFuzzy qualified' => [fn ($q) => $q->orderByFuzzy('expose_authors.ssn', '123'), 'expose_authors.ssn'],
-            'whereFuzzy hidden'      => [fn ($q) => $q->whereFuzzy('ssn', '123-45-6789'), 'ssn'],
+            'whereFuzzy secret'      => [fn ($q) => $q->whereFuzzy('api_token', 'tok-ann'), 'api_token'],
             'orWhereFuzzy secret'    => [fn ($q) => $q->orWhereFuzzy('api_token', 'tok-ann'), 'api_token'],
-            'whereFuzzyMultiple'     => [fn ($q) => $q->whereFuzzyMultiple(['name', 'SSN'], 'ann'), 'SSN'],
-            'fuzzySearch'            => [fn ($q) => $q->fuzzySearch('ssn', '123'), 'ssn'],
+            'whereFuzzyMultiple'     => [fn ($q) => $q->whereFuzzyMultiple(['name', 'API_TOKEN'], 'ann'), 'API_TOKEN'],
+            'fuzzySearch'            => [fn ($q) => $q->fuzzySearch('api_token', 'tok'), 'api_token'],
         ];
     }
 
@@ -215,5 +229,21 @@ class RequestColumnExposureTest extends TestCase
 
         // A query builder has no $hidden or $searchable['columns'] to judge by: not checked, as in the builder.
         $this->assertNotNull(DB::table('expose_authors')->orderByFuzzy('ssn', '123')->first());
+    }
+
+    public function test_an_equality_filter_a_plain_ordering_and_the_where_macros_take_a_hidden_column(): void
+    {
+        $both = fn () => ExposeTenantAuthor::search('site.test')->searchIn(['email']);
+        $this->assertSame(['Ann Lee'], $both()->filter('tenant_id', 7)->get()->pluck('name')->all());
+        $this->assertSame(['Bo Ray'], $both()->filterIn('tenant_id', [8, 9])->get()->pluck('name')->all());
+        $this->assertSame(['Ann Lee'], ExposeAuthor::search('ann')->filter('ssn', '123-45-6789')->get()->pluck('name')->all());
+        $this->assertSame(['Bo Ray', 'Ann Lee'], $both()->orderBy('priority')->get()->pluck('name')->all());
+
+        $this->assertContains('Ann Lee', ExposePlainAuthor::query()->whereFuzzy('email', 'ann@site.test')->pluck('name')->all());
+        $this->assertContains('Ann Lee', ExposeTenantAuthor::query()->whereFuzzyMultiple(['name', 'ssn'], 'ann')->pluck('name')->all());
+        $this->assertNotEmpty(ExposeTenantAuthor::query()->fuzzySearch('ssn', '123-45-6789')->get());
+
+        $this->expectException(\InvalidArgumentException::class);
+        ExposePlainAuthor::query()->whereFuzzy('api_token', 'tok-ann')->get();
     }
 }

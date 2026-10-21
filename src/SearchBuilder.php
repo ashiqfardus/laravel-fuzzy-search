@@ -185,7 +185,7 @@ class SearchBuilder
     {
         foreach (SearchableColumns::weights($columns) as $col => $weight) {
             SearchableColumns::validate([$col], SearchableColumns::INVALID_NAME_BRACKETED);
-            $this->guardExposedColumn($col);
+            $this->guardExposedColumn($col, true);
             if (!in_array($col, $this->searchableColumns, true)) {
                 $this->searchableColumns[] = $col;
             }
@@ -376,15 +376,16 @@ class SearchBuilder
 
     /**
      * Throws for a column a request could probe the model's withheld values through (searchIn(),
-     * filter(), filterIn(), facet() and orderBy() may be handed request input): one in the $hidden of the
-     * model it belongs to, in any letter case, or named like a secret (SearchableColumns::
-     * isSecretName(), the list auto-detection skips), unless the model lists it, as written, in
+     * filter(), filterIn(), facet() and orderBy() may be handed request input): one named like a
+     * secret (SearchableColumns::isSecretName(), the list auto-detection skips) and, where $hidden is
+     * true (searchIn() and facet(), whose matching or counts reveal the content), one in the $hidden
+     * of the model it belongs to, in any letter case; unless the model lists it, as written, in
      * $searchable['columns']. A relation path is judged on the related model, reached through
      * typed relation methods only (isReachableRelation()), which run no query; a joined table's
      * column, whose model is unknown, by its name alone; filter()'s JSON path (`options->theme`)
      * by its column. A Query Builder has neither $hidden nor $searchable['columns'] and is not checked.
      */
-    private function guardExposedColumn(string $column): void
+    private function guardExposedColumn(string $column, bool $hidden): void
     {
         if (!$this->query instanceof EloquentBuilder) {
             return;
@@ -412,7 +413,7 @@ class SearchBuilder
             }
         }
 
-        SearchableColumns::guardExposed($model, $owner, $column, $leaf);
+        SearchableColumns::guardExposed($model, $owner, $column, $leaf, $hidden);
     }
 
     /** @return array<string, string> searchIn() column => column for direct (non-relation) targets */
@@ -954,7 +955,7 @@ class SearchBuilder
      */
     public function filter(string $column, mixed $operator, mixed $value = null): self
     {
-        $this->guardExposedColumn($column);
+        $this->guardExposedColumn($column, false);
         if ($value === null) {
             $value = $operator;
             $operator = '=';
@@ -968,7 +969,7 @@ class SearchBuilder
      */
     public function filterIn(string $column, array $values): self
     {
-        $this->guardExposedColumn($column);
+        $this->guardExposedColumn($column, false);
         $this->filters[] = ['column' => $column, 'operator' => 'IN', 'value' => $values];
         return $this;
     }
@@ -979,7 +980,7 @@ class SearchBuilder
     public function facet(string $column): self
     {
         SearchableColumns::validate([$column]);
-        $this->guardExposedColumn($column);
+        $this->guardExposedColumn($column, true);
         $this->facets[] = $column;
         return $this;
     }
@@ -1123,7 +1124,7 @@ class SearchBuilder
      */
     public function orderBy(string $column, string $direction = 'asc'): self
     {
-        $this->guardExposedColumn($column); // a request's ?sort= orders by the value: see guardExposedColumn()
+        $this->guardExposedColumn($column, false); // a secret name only: ordering by a hidden sort field is legitimate
         $this->sortBy[] = compact('column', 'direction');
         return $this;
     }

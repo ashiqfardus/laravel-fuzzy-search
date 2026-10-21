@@ -299,13 +299,16 @@ final class SearchableColumns
     }
 
     /**
-     * Throws for a column a request could probe $model's withheld values through: $leaf in the
-     * $hidden of $owner (the model the column belongs to, or null for a joined table's, judged by
-     * name alone), in any letter case, or named like a secret (isSecretName()), unless $model lists
-     * $column, as written, in $searchable['columns']. Declared config only is read, so a model
-     * with auto-detected columns runs no schema SQL here.
+     * Throws for a column a request could probe $model's withheld values through, unless $model
+     * lists $column, as written, in $searchable['columns']: a $leaf named like a secret
+     * (isSecretName()) always, and, when $hidden is true, one in the $hidden of $owner (the model
+     * the column belongs to, or null for a joined table's, judged by name alone), in any letter
+     * case. Callers pass $hidden only where the column's content leaks through partial or
+     * aggregate matching (searchIn(), facet(), orderByFuzzy()); an equality filter or a plain
+     * ordering by a hidden column (a tenant id, a sort field) is a legitimate use. Declared config
+     * only is read, so a model with auto-detected columns runs no schema SQL here.
      */
-    public static function guardExposed(Model $model, ?Model $owner, string $column, string $leaf): void
+    public static function guardExposed(Model $model, ?Model $owner, string $column, string $leaf, bool $hidden): void
     {
         if (method_exists($model, 'hasDeclaredSearchableColumns') && $model->hasDeclaredSearchableColumns()
             && in_array($column, $model->getSearchableColumns(), true)) {
@@ -313,7 +316,7 @@ final class SearchableColumns
         }
 
         if (self::isSecretName($leaf)
-            || ($owner !== null && in_array(strtolower($leaf), array_map('strtolower', $owner->getHidden()), true))) {
+            || ($hidden && $owner !== null && in_array(strtolower($leaf), array_map('strtolower', $owner->getHidden()), true))) {
             throw new \InvalidArgumentException(
                 "Column [{$column}] is hidden or named like a secret: declare it in " . get_class($model)
                 . "'s \$searchable['columns'] to search, filter or sort by it."
