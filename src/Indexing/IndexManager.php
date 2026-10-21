@@ -863,16 +863,16 @@ class IndexManager
      * - MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the five
      *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
      *   session may truncate a table it has write-locked: the postings, the documents and the model
-     *   terms. Laravel 10 connects to it as mysql.
-     * - MySQL: as MariaDB (the terms are truncated too, with foreign_key_checks off for that
-     *   statement, unless a table of the app's references them), but its LOCK TABLES has no NOWAIT,
+     *   terms, then the terms, with foreign_key_checks off for that statement, unless a table of the
+     *   app's references them. Laravel 10 connects to it as mysql.
+     * - MySQL: as MariaDB, but its LOCK TABLES has no NOWAIT,
      *   so each try waits one second at most, and only while no other session holds one of the
      *   tables (truncateWhenFree()).
      * MySQL and MariaDB try 3 times, 2 s apart; where they still cannot truncate, they delete in
      * bounded transactions (clearInBatches()) rather than in one.
-     * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
-     * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
-     * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). Every DELETE path
+     * SQL Server, MySQL and MariaDB then delete the meta rows (one per model), and SQL Server the
+     * terms, as MySQL/MariaDB do where a table of the app's references them: the DELETE is quick
+     * once the postings are gone (about 2 s per 100,000 terms on MySQL). Every DELETE path
      * deletes the model terms before the terms, which would otherwise cascade into them row by
      * row. SQLite: DELETE without WHERE is its truncate.
      *
