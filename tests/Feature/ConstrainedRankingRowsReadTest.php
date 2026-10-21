@@ -88,15 +88,16 @@ class ConstrainedRankingRowsReadTest extends TestCase
     {
         $scout = fn () => new \Laravel\Scout\Builder(new RowsReadScoutUser, $term, null, true); // soft_delete, as Scout's search() passes it
         $index = fn (string $class) => $class::search($term)->typoTolerance(0)->useInvertedIndex();
+        $taken = min($matches, (int) config('fuzzy-search.max_candidates')); // the Scout engine cuts take() to max_candidates
 
         return [
             'SoftDeletes get'       => fn () => $this->assertCount($matches, $index(SoftDeletedUser::class)->take(50)->get()),
             'SoftDeletes paginate'  => fn () => $this->assertSame($matches, $index(SoftDeletedUser::class)->paginate(15)->total()),
             'SoftDeletes count'     => fn () => $this->assertSame($matches, $index(SoftDeletedUser::class)->count()),
             'where() get'           => fn () => $this->assertCount($matches, $index(User::class)->where('email', 'like', '%.test')->take(50)->get()),
-            'Scout soft_delete get' => fn () => $this->assertCount($matches, $scout()->take(50)->get()),
+            'Scout soft_delete get' => fn () => $this->assertCount($taken, $scout()->take(50)->get()),
             'Scout paginate'        => fn () => $this->assertSame($matches, $scout()->paginate(15)->total()),
-            'Scout query()'         => fn () => $this->assertCount($matches, $scout()->query(fn ($query) => $query->where('email', 'like', '%.test'))->take(50)->get()),
+            'Scout query()'         => fn () => $this->assertCount($taken, $scout()->query(fn ($query) => $query->where('email', 'like', '%.test'))->take(50)->get()),
         ];
     }
 
