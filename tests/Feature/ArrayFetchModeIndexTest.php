@@ -58,6 +58,7 @@ class ArrayFetchModeIndexTest extends TestCase
 
     public function test_the_index_paths_and_the_log_read_rows_whatever_the_fetch_mode(): void
     {
+        $this->withoutMockingConsoleOutput(); // under Laravel 10's test kernel a package command's output reaches Artisan::output() only this way
         Artisan::call('fuzzy-search:rebuild', ['model' => User::class]);
         config(['fuzzy-search.analytics.enabled' => true]);
         User::search('john')->get();

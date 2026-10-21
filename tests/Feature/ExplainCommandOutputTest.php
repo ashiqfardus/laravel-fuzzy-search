@@ -17,6 +17,7 @@ class ExplainCommandOutputTest extends TestCase
 {
     public function test_explain_prints_the_searchs_own_sql_and_bindings_and_nothing_made_up(): void
     {
+        $this->withoutMockingConsoleOutput(); // under Laravel 10's test kernel a package command's output reaches Artisan::output() only this way
         foreach (['fuzzy', 'levenshtein', 'soundex', 'simple'] as $algorithm) {
             $this->assertSame(0, Artisan::call('fuzzy-search:explain', ['model' => User::class, '--term' => 'johnathan', '--algorithm' => $algorithm]));
             $output = Artisan::output();
