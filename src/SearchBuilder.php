@@ -2726,6 +2726,7 @@ class SearchBuilder
                     ->orderByDesc('count')
                     ->orderBy($column)
                     ->pluck('count', $column)
+                    ->map(fn ($count) => (int) $count) // SQL Server's driver returns COUNT(*) as a string
                     ->toArray();
             }
 

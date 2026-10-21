@@ -116,7 +116,7 @@ class SuggestionFilterScopeTest extends TestCase
     {
         $limits = [];
         foreach ($this->queriesOf(fn () => FilterScopedNote::search('jon')->filter('tenant_id', 1)->suggest(1_000_000)) as $sql) {
-            if (preg_match('/limit (\d+)/i', $sql, $m)) {
+            if (preg_match('/\b(?:limit|top \(?|fetch next) ?(\d+)/i', $sql, $m)) { // SQL Server sends top N or fetch next N
                 $limits[] = (int) $m[1];
             }
         }

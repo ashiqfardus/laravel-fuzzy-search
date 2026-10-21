@@ -109,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Scout engine's `update()` writes a collection in one transaction. ([guide][u-federated])
 - The Scout engine cuts `paginate()`, `simplePaginate()` and `take()` to `max_candidates`, as `SearchBuilder` and `FederatedSearch` cut a page size; 2.0 hydrated any size it was given.
 - Scout 10.0 is not supported: `composer.json` conflicts with `laravel/scout` below 10.1, the first release that hands the engine `paginate()` and `simplePaginate()` (2.0.1 allowed `^10.0`). ([guide][u-federated])
+- `getFacets()` counts are integers on every database; SQL Server returned them as strings.
 - An index-path query, and a Scout search, uses its first `query.max_tokens` distinct terms (32) and ignores the rest, without an exception; each term reads up to `bm25.max_postings_per_term` rows. ([guide][u-bm25])
 - `suggest()` and `didYouMean()` cut their limit to 50. ([guide][u-search])
 - The FuzzySearch singleton reads `config('fuzzy-search')` live, so runtime overrides reach the drivers. ([guide][u-api])
