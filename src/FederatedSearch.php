@@ -350,6 +350,14 @@ class FederatedSearch
             return null;
         }
 
+        // Columns named by searchIn() may come from the request: a hidden one is refused (the model
+        // has no Searchable trait to declare it with), as SearchBuilder::searchIn() refuses it.
+        if (!empty($weighted)) {
+            foreach ($columns as $column) {
+                SearchableColumns::guardExposed($instance, $instance, $column, $column, true);
+            }
+        }
+
         // A model with the Fuzzy trait keeps its own algorithm and options, read through the trait's
         // public accessors as its fuzzy() scope reads them; using(), options() and typoTolerance() on
         // this federated search override them. Any other model is searched with LIKE.

@@ -336,6 +336,15 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
         SearchableColumns::validate(array_column($orders, 'column'));
 
+        // A request can hand orderBy() a column: refuse a secret-named one, as SearchBuilder::orderBy() does
+        // (a hidden sort field is legitimate, so only the name is judged).
+        foreach ($orders as $order) {
+            $segments = explode('.', explode('->', (string) $order['column'], 2)[0]);
+            $leaf     = array_pop($segments);
+            $model    = $builder->model;
+            SearchableColumns::guardExposed($model, $segments === [] || end($segments) === $model->getTable() ? $model : null, (string) $order['column'], $leaf, false);
+        }
+
         return $orders;
     }
 
@@ -416,7 +425,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         // term, and an uncapped query of a few thousand words passed SQL Server's 2,100 limit.
         $query = FuzzySearch::capTerm($query);
 
-        return $this->indexManager->processTerms($query, null, $builder->model::class);
+        // The first query.max_tokens distinct terms, as SearchBuilder::indexedQueryTerms() uses them.
+        $terms = array_values(array_unique($this->indexManager->processTerms($query, null, $builder->model::class)));
+
+        return array_slice($terms, 0, max(1, (int) config('fuzzy-search.query.max_tokens', 32)));
     }
 
     /**

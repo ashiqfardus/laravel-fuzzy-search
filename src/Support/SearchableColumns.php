@@ -317,9 +317,14 @@ final class SearchableColumns
 
         if (self::isSecretName($leaf)
             || ($hidden && $owner !== null && in_array(strtolower($leaf), array_map('strtolower', $owner->getHidden()), true))) {
+            $class = get_class($model);
+
+            // Only a model with the package's Searchable trait can declare the column.
             throw new \InvalidArgumentException(
-                "Column [{$column}] is hidden or named like a secret: declare it in " . get_class($model)
-                . "'s \$searchable['columns'] to search, filter or sort by it."
+                "Column [{$column}] is hidden or named like a secret: "
+                . (method_exists($model, 'hasDeclaredSearchableColumns')
+                    ? "declare it in {$class}'s \$searchable['columns'] to search, filter or sort by it."
+                    : "{$class} does not use the Searchable trait, so it cannot declare it: add the trait and list the column in \$searchable['columns'], or search a Query Builder (DB::table()), where columns are not checked.")
             );
         }
     }
