@@ -21,7 +21,9 @@ use PHPUnit\Framework\Attributes\DataProvider;
  * It stays atomic against index writes (TB-1: IndexModelJobOverlapTest), keeps the model type and
  * column dictionaries, never commits a transaction of the caller's, never waits for an exclusive
  * table lock (R13-M3, ruling ER-194), and falls back to the DELETEs where TRUNCATE is refused or
- * the tables are busy, saying so on the console. MySQL always deletes.
+ * the tables are busy, saying so on the console. MySQL truncates under LOCK TABLES … WRITE with a
+ * one second wait, and deletes when the tables are busy. ER-228: MySQL and MariaDB try the truncate
+ * 3 times, 2 s apart, and their DELETEs, and a flush's of one model, run in bounded transactions.
  */
 class ClearAllTest extends TestCase
 {
@@ -102,7 +104,7 @@ class ClearAllTest extends TestCase
         $this->indexBoth();
         $dictionaries = $this->dictionaries();
 
-        $this->clearAll($this->dbDriver === 'mysql');
+        $this->clearAll(false);
 
         $this->assertCleared($dictionaries);
         // The dictionaries' ids still hold: the index fills again and searches.
@@ -116,8 +118,7 @@ class ClearAllTest extends TestCase
      * deleted row by row, and the model terms are emptied before the terms on every path (a DELETE
      * of the terms cascades into them row by row). PostgreSQL truncates all five in one statement, without CASCADE or RESTART IDENTITY, once it
      * holds them (LOCK TABLE … NOWAIT); MariaDB under LOCK TABLES … NOWAIT (its TRUNCATE commits);
-     * SQL Server behind the index write lock. MySQL deletes (R13-M3: its LOCK TABLES cannot be
-     * told not to wait). flushAll() says whether it truncated.
+     * SQL Server behind the index write lock; MySQL as MariaDB, with a one second lock wait and no NOWAIT. flushAll() says whether it truncated.
      */
     public function test_clear_all_truncates_the_big_tables(): void
     {
@@ -139,8 +140,17 @@ class ClearAllTest extends TestCase
                 'truncate table fuzzy_index_postings',
                 'truncate table fuzzy_index_documents',
                 'truncate table fuzzy_index_model_terms',
+                'truncate table fuzzy_index_terms',
                 'delete from fuzzy_index_meta',
-                'delete from fuzzy_index_terms',
+                'unlock tables',
+            ],
+            'mysql' => [
+                'lock tables fuzzy_index_postings write, fuzzy_index_documents write, fuzzy_index_meta write, fuzzy_index_model_terms write, fuzzy_index_terms write',
+                'truncate table fuzzy_index_postings',
+                'truncate table fuzzy_index_documents',
+                'truncate table fuzzy_index_model_terms',
+                'truncate table fuzzy_index_terms',
+                'delete from fuzzy_index_meta',
                 'unlock tables',
             ],
             'sqlsrv' => [
@@ -151,11 +161,14 @@ class ClearAllTest extends TestCase
                 'delete from fuzzy_index_meta',
                 'delete from fuzzy_index_terms',
             ],
-            default => array_map(fn (string $table) => "delete from {$table}", self::TABLES), // MySQL; SQLite: DELETE without WHERE is its truncate
+            default => array_map(fn (string $table) => "delete from {$table}", self::TABLES), // SQLite: DELETE without WHERE is its truncate
         };
         $this->assertSame($expected, $statements);
-        $this->assertSame($this->dbDriver !== 'mysql', $truncated);
+        $this->assertTrue($truncated);
         $this->assertSame(0, DB::table('fuzzy_index_postings')->count());
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->assertSame(1, (int) DB::scalar('select @@session.foreign_key_checks'), 'foreign_key_checks is back on');
+        }
     }
 
     /**
@@ -188,7 +201,7 @@ class ClearAllTest extends TestCase
     /**
      * A table of the app's with a foreign key to the index makes TRUNCATE fail (PostgreSQL would
      * empty it with CASCADE); clear --all then deletes, and the app's rows stay. Only PostgreSQL
-     * truncates the referenced words, so only there (and on MySQL, always) it says it deleted.
+     * truncates the referenced words, so only there it says it deleted.
      */
     public function test_a_table_of_the_apps_referencing_the_index_keeps_its_rows(): void
     {
@@ -203,7 +216,7 @@ class ClearAllTest extends TestCase
             $this->indexBoth();
             $dictionaries = $this->dictionaries();
 
-            $this->clearAll(in_array($this->dbDriver, ['mysql', 'pgsql'], true));
+            $this->clearAll($this->dbDriver === 'pgsql');
 
             $this->assertCleared($dictionaries);
             $this->assertSame(2, DB::table('clear_all_refs')->count());
@@ -222,7 +235,7 @@ class ClearAllTest extends TestCase
      * PostgreSQL, no ALTER on SQL Server) cleared the index with the DELETEs before ER-187, and
      * still does: a refused LOCK TABLES or TRUNCATE falls back to them. On PostgreSQL the refusal
      * rolls back to a savepoint, so the transaction goes on; SQL Server would roll back the whole
-     * transaction, so it checks the permission first. MySQL takes no LOCK TABLES at all (R13-M3).
+     * transaction, so it checks the permission first. MySQL takes LOCK TABLES as MariaDB does.
      * The command says it deleted row by row. SQLite has no users.
      */
     #[DataProvider('grants')]
@@ -278,7 +291,8 @@ class ClearAllTest extends TestCase
 
         $this->assertCleared($dictionaries);
         // The refused statement is not logged (no QueryExecuted); the DELETEs that followed are.
-        $this->assertContains('delete from fuzzy_index_postings', $statements);
+        $this->assertNotEmpty(preg_grep('/^delete from fuzzy_index_postings\b/', $statements), implode("\n", $statements));
+        // MySQL: such a user cannot read performance_schema, so the tables count as in use (ER-228).
         $this->assertSame($lockTables && $this->dbDriver === 'mariadb', in_array('unlock tables', $statements, true));
     }
 
@@ -398,6 +412,326 @@ class ClearAllTest extends TestCase
 
         $this->assertSame($sqlsrv, (bool) preg_grep('/^truncate /', $statements), implode("\n", $statements));
         $this->assertSame($sqlsrv, $truncated);
+    }
+
+    /**
+     * flush($model), which `rebuild --fresh` runs, truncates the big tables when its type is the only
+     * one with documents, checked under the lock the truncation holds; SQLite deletes. The model
+     * types stay, and the type's meta row goes as it always did.
+     */
+    public function test_flush_truncates_when_the_model_is_the_only_one_indexed(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $dictionaries = $this->dictionaries();
+
+        $statements = $this->statements(fn () => app(IndexManager::class)->flush(User::class));
+
+        foreach (self::TABLES as $table) {
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+        $this->assertSame($dictionaries, $this->dictionaries());
+        $this->assertSame($this->dbDriver !== 'sqlite', (bool) preg_grep('/^truncate /', $statements), implode("\n", $statements));
+        app(IndexManager::class)->indexBatch(User::all());
+        $this->assertGreaterThan(0, User::search('john')->useInvertedIndex()->get()->count());
+    }
+
+    /** With a second type indexed, flush($model) deletes only its own rows. */
+    public function test_flush_deletes_only_its_own_rows_when_another_model_is_indexed(): void
+    {
+        $this->indexBoth();
+        $productType = DB::table('fuzzy_index_model_types')->where('model_type', Product::class)->value('id');
+        $keep        = [
+            'documents'   => DB::table('fuzzy_index_documents')->where('model_type', Product::class)->count(),
+            'postings'    => DB::table('fuzzy_index_postings')->where('model_type_id', $productType)->count(),
+            'model_terms' => DB::table('fuzzy_index_model_terms')->where('model_type_id', $productType)->count(),
+            'meta'        => DB::table('fuzzy_index_meta')->where('model_type', Product::class)->count(),
+        ];
+        $this->assertGreaterThan(0, min($keep));
+
+        $statements = $this->statements(fn () => app(IndexManager::class)->flush(User::class));
+
+        $this->assertEmpty(preg_grep('/^truncate /', $statements), implode("\n", $statements));
+        $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_type', User::class)->count());
+        $this->assertSame(0, DB::table('fuzzy_index_meta')->where('model_type', User::class)->count());
+        $this->assertSame($keep, [
+            'documents'   => DB::table('fuzzy_index_documents')->where('model_type', Product::class)->count(),
+            'postings'    => DB::table('fuzzy_index_postings')->where('model_type_id', $productType)->count(),
+            'model_terms' => DB::table('fuzzy_index_model_terms')->where('model_type_id', $productType)->count(),
+            'meta'        => DB::table('fuzzy_index_meta')->where('model_type', Product::class)->count(),
+        ]);
+        $this->assertSame(DB::table('fuzzy_index_postings')->count(), DB::table('fuzzy_index_postings')->where('model_type_id', $productType)->count());
+    }
+
+    /**
+     * On MySQL a reader's open transaction holds a metadata lock on the postings, which LOCK TABLES
+     * would wait for; MariaDB's NOWAIT is refused. ER-228: the truncate is tried 3 times, 2 s apart
+     * (MySQL waits at most one second a try, and only once no other session holds a table), then
+     * clear --all deletes in bounded batches, each its own transaction, and says to run it again
+     * when the index is idle. The reader is not killed (it commits afterwards), and MySQL's session
+     * lock_wait_timeout is back where it was, after this path and after the truncating one.
+     */
+    public function test_mysql_and_mariadb_give_up_the_truncate_after_three_tries_and_delete_in_batches(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL\'s and MariaDB\'s truncate tries and batched DELETEs.');
+        }
+        $this->indexBoth();
+        $dictionaries = $this->dictionaries();
+        $this->boundLockWaits(7);
+        $this->flushRows(5);
+
+        config(['database.connections.reader' => config('database.connections.integration')]);
+        $reader = DB::connection('reader');
+        $reader->beginTransaction();
+        try {
+            $reader->table('fuzzy_index_postings')->count();
+
+            $started    = microtime(true);
+            $statements = $this->statements(function () {
+                $this->artisan('fuzzy-search:clear', ['--all' => true])
+                    ->expectsOutputToContain(self::ROW_BY_ROW . ', not truncated, because the index tables were busy (or TRUNCATE is not allowed). On a large index, run it again when the index is idle, so it truncates, before rebuilding.')
+                    ->assertExitCode(0)
+                    ->run();
+            });
+            $elapsed = microtime(true) - $started;
+            $this->assertGreaterThan(3.9, $elapsed, 'it tried 3 times, 2 s apart');
+            $this->assertLessThan(10, $elapsed, 'it waited for the reader');
+            if ($this->dbDriver === 'mysql') {
+                $this->assertSame(7, (int) DB::scalar('select @@session.lock_wait_timeout'), 'after the fallback');
+            }
+            $this->assertEmpty(preg_grep('/^truncate /', $statements));
+            $this->assertGreaterThan(1, count(preg_grep('/^delete from fuzzy_index_postings\b/', $statements)), implode("\n", $statements));
+            $this->assertCleared($dictionaries);
+            $reader->commit(); // not killed
+        } finally {
+            if ($reader->transactionLevel() > 0) {
+                $reader->rollBack();
+            }
+            DB::purge('reader');
+        }
+
+        $this->indexBoth();
+        $this->clearAll(false);
+        if ($this->dbDriver === 'mysql') {
+            $this->assertSame(7, (int) DB::scalar('select @@session.lock_wait_timeout'), 'after the truncate');
+        }
+    }
+
+    public static function truncations(): array
+    {
+        return ['clear --all' => [true], 'flush of the only model indexed' => [false]];
+    }
+
+    /**
+     * ER-228: a reader that holds the tables for 1.5 s does not send clear --all, or the flush of
+     * the only model indexed, to the DELETEs: the truncate is tried again 2 s later and succeeds.
+     */
+    #[DataProvider('truncations')]
+    public function test_mysql_and_mariadb_truncate_on_a_later_try_once_the_reader_has_finished(bool $all): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL\'s and MariaDB\'s truncate tries.');
+        }
+        $all ? $this->indexBoth() : app(IndexManager::class)->indexBatch(User::all());
+        $dictionaries = $this->dictionaries();
+
+        [$readerError, $clearError] = $this->alongside(
+            function (\Closure $ready) {
+                DB::transaction(function () use ($ready) {
+                    DB::table('fuzzy_index_postings')->count();
+                    $ready();
+                    usleep(1_500_000);
+                });
+            },
+            function () use ($all, &$statements, &$truncated) {
+                $statements = $this->statements(function () use ($all, &$truncated) {
+                    $all ? $truncated = app(IndexManager::class)->flushAll() : app(IndexManager::class)->flush(User::class);
+                });
+            }
+        );
+
+        $this->assertNull($readerError);
+        $this->assertNull($clearError);
+        if ($all) {
+            $this->assertTrue($truncated);
+        }
+        $this->assertNotEmpty(preg_grep('/^truncate /', $statements), implode("\n", $statements));
+        $this->assertEmpty(preg_grep('/^delete from fuzzy_index_postings\b/', $statements), implode("\n", $statements));
+        $this->assertCleared($dictionaries);
+    }
+
+    /**
+     * ER-228 (ruling b8): where MySQL cannot read performance_schema.metadata_locks (performance_schema
+     * off, no privilege, MySQL before 8.0.16, any error), the index tables count as in use: no LOCK
+     * TABLES, which could deadlock a reader's transaction, and no tries; the DELETEs run at once,
+     * in batches, and the command says to run it again when the index is idle.
+     */
+    #[DataProvider('truncations')]
+    public function test_mysql_deletes_in_batches_at_once_when_it_cannot_tell_whether_the_tables_are_in_use(bool $all): void
+    {
+        if ($this->dbDriver !== 'mysql') {
+            $this->markTestSkipped('MySQL\'s metadata lock check.');
+        }
+        $all ? $this->indexBoth() : app(IndexManager::class)->indexBatch(User::all());
+        $dictionaries = $this->dictionaries();
+        $this->flushRows(5);
+        DB::connection()->beforeExecuting(function (string $sql) {
+            if (str_contains($sql, 'performance_schema')) {
+                throw new \Illuminate\Database\QueryException(DB::getDefaultConnection(), $sql, [], new \PDOException("SQLSTATE[42000]: Syntax error or access violation: 1142 SELECT command denied to user 'app'@'%' for table 'metadata_locks'"));
+            }
+        });
+
+        $started    = microtime(true);
+        $statements = $this->statements(function () use ($all) {
+            $all
+                ? $this->artisan('fuzzy-search:clear', ['--all' => true])->expectsOutputToContain('run it again when the index is idle')->assertExitCode(0)->run()
+                : app(IndexManager::class)->flush(User::class);
+        });
+
+        $this->assertLessThan(1.5, microtime(true) - $started, 'no tries');
+        $this->assertEmpty(preg_grep('/^(lock tables|truncate )/', $statements), implode("\n", $statements));
+        $this->assertGreaterThan(1, count(preg_grep('/^delete from fuzzy_index_postings\b/', $statements)), implode("\n", $statements));
+        $this->assertCleared($dictionaries);
+    }
+
+    /**
+     * ER-228: with another model indexed, flush($model) on MySQL/MariaDB deletes its postings in
+     * batches by model_id, each its own transaction, then its words' counts, its documents and its
+     * meta row; the other model's rows stay, and each shared word's doc_count ends as a fresh count
+     * of the documents holding it. Every database ends exact; only MySQL/MariaDB batch.
+     */
+    public function test_a_flush_beside_another_model_deletes_its_rows_in_batches_and_keeps_the_shared_counts_exact(): void
+    {
+        $this->indexShared();
+        $keep = $this->productRows();
+        $this->flushRows(5);
+        $commits = 0;
+        DB::connection()->getEventDispatcher()->listen(\Illuminate\Database\Events\TransactionCommitted::class, function () use (&$commits) {
+            $commits++;
+        });
+
+        $statements = $this->statements(fn () => app(IndexManager::class)->flush(User::class));
+
+        $this->assertFlushedBesideProducts($keep);
+        $this->assertEmpty(preg_grep('/^truncate /', $statements), implode("\n", $statements));
+        if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $batches = count(preg_grep('/^delete from fuzzy_index_postings\b/', $statements));
+            $this->assertGreaterThan(1, $batches, implode("\n", $statements));
+            $this->assertGreaterThanOrEqual($batches, $commits, 'a transaction per batch');
+        }
+    }
+
+    /** @return array<string, array{string}> the table whose delete the flush is interrupted after */
+    public static function interruptions(): array
+    {
+        return [
+            'between postings batches'  => ['postings'],
+            'in a chunk of words'       => ['model_terms'],
+            'between documents batches' => ['documents'],
+        ];
+    }
+
+    /**
+     * ER-228: a batched flush interrupted part way (the process dies, a statement fails) has
+     * committed the batches before; run again, it finishes, and the index ends as if it had run once.
+     */
+    #[DataProvider('interruptions')]
+    public function test_a_batched_flush_interrupted_part_way_ends_exact_when_run_again(string $table): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB flush in batches; elsewhere the flush is one transaction.');
+        }
+        $this->indexShared();
+        $keep = $this->productRows();
+        $this->flushRows(5);
+        $seen = 0;
+        DB::listen(function ($query) use ($table, &$seen) {
+            if (preg_match('/^\s*delete from [`"\[]?fuzzy_index_' . $table . '\b/i', $query->sql) && ++$seen === 2 - (int) ($table === 'model_terms')) {
+                throw new \RuntimeException('interrupted');
+            }
+        });
+
+        $error = null;
+        try {
+            app(IndexManager::class)->flush(User::class);
+        } catch (\RuntimeException $e) {
+            $error = $e->getMessage();
+        }
+        $this->assertSame('interrupted', $error);
+        $this->assertSame(0, DB::transactionLevel());
+
+        app(IndexManager::class)->flush(User::class);
+
+        $this->assertFlushedBesideProducts($keep);
+    }
+
+    /** Index the users and the products, with words both hold (apple, laptop, galaxy …). */
+    private function indexShared(): void
+    {
+        DB::table('users')->insert([
+            ['name' => 'Apple Laptop', 'email' => 'tablet@example.com', 'created_at' => now(), 'updated_at' => now()],
+            ['name' => 'Galaxy Phone', 'email' => 'pro@example.com', 'created_at' => now(), 'updated_at' => now()],
+        ]);
+        $this->indexBoth();
+        $productType = DB::table('fuzzy_index_model_types')->where('model_type', Product::class)->value('id');
+        $shared      = DB::table('fuzzy_index_model_terms')->where('model_type_id', $productType)->pluck('term_id')
+            ->intersect(DB::table('fuzzy_index_model_terms')->where('model_type_id', '<>', $productType)->pluck('term_id'));
+        $this->assertGreaterThan(2, $shared->count(), 'the models share words');
+    }
+
+    /** @return array<string, mixed> the product rows of each index table */
+    private function productRows(): array
+    {
+        $productType = DB::table('fuzzy_index_model_types')->where('model_type', Product::class)->value('id');
+        $rows        = function (string $table, string $column, $value, array $order) {
+            $query = DB::table($table)->where($column, $value);
+            foreach ($order as $key) {
+                $query->orderBy($key);
+            }
+
+            return $query->get()->map(fn ($row) => array_map('strval', (array) $row))->all();
+        };
+
+        return [
+            'documents'   => $rows('fuzzy_index_documents', 'model_type', Product::class, ['model_id']),
+            'postings'    => $rows('fuzzy_index_postings', 'model_type_id', $productType, ['model_id', 'term_id', 'column_id']),
+            'model_terms' => $rows('fuzzy_index_model_terms', 'model_type_id', $productType, ['term_id']),
+            'meta'        => $rows('fuzzy_index_meta', 'model_type', Product::class, ['model_type']),
+        ];
+    }
+
+    /**
+     * After flush(User): no user row anywhere, every product row as it was, every word held by a
+     * posting, and each word's doc_count, and each model's own count of it, the number of documents
+     * holding it.
+     */
+    private function assertFlushedBesideProducts(array $keep): void
+    {
+        $userType = DB::table('fuzzy_index_model_types')->where('model_type', User::class)->value('id');
+        $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_type', User::class)->count());
+        $this->assertSame(0, DB::table('fuzzy_index_postings')->where('model_type_id', $userType)->count());
+        $this->assertSame(0, DB::table('fuzzy_index_model_terms')->where('model_type_id', $userType)->count());
+        $this->assertSame(0, DB::table('fuzzy_index_meta')->where('model_type', User::class)->count());
+        $this->assertSame($keep, $this->productRows());
+
+        $held = fn (array $columns) => DB::query()
+            ->fromSub(DB::table('fuzzy_index_postings')->distinct()->select(['term_id', 'model_type_id', 'model_id']), 'held')
+            ->select($columns)->selectRaw('count(*) as documents')->groupBy($columns)->get()
+            ->mapWithKeys(fn ($row) => [implode(':', array_map(fn ($column) => $row->{$column}, $columns)) => (int) $row->documents])->sortKeys()->all();
+        $counts = DB::table('fuzzy_index_terms')->pluck('doc_count', 'id')->mapWithKeys(fn ($count, $id) => [(string) $id => (int) $count])->sortKeys()->all();
+        $own    = DB::table('fuzzy_index_model_terms')->get()
+            ->mapWithKeys(fn ($row) => ["{$row->model_type_id}:{$row->term_id}" => (int) $row->doc_count])->sortKeys()->all();
+
+        $this->assertSame($held(['term_id']), $counts, 'doc_count: a fresh count, and no word without a posting');
+        $this->assertSame($held(['model_type_id', 'term_id']), $own, 'each model\'s own counts');
+    }
+
+    /** Make the flushes delete $rows rows a statement where they delete in batches (MySQL/MariaDB). */
+    private function flushRows(int $rows): void
+    {
+        if (property_exists(IndexManager::class, 'flushRows')) {
+            (new \ReflectionProperty(IndexManager::class, 'flushRows'))->setValue(app(IndexManager::class), $rows);
+        }
     }
 
     /**

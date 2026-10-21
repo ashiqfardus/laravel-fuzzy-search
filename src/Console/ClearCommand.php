@@ -23,7 +23,7 @@ class ClearCommand extends Command
             $truncated = $indexManager->flushAll();
             $this->info('Cleared BM25 index for all models.');
             if (!$truncated) {
-                $this->warn('It was deleted row by row, not truncated (always on MySQL; elsewhere the index tables were busy, or TRUNCATE is not allowed): on a large index that is slow.');
+                $this->warn('It was deleted row by row, not truncated, because the index tables were busy (or TRUNCATE is not allowed). On a large index, run it again when the index is idle, so it truncates, before rebuilding.');
             }
             return self::SUCCESS;
         }

@@ -1316,8 +1316,10 @@ php artisan fuzzy-search:flush "App\Models\User"
 # Clear BM25 index for a model (asks no confirmation); a renamed or deleted model's rows go by its old class name
 php artisan fuzzy-search:clear "App\Models\User"
 
-# Clear BM25 index for all models (asks no confirmation). It truncates where it can; MySQL deletes row by row,
-# which takes hours on a large index: see docs/bm25.md#artisan-commands
+# Clear BM25 index for all models (asks no confirmation). It truncates where it can; while other
+# sessions use the index tables, or where TRUNCATE is not allowed, it deletes row by row (on MySQL/MariaDB in
+# bounded batches), which is slow on a large index: run it again when the index is idle, so it truncates,
+# before rebuilding. See docs/bm25.md#artisan-commands
 php artisan fuzzy-search:clear --all
 
 # Show index statistics (total docs, tokens, avg length per model; the dictionary's unique terms for all models together)
