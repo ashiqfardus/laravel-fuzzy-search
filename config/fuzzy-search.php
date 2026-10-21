@@ -252,14 +252,14 @@ return [
         /*
          * candidate_chunk: an ordered index search lists the ranked ids when the ranking
          * holds every match. Past this many, on SQL Server, for a string key on PostgreSQL
-         * (or over a union on MySQL or MariaDB), and for a string list past the database's
-         * placeholder limit, the postings restrict the read instead (a subquery; on MySQL and
-         * MariaDB, for a query with no constraint and words in at most a tenth of the rows, a
-         * join on the key), as they do a ranking capped at max_postings_per_term. On SQL
-         * Server, and for such a
-         * string key or one on SQLite, a constrained relevance search checks a ranking of
-         * at most max(candidate_chunk, max_candidates) ids by key, this many per query, and
-         * reads a longer one through that subquery. It is also the chunk the index path hydrates a
+         * when the word is in more than a tenth of the rows (a sparser word's ranking stays a
+         * bound list), over a union on MySQL, MariaDB or PostgreSQL, and for a string list past
+         * the database's placeholder limit, the postings restrict the read instead (a subquery;
+         * on MySQL and MariaDB, for a query with no constraint and words in at most a tenth of
+         * the rows, a join on the key), as they do a ranking capped at max_postings_per_term.
+         * On SQL Server, and for such a string key or one on SQLite, a constrained relevance
+         * search checks a ranking of at most max(candidate_chunk, max_candidates) ids by key,
+         * this many per query, and reads a longer one through that subquery. It is also the chunk the index path hydrates a
          * page's rows in and a cache hit re-reads rows in, and, for such a model on another
          * connection than the index, the chunk its ranking of any length is checked against
          * the constraints in.
@@ -347,7 +347,7 @@ return [
     | When enabled, every executed search attempt (get(), paginate(), in-memory) writes one row
     | to the analytics table through the FuzzySearchExecuted event — fallback() records one row
     | per algorithm tried and a federated search one per inner model; a cache hit and count()
-    | record nothing. See "What counts as one row" in the README. Search terms are user input:
+    | record nothing. See "What counts as one row" in docs/analytics.md. Search terms are user input:
     | keep retention short, or set hash_terms to store only a keyed SHA-256 of the normalized
     | term (HMAC with APP_KEY, so the table alone cannot be brute-forced; rotating APP_KEY
     | splits history at the rotation).

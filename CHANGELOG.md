@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade notes (read first)
 
-- **Plan the migrations.** Eleven new migrations; ten change the index tables. On MySQL and MariaDB they take a while (about 40 minutes to an hour for 6M rows on MySQL), and index searches fail until they finish: migrate under `php artisan down` with the indexing workers stopped, or empty the index and rebuild instead. On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty and take seconds; build each model's index once afterwards with `fuzzy-search:rebuild`. ([guide][u-checklist])
+- **Plan the migrations.** Eleven new migrations; ten change the index tables. On MySQL and MariaDB they take a while (the compact postings migration alone takes about 22 minutes for 6M rows on MySQL), and index searches fail until they finish: migrate under `php artisan down` with the indexing workers stopped, or empty the index and rebuild instead. On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty and take seconds; build each model's index once afterwards with `fuzzy-search:rebuild`. ([guide][u-checklist])
 - **Upgrade order.** Stop the indexing workers and saves, `migrate`, then `rebuild --fresh` each model a migration's warning names (nothing may be indexing), then restart the workers and Octane, then run a plain `rebuild` of every other indexed model for weighted ranking (it runs with writers on). ([guide][u-checklist])
 - **Empty terms throw everywhere.** `''` or whitespace throws `EmptySearchTermException` from `count()`, `paginate()`, `getFacets()` and `FuzzySearch::on()` too, unless `allow_empty_search` is on. ([guide][u-exceptions])
 - **`min_search_length` applies on every path**, so a one-character term matches nothing on `paginate()`, `count()` and `getFacets()` as well. A model with no searchable column matches nothing instead of every row. ([guide][u-search])
@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | `2026_09_17_000002_binary_collation_on_fuzzy_index_terms_term` | MySQL/MariaDB: `term` to `utf8mb4_bin`, so `café` and `cafe` are separate words | rewrites the dictionary |
 | `2026_09_18_000001_add_column_name_to_fuzzy_index_postings_table` | Postings carry their column (weighted BM25); postings from before keep an empty column | swaps the postings key |
 | `2026_09_19_000001_create_fuzzy_search_logs_table` | Creates the `analytics.table` table (`fuzzy_search_logs`); set `analytics.table` first | instant |
-| `2026_09_20_000001_widen_model_id_on_fuzzy_index_tables` | `model_id` 36 → 191 characters; byte-wise on MySQL/MariaDB | MySQL/MariaDB copy both tables (about 10 s per million postings) |
+| `2026_09_20_000001_widen_model_id_on_fuzzy_index_tables` | `model_id` 36 → 191 characters; byte-wise on MySQL/MariaDB | MySQL/MariaDB copy both tables |
 | `2026_09_30_000001_binary_collation_on_fuzzy_index_terms_term_on_sqlsrv` | SQL Server: `term` to `Latin1_General_100_BIN2`; rebuild with `--fresh` after | rebuilds the dictionary's indexes |
 | `2026_10_01_000001_rework_fuzzy_index_terms_and_postings_indexes` | Drops `postings_term_model_idx`, and adds a `(term_length, doc_count, id)` dictionary index that `2026_10_20_000001` drops again | builds a dictionary index |
 | `2026_10_02_000001_compact_fuzzy_index_postings_table` | Rewrites the postings in the compact layout, with the `fuzzy_index_model_types` and `fuzzy_index_columns` dictionaries; needs PostgreSQL 11+ | copies the postings (about 22 minutes for 6M rows on MySQL) |
@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Typo expansion, `asYouType()`, `suggest()`, `didYouMean()` and BM25 document frequency read each model's own words and counts in `fuzzy_index_model_terms`, one word length at a time through its `(model_type_id, term_length, doc_count, term_id)` key, newest word first among equal counts. Another model's words no longer crowd a model's own out, and the cost no longer grows with the shared dictionary. `fuzzy_index_terms.doc_count` is a total across models that no search reads. ([guide][u-bm25])
-- The postings table is compact and clustered by word, with each document's length in the posting. A common word is read as one range: on MySQL at 6M rows its first page takes 0.81 s, and three such words 5.5 s (43 s, and a timeout, on the old layout). The index takes about 1.5 GB per million rows on MySQL and 2.9 GB on PostgreSQL. ([sizing][r-sizing])
+- The postings table is compact and clustered by word, with each document's length in the posting. A common word is read as one range: on MySQL at 12M rows its first page takes 0.59 s, and three such words 1.6 s (at 6M rows the old layout took 43 s, and timed out). The index takes about 1.5 GB per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows). ([sizing][r-sizing])
 - The index stores one posting per (term, column), the column by id through `fuzzy_index_columns`. Postings from before 2.1 keep an empty column, which `fuzzy-search:status` reports, and a plain `rebuild` replaces them. ([guide][u-weighted])
 - In relevance order on the index path, a model that a one-to-many join repeats is served once. ([guide][u-bm25])
 - `maxPatterns()` and `performance.max_patterns` cap the pattern list of every pattern-based algorithm. The trigram fallback's cap moves from a hard-coded 10 to that key (100). ([guide][u-api])
@@ -108,8 +108,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The FuzzySearch singleton reads `config('fuzzy-search')` live, so runtime overrides reach the drivers. ([guide][u-api])
 - PHP API: `FuzzySearch::$config` is nullable (use `currentConfig()`). `SearchBuilder::first()` is declared `Model|\stdClass|array|null`. `IndexManager::processTerms()` and several protected methods take optional arguments. `PorterStemmer`, `NullStemmer` and `WhitespaceTokenizer` are no longer `@internal`. ([guide][u-api])
 - `composer.json` requires `illuminate/http` directly. ([guide][u-filament])
-- CI runs the full suite against SQLite, MySQL 8, MariaDB 11.4, PostgreSQL 14 and SQL Server 2022.
-
 - `using('levenshtein')` makes no typo patterns for a term shorter than `typo_tolerance.min_word_length` (4), so `jo` no longer finds most of a table. ([guide][u-search])
 - An empty or NULL column scores 0 for a short term; it no longer earns the typo floor. ([guide][u-search])
 - `preset()` leaves out the columns the table doesn't have; explicit columns are untouched. ([guide][u-search])
@@ -126,7 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- Config keys `indexing.table`, `performance.chunk_size`, `performance.debounce_ms` and `levenshtein.cost_insert`, `cost_replace` and `cost_delete`: nothing read them. ([guide][u-removed])
+- Config keys `performance.chunk_size`, `performance.debounce_ms` and `levenshtein.cost_insert`, `cost_replace` and `cost_delete`: nothing read them. `indexing.table` is gone from the shipped config; only the deprecated `fuzzy-search:index` command and `performReindex()` still read it (default `search_index`). ([guide][u-removed])
 - The protected `SearchBuilder::$debounceMs` and `$stopWordLocale` properties, which nothing read. ([guide][u-api])
 
 ### Fixed
@@ -164,7 +162,6 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `highlight()` on the LIKE path did not mark tokens and synonyms.
 - On SQLite, a non-ASCII LIKE term matched only in its own case.
 - `facet()` and the other column checks accepted a trailing or doubled dot.
-- A JSON resource page past the last one carried suggestions.
 
 **Index**
 
@@ -183,7 +180,7 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - `restore()` did not re-index a soft-deleted model, and with `indexing.async` off a soft delete's removal could land after a restore. ([guide][u-indexing])
 - A searchable column holding `"0"` was skipped, and one qualified with the model's own table (`posts.title`) was never indexed. ([guide][u-indexing])
 - On a read/write split, an index write read the row from the replica. ([docs][d-bm25-how])
-- On a connection with a table prefix, `migrate` failed on MySQL (the terms table's unique key was added to the unprefixed table), and indexing and the flush's orphan sweep ran raw SQL against unprefixed tables. A second install with its own prefix in a shared schema stopped at `relation postings_model_idx already exists`.
+- On a connection with a table prefix, `migrate` failed on MySQL (the terms table's unique key was added to the unprefixed table), and indexing and the flush's orphan sweep ran raw SQL against unprefixed tables. A second install with its own prefix in a shared schema stopped at `relation postings_unique_idx already exists`.
 - `count()` and `paginate()` on `useInvertedIndex()` did not cap the term at `query.max_term_length`. `take(PHP_INT_MAX)` threw, and `skip()->take()->get()` hydrated every model up to twice the page end.
 - An empty index result came back in a base `Collection`, not the model's collection.
 - A rebuild of a single-table-inheritance parent indexed each chunk under its first row's class. ([guide][u-indexing])
@@ -232,7 +229,7 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 
 ### Security
 
-- **Soundex filter bypass** (2.0.0–2.0.1; MySQL, MariaDB, PostgreSQL with native functions). `SOUNDEX(...) OR SOUNDEX(...)` was not parenthesised, so a `where()`, tenant scope or soft-delete scope chained after `using('soundex')` guarded one arm only. Check soundex searches behind a tenant or permission constraint. ([guide][u-search])
+- **Soundex filter bypass** (2.0.0–2.0.1; MySQL, MariaDB connected through the `mysql` driver (every MariaDB connection on Laravel 10), PostgreSQL with native functions). `SOUNDEX(...) OR SOUNDEX(...)` was not parenthesised, so a `where()`, tenant scope or soft-delete scope chained after `using('soundex')` guarded one arm only. Check soundex searches behind a tenant or permission constraint. ([guide][u-search])
 - **The Scout engine ignored `where()`, `whereIn()`, `whereNotIn()` and soft deletes** (2.0.x): a Scout `where('tenant_id', …)` returned every tenant's matches, and trashed rows came back. Check Scout searches that rely on these constraints. ([guide][u-federated])
 - **A plain query builder's `where()` was dropped on the index path** (2.0.x): `new SearchBuilder(DB::table('notes')->where(...), …)->useInvertedIndex(Note::class)` served rows the `where()` excluded. ([guide][u-bm25])
 - **`didYouMean()` offered other models', other tenants' and hidden columns' words** (2.0.x): it read the whole dictionary and ignored `where()`, joins and scopes. It now offers the searched model's words that the query can see, and so does the new dictionary `suggest()`. ([guide][u-bm25])

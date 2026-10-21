@@ -151,11 +151,11 @@ In `.env`:
 SCOUT_DRIVER=fuzzy-search
 ```
 
-The Scout engine adapter is bundled — no separate package. See the [Scout Driver section](integrations.md#scout-driver) in the README.
+The Scout engine adapter is bundled — no separate package. See the [Scout Driver section](integrations.md#scout-driver) of the integrations guide.
 
 ### Performance notes
 
-BM25 via `useInvertedIndex()` is faster than LIKE-pattern search on tables with **~500k+ rows**. On smaller tables the BM25 scoring overhead may be comparable to or slightly slower than LIKE. Always benchmark against your own dataset.
+BM25 via `useInvertedIndex()` tends to beat LIKE-pattern search once a table passes roughly **10k rows**. On smaller tables the BM25 scoring overhead may be comparable to or slightly slower than LIKE. Always benchmark against your own dataset.
 
 For large table rebuilds (>100k rows) use `--async`:
 

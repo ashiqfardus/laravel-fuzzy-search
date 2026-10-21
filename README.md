@@ -822,7 +822,7 @@ Post::search('tolkien')->useInvertedIndex()->get();
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
 - BM25 tends to beat LIKE once a table passes roughly 10k+ rows; below that, LIKE is simpler to operate.
 - **Single-table inheritance** — each row is indexed under its own class; return the parent from each child's `searchIndexType()` to index the hierarchy once ([docs/bm25.md](docs/bm25.md#single-table-inheritance)).
-- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, naming the model and key (`IndexModelJob::dispatch($model, $key)` repairs it), not thrown from `save()`. Indexing inside an open transaction (Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`) can deadlock, on every database once the transaction holds two or more index writes (on SQL Server with one), and such a deadlock is thrown from `save()`, not retried: set `scout.after_commit` to `true`; see [Production Setup](docs/bm25.md#production-setup). On MySQL/MariaDB one such write does not deadlock with a neighbouring row's (it deletes and writes only the postings that change, by primary key), and it reads the row with a shared lock held until your transaction ends; but while a transaction with two or more runs, its deadlock can roll back either side, the one-write transaction too. On PostgreSQL the package analyzes the index tables after a rebuild and as they grow, and a failure to analyze is reported, not thrown (a connection lost inside an open transaction is thrown); after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
+- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, naming the model and key (`IndexModelJob::dispatch($model, $key)` repairs it), not thrown from `save()`. Indexing inside an open transaction (Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`) can deadlock: on MySQL, MariaDB and PostgreSQL once the transaction holds two or more index writes, and on SQL Server under its default locking read committed even with one (turn on `READ_COMMITTED_SNAPSHOT` or set `scout.after_commit`), and such a deadlock is thrown from `save()`, not retried: set `scout.after_commit` to `true`; see [Production Setup](docs/bm25.md#production-setup). On MySQL/MariaDB one such write does not deadlock with a neighbouring row's (it deletes and writes only the postings that change, by primary key), and it reads the row with a shared lock held until your transaction ends; but while a transaction with two or more runs, its deadlock can roll back either side, the one-write transaction too. On PostgreSQL the package analyzes the index tables after a rebuild and as they grow, and a failure to analyze is reported, not thrown (a connection lost inside an open transaction is thrown); after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
 
 → Full guide: [docs/bm25.md](docs/bm25.md)
 
@@ -871,7 +871,12 @@ Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaul
 `HasFuzzyGlobalSearch` swaps a Filament Resource's LIKE-based global search for fuzzy search — typo tolerance, relevance ordering, highlighted details — while everything else about the Resource stays as defined.
 
 ```php
-use HasFuzzyGlobalSearch; // on the Resource, for global search
+use Ashiqfardus\LaravelFuzzySearch\Integrations\Filament\HasFuzzyGlobalSearch;
+
+class UserResource extends Resource
+{
+    use HasFuzzyGlobalSearch; // global search
+}
 
 FuzzySearch::tableSearch(['name']); // for individual table columns
 ```
@@ -1108,7 +1113,7 @@ return [
     ],
     
     'stop_words' => [
-        'en' => ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at'],
+        'en' => ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it'],
         'de' => ['der', 'die', 'das', 'und', 'oder', 'aber'],
     ],
     
@@ -1366,18 +1371,7 @@ php artisan fuzzy-search:explain User --term="john"
 | **levenshtein** | Medium | Configurable | Precise typo matching | < 50K rows |
 | **BM25 index** | Fast at scale | Native (dictionary expansion) | Large tables, ranked results | 10K+ rows |
 
-### Indicative Latency (100k-row MySQL 8.0 table)
-
-Indicative medians from a 100k-row MySQL 8.0 table on a commodity VPS with a warm cache — a guide to how the paths compare, not a guaranteed result. The [demo project](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) seeds a comparable dataset, 100k rows per model, with `php artisan db:seed --class="Database\Seeders\LargeDatasetSeeder"` (its `demo:seed` seeds ~150 sample rows, and `--huge` 1M users). `php artisan fuzzy-search:benchmark` times the LIKE algorithms on your own tables; time an index search in your app, through `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()`.
-
-| Search path | Median latency | Notes |
-|---|---|---|
-| LIKE (`using('simple')`) | ~8 ms | Full table scan |
-| Levenshtein (`using('levenshtein')`) | ~45 ms | PHP re-score over 1,000 SQL candidates |
-| BM25 inverted index (`useInvertedIndex()`) | ~12 ms | Three parameterised SQL queries + PHP BM25 scoring |
-| Extended syntax (`->extended()`) | ~15 ms | Includes AST compilation and multi-operator SQL generation |
-
-**At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast (see [Sizing the index](#sizing-the-index)). Three reads grow with the data:
+**At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast. For measured numbers, see [Sizing the index](#sizing-the-index); `php artisan fuzzy-search:benchmark` times the LIKE algorithms on your own tables, and `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()` times an index search in your app. Three reads grow with the data:
 
 - **Common words.** Every posting of a matched word is read and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. A word's postings are one range of the postings table, read in order, each with its document's length, so no other table is read, and the word's document count within the model comes from the per-model dictionary (`fuzzy_index_model_terms`), one keyed read, not a count over those postings: on MySQL with a 4 GB buffer pool, one such word (in 7% of 6M rows of about 16 indexed words each) takes 0.81 s for its first page and three together 5.5 s, where the earlier layout took 43 s and timed out; on PostgreSQL a prototype of the layout took about 1 s and 2.7 s at 24M rows. A `where()` does not shorten that read: the word's postings are read for the whole model before the `where()` and the cap apply. `typoTolerance(0)` and Scout's exact terms skip only the typo expansion. For a selective filter over a common word, the LIKE path with an index on the filtered column is the fast path (17 ms at 1M rows on MySQL, for a filter holding 0.1% of them).
 - **Typo expansion** takes each query term's most common neighbours from the searched model's own words, by its own document count (`fuzzy_index_model_terms`): one index read per word length in the window around the term, each stopping at `bm25.fuzzy.candidate_pool` (500) of the model's words or at the last of them. Once the model has more rows than `bm25.max_postings_per_term`, a word in more than half of them is never an expansion, so a misspelling never reads a stop word's postings (`smith` into `with`, in 999,967 of 1M rows, took 2.0 to 2.5 s). Another model's words never enter it, however many share a length. On MySQL at 3M words, where 1M six-digit product SKUs filled length 6, a users typo search for `smith` takes 43 ms for the whole page, where the read through the shared dictionary walked all of them (1.2 s), and an article search for `kubernetes` 24 ms (2.05 s before). `asYouType()` and `suggest()` read the model's own words under the prefix the same way, through `(model_type_id, term)`: `suggest('sm')` there takes 3 ms (93 ms before), and a 4-letter `asYouType()` search at 24M rows on PostgreSQL 2.3 s (40 s before; the ranking read is now most of it). `typoTolerance(0)` skips the expansion.

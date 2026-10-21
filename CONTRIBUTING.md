@@ -146,6 +146,7 @@ src/
 ├── Jobs/                 # Queue jobs
 │   ├── Concerns/ConfiguresRetryLimits.php
 │   ├── IndexModelJob.php
+│   ├── PruneIndexJob.php
 │   ├── RebuildIndexJob.php
 │   ├── RecordSearchLogJob.php
 │   └── ReindexModelJob.php
