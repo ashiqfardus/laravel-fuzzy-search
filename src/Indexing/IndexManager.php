@@ -481,11 +481,18 @@ class IndexManager
      * wait is the connection's LOCK_TIMEOUT, as for every other lock the write takes: none by
      * default. A lock not granted throws, naming the lock and sp_getapplock's code.
      *
+     * Since no other write can insert or change an index row while it is held, a write under it
+     * sends no MERGE: it inserts the rows it adds (insertMissing() where a row may be there
+     * already, a plain INSERT where the write knows it is not) and updates the ones it changes by
+     * key (updateByKey()). The MERGEs (claim, words, model terms, postings, documents, meta) held a
+     * rebuild past 1M rows to about 120 documents a second.
+     *
      * ponytail: one writer per index on SQL Server, the whole write transaction (the claim, the
      * re-read, tokenizing and the SQL) at a time; only what runs before it, such as a rebuild's
-     * chunk load, stays parallel. To lift it, fix the cycles one by one: no HOLDLOCK on
-     * adjustDocCounts()' locking read, MERGE hints of our own for the claim, LOCK_ESCALATION
-     * off on fuzzy_index_terms, and the doc_count UPDATE in the order the dictionary MERGE locks.
+     * chunk load, stays parallel. To lift it, the writes need upserts that tolerate another
+     * writer again (MERGE), and the cycles fixed one by one: no HOLDLOCK on adjustDocCounts()'
+     * locking read, MERGE hints of our own for the claim, LOCK_ESCALATION off on
+     * fuzzy_index_terms, and the doc_count UPDATE in the order the dictionary MERGE locks.
      *
      * @internal public for 2026_10_13_000002, whose backfill ranges take it too (V1-2)
      */
@@ -526,7 +533,8 @@ class IndexManager
      * The upsert also waits for a concurrent first insert of the row, which a lock on a missing
      * row cannot; SQLite takes its database write lock on it. A crashed process releases the
      * lock with its connection. Ids are claimed in sorted order, so two batches cannot deadlock.
-     * On SQL Server the index's write lock comes first (lockIndexForWrite()).
+     * On SQL Server the index's write lock comes first (lockIndexForWrite()), so no other write
+     * claims a row meanwhile: the missing placeholders are inserted (insertMissing()), no MERGE.
      *
      * @param  array<int|string>  $modelIds
      * @return array<int|string, int> model id => doc_length, for the models already indexed
@@ -541,12 +549,15 @@ class IndexManager
         $driver  = DB::connection()->getDriverName();
 
         foreach (array_chunk($modelIds, self::ROWS_PER_UPSERT) as $chunk) {
-            $this->upsertShared(
-                'fuzzy_index_documents',
-                array_map(fn ($id) => ['model_type' => $modelType, 'model_id' => $id, 'doc_length' => 0], $chunk),
-                ['model_type', 'model_id'],
-                ['model_type'] // a no-op update: the conflict branch only takes the row lock
-            );
+            if ($driver === DbDialect::SQLSRV) {
+                self::insertMissing('fuzzy_index_documents', ['model_type', 'model_id', 'doc_length'], array_map(fn ($id) => [$modelType, $id, 0], $chunk), ['model_type', 'model_id']);
+            } else {
+                DB::table('fuzzy_index_documents')->upsert(
+                    array_map(fn ($id) => ['model_type' => $modelType, 'model_id' => $id, 'doc_length' => 0], $chunk),
+                    ['model_type', 'model_id'],
+                    ['model_type'] // a no-op update: the conflict branch only takes the row lock
+                );
+            }
 
             $claim = DB::table('fuzzy_index_documents')->where('model_type', $modelType);
 
@@ -567,11 +578,11 @@ class IndexManager
                 $rows = collect(DB::select(implode(' union all ', array_fill(0, count($chunk), $point)), $bindings, false))
                     ->pluck('doc_length', 'model_id');
             } else {
-                // SQL Server: UPDLOCK holds the row locks to commit; the rows exist (the upsert
-                // just wrote them), so Laravel's HOLDLOCK only added key-range locks, which reach
-                // the neighbouring keys: other writes' rows. FORCESEEK: for an IN list on a small
-                // table SQL Server scanned the model type's rows instead, locking them all. Either
-                // way parallel batches for different rows deadlocked.
+                // SQL Server: UPDLOCK holds the row locks to commit; the rows exist (the insert
+                // just wrote the missing ones), so Laravel's HOLDLOCK only added key-range locks,
+                // which reach the neighbouring keys: other writes' rows. FORCESEEK: for an IN list
+                // on a small table SQL Server scanned the model type's rows instead, locking them
+                // all. Either way parallel batches for different rows deadlocked.
                 $rows = $claim
                     ->whereIn('model_id', $chunk)
                     ->lock($driver === 'sqlsrv' ? 'with(rowlock,updlock,forceseek)' : true)
@@ -1544,7 +1555,8 @@ class IndexManager
      *  4. insert the terms the dictionary lacks, sorted; apply the same changes to the model
      *     type's own counts (adjustModelTerms()); then the postings (those the rows no
      *     longer hold deleted by key, the changed and new ones upserted), document rows and
-     *     meta of the rows with text.
+     *     meta of the rows with text. On SQL Server, under the index write lock, the new rows
+     *     are inserted and the changed ones updated by key instead (lockIndexForWrite()).
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
      *
@@ -1671,7 +1683,7 @@ class IndexManager
             // no other write can see, and waits only on another's uncommitted insert of the same
             // word, in the same sorted order; every lock after that is taken in id order. MySQL/
             // MariaDB keep the upsert below (an INSERT IGNORE there takes gap locks, and measured
-            // far worse), and so does SQL Server, whose MERGE locks in plan order (retried).
+            // far worse). SQL Server inserts them below, under its index write lock.
             if ($driver === DbDialect::PGSQL) {
                 $new = [];
                 foreach ($counts as $term => $increment) {
@@ -1707,15 +1719,17 @@ class IndexManager
 
             // PHP normalises numeric-string array keys (e.g. '10') to int keys, so a purely
             // numeric token comes back an int. Cast back to string wherever a key becomes a query
-            // binding: SQL Server's MERGE ... USING (VALUES (...)) infers one type per column from
+            // binding: SQL Server's multi-row VALUES (...) infers one type per column from
             // the batch of bindings, so a mixed int/string 'term' column fails with "Conversion
             // failed when converting the nvarchar value 'paginate' to data type int". $termIds[$term]
             // lookups still work because PHP normalises numeric-string keys the same way on read.
             //
             // Terms the dictionary lacks are inserted, sorted by term (on PostgreSQL, only a word
-            // swept since its insert above). A write that inserts one of them first turns
+            // swept since its insert above). On SQL Server no other write inserts a word while this
+            // one holds the index write lock, so a plain INSERT, each word at its increment.
+            // Elsewhere a write that inserts one of them first turns
             // this insert into an update of its row: the conflict branch raises it by this write's
-            // increment, the inserted row's own doc_count (EXCLUDED, or the MERGE source). So every
+            // increment, the inserted row's own doc_count (EXCLUDED). So every
             // write takes its new words in one sorted order; a statement per increment, each
             // sorted only within itself, let two batches take them in opposite orders. MySQL/MariaDB
             // keep a statement per increment with a literal raise: the raise cannot name the
@@ -1731,14 +1745,11 @@ class IndexManager
             }
             ksort($missing, SORT_STRING);
 
-            $source = match (true) { // the inserted row's doc_count, as the conflict branch sees it
-                DbDialect::isMySqlFamily($driver) => null,
-                $driver === 'sqlsrv'              => DbDialect::rawIdentifier('laravel_source.doc_count'), // Laravel's MERGE source alias
-                default                           => 'excluded.doc_count',
-            };
-            $runs = []; // raise => term => increment
+            $sqlsrv = $driver === DbDialect::SQLSRV;
+            $source = DbDialect::isMySqlFamily($driver) ? null : 'excluded.doc_count'; // the inserted row's doc_count, as the conflict branch sees it
+            $runs   = []; // raise => term => increment
             foreach ($missing as $term => $increment) {
-                $runs[$source ?? (string) $increment][$term] = $increment;
+                $runs[$sqlsrv ? '' : ($source ?? (string) $increment)][$term] = $increment; // SQL Server: one run
             }
             foreach ($runs as $raise => $terms) {
                 foreach (array_chunk($terms, self::ROWS_PER_UPSERT, true) as $chunk) {
@@ -1746,13 +1757,16 @@ class IndexManager
                     foreach ($chunk as $term => $increment) {
                         $rows[] = ['term' => (string) $term, 'doc_count' => $increment, 'term_length' => mb_strlen((string) $term)];
                     }
-                    $this->upsertShared(
-                        'fuzzy_index_terms',
+                    if ($sqlsrv) {
+                        DB::table('fuzzy_index_terms')->insert($rows);
+                        continue;
+                    }
+                    DB::table('fuzzy_index_terms')->upsert(
                         $rows,
                         ['term'],
                         // Table-qualified: PostgreSQL treats a bare "doc_count" as ambiguous inside
                         // ON CONFLICT DO UPDATE. The qualified form is valid on MySQL/MariaDB
-                        // (ON DUPLICATE KEY UPDATE), SQLite, PostgreSQL and SQL Server (MERGE target).
+                        // (ON DUPLICATE KEY UPDATE), SQLite and PostgreSQL.
                         ['doc_count' => DB::raw(DbDialect::rawIdentifier('fuzzy_index_terms.doc_count') . " + {$raise}")]
                     );
                 }
@@ -1776,27 +1790,47 @@ class IndexManager
             // frequency and document length is left as it is. What is left in $current, the
             // postings the rows no longer hold, is deleted by its primary key first (deletePostings()).
             $postingRows  = [];
+            $changedRows  = []; // SQL Server: the postings held at another frequency or length, as updateByKey() rows
             $documentRows = [];
             foreach ($byModel as $id => $byColumn) {
                 foreach ($this->postingRows($byColumn, $termIds, $typeId, $columnIds, $id, $lengths[$id]) as $row) {
                     [$termId, $columnId] = [(int) $row['term_id'], (int) $row['column_id']];
-                    if (($current[$id][$termId][$columnId] ?? null) !== [$row['frequency'], $row['doc_length']]) {
+                    $held                = $current[$id][$termId][$columnId] ?? null;
+                    unset($current[$id][$termId][$columnId]);
+                    if ($held === [$row['frequency'], $row['doc_length']]) {
+                        continue;
+                    }
+                    if ($held !== null && $sqlsrv) {
+                        $changedRows[] = [$termId, $typeId, $row['model_id'], $columnId, $row['frequency'], $row['doc_length']];
+                    } else {
                         $postingRows[] = $row;
                     }
-                    unset($current[$id][$termId][$columnId]);
                 }
-                $documentRows[] = ['model_type' => $modelType, 'model_id' => (string) $id, 'doc_length' => $lengths[$id]];
+                if (!$sqlsrv || $lengths[$id] !== ($old[$id] ?? 0)) {
+                    $documentRows[] = ['model_type' => $modelType, 'model_id' => (string) $id, 'doc_length' => $lengths[$id]];
+                }
             }
             if ($posted !== []) {
                 $this->deletePostings($typeId, $current);
             }
 
-            // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing.
-            foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
-                DB::table('fuzzy_index_postings')->upsert($chunk, ['term_id', 'model_type_id', 'model_id', 'column_id'], ['frequency', 'doc_length']);
-            }
-            foreach (array_chunk($documentRows, self::ROWS_PER_UPSERT) as $chunk) {
-                DB::table('fuzzy_index_documents')->upsert($chunk, ['model_type', 'model_id'], ['doc_length']);
+            if ($sqlsrv) {
+                // Under the index write lock no other write has a posting of these rows, and every
+                // document row is there since the claim: the new postings are inserted, the changed
+                // ones and the lengths that change updated by key.
+                foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
+                    DB::table('fuzzy_index_postings')->insert($chunk);
+                }
+                self::updateByKey('fuzzy_index_postings', ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'], $changedRows, ['term_id', 'model_type_id', 'model_id', 'column_id'], ['frequency' => 'v.frequency', 'doc_length' => 'v.doc_length']);
+                self::updateByKey('fuzzy_index_documents', ['model_type', 'model_id', 'doc_length'], array_map('array_values', $documentRows), ['model_type', 'model_id'], ['doc_length' => 'v.doc_length']);
+            } else {
+                // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing.
+                foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
+                    DB::table('fuzzy_index_postings')->upsert($chunk, ['term_id', 'model_type_id', 'model_id', 'column_id'], ['frequency', 'doc_length']);
+                }
+                foreach (array_chunk($documentRows, self::ROWS_PER_UPSERT) as $chunk) {
+                    DB::table('fuzzy_index_documents')->upsert($chunk, ['model_type', 'model_id'], ['doc_length']);
+                }
             }
 
             $this->adjustMeta(
@@ -2049,7 +2083,8 @@ class IndexManager
      * locked already rather than wait for it behind another write. It is not updated, though: a
      * re-index nets 0 for every word a row keeps, and `doc_count + 0` still wrote a new row
      * version on PostgreSQL.
-     * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
+     * Ids and deltas are inlined as ints; they come from the database and the tokenizer. SQL
+     * Server binds them instead (updateByKey()).
      *
      * @param  array<int, int> $deltas
      * @return array<int, string> the words the locking read found, id => term, as they are now
@@ -2066,6 +2101,10 @@ class IndexManager
             $words += $found;
             $chunk  = array_filter(array_intersect_key($chunk, $found)); // locked above; a 0 is not updated
             if ($chunk === []) {
+                continue;
+            }
+            if (DB::connection()->getDriverName() === DbDialect::SQLSRV) {
+                self::updateByKey('fuzzy_index_terms', ['id', 'delta'], array_map(fn (int $termId, int $delta) => [$termId, $delta], array_keys($chunk), $chunk), ['id'], ['doc_count' => 'CASE WHEN t.doc_count + v.delta < 0 THEN 0 ELSE t.doc_count + v.delta END']);
                 continue;
             }
 
@@ -2138,6 +2177,9 @@ class IndexManager
      * conflict and the DELETE's rows (all of them exist once the upsert ran) take record locks only,
      * no gap lock on MySQL/MariaDB, where another write's new row of the type would otherwise wait.
      *
+     * SQL Server, under the index write lock: the rows the type holds change by key (updateByKey()),
+     * then the ones it lacks are inserted (insertMissing()), at the change, or 0 for a decrease.
+     *
      * @param array<int, array{string, int}> $deltas see termDeltas()
      */
     private function adjustModelTerms(int $typeId, array $deltas): void
@@ -2146,21 +2188,31 @@ class IndexManager
         $deltas  = array_filter($deltas, fn (array $change) => $change[1] !== 0);
         $lowered = array_keys(array_filter($deltas, fn (array $change) => $change[1] < 0));
 
-        // Qualified: see the dictionary's upsert in write().
-        $count = DbDialect::rawIdentifier('fuzzy_index_model_terms.doc_count');
-        $word  = DbDialect::rawIdentifier('fuzzy_index_model_terms.term_id');
-        foreach (array_chunk($deltas, self::POSTING_ROWS_PER_UPSERT, true) as $chunk) {
-            $rows  = [];
-            $cases = '';
-            foreach ($chunk as $termId => [$term, $delta]) {
-                $termId = (int) $termId;
-                $delta  = (int) $delta;
-                $rows[] = ['model_type_id' => $typeId, 'term_id' => $termId, 'term' => $term, 'term_length' => mb_strlen($term), 'doc_count' => max($delta, 0)];
-                $cases .= $delta > 0
-                    ? " WHEN {$termId} THEN {$count} + {$delta}"
-                    : " WHEN {$termId} THEN CASE WHEN {$count} >= " . -$delta . " THEN {$count} - " . -$delta . ' ELSE 0 END';
+        if (DB::connection()->getDriverName() === DbDialect::SQLSRV) {
+            $changes = $rows = [];
+            foreach ($deltas as $termId => [$term, $delta]) {
+                $changes[] = [$typeId, (int) $termId, (int) $delta];
+                $rows[]    = [$typeId, (int) $termId, (string) $term, mb_strlen((string) $term), max((int) $delta, 0)];
             }
-            DB::table('fuzzy_index_model_terms')->upsert($rows, ['model_type_id', 'term_id'], ['doc_count' => DB::raw("CASE {$word}{$cases} ELSE {$count} END")]);
+            self::updateByKey('fuzzy_index_model_terms', ['model_type_id', 'term_id', 'delta'], $changes, ['model_type_id', 'term_id'], ['doc_count' => 'CASE WHEN t.doc_count + v.delta < 0 THEN 0 ELSE t.doc_count + v.delta END']);
+            self::insertMissing('fuzzy_index_model_terms', ['model_type_id', 'term_id', 'term', 'term_length', 'doc_count'], $rows, ['model_type_id', 'term_id']);
+        } else {
+            // Qualified: see the dictionary's upsert in write().
+            $count = DbDialect::rawIdentifier('fuzzy_index_model_terms.doc_count');
+            $word  = DbDialect::rawIdentifier('fuzzy_index_model_terms.term_id');
+            foreach (array_chunk($deltas, self::POSTING_ROWS_PER_UPSERT, true) as $chunk) {
+                $rows  = [];
+                $cases = '';
+                foreach ($chunk as $termId => [$term, $delta]) {
+                    $termId = (int) $termId;
+                    $delta  = (int) $delta;
+                    $rows[] = ['model_type_id' => $typeId, 'term_id' => $termId, 'term' => $term, 'term_length' => mb_strlen($term), 'doc_count' => max($delta, 0)];
+                    $cases .= $delta > 0
+                        ? " WHEN {$termId} THEN {$count} + {$delta}"
+                        : " WHEN {$termId} THEN CASE WHEN {$count} >= " . -$delta . " THEN {$count} - " . -$delta . ' ELSE 0 END';
+                }
+                DB::table('fuzzy_index_model_terms')->upsert($rows, ['model_type_id', 'term_id'], ['doc_count' => DB::raw("CASE {$word}{$cases} ELSE {$count} END")]);
+            }
         }
 
         foreach (array_chunk($lowered, 1000) as $chunk) {
@@ -2263,25 +2315,65 @@ class IndexManager
     }
 
     /**
-     * upsert() for a key another write may insert at the same moment: a new document row, a new
-     * word, a model type's meta row. SQL Server's MERGE decides "not matched" without locking the
-     * missing key, so two writes both insert it and the second fails (2601/2627) once the first
-     * commits; run again, the MERGE finds the row and updates it. That holds only while
-     * XACT_ABORT is off (@@OPTIONS & 16384 = 0, SQL Server's default): then only the failed
-     * statement rolls back, and the write keeps its transaction and its locks. With XACT_ABORT on,
-     * the error has rolled back the whole write, and the driver silently opens a new transaction
-     * at the next statement, so a re-run would commit the rest of the write without its start.
-     * The error is rethrown instead: the write fails and rolls back whole, and the queue retries
-     * it. The other databases' upserts take the conflict branch instead.
+     * SQL Server, under the index write lock (lockIndexForWrite()), which every caller holds: insert
+     * those of $rows whose $key $table does not hold, in one INSERT … SELECT … WHERE NOT EXISTS per
+     * 2,000 bindings (SQL Server takes 2,100), where an upsert sent a MERGE. No other write
+     * inserts one of these keys meanwhile. The database compares the keys, in each column's own
+     * collation: a case-insensitive model_id finds ABC for abc, as the MERGE did.
+     *
+     * @param list<string>           $columns the columns of each row, in order
+     * @param list<list<int|string>> $rows
+     * @param list<string>           $key     the columns that find a row, each one of $columns
      */
-    private function upsertShared(string $table, array $rows, array $uniqueBy, array $update): void
+    private static function insertMissing(string $table, array $columns, array $rows, array $key): void
     {
-        retry(self::ATTEMPTS, fn () => DB::table($table)->upsert($rows, $uniqueBy, $update), 0, fn (\Throwable $e) => self::duplicateKey($e));
+        $wrapped = DbDialect::rawIdentifier($table);
+        $list    = implode(', ', $columns);
+        $match   = implode(' AND ', array_map(fn (string $column) => "t.{$column} = v.{$column}", $key));
+        $values  = '(' . implode(', ', array_fill(0, count($columns), '?')) . ')';
+        foreach (array_chunk($rows, intdiv(2000, count($columns))) as $chunk) {
+            DB::insert(
+                "INSERT INTO {$wrapped} ({$list}) SELECT {$list} FROM (VALUES " . implode(', ', array_fill(0, count($chunk), $values))
+                    . ") AS v ({$list}) WHERE NOT EXISTS (SELECT 1 FROM {$wrapped} AS t WHERE {$match})",
+                array_merge(...$chunk)
+            );
+        }
+    }
+
+    /**
+     * SQL Server, under the index write lock (lockIndexForWrite()), which every caller holds: set the
+     * rows of $table that $rows find by $key, one UPDATE … FROM (VALUES …) per 2,000 bindings. Bound,
+     * where the other databases' statements inline a CASE (adjustDocCounts(), adjustModelTerms()):
+     * the statement's text depends on its row count only, so SQL Server compiles it once per count,
+     * not once per statement.
+     *
+     * @param list<string>           $columns the columns of each row, in order: v.<column> in $set
+     * @param list<list<int|string>> $rows
+     * @param list<string>           $key     the columns that find a row, each one of $columns
+     * @param array<string, string>  $set     column => its new value, over t (the row) and v
+     */
+    private static function updateByKey(string $table, array $columns, array $rows, array $key, array $set): void
+    {
+        $assign = implode(', ', array_map(fn (string $column, string $value) => "{$column} = {$value}", array_keys($set), $set));
+        $match  = implode(' AND ', array_map(fn (string $column) => "t.{$column} = v.{$column}", $key));
+        $values = '(' . implode(', ', array_fill(0, count($columns), '?')) . ')';
+        foreach (array_chunk($rows, intdiv(2000, count($columns))) as $chunk) {
+            DB::update(
+                "UPDATE t SET {$assign} FROM " . DbDialect::rawIdentifier($table) . ' AS t INNER JOIN (VALUES ' . implode(', ', array_fill(0, count($chunk), $values))
+                    . ') AS v (' . implode(', ', $columns) . ") ON {$match}",
+                array_merge(...$chunk)
+            );
+        }
     }
 
     /**
      * SQL Server: whether $e is a duplicate key (2601/2627) that failed its own statement only, as
-     * it does while XACT_ABORT is off (see upsertShared()).
+     * it does while XACT_ABORT is off (@@OPTIONS & 16384 = 0, SQL Server's default): then only the
+     * failed statement rolls back, and the write keeps its transaction and its locks. With
+     * XACT_ABORT on, the error has rolled back the whole write, and the driver silently opens a new
+     * transaction at the next statement, so going on would commit the rest of the write without its
+     * start: the error is rethrown instead (insertDictionary()), the write fails and rolls back
+     * whole, and the queue retries it.
      */
     private static function duplicateKey(\Throwable $e): bool
     {
@@ -2294,14 +2386,19 @@ class IndexManager
     /**
      * Guarantee the meta row exists without clobbering its counters.
      *
-     * upsert() is implemented on every supported driver (MySQL/MariaDB ON DUPLICATE KEY,
-     * PostgreSQL/SQLite ON CONFLICT, SQL Server MERGE). insertOrIgnore() is not: Laravel's
-     * SqlServerGrammar throws. Updating model_type to itself makes the conflict branch a no-op.
+     * upsert() on MySQL/MariaDB (ON DUPLICATE KEY), PostgreSQL and SQLite (ON CONFLICT); on SQL
+     * Server, under the index write lock, insertMissing(). insertOrIgnore() is not portable:
+     * Laravel's SqlServerGrammar throws. Updating model_type to itself makes the conflict branch a no-op.
      */
     private function ensureMetaRow(string $modelType): void
     {
-        $this->upsertShared(
-            'fuzzy_index_meta',
+        if (DB::connection()->getDriverName() === DbDialect::SQLSRV) {
+            self::insertMissing('fuzzy_index_meta', ['model_type', 'total_docs', 'total_tokens', 'avg_doc_length'], [[$modelType, 0, 0, 0]], ['model_type']);
+
+            return;
+        }
+
+        DB::table('fuzzy_index_meta')->upsert(
             [[
                 'model_type'     => $modelType,
                 'total_docs'     => 0,
