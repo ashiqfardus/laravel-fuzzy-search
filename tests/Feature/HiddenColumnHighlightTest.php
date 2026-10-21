@@ -86,6 +86,9 @@ class HiddenNameAuthor extends Author
 
 class PostWithHiddenAuthorName extends Post
 {
+    /** A hidden column is searchable only when the model lists it here. */
+    protected array $searchable = ['columns' => ['title' => 10, 'author.name' => 1], 'algorithm' => 'like'];
+
     public function author(): BelongsTo
     {
         return $this->belongsTo(HiddenNameAuthor::class, 'author_id');

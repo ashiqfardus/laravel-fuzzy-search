@@ -39,7 +39,7 @@ class NoSearchableColumnTest extends TestCase
             'paginate'       => [fn ($b) => [($p = $b->paginate(5))->total(), $p->items()], [0, []]],
             'simplePaginate' => [fn ($b) => $b->simplePaginate(5)->items(), []],
             'count'          => [fn ($b) => $b->count(), 0],
-            'getFacets'      => [fn ($b) => $b->facet('email')->getFacets(), ['email' => []]],
+            'getFacets'      => [fn ($b) => $b->facet('created_at')->getFacets(), ['created_at' => []]],
         ];
     }
 
