@@ -96,12 +96,14 @@ User::search('Müller')
     ->accentInsensitive()   // or rely on unicode.accent_insensitive, on by default
     ->get();
 
-// A decomposed "naïve" (i followed by U+0308, as some keyboards and macOS produce) is
-// NFC-normalised before the search, so it matches a stored, composed "naïve"
+// On the LIKE algorithms, a decomposed "naïve" (i followed by U+0308, as some keyboards and
+// macOS produce) is NFC-normalised before the search, so it matches a stored, composed "naïve"
 User::search("nai\u{0308}ve")
     ->unicodeNormalize()    // needs ext-intl; a no-op without it
     ->get();
 ```
+
+`unicodeNormalize()` (and `unicode.normalize`) applies to the LIKE algorithms' search term only. The BM25 index does not normalize to NFC or NFD, when it indexes a document or when it reads a query, so a decomposed "naïve" and a composed one can be different terms on `useInvertedIndex()` and the Scout engine (accent folding, where it is on, maps both to "naive"). Normalise text to one form before it is saved if your input mixes the two. Changing this would need every index rebuilt, so it is left for a later release.
 
 With `unicode.accent_insensitive` on (the shipped default), every `Model::search()` (and any other `SearchBuilder`) also looks for the term's accent-free form, beside the term as typed: `Müller` finds both `Zoë Müller` and `Muller`. The `whereFuzzy`-style macros, the `Fuzzy` scopes, `tableSearch()` and `FuzzySearch::on()` search only the term as typed, and so does `FederatedSearch` for a model without the `Searchable` trait. The folded form works like a synonym. It is OR'd into the LIKE conditions of every algorithm and into `extended()` terms (where `!Müller` excludes both forms), and it counts for relevance and highlighting. A term with no accents compiles to exactly the SQL it would without the setting. `->accentInsensitive()` does the same for a single query. On PostgreSQL with `use_native_functions=true` it also ORs `unaccent(column) ILIKE unaccent(term)` beside the algorithm, so the column is folded too; that needs `CREATE EXTENSION unaccent`, and without it such a search fails with `function unaccent(…) does not exist`. `$searchable['accent_insensitive']` and a preset's `accent_insensitive` opt in the same way. The global key alone never runs `unaccent()`.
 

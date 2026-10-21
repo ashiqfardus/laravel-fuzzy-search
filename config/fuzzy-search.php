@@ -35,7 +35,7 @@ return [
     | bm25.candidate_chunk).
     |
     | Also the largest page size on every path (paginate/simplePaginate clamp
-    | perPage to it) and the most rows one model contributes to a federated search.
+    | perPage to it, and so do the Scout engine's take() and page size) and the most rows one model contributes to a federated search.
     |
     | Lower it if fetching and re-scoring the candidate window is slow or uses
     | too much memory on your data. It lowers everything above with it: the
@@ -304,7 +304,8 @@ return [
     |
     | max_depth: maximum nesting depth of parentheses (DoS guard)
     | max_tokens: the most tokens a query may have; one more throws (words, | and
-    |   parentheses each count) (DoS guard)
+    |   parentheses each count) (DoS guard). A plain index query (and a Scout
+    |   search) uses only its first max_tokens distinct terms; it does not throw.
     | max_term_length: maximum character length of a single search term; longer
     |   terms are truncated before driver pattern generation to prevent O(n²)
     |   LIKE-pattern explosion on LevenshteinDriver and FuzzyDriver
