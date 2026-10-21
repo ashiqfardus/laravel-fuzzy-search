@@ -12,13 +12,24 @@ class PorterStemmerTest extends TestCase
         return class_exists('Wamania\\Snowball\\StemmerFactory');
     }
 
+    /**
+     * php-stemmer 1.3 calls utf8_decode(), deprecated since PHP 8.2 (tokenization.md says so): its
+     * notice is not this package's, so it is suppressed on 1.3 only.
+     */
+    private function stem(string $language, string $word): string
+    {
+        $stemmer = new PorterStemmer($language);
+
+        return $this->hasFactory() ? $stemmer->stem($word) : @$stemmer->stem($word);
+    }
+
     public function test_language_names_work_in_any_case(): void
     {
         foreach (['English', 'english', 'ENGLISH'] as $name) {
-            $this->assertSame('run', (new PorterStemmer($name))->stem('running'), $name);
+            $this->assertSame('run', $this->stem($name, 'running'), $name);
         }
-        $this->assertSame('cheval', (new PorterStemmer('French'))->stem('chevaux'));
-        $this->assertSame('cheval', (new PorterStemmer('french'))->stem('chevaux'));
+        $this->assertSame('cheval', $this->stem('French', 'chevaux'));
+        $this->assertSame('cheval', $this->stem('french', 'chevaux'));
     }
 
     public function test_iso_codes_work_with_the_factory_api(): void
