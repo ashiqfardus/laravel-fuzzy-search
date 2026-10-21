@@ -23,6 +23,10 @@ class SearchableIndexingObserver
 
     public function saved(Model $model): void
     {
+        // Let go of the key updating() noted on every path, indexing off too.
+        $oldKey = self::$oldKeys[$model] ?? null;
+        unset(self::$oldKeys[$model]);
+
         if (!config('fuzzy-search.indexing.enabled', false)) {
             return;
         }
@@ -36,9 +40,7 @@ class SearchableIndexingObserver
         // A save that changes the primary key indexes the new key, and syncs the old one too: its
         // sync finds no row under that key and takes the document and postings out, which nothing
         // else would (a rebuild reads only the rows that exist).
-        $oldKey     = self::$oldKeys[$model] ?? null;
         $keyChanged = $oldKey !== null && $model->wasChanged($model->getKeyName());
-        unset(self::$oldKeys[$model]);
 
         if (!$model->wasRecentlyCreated && !$keyChanged && !$this->needsReindex($model, $columns)) {
             return; // nothing the index depends on changed — skip dispatch
