@@ -288,7 +288,7 @@ final class TermExpander
      * of a non-empty $visible, so suggest() and didYouMean(), which hand words back, never offer a
      * hidden column's words. The typo and prefix expansions only match, and keep every column, as
      * the LIKE path does. A word that is also in a visible column is still offered. Postings written
-     * before 2.1 carry no column name (''), so they are left out too, but only when the model
+     * before 3.0 carry no column name (''), so they are left out too, but only when the model
      * hides one of its searchable columns; rebuilding the index brings those words back.
      *
      * A relation column (author.email, indexed through searchableText()) is posted under its dotted

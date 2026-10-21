@@ -11,9 +11,9 @@
 >
 > The four index tables are harmless if unused. If you never plan to use BM25 search, simply ignore them.
 >
-> Installing 2.1 also runs the 2.1 migrations (see [Upgrading from v2.0 to v2.1](UPGRADE_v2.0_TO_v2.1.md)), which change these tables, add the index's other tables and create the `fuzzy_search_logs` analytics table (`analytics.table`); all are harmless if unused.
+> Installing 3.0 also runs the 3.0 migrations (see [Upgrading from v2.0 to v3.0](UPGRADE_v2_TO_v3.md)), which change these tables, add the index's other tables and create the `fuzzy_search_logs` analytics table (`analytics.table`); all are harmless if unused.
 >
-> **Then read [Upgrading from v2.0 to v2.1](UPGRADE_v2.0_TO_v2.1.md) too:** every behaviour change there applies to you as well.
+> **Then read [Upgrading from v2.0 to v3.0](UPGRADE_v2_TO_v3.md) too:** every behaviour change there applies to you as well.
 
 ## Breaking changes
 

@@ -10,7 +10,7 @@ use Illuminate\Queue\SerializesModels;
 
 /**
  * @deprecated v2.0.0 Use IndexModelJob (per-row) or RebuildIndexJob (bulk) instead.
- *             This job performs a full-table reindex and will be removed in v3.0.0.
+ *             This job performs a full-table reindex and will be removed in v4.0.0.
  */
 class ReindexModelJob implements ShouldQueue
 {

@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Schema;
  * the connection's case- and accent-insensitive collation, keys that differ only by case or
  * accents (sqids, hashids, base62: aBc and AbC) were one key, so the second overwrote the first's
  * document. The collation is a NO PAD one, utf8mb4_0900_bin on MySQL (8.0.17+) and
- * utf8mb4_nopad_bin on MariaDB: utf8mb4_bin, which an earlier 2.1 build used and an older MySQL
+ * utf8mb4_nopad_bin on MariaDB: utf8mb4_bin, which an earlier 3.0 build used and an older MySQL
  * still gets, ignores trailing spaces, so 'SKU1' and 'SKU1 ' (two rows under a NO PAD key column,
  * such as MySQL 8's default utf8mb4_0900_ai_ci) were one document. A second run moves an earlier
  * build's utf8mb4_bin over. PostgreSQL and SQLite compare it byte-wise already; SQL Server keeps

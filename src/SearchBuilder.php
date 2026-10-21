@@ -576,16 +576,16 @@ class SearchBuilder
     }
 
     /**
-     * @deprecated since 2.1.0 — never implemented. The value was only ever read into the cache
+     * @deprecated since 3.0.0 — never implemented. The value was only ever read into the cache
      *             key, never into a pattern or a predicate; the real minimum-length controls are
      *             the `min_search_length` config key (whole term) and
      *             `typo_tolerance.min_word_length` (per word). This method is a no-op and will
-     *             be removed in v3.0.0.
+     *             be removed in v4.0.0.
      */
     public function minMatchLength(int $length): self
     {
         trigger_error(
-            'SearchBuilder::minMatchLength() is deprecated since 2.1.0 and does nothing — use the min_search_length config key. It will be removed in v3.0.0.',
+            'SearchBuilder::minMatchLength() is deprecated since 3.0.0 and does nothing — use the min_search_length config key. It will be removed in v4.0.0.',
             E_USER_DEPRECATED
         );
 
@@ -649,17 +649,17 @@ class SearchBuilder
     }
 
     /**
-     * @deprecated since 2.1.0 — never implemented. The value was only ever read into the cache
+     * @deprecated since 3.0.0 — never implemented. The value was only ever read into the cache
      *             key: no stop-word list, stemmer or collation was ever selected from it. Pass
      *             the locale where it is actually read — `ignoreStopWords('de')` for a
      *             query-time stop-word list, `$searchable['locale']` for a model's index
      *             pipeline, the top-level `locale` config key for every other model's index
-     *             stop-word list. This method is a no-op and will be removed in v3.0.0.
+     *             stop-word list. This method is a no-op and will be removed in v4.0.0.
      */
     public function locale(string $locale): self
     {
         trigger_error(
-            "SearchBuilder::locale() is deprecated since 2.1.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list, \$searchable['locale'] for a model's index pipeline, or the locale config key for every other model's index stop-word list. It will be removed in v3.0.0.",
+            "SearchBuilder::locale() is deprecated since 3.0.0 and does nothing — use ignoreStopWords('de') for a query-time stop-word list, \$searchable['locale'] for a model's index pipeline, or the locale config key for every other model's index stop-word list. It will be removed in v4.0.0.",
             E_USER_DEPRECATED
         );
 
@@ -882,15 +882,15 @@ class SearchBuilder
     }
 
     /**
-     * @deprecated since 2.1.0 — a server-side "debounce" cannot exist: by the time this
+     * @deprecated since 3.0.0 — a server-side "debounce" cannot exist: by the time this
      *             builder runs, the request has already arrived. Debounce on the client
      *             (`wire:model.live.debounce.300ms`, a JS timer). This method is a no-op
-     *             and will be removed in v3.0.0.
+     *             and will be removed in v4.0.0.
      */
     public function debounce(int $ms): self
     {
         trigger_error(
-            'SearchBuilder::debounce() is deprecated since 2.1.0 and does nothing — debounce on the client instead. It will be removed in v3.0.0.',
+            'SearchBuilder::debounce() is deprecated since 3.0.0 and does nothing — debounce on the client instead. It will be removed in v4.0.0.',
             E_USER_DEPRECATED
         );
 
@@ -1263,7 +1263,7 @@ class SearchBuilder
         $store  = Cache::store(in_array($store, [null, '', 'default'], true) ? null : $store);
         $cached = $store->get($cacheKey);
 
-        // Anything else under the key (an entry written before 2.1) is a miss.
+        // Anything else under the key (an entry written before 3.0) is a miss.
         if (is_array($cached) && isset($cached['rows']) && in_array($cached['models'] ?? null, [false, 'key', 'attributes'], true)) {
             return $this->fromCachePayload($cached);
         }

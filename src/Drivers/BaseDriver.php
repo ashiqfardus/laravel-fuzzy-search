@@ -40,7 +40,7 @@ abstract class BaseDriver
      * Get relevance expression for ordering.
      *
      * @deprecated Not called by any internal code path — relevance ordering is handled
-     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v3.
+     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v4.
      */
     public function getRelevanceExpression(string $column, string $value): string
     {
@@ -51,7 +51,7 @@ abstract class BaseDriver
      * Get relevance bindings.
      *
      * @deprecated Not called by any internal code path — relevance ordering is handled
-     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v3.
+     *             by SearchBuilder::applyRelevanceOrdering(). Will be removed in v4.
      */
     public function getRelevanceBindings(string $value): array
     {
@@ -128,7 +128,7 @@ abstract class BaseDriver
      * patterns (exact contains, prefix) first, so slicing keeps the best ones.
      *
      * @deprecated Not called by any bundled driver: they cap with firstPatterns(), which takes a
-     *             generator as well as an array. Will be removed in v3.
+     *             generator as well as an array. Will be removed in v4.
      */
     protected function capPatterns(array $patterns): array
     {

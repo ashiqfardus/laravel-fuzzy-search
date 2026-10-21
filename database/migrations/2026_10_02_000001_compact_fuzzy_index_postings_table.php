@@ -264,7 +264,7 @@ return new class extends Migration
     }
 
     /**
-     * Bring an install of an earlier 2.1 build to the 2.1.0 schema. Its recorded migrations
+     * Bring an install of an earlier 3.0 build to the 3.0.0 schema. Its recorded migrations
      * never run again, and two of them changed since: 2026_09_20_000001 now gives model_id a NO PAD
      * binary collation on MySQL/MariaDB, where an earlier build gave utf8mb4_bin (which pads: 'SKU1'
      * and 'SKU1 ' were one key), and 2026_10_01_000001 now indexes the dictionary on (term_length,

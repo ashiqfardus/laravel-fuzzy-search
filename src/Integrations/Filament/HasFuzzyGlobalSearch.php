@@ -89,7 +89,7 @@ trait HasFuzzyGlobalSearch
      * The resource's details plus one highlighted entry per searchable attribute that matched.
      *
      * Only columns listed in `_matches` are promoted to HtmlString. `_highlighted` is uniformly
-     * escaped since 2.1, but the `_matches` guard is kept so that only the columns the search
+     * escaped since 3.0, but the `_matches` guard is kept so that only the columns the search
      * actually hit become details — sniffing for the tag string would promote a record's own
      * `<mark>…</mark>` payload whenever a *different* column was the one that matched.
      */

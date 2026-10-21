@@ -118,7 +118,7 @@ class SearchBuilderTest extends TestCase
         $this->assertInstanceOf(SearchBuilder::class, $result);
         $this->assertCount(1, $deprecations);
         $this->assertStringContainsString('minMatchLength() is deprecated', $deprecations[0]);
-        $this->assertStringContainsString('v3.0.0', $deprecations[0]);
+        $this->assertStringContainsString('v4.0.0', $deprecations[0]);
         $this->assertSame($plain->toSql(), $result->toSql());
         $this->assertSame($plain->getBindings(), $result->getBindings());
     }
@@ -162,7 +162,7 @@ class SearchBuilderTest extends TestCase
         $this->assertInstanceOf(SearchBuilder::class, $result);
         $this->assertCount(1, $deprecations);
         $this->assertStringContainsString('locale() is deprecated', $deprecations[0]);
-        $this->assertStringContainsString('v3.0.0', $deprecations[0]);
+        $this->assertStringContainsString('v4.0.0', $deprecations[0]);
         // No stop-word list is selected by it: same bindings, and stop words stay off.
         $this->assertSame($plain->getBindings(), $result->getBindings());
         $this->assertFalse($result->getAnalytics()['stop_words_active']);

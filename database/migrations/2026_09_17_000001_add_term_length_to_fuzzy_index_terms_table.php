@@ -10,7 +10,7 @@ return new class extends Migration
 {
     private const INDEX = 'fuzzy_index_terms_term_length_index';
 
-    /** 2026_10_01_000001's indexes on term_length: the current one, and an earlier 2.1 build's. */
+    /** 2026_10_01_000001's indexes on term_length: the current one, and an earlier 3.0 build's. */
     private const LATER = ['fuzzy_index_terms_term_length_doc_count_id_index', 'fuzzy_index_terms_term_length_doc_count_index'];
 
     public function up(): void
