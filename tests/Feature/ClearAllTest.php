@@ -717,6 +717,32 @@ class ClearAllTest extends TestCase
         $this->assertFlushedBesideProducts($keep);
     }
 
+    /**
+     * SQLite: a flush by type begins its transaction with reads and then writes, and a write by
+     * another connection in between makes SQLite refuse the first DELETE ("database is locked").
+     * The transaction retries it, as the index writes do, and the flush finishes.
+     */
+    public function test_a_flush_by_type_on_sqlite_retries_a_locked_database(): void
+    {
+        if ($this->dbDriver !== 'sqlite') {
+            $this->markTestSkipped('Only SQLite refuses a write after a read this way.');
+        }
+        $this->indexBoth();
+        $keep   = $this->productRows();
+        $failed = 0;
+        DB::listen(function ($query) use (&$failed) {
+            if ($failed === 0 && preg_match('/^\s*delete from [`"\[]?fuzzy_index_/i', $query->sql) && ++$failed) {
+                throw new \Illuminate\Database\QueryException(DB::getDefaultConnection(), $query->sql, [], new \PDOException('SQLSTATE[HY000]: General error: 5 database is locked'));
+            }
+        });
+
+        app(IndexManager::class)->flush(User::class);
+
+        $this->assertSame(1, $failed, 'the first DELETE was refused once');
+        $this->assertSame(0, DB::table('fuzzy_index_documents')->where('model_type', User::class)->count());
+        $this->assertSame($keep, $this->productRows());
+    }
+
     private function isolation(): string
     {
         try {

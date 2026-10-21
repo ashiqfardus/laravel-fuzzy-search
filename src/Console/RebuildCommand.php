@@ -53,7 +53,18 @@ class RebuildCommand extends Command
 
         if ($this->option('fresh')) {
             $this->info("Flushing existing index for [{$modelClass}]...");
-            $indexManager->flush($modelClass);
+            try {
+                $indexManager->flush($modelClass);
+            } catch (\Throwable $e) {
+                // MySQL/MariaDB delete in batches that commit one by one, so the index may be partly
+                // emptied: only running the flush again finishes it, and indexing before that counts
+                // the documents left a second time.
+                report($e);
+                $this->error("The flush did not finish: {$e->getMessage()}");
+                $this->line("Run <comment>php artisan fuzzy-search:rebuild \"{$modelClass}\" --fresh</comment> again before any other index command (a rebuild without --fresh or a save that is indexed counts what is left a second time).");
+
+                return self::FAILURE;
+            }
             // Single-table inheritance: a deleted row leaves the other kinds' indexes too.
             $indexManager->unfileGone($modelClass);
         }
