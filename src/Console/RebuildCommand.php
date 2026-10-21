@@ -140,6 +140,14 @@ class RebuildCommand extends Command
      */
     private const JOBS_PER_DISPATCH = 300;
 
+    /**
+     * Keys read per query while dispatching. One query per job (chunk_size, 500 by default) took
+     * 6,000 round trips on 3M rows; 10,000 keys is a page that costs one index seek and about
+     * 10,000 key-only models, a few MB, while one page per slice of jobs (150,000) would hold far
+     * too many. The page is a multiple of chunk_size so that the jobs split the keys as before.
+     */
+    private const KEYS_PER_READ = 10000;
+
     private function rebuildAsync(string $modelClass, int $chunkSize, string $queue, int $total, bool $prune): int
     {
         $this->info("Dispatching async rebuild for [{$modelClass}] ({$total} records, chunk: {$chunkSize}, queue: {$queue})...");
@@ -176,14 +184,18 @@ class RebuildCommand extends Command
         };
 
         try {
-            // The keys a chunk at a time (keyset, as the sync rebuild reads its rows), never all at
-            // once: only the key column, with no eager loads, each key as the model casts it.
+            // The keys a page at a time (keyset, as the sync rebuild reads its rows), never all at
+            // once: only the key column, with no eager loads, each key as the model casts it. A
+            // page is split into jobs of chunk_size keys.
+            $page = max($chunkSize, intdiv(self::KEYS_PER_READ, $chunkSize) * $chunkSize);
             IndexQuery::for($modelClass)->setEagerLoads([])->select($model->getQualifiedKeyName())->chunkById(
-                $chunkSize,
-                function ($models) use (&$jobs, $modelClass, $dispatch) {
-                    $jobs[] = new RebuildIndexJob($modelClass, $models->modelKeys());
-                    if (count($jobs) === self::JOBS_PER_DISPATCH) {
-                        $dispatch();
+                $page,
+                function ($models) use (&$jobs, $modelClass, $dispatch, $chunkSize) {
+                    foreach (array_chunk($models->modelKeys(), $chunkSize) as $keys) {
+                        $jobs[] = new RebuildIndexJob($modelClass, $keys);
+                        if (count($jobs) === self::JOBS_PER_DISPATCH) {
+                            $dispatch();
+                        }
                     }
                 },
                 $model->getQualifiedKeyName(),
