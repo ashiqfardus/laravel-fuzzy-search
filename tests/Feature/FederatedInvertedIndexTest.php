@@ -223,12 +223,6 @@ class FederatedInvertedIndexTest extends TestCase
 
     public function test_a_typo_is_found_through_the_index(): void
     {
-        // Rows without "laravel" bring it to half of each model's rows: a word in more is no typo expansion (ER-225a).
-        DB::table('fii_books')->insert(array_map(fn ($i) => ['title' => "Gardening volume {$i}", 'summary' => 'Plants'], range(1, 5)));
-        DB::table('fii_authors')->insert(array_map(fn ($i) => ['name' => "Poet number {$i}", 'bio' => 'Verses'], range(1, 3)));
-        app(IndexManager::class)->indexBatch(FiiBook::all());
-        app(IndexManager::class)->indexBatch(FiiAuthor::all());
-
         DB::enableQueryLog();
         $federated = FederatedSearch::across([FiiBook::class, FiiAuthor::class])->search('larvel')->typoTolerance(1)->useInvertedIndex();
         $rows      = $federated->limit(50)->get();

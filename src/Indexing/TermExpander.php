@@ -92,12 +92,13 @@ final class TermExpander
      * Bm25Scorer::rank() caps the expansion's idf at: a misspelling is rare, so its own idf put
      * the misspelled rows of a common word above every exact hit.
      *
-     * A neighbour in more than half of $modelType's documents, or in more than
-     * bm25.max_postings_per_term of them, is no expansion: the first holds no signal for a
-     * misspelling (its Robertson–Spärck Jones idf is at most 0), and the second's read alone
-     * reaches the cap; yet the ranking read every posting of either: "smith" expanded into "with",
-     * in 999,967 of 1M rows, and its read took 2.0 to 2.5 s. The words in $terms keep matching at
-     * any frequency.
+     * In an index of more of $modelType's documents than bm25.max_postings_per_term, a neighbour in
+     * more than half of them is no expansion: a stop word there, with no signal for a misspelling
+     * (its Robertson–Spärck Jones idf is at most 0), yet the ranking read every one of its
+     * postings: "smith" expanded into "with", in 999,967 of 1M rows, and its read took 2.0 to
+     * 2.5 s. A smaller index keeps every expansion (on 10 rows, "phnoe" still finds "phone" in 6),
+     * and so does a word in no more than half of the documents, however many ("jhon" finds "john"
+     * in more rows than the cap). The words in $terms keep matching at any frequency.
      *
      * @param  string[]                   $terms
      * @param  array<string, string>|null $sources set to expansion => the input term it expands
@@ -112,12 +113,13 @@ final class TermExpander
             return $weights;
         }
 
-        // The most documents an expansion may hold, read once a neighbour needs it (one keyed read
-        // of the model's total); the whole dictionary (no $modelType) has no total: the cap alone.
+        // The most documents an expansion may hold: half of the model's, in an index of more than
+        // the cap; read once a neighbour needs it (one keyed read of the model's total). A smaller
+        // index, and the whole dictionary (no $modelType), keep every expansion.
         $most = function () use ($modelType): int {
-            $cap = (int) config('fuzzy-search.bm25.max_postings_per_term', 50000);
+            $total = $modelType === null ? 0 : (int) DB::table('fuzzy_index_meta')->where('model_type', $modelType)->value('total_docs');
 
-            return $modelType === null ? $cap : min($cap, intdiv((int) DB::table('fuzzy_index_meta')->where('model_type', $modelType)->value('total_docs'), 2));
+            return $total > (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) ? intdiv($total, 2) : PHP_INT_MAX;
         };
         $limit = null;
 

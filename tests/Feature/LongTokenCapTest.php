@@ -36,9 +36,6 @@ class LongTokenCapTest extends TestCase
         $this->userB = User::create(['name' => $this->b, 'email' => 'long-b@example.com']);
         app(IndexManager::class)->indexModel($this->userA);
         app(IndexManager::class)->indexModel($this->userB);
-        // The other users too: the capped token is in both rows above, and a word in more than half
-        // of the model's rows is no typo expansion (ER-225a).
-        app(IndexManager::class)->indexBatch(User::whereKeyNot([$this->userA->getKey(), $this->userB->getKey()])->get());
     }
 
     private function found(\Ashiqfardus\LaravelFuzzySearch\SearchBuilder $search): array

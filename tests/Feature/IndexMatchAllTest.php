@@ -46,8 +46,6 @@ class IndexMatchAllTest extends TestCase
             ['name' => 'blue kettle', 'body' => null, 'rank' => 3],
             ['name' => 'teapot', 'body' => 'red enamel kettle', 'rank' => 4],
             ['name' => 'plate', 'body' => 'white', 'rank' => 5],
-            // "kettle" in at most half of the rows: a word in more is no typo expansion (ER-225a).
-            ['name' => 'spoon', 'body' => null, 'rank' => 6],
         ]);
         app(IndexManager::class)->indexBatch(MatchAllItem::all());
     }
