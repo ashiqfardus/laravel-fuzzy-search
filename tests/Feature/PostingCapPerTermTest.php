@@ -160,11 +160,12 @@ class PostingCapPerTermTest extends TestCase
             /** @var list<string|null> the class of each cursor() caller */
             public array $callers = [];
 
-            public function cursor($query, $bindings = [], $useReadPdo = true)
+            // ...$rest: Laravel 13 adds a fourth parameter ($fetchUsing); a fixed list is a fatal error there.
+            public function cursor($query, $bindings = [], $useReadPdo = true, ...$rest)
             {
                 $this->callers[] = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1]['class'] ?? null;
 
-                return parent::cursor($query, $bindings, $useReadPdo);
+                return parent::cursor($query, $bindings, $useReadPdo, ...$rest);
             }
         };
         $name = $connection->getName();
