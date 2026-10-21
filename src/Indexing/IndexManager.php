@@ -834,8 +834,8 @@ class IndexManager
      *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
      *   session may truncate a table it has write-locked: the postings, the documents and the model
      *   terms. Laravel 10 connects to it as mysql.
-     * - MySQL: the DELETEs, as 2.0 did. Its LOCK TABLES cannot be told not
-     *   to wait (no NOWAIT; lock_wait_timeout is a second at least).
+     * - MySQL: as MariaDB, but its LOCK TABLES has no NOWAIT, so the session's lock_wait_timeout is
+     *   set to 1 (the least it takes) for it, once, and put back after.
      * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
      * quick once the postings are gone (about 2 s per 100,000 terms on MySQL). Every DELETE path
@@ -850,7 +850,7 @@ class IndexManager
      * which Laravel's savepoint handler turned into a DeadlockException past the fallback). Searches
      * hold their locks for a moment, so a refusal is tried again (withoutWaiting()).
      *
-     * The DELETEs run instead on MySQL, inside a transaction of the caller's on MariaDB (TRUNCATE and
+     * The DELETEs run instead inside a transaction of the caller's on MySQL and MariaDB (TRUNCATE and
      * LOCK TABLES would commit it), while the tables stay busy, and wherever TRUNCATE is refused: a
      * database user without the privilege it needs beyond DELETE (DROP, and LOCK TABLES, on MariaDB;
      * TRUNCATE on PostgreSQL; ALTER on SQL Server), or an app table with a foreign key to one of these
@@ -865,6 +865,19 @@ class IndexManager
      */
     public function flushAll(): bool
     {
+        return $this->clearIndex(null);
+    }
+
+    /**
+     * flushAll()'s clear, or flush()'s when $only names the one model type that is left to clear:
+     * then only that type's meta row goes and the other types' stay, and the big tables are
+     * truncated only if no other type has a document, which is checked after the lock that holds
+     * index writes off (the table locks on MySQL/MariaDB, flushing()'s lock and the table lock on
+     * PostgreSQL, the index write lock on SQL Server), so no write of another type lands between
+     * the check and the TRUNCATE. Otherwise $byType (flush()'s DELETE by type) runs in flushing().
+     */
+    private function clearIndex(?string $only, ?\Closure $byType = null): bool
+    {
         $connection = DB::connection();
         $driver     = $connection->getDriverName();
         // Each model's words, once 2026_10_13_000001 has created them: clear --all also
@@ -872,39 +885,83 @@ class IndexManager
         $own        = $connection->getSchemaBuilder()->hasTable('fuzzy_index_model_terms') ? ['fuzzy_index_model_terms'] : [];
         $tables     = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', ...$own, 'fuzzy_index_terms'];
         $big        = ['fuzzy_index_postings', 'fuzzy_index_documents', ...$own];
-        $deletes    = function (array $truncated) use ($tables) {
+        $deletes    = function (array $truncated) use ($tables, $only, $byType) {
+            if ($only !== null) {
+                if ($truncated === []) {
+                    $byType();
+
+                    return;
+                }
+                // Nothing else is indexed: the words go whole, this type's meta row with them.
+                DB::table('fuzzy_index_meta')->where('model_type', $only)->delete();
+                DB::table('fuzzy_index_terms')->delete();
+
+                return;
+            }
             foreach (array_diff($tables, $truncated) as $table) {
                 DB::table($table)->delete();
             }
         };
+        $alone      = fn () => $only === null || !DB::table('fuzzy_index_documents')->where('model_type', '<>', $only)->exists();
 
         // Laravel 10 connects to MariaDB as mysql; the server tells them apart, without a query.
         $mariadb = $driver === DbDialect::MARIADB
             || ($driver === DbDialect::MYSQL && stripos((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION), 'mariadb') !== false);
 
-        if ($mariadb && DB::transactionLevel() === 0 && $this->withoutWaiting(function () use ($connection, $tables, $big, $deletes) {
-            $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)) . ' NOWAIT');
-            try {
-                foreach ($big as $table) {
-                    DB::table($table)->truncate();
+        if (($mariadb || $driver === DbDialect::MYSQL) && DB::transactionLevel() === 0) {
+            $ran    = false;
+            $locked = function () use ($connection, $tables, $big, $deletes, $alone, $mariadb, &$ran) {
+                $connection->unprepared('LOCK TABLES ' . implode(', ', array_map(fn ($table) => $connection->getQueryGrammar()->wrapTable($table) . ' WRITE', $tables)) . ($mariadb ? ' NOWAIT' : ''));
+                try {
+                    if ($alone()) {
+                        foreach ($big as $table) {
+                            DB::table($table)->truncate();
+                        }
+                        $deletes($big);
+                        $ran = true;
+                    }
+                } finally {
+                    $connection->unprepared('UNLOCK TABLES');
                 }
-                $deletes($big);
-            } finally {
-                $connection->unprepared('UNLOCK TABLES');
+            };
+            if ($mariadb) {
+                $this->withoutWaiting($locked);
+            } else {
+                // MySQL's LOCK TABLES has no NOWAIT: wait one second for the tables (the least
+                // lock_wait_timeout allows), once, and delete row by row if they stay busy.
+                $wait = (int) $connection->scalar('select @@session.lock_wait_timeout');
+                try {
+                    $connection->unprepared('SET SESSION lock_wait_timeout = 1');
+                    if (!$this->tablesInUse($tables)) {
+                        $locked();
+                    }
+                } catch (\Illuminate\Database\QueryException) {
+                    // refused or busy: the DELETEs below
+                } finally {
+                    $connection->unprepared("SET SESSION lock_wait_timeout = {$wait}");
+                }
             }
-        })) {
-            return true;
+            if ($ran) {
+                return true;
+            }
         }
 
         $truncated = [];
-        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes, &$truncated) {
+        $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes, $alone, $only, &$truncated) {
             if ($driver === DbDialect::PGSQL) {
-                $list = implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $tables));
-                if ($this->withoutWaiting(fn () => DB::transaction(function () use ($list) { // a savepoint
-                    DB::statement("LOCK TABLE {$list} IN ACCESS EXCLUSIVE MODE NOWAIT");
-                    DB::statement("TRUNCATE TABLE {$list}");
-                }))) {
-                    $truncated = $tables;
+                $pgTables = $only === null ? $tables : array_diff($tables, ['fuzzy_index_meta']);
+                $list     = implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $pgTables));
+                $ran      = false;
+                if ($this->withoutWaiting(function () use ($list, $alone, &$ran) {
+                    DB::transaction(function () use ($list, $alone, &$ran) { // a savepoint
+                        DB::statement("LOCK TABLE {$list} IN ACCESS EXCLUSIVE MODE NOWAIT");
+                        if ($alone()) {
+                            DB::statement("TRUNCATE TABLE {$list}");
+                            $ran = true;
+                        }
+                    });
+                }) && $ran) {
+                    $truncated = $pgTables;
                 }
             } elseif ($driver === DbDialect::SQLSRV) {
                 // A refused TRUNCATE rolls the whole transaction back there, the index write lock
@@ -912,7 +969,7 @@ class IndexManager
                 $names = array_map(fn ($table) => $connection->getTablePrefix() . $table, $big);
                 $ids   = implode(', ', array_fill(0, count($names), 'object_id(?)'));
                 $alter = implode(' * ', array_fill(0, count($names), "has_perms_by_name(?, 'OBJECT', 'ALTER')"));
-                if ((int) $connection->scalar("select case when exists (select 1 from sys.foreign_keys where referenced_object_id in ({$ids})) then 0 else {$alter} end", [...$names, ...$names], false) === 1) {
+                if ($alone() && (int) $connection->scalar("select case when exists (select 1 from sys.foreign_keys where referenced_object_id in ({$ids})) then 0 else {$alter} end", [...$names, ...$names], false) === 1) {
                     foreach ($big as $table) {
                         DB::table($table)->truncate();
                     }
@@ -924,6 +981,32 @@ class IndexManager
         });
 
         return $truncated !== [] || $driver === DbDialect::SQLITE;
+    }
+
+    /**
+     * Whether another MySQL session holds a metadata lock on one of $tables: a transaction of
+     * the app's that has read one keeps its shared lock to its end. LOCK TABLES would queue behind
+     * it, and the app's next statement on another index table then queues behind LOCK TABLES: a
+     * deadlock the server breaks by killing the app's transaction. So the clear does not ask. False
+     * when the lock table cannot be read (performance_schema off, no privilege, MySQL < 8.0.16):
+     * LOCK TABLES then waits its one second.
+     *
+     * @param  list<string>  $tables
+     */
+    private function tablesInUse(array $tables): bool
+    {
+        $connection = DB::connection();
+        $names      = array_map(fn ($table) => $connection->getTablePrefix() . $table, $tables);
+        try {
+            return (int) $connection->scalar(
+                "select count(*) from performance_schema.metadata_locks where object_type = 'TABLE' and lock_status = 'GRANTED'"
+                . ' and object_schema = database() and object_name in (' . implode(',', array_fill(0, count($names), '?')) . ')'
+                . ' and owner_thread_id <> ps_current_thread_id()',
+                $names
+            ) > 0;
+        } catch (\Illuminate\Database\QueryException) {
+            return false;
+        }
     }
 
     /**

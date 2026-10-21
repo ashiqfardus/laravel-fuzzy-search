@@ -21,7 +21,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
  * It stays atomic against index writes (TB-1: IndexModelJobOverlapTest), keeps the model type and
  * column dictionaries, never commits a transaction of the caller's, never waits for an exclusive
  * table lock (R13-M3, ruling ER-194), and falls back to the DELETEs where TRUNCATE is refused or
- * the tables are busy, saying so on the console. MySQL always deletes.
+ * the tables are busy, saying so on the console. MySQL truncates under LOCK TABLES … WRITE with a
+ * one second wait, and deletes when the tables are busy.
  */
 class ClearAllTest extends TestCase
 {
@@ -102,7 +103,7 @@ class ClearAllTest extends TestCase
         $this->indexBoth();
         $dictionaries = $this->dictionaries();
 
-        $this->clearAll($this->dbDriver === 'mysql');
+        $this->clearAll(false);
 
         $this->assertCleared($dictionaries);
         // The dictionaries' ids still hold: the index fills again and searches.
@@ -116,8 +117,7 @@ class ClearAllTest extends TestCase
      * deleted row by row, and the model terms are emptied before the terms on every path (a DELETE
      * of the terms cascades into them row by row). PostgreSQL truncates all five in one statement, without CASCADE or RESTART IDENTITY, once it
      * holds them (LOCK TABLE … NOWAIT); MariaDB under LOCK TABLES … NOWAIT (its TRUNCATE commits);
-     * SQL Server behind the index write lock. MySQL deletes (R13-M3: its LOCK TABLES cannot be
-     * told not to wait). flushAll() says whether it truncated.
+     * SQL Server behind the index write lock; MySQL as MariaDB, with a one second lock wait and no NOWAIT. flushAll() says whether it truncated.
      */
     public function test_clear_all_truncates_the_big_tables(): void
     {
@@ -143,6 +143,15 @@ class ClearAllTest extends TestCase
                 'delete from fuzzy_index_terms',
                 'unlock tables',
             ],
+            'mysql' => [
+                'lock tables fuzzy_index_postings write, fuzzy_index_documents write, fuzzy_index_meta write, fuzzy_index_model_terms write, fuzzy_index_terms write',
+                'truncate table fuzzy_index_postings',
+                'truncate table fuzzy_index_documents',
+                'truncate table fuzzy_index_model_terms',
+                'delete from fuzzy_index_meta',
+                'delete from fuzzy_index_terms',
+                'unlock tables',
+            ],
             'sqlsrv' => [
                 'sp_getapplock',
                 'truncate table fuzzy_index_postings',
@@ -151,10 +160,10 @@ class ClearAllTest extends TestCase
                 'delete from fuzzy_index_meta',
                 'delete from fuzzy_index_terms',
             ],
-            default => array_map(fn (string $table) => "delete from {$table}", self::TABLES), // MySQL; SQLite: DELETE without WHERE is its truncate
+            default => array_map(fn (string $table) => "delete from {$table}", self::TABLES), // SQLite: DELETE without WHERE is its truncate
         };
         $this->assertSame($expected, $statements);
-        $this->assertSame($this->dbDriver !== 'mysql', $truncated);
+        $this->assertTrue($truncated);
         $this->assertSame(0, DB::table('fuzzy_index_postings')->count());
     }
 
@@ -188,7 +197,7 @@ class ClearAllTest extends TestCase
     /**
      * A table of the app's with a foreign key to the index makes TRUNCATE fail (PostgreSQL would
      * empty it with CASCADE); clear --all then deletes, and the app's rows stay. Only PostgreSQL
-     * truncates the referenced words, so only there (and on MySQL, always) it says it deleted.
+     * truncates the referenced words, so only there it says it deleted.
      */
     public function test_a_table_of_the_apps_referencing_the_index_keeps_its_rows(): void
     {
@@ -203,7 +212,7 @@ class ClearAllTest extends TestCase
             $this->indexBoth();
             $dictionaries = $this->dictionaries();
 
-            $this->clearAll(in_array($this->dbDriver, ['mysql', 'pgsql'], true));
+            $this->clearAll($this->dbDriver === 'pgsql');
 
             $this->assertCleared($dictionaries);
             $this->assertSame(2, DB::table('clear_all_refs')->count());
@@ -222,7 +231,7 @@ class ClearAllTest extends TestCase
      * PostgreSQL, no ALTER on SQL Server) cleared the index with the DELETEs before ER-187, and
      * still does: a refused LOCK TABLES or TRUNCATE falls back to them. On PostgreSQL the refusal
      * rolls back to a savepoint, so the transaction goes on; SQL Server would roll back the whole
-     * transaction, so it checks the permission first. MySQL takes no LOCK TABLES at all (R13-M3).
+     * transaction, so it checks the permission first. MySQL takes LOCK TABLES as MariaDB does.
      * The command says it deleted row by row. SQLite has no users.
      */
     #[DataProvider('grants')]
@@ -279,7 +288,7 @@ class ClearAllTest extends TestCase
         $this->assertCleared($dictionaries);
         // The refused statement is not logged (no QueryExecuted); the DELETEs that followed are.
         $this->assertContains('delete from fuzzy_index_postings', $statements);
-        $this->assertSame($lockTables && $this->dbDriver === 'mariadb', in_array('unlock tables', $statements, true));
+        $this->assertSame($lockTables && $mysql, in_array('unlock tables', $statements, true));
     }
 
     /** @return array<string, array{string, string, float}> what the app's transaction does first, then $delay seconds into the clear */
@@ -398,6 +407,46 @@ class ClearAllTest extends TestCase
 
         $this->assertSame($sqlsrv, (bool) preg_grep('/^truncate /', $statements), implode("\n", $statements));
         $this->assertSame($sqlsrv, $truncated);
+    }
+
+    /**
+     * On MySQL a reader's open transaction holds a metadata lock on the postings, which LOCK TABLES
+     * waits for: only for one second, then clear --all deletes row by row. The reader is not
+     * killed (it commits afterwards), and the session's lock_wait_timeout is back where it was,
+     * after this path and after the truncating one.
+     */
+    public function test_mysql_gives_up_the_lock_after_a_second_and_restores_the_wait(): void
+    {
+        if ($this->dbDriver !== 'mysql') {
+            $this->markTestSkipped('MySQL\'s bounded LOCK TABLES wait; MariaDB uses NOWAIT.');
+        }
+        $this->indexBoth();
+        $dictionaries = $this->dictionaries();
+        $this->boundLockWaits(7);
+
+        config(['database.connections.reader' => config('database.connections.integration')]);
+        $reader = DB::connection('reader');
+        $reader->beginTransaction();
+        try {
+            $reader->table('fuzzy_index_postings')->count();
+
+            $started    = microtime(true);
+            $statements = $this->statements(fn () => $this->clearAll(true));
+            $this->assertLessThan(5, microtime(true) - $started, 'it waited for the reader');
+            $this->assertSame(7, (int) DB::scalar('select @@session.lock_wait_timeout'), 'after the fallback');
+            $this->assertEmpty(preg_grep('/^truncate /', $statements));
+            $this->assertCleared($dictionaries);
+            $reader->commit(); // not killed
+        } finally {
+            if ($reader->transactionLevel() > 0) {
+                $reader->rollBack();
+            }
+            DB::purge('reader');
+        }
+
+        $this->indexBoth();
+        $this->clearAll(false);
+        $this->assertSame(7, (int) DB::scalar('select @@session.lock_wait_timeout'), 'after the truncate');
     }
 
     /**
