@@ -82,7 +82,7 @@ class FlushClearCommandTest extends TestCase
         app(IndexManager::class)->indexBatch(User::all());
         $failing = true;
         DB::connection()->beforeExecuting(function (string $sql) use (&$failing) {
-            if ($failing && preg_match('/^\s*delete from [`"\[]?fuzzy_index_/i', $sql)) {
+            if ($failing && preg_match('/^\s*(delete from|truncate( table)?) [`"\[]?fuzzy_index_/i', $sql)) {
                 throw new \RuntimeException('connection lost');
             }
         });

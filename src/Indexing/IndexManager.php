@@ -1271,7 +1271,8 @@ class IndexManager
      * so they see every write it waited for. The type ends empty and every count exact, as after
      * one DELETE; the transaction touches only what was written meanwhile. The DELETE's gap locks
      * are what hold the new writes off, and READ COMMITTED takes none, so the transaction runs at
-     * REPEATABLE READ whatever the session is set to (atRepeatableRead()). A search during the
+     * REPEATABLE READ whatever the session is set to (atRepeatableRead()). Once it has committed, it counts again the words of each chunk
+     * the loop above handled (recountRanges()). A search during the
      * flush still finds the model partly emptied. Interrupted part way, it is finished by running
      * it again, before any rebuild or other indexing: each step goes on from what is left, but the
      * documents it has not reached have lost their postings while the counts still hold them, so a
@@ -1280,13 +1281,14 @@ class IndexManager
     private function flushInBatches(string $modelType): void
     {
         $typeId = self::modelTypeId($modelType);
+        $ranges = [];
         if ($typeId !== null) {
             $this->deleteInBatches('fuzzy_index_postings', ['model_type_id' => $typeId], 'model_id');
 
             $after = 0;
             while (($ids = DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->where('term_id', '>', $after)
                 ->orderBy('term_id')->limit(1000)->pluck('term_id')->map(fn ($id) => (int) $id)->all()) !== []) {
-                $after = end($ids);
+                $ranges[] = [$ids[0], $after = end($ids)];
                 DB::transaction(function () use ($typeId, $ids) {
                     DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
                     DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $ids)->delete();
@@ -1315,7 +1317,34 @@ class IndexManager
             DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
         }, self::ATTEMPTS));
 
+        $this->recountRanges($ranges);
         $this->deleteUnpostedWords();
+    }
+
+    /**
+     * The words of each id range, counted again from the models' own counts, 1,000 words a
+     * transaction in id order as the flush's chunks are. A save of the flushed type between the
+     * flush's chunk of its words and its last transaction can give a posting back from a doc_count
+     * the chunk had already cut to the other models' share, and leave another model's count one
+     * low; the sum of the model terms is the truth, so counting the range again repairs it, and the
+     * other models' words in the range are counted to the same value. One pair of ids a chunk is
+     * kept, not the words.
+     *
+     * @param  list<array{int, int}>  $ranges
+     */
+    private function recountRanges(array $ranges): void
+    {
+        foreach ($ranges as [$first, $last]) {
+            $after = $first - 1;
+            while (($ids = DB::table('fuzzy_index_terms')->where('id', '>', $after)->where('id', '<=', $last)
+                ->orderBy('id')->limit(1000)->pluck('id')->map(fn ($id) => (int) $id)->all()) !== []) {
+                $after = end($ids);
+                DB::transaction(function () use ($ids) {
+                    DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
+                    self::recountDictionary(fn ($words) => $words->whereIn('id', $ids));
+                }, self::ATTEMPTS);
+            }
+        }
     }
 
     /**

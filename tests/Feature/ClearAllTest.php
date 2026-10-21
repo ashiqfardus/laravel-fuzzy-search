@@ -743,6 +743,80 @@ class ClearAllTest extends TestCase
         $this->assertSame($keep, $this->productRows());
     }
 
+    public function test_a_write_during_the_final_transaction_of_clear_all_at_read_committed_leaves_the_index_empty(): void
+    {
+        $this->readCommittedWriteDuringTheFinalTransaction('delete from [`"]?fuzzy_index_documents[`"]?');
+        // LOCK TABLES refused, and not for a lock wait: no more tries, the batches run.
+        DB::connection()->beforeExecuting(function (string $sql) {
+            if (preg_match('/^\s*lock tables/i', $sql)) {
+                throw new \Illuminate\Database\QueryException(DB::getDefaultConnection(), $sql, [], new \PDOException('SQLSTATE[42000]: Syntax error or access violation: 1044 Access denied'));
+            }
+        });
+        $dictionaries = $this->dictionaries();
+
+        $this->assertFalse(app(IndexManager::class)->flushAll());
+
+        $this->assertSame('READ-COMMITTED', $this->isolation(), 'the session setting is put back');
+        $this->assertCleared($dictionaries);
+    }
+
+    /**
+     * A document saved once during the postings phase of a flush and again after the words'
+     * recount: the second save gives its first save's postings back from terms.doc_count, which the
+     * recount had already reduced to the other types' share, so another type's count of a shared
+     * word ends one too low.
+     */
+    public function test_a_second_save_of_a_document_after_the_recount_leaves_the_other_types_counts_exact(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB flush in batches.');
+        }
+        $this->indexShared();
+        $this->flushRows(5);
+        config(['database.connections.app' => config('database.connections.integration')]);
+        $last  = null;
+        $stage = 0;
+        $names = [['postings', 'Apple Laptop Zzyx'], ['model_terms', 'Zzyx']];
+        DB::listen(function ($query) use (&$last) {
+            if ($query->connectionName === 'integration' && preg_match('/^\s*delete from [`"\[]?fuzzy_index_(\w+)/i', $query->sql, $match)) {
+                $last = $match[1];
+            }
+        });
+        DB::connection()->getEventDispatcher()->listen(\Illuminate\Database\Events\TransactionCommitted::class, function ($event) use (&$last, &$stage, $names) {
+            if ($stage > 1 || $event->connectionName !== 'integration' || $last !== $names[$stage][0]) {
+                return;
+            }
+            $name = $names[$stage++][1];
+            DB::setDefaultConnection('app');
+            try {
+                DB::table('users')->where('id', 1)->update(['name' => $name]);
+                app(IndexManager::class)->indexBatch(User::query()->where('id', 1)->get());
+            } finally {
+                DB::setDefaultConnection('integration');
+            }
+        });
+
+        app(IndexManager::class)->flush(User::class);
+
+        $this->assertSame(2, $stage, 'both saves ran');
+        $this->assertCountsAreFresh();
+    }
+
+    /** terms.doc_count and each model's own counts equal a fresh count of the postings held. */
+    private function assertCountsAreFresh(): void
+    {
+        $held = fn (array $columns) => DB::query()
+            ->fromSub(DB::table('fuzzy_index_postings')->distinct()->select(['term_id', 'model_type_id', 'model_id']), 'held')
+            ->select($columns)->selectRaw('count(*) as documents')->groupBy($columns)->get()
+            ->mapWithKeys(fn ($row) => [implode(':', array_map(fn ($column) => $row->{$column}, $columns)) => (int) $row->documents])->sortKeys()->all();
+        $counts = DB::table('fuzzy_index_terms')->where('doc_count', '>', 0)->pluck('doc_count', 'id')->mapWithKeys(fn ($count, $id) => [(string) $id => (int) $count])->sortKeys()->all();
+        $own    = DB::table('fuzzy_index_model_terms')->get()
+            ->mapWithKeys(fn ($row) => ["{$row->model_type_id}:{$row->term_id}" => (int) $row->doc_count])->sortKeys()->all();
+
+        $this->assertSame($held(['term_id']), $counts, 'terms.doc_count: a fresh count');
+        $this->assertSame($held(['model_type_id', 'term_id']), $own, 'each model\'s own counts');
+    }
+
     private function isolation(): string
     {
         try {
