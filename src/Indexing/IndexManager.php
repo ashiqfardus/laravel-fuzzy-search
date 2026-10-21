@@ -289,6 +289,9 @@ class IndexManager
      * changed key), left its document in the index, counted by total_docs, a paginator's total and
      * the federated counts until a `rebuild --fresh`. A plain rebuild runs this after its walk.
      *
+     * A trashed row of a model on Scout's trait is kept while scout.soft_delete is on: Scout indexes
+     * it, for its withTrashed() and onlyTrashed().
+     *
      * The rows are read without global scopes: a row a scope hides is no row gone. A single-database
      * multi-tenant app rebuilds each tenant under its tenant scope, and a read through the scope took
      * every other tenant's documents out. Such a row keeps its document until its next save (whose
@@ -312,20 +315,24 @@ class IndexManager
         $model  = new $type();
         $int    = in_array($model->getKeyType(), ['int', 'integer'], true);
         $kinds  = self::hydratesOtherClasses($type);
+        // A trashed row is gone, but on a model on Scout's trait under scout.soft_delete: Scout keeps
+        // it indexed, for withTrashed().
+        $trashedGone = method_exists($model, 'getQualifiedDeletedAtColumn')
+            && !(config('scout.soft_delete', false) && in_array(\Laravel\Scout\Searchable::class, class_uses_recursive($type), true));
         $pruned = 0;
         $read   = 0;
         $last   = null;
 
         $complete = DB::table('fuzzy_index_documents')->useWritePdo()->where('model_type', $type)->select('model_id')
             ->when($after !== null, fn ($query) => $query->where('model_id', '>', $after))
-            ->chunkById(1000, function ($rows) use ($type, $model, $int, $kinds, $chunks, &$pruned, &$read, &$last) {
+            ->chunkById(1000, function ($rows) use ($type, $model, $int, $kinds, $trashedGone, $chunks, &$pruned, &$read, &$last) {
                 $ids  = $rows->map(fn ($row) => (string) ((object) $row)->model_id)->all(); // an app-wide array fetch mode returns arrays
                 // model_id holds strval() of the key: one no integer key gives names no row.
                 $keys = $int ? array_values(array_filter($ids, fn (string $id) => (string) (int) $id === $id)) : $ids;
                 // searchIndexQuery() applied with the scopes registered (it may call withTrashed() or
                 // withoutGlobalScope()), then every global scope dropped; trashed rows left out by hand.
                 $query = fn () => IndexQuery::for($type)->withoutGlobalScopes()->useWritePdo()->setEagerLoads([])
-                    ->when(method_exists($model, 'getQualifiedDeletedAtColumn'), fn ($query) => $query->whereNull($model->getQualifiedDeletedAtColumn()))
+                    ->when($trashedGone, fn ($query) => $query->whereNull($model->getQualifiedDeletedAtColumn()))
                     ->whereKey($keys);
                 $live = $keys === [] ? collect() : Model::withoutEvents(fn () => $kinds
                     ? $query()->get()->filter(fn (Model $row) => self::indexType(self::rowClass($row)) === $type)->map(fn (Model $row) => $row->getKey())
