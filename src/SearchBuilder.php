@@ -1331,12 +1331,10 @@ class SearchBuilder
         return $this->decorate($results, $decoration);
     }
 
-    /** The attributes the database returned for a model, less what it hides: its $hidden ones and, with a $visible list, everything outside it. */
+    /** The attributes the database returned for a model, less its $hidden ones. $visible is a serialisation filter, so a joined or aliased column outside it stays, as on a miss. */
     private function visibleAttributes(Model $row): array
     {
-        $attributes = array_diff_key($row->getRawOriginal(), array_flip($row->getHidden()));
-
-        return $row->getVisible() === [] ? $attributes : array_intersect_key($attributes, array_flip($row->getVisible()));
+        return array_diff_key($row->getRawOriginal(), array_flip($row->getHidden()));
     }
 
     /**

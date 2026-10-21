@@ -623,6 +623,44 @@ class ClearAllTest extends TestCase
         }
     }
 
+    /**
+     * The words a batched flush counts again afterwards are the flushed type's own, not every word
+     * between its first and last: a model in a large shared dictionary does not lock the rest.
+     */
+    public function test_a_batched_flush_recounts_only_the_words_of_its_type(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB flush in batches.');
+        }
+        $manager = app(IndexManager::class);
+        $first   = User::create(['name' => 'zzalpha', 'email' => 'a@example.com']);
+        $manager->indexBatch(collect([$first]));
+        $manager->indexBatch(collect([Product::create(['title' => 'yyunique', 'price' => 1])]));
+        $manager->indexBatch(User::where('id', '<>', $first->id)->get()->push(User::create(['name' => 'zzomega', 'email' => 'o@example.com'])));
+
+        $typeId  = DB::table('fuzzy_index_model_types')->where('model_type', User::class)->value('id');
+        $mine    = DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->pluck('term_id')->map(fn ($id) => (int) $id)->all();
+        $between = (int) DB::table('fuzzy_index_terms')->where('term', 'yyunique')->value('id');
+        $this->assertGreaterThan(min($mine), $between);
+        $this->assertLessThan(max($mine), $between);
+
+        $locked = [];
+        $after  = false;
+        DB::listen(function ($query) use (&$locked, &$after) {
+            $sql = strtolower($query->sql);
+            if (str_starts_with($sql, 'delete from `fuzzy_index_meta`')) {
+                $after = true;
+            } elseif ($after && str_contains($sql, 'fuzzy_index_terms') && str_ends_with($sql, 'for update')) {
+                $locked = [...$locked, ...array_map('intval', $query->bindings)];
+            }
+        });
+        $manager->flush(User::class);
+
+        $this->assertNotContains($between, $locked, 'a word of another model');
+        $this->assertNotEmpty($locked);
+        $this->assertEqualsCanonicalizing([], array_diff($locked, $mine));
+    }
+
     /** @return array<string, array{string}> the table whose delete the flush is interrupted after */
     public static function interruptions(): array
     {

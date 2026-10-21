@@ -15,20 +15,21 @@ class CacheVisibleUser extends User
     protected $visible = ['id', 'name'];
 }
 
-/** Rows cached as attributes keep out what the model hides, whether through $hidden or a $visible list. */
+/** Rows cached as attributes drop what $hidden hides, and keep the rest, so a hit reads what a miss reads. */
 class CacheVisibleAttributesTest extends TestCase
 {
-    public function test_attributes_outside_visible_are_not_written_to_the_cache_store(): void
+    public function test_an_aliased_column_outside_visible_reads_the_same_on_a_hit_and_a_miss(): void
     {
         config(['cache.default' => 'array']);
         Cache::flush();
 
-        $run = fn () => (new SearchBuilder(CacheVisibleUser::query()->from('users as u'), app(FuzzySearch::class)))
+        $run = fn () => (new SearchBuilder(CacheVisibleUser::query()->from('users as u')->select('u.*', 'u.email as mail'), app(FuzzySearch::class)))
             ->search('doe')->searchIn(['name'])->using('like')->cache(60)->get();
 
-        $run();
+        $miss = $run()->map->mail->sort()->values()->all();
+        $hit  = $run()->map->mail->sort()->values()->all();
 
-        $this->assertStringNotContainsString('jane@example.com', serialize((new \ReflectionProperty(Cache::getStore(), 'storage'))->getValue(Cache::getStore())));
-        $this->assertCount(2, $run());
+        $this->assertNotEmpty(array_filter($miss));
+        $this->assertSame($miss, $hit);
     }
 }

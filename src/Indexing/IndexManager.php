@@ -1038,6 +1038,7 @@ class IndexManager
 
         $truncated = [];
         $this->flushing(function () use ($connection, $driver, $tables, $big, $deletes, $alone, $only, &$truncated) {
+            $truncated = []; // an attempt a deadlock rolled back (its TRUNCATE with it) must not count
             if ($driver === DbDialect::PGSQL) {
                 $pgTables = $only === null ? $tables : array_diff($tables, ['fuzzy_index_meta']);
                 $list     = implode(', ', array_map([DbDialect::class, 'rawIdentifier'], $pgTables));
@@ -1288,7 +1289,7 @@ class IndexManager
      * are what hold the new writes off, and READ COMMITTED takes none, so the transaction runs at
      * REPEATABLE READ whatever the session is set to (atRepeatableRead()). It starts by marking the
      * meta row (markFlushing()) and, once it has committed, counts again the words of each chunk
-     * the loop above handled (recountRanges()). A search during the
+     * the loop above handled (recountWords()). A search during the
      * flush still finds the model partly emptied. Interrupted part way, it is finished by running
      * it again, before any rebuild or other indexing: each step goes on from what is left, but the
      * documents it has not reached have lost their postings while the counts still hold them, so a
@@ -1298,14 +1299,15 @@ class IndexManager
     {
         $this->markFlushing($modelType);
         $typeId = self::modelTypeId($modelType);
-        $ranges = [];
+        $words  = ''; // the type's word ids, 4 bytes each (pack 'N*')
         if ($typeId !== null) {
             $this->deleteInBatches('fuzzy_index_postings', ['model_type_id' => $typeId], 'model_id');
 
             $after = 0;
             while (($ids = DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->where('term_id', '>', $after)
                 ->orderBy('term_id')->limit(1000)->pluck('term_id')->map(fn ($id) => (int) $id)->all()) !== []) {
-                $ranges[] = [$ids[0], $after = end($ids)];
+                $words .= pack('N*', ...$ids);
+                $after  = end($ids);
                 DB::transaction(function () use ($typeId, $ids) {
                     DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
                     DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->whereIn('term_id', $ids)->delete();
@@ -1334,7 +1336,7 @@ class IndexManager
             DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
         }, self::ATTEMPTS));
 
-        $this->recountRanges($ranges);
+        $this->recountWords($words);
         $this->deleteUnpostedWords();
     }
 
@@ -1357,28 +1359,22 @@ class IndexManager
     }
 
     /**
-     * The words of each id range, counted again from the models' own counts, 1,000 words a
-     * transaction in id order as the flush's chunks are. A save of the flushed type between the
-     * flush's chunk of its words and its last transaction can give a posting back from a doc_count
-     * the chunk had already cut to the other models' share, and leave another model's count one
-     * low; the sum of the model terms is the truth, so counting the range again repairs it, and the
-     * other models' words in the range are counted to the same value. One pair of ids a chunk is
-     * kept, not the words.
-     *
-     * @param  list<array{int, int}>  $ranges
+     * The words the flush's chunks handled (their ids packed 4 bytes each, in id order), counted
+     * again from the models' own counts, 1,000 words a transaction in id order as the chunks are. A
+     * save of the flushed type between the flush's chunk of its words and its last transaction can
+     * give a posting back from a doc_count the chunk had already cut to the other models' share,
+     * and leave another model's count one low; the sum of the model terms is the truth, so counting
+     * the words again repairs it. Only the type's own words: a small model in a large dictionary
+     * does not lock the rest.
      */
-    private function recountRanges(array $ranges): void
+    private function recountWords(string $packed): void
     {
-        foreach ($ranges as [$first, $last]) {
-            $after = $first - 1;
-            while (($ids = DB::table('fuzzy_index_terms')->where('id', '>', $after)->where('id', '<=', $last)
-                ->orderBy('id')->limit(1000)->pluck('id')->map(fn ($id) => (int) $id)->all()) !== []) {
-                $after = end($ids);
-                DB::transaction(function () use ($ids) {
-                    DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
-                    self::recountDictionary(fn ($words) => $words->whereIn('id', $ids));
-                }, self::ATTEMPTS);
-            }
+        foreach (str_split($packed, 4000) as $chunk) {
+            $ids = array_values(unpack('N*', $chunk));
+            DB::transaction(function () use ($ids) {
+                DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
+                self::recountDictionary(fn ($words) => $words->whereIn('id', $ids));
+            }, self::ATTEMPTS);
         }
     }
 

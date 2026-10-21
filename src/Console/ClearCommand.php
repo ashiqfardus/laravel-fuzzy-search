@@ -76,7 +76,7 @@ class ClearCommand extends Command
     {
         report($e);
         $this->error("The clear did not finish: {$e->getMessage()}");
-        $this->line("Run <comment>{$command}</comment> again before any other index command (a rebuild or a save that is indexed counts what is left a second time).");
+        $this->line("Run <comment>{$command}</comment> again before any other index command: the index may be partly emptied (MySQL/MariaDB delete in batches), and a rebuild or a save that is indexed counts what is left a second time.");
 
         return self::FAILURE;
     }
