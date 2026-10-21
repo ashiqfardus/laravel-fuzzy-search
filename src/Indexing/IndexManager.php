@@ -1414,9 +1414,10 @@ class IndexManager
 
     /**
      * Forget the per-process caches: the pipelines, which PostgreSQL index tables have statistics,
-     * and the model types' and columns' ids. The migrations that create those tables call this, and
-     * so does the service provider for each new application (each test of an app's suite) and after
-     * migrations or a schema dump ran in the process.
+     * the model types' and columns' ids, and the column types and collations the BM25 scorer reads
+     * (Bm25Scorer::resetColumnCache()). The migrations that create those tables call this, and so
+     * does the service provider for each new application (each test of an app's suite) and
+     * after migrations or a schema dump ran in the process.
      */
     public static function resetPipelineCache(): void
     {
@@ -1425,6 +1426,7 @@ class IndexManager
         self::$pendingChecks = [];
         self::$dictionary    = [];
         self::$watched       = [];
+        Bm25Scorer::resetColumnCache();
     }
 
     /**

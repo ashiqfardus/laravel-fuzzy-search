@@ -277,9 +277,24 @@ class Bm25Scorer
     private static array $sqlServerColumns = [];
 
     /**
+     * Forget the column types and collations read from information_schema (sqlServerColumn(),
+     * columnCollation()). IndexManager::resetPipelineCache() calls it, which the compact postings
+     * migration and the service provider (after migrations ran in the process) call, so a process
+     * that migrated does not compare the key with model_id as the old collations allowed.
+     *
+     * @internal
+     */
+    public static function resetColumnCache(): void
+    {
+        self::$sqlServerColumns = [];
+        self::$collations       = [];
+    }
+
+    /**
      * SQL Server: the type and collation of $table.$column in the default schema, read from
-     * information_schema once per connection, database, table prefix, table and column for the
-     * process (restart long-running workers after changing either); null for a column it cannot find.
+     * information_schema once per connection, database, table prefix, table and column, until
+     * resetColumnCache() (restart long-running workers after changing either outside the package's
+     * migrations); null for a column it cannot find.
      *
      * @return array{string, ?string}|null
      */
@@ -352,7 +367,7 @@ class Bm25Scorer
 
     /**
      * MySQL/MariaDB: the character set and collation of $table.$column, read from information_schema
-     * once per connection, database, table prefix, table and column for the process; null for a
+     * once per connection, database, table prefix, table and column, until resetColumnCache(); null for a
      * column without one (a number, a binary string) or one it cannot find. Names that are not plain
      * identifiers are never written into SQL.
      *
