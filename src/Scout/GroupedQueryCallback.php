@@ -7,10 +7,10 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * A Scout query() callback as the engine reads it: the callback, then its wheres grouped when one is
- * an or (RE-1) and a union read as one table (RankedCandidates::rows()), as constrainedQuery() and
+ * an or and a union read as one table (RankedCandidates::rows()), as constrainedQuery() and
  * modelsById() read it, and Scout's restriction to ids named as the FROM names the key
  * (restrictByKeyColumn()). Scout 10.0 counts paginate()'s total itself, through the Builder's callback,
- * so FuzzySearchEngine::paginate() puts this in the callback's place there (SD-1). A second reading
+ * so FuzzySearchEngine::paginate() puts this in the callback's place there. A second reading
  * changes nothing.
  *
  * @internal This class is not part of the public API and may change without notice.
@@ -39,7 +39,7 @@ final class GroupedQueryCallback
      * Scout restricts the read to a page's ids by the model's qualified key, after the callback
      * (queryScoutModelsByIds()). A FROM that is not named as the model's table has no such column: the
      * derived table a union on a schema-qualified table (billing.invoices) is read as, named by the
-     * table alone (TE-7), or the callback's alias. A scope, which applies after Scout's whereIn, names
+     * table alone, or the callback's alias. A scope, which applies after Scout's whereIn, names
      * the key there as the FROM does (RankedCandidates::keyColumn()); under the model's own table the
      * two names are one, and nothing changes.
      */

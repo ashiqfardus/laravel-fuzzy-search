@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * The compact postings layout (S2, S8; ruling ER-168). fuzzy_index_postings is rewritten as a table
+ * The compact postings layout: fuzzy_index_postings is rewritten as a table
  * clustered by term: its primary key is (term_id, model_type_id, model_id, column_id), so a word's
  * postings are one range of it, and each posting carries its document's length (doc_length), so the
  * ranking reads no other table. A common word was read through postings_unique_idx, one random
@@ -52,7 +52,7 @@ return new class extends Migration
     private const PROGRESS = 'fuzzy_index_postings_copied';
     private const PRIMARY = 'postings_primary';
     private const BY_MODEL = 'postings_model_idx';
-    private const BY_DOCUMENT = 'postings_compact_model_idx'; // BY_MODEL's columns on the compact table, for the tail (VA-6)
+    private const BY_DOCUMENT = 'postings_compact_model_idx'; // BY_MODEL's columns on the compact table, for the tail
     private const UNIQUE  = 'postings_unique_idx';
 
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
@@ -67,14 +67,14 @@ return new class extends Migration
     /** Called with the last id of each range up() commits (tests write the earlier layout in between, as old code would). */
     public ?\Closure $afterRange = null;
 
-    /** How many times up() follows the postings old code wrote past the ids it read (ER-183). */
+    /** How many times up() follows the postings old code wrote past the ids it read. */
     private const TAIL_ROUNDS = 5;
 
     public function up(): void
     {
         $pretending = DB::connection()->pretending();
         $old        = $pretending || Schema::hasTable('fuzzy_index_postings');
-        $orphans    = !$pretending; // VA-2: the earlier table is gone, so an earlier run copied it (and may have warned)
+        $orphans    = !$pretending; // The earlier table is gone, so an earlier run copied it (and may have warned)
 
         if ($old && ($pretending || !Schema::hasColumn('fuzzy_index_postings', 'model_type_id'))) {
             $collations = $this->collations($pretending);
@@ -87,7 +87,7 @@ return new class extends Migration
             if ($pretending || !Schema::hasTable('fuzzy_index_columns')) {
                 Schema::create('fuzzy_index_columns', function (Blueprint $table) use ($collations) {
                     // Not a small id: column names are shared by every model and never deleted, and a
-                    // searchableText() keyed per attribute, locale or custom field can pass 32,767 (VC-6).
+                    // searchableText() keyed per attribute, locale or custom field can pass 32,767.
                     $table->increments('id');
                     $this->collate($table->string('name', 64), $collations['column_name'] ?? null)->unique();
                 });
@@ -104,12 +104,12 @@ return new class extends Migration
             }
 
             if ($pretending || !Schema::hasTable(self::PROGRESS)) {
-                // A primary key, as every table needs under MySQL's sql_require_primary_key (VA-3); its one row is updated in place.
+                // A primary key, as every table needs under MySQL's sql_require_primary_key; its one row is updated in place.
                 Schema::create(self::PROGRESS, fn (Blueprint $table) => $table->unsignedBigInteger('copied_id')->primary());
                 DB::table(self::PROGRESS)->insert(['copied_id' => 0]);
             }
 
-            // VA-1, VA-4: an earlier run committed part of the copy (a range, or rows the tail
+            // An earlier run committed part of the copy (a range, or rows the tail
             // copied again). Its meta snapshot, the ids it read and its count of dropped postings
             // went with it, so writes made during it or since cannot be told apart here.
             $resumed = !$pretending && ((int) DB::table(self::PROGRESS)->value('copied_id') > 0 || DB::table(self::COMPACT)->exists());
@@ -123,7 +123,7 @@ return new class extends Migration
                 Log::warning("fuzzy-search: the compact postings migration dropped {$dropped} posting(s) whose document row was missing (an inconsistent index), or written again while it ran. Rebuild a model whose search should find them: php artisan fuzzy-search:rebuild \"App\\Models\\YourModel\" --fresh");
             }
 
-            // ER-183: the index written while the copy ran (old code: a queue worker, a request).
+            // The index written while the copy ran (old code: a queue worker, a request).
             // A write is copied whole when its postings landed past the ids the copy read
             // (copyUp()), but a removal leaves no id, and doc_count follows whichever code wrote
             // it: the meta totals tell. Rebuilding the models named makes them exact. A resumed
@@ -156,7 +156,7 @@ return new class extends Migration
         // one (an index name is unique per schema on PostgreSQL, per database on SQLite): renamed
         // now, but on SQLite, which renames no index, dropped and built again.
         // Each name led by the table prefix under prefix_indexes; an install made before index names
-        // carried it has them as written (ER-216).
+        // carried it has them as written.
         $indexes    = $pretending ? [] : $this->indexes('fuzzy_index_postings');
         $byDocument = DbDialect::presentIndexName(self::BY_DOCUMENT, $indexes);
         if ($byDocument !== null) {
@@ -181,8 +181,8 @@ return new class extends Migration
             $this->converge();
         }
 
-        // PostgreSQL: statistics (a never-analyzed table is planned as if it held a few rows, ruling
-        // ER-106), and the visibility map that lets the ranking's index-only read skip the heap.
+        // PostgreSQL: statistics (a never-analyzed table is planned as if it held a few rows)
+        // and the visibility map that lets the ranking's index-only read skip the heap.
         // Unprepared: VACUUM runs only as a statement of its own.
         // Best-effort, as the package's own ANALYZE: autovacuum gets there too.
         if (DB::connection()->getDriverName() === DbDialect::PGSQL) {
@@ -253,7 +253,7 @@ return new class extends Migration
     }
 
     /**
-     * R12-L6: bring an install of an earlier 2.1 build to the 2.1.0 schema. Its recorded migrations
+     * Bring an install of an earlier 2.1 build to the 2.1.0 schema. Its recorded migrations
      * never run again, and two of them changed since: 2026_09_20_000001 now gives model_id a NO PAD
      * binary collation on MySQL/MariaDB, where an earlier build gave utf8mb4_bin (which pads: 'SKU1'
      * and 'SKU1 ' were one key), and 2026_10_01_000001 now indexes the dictionary on (term_length,
@@ -320,7 +320,7 @@ return new class extends Migration
     }
 
     /**
-     * up(): copy the earlier postings into the compact table, $chunk ids at a time (ER-179a): a
+     * up(): copy the earlier postings into the compact table, $chunk ids at a time: a
      * range of its primary key, read in order. A range of words was read through
      * postings_unique_idx, which does not hold frequency, so every posting was a lookup of its row,
      * and one word's postings span the whole table: 7 to 9 hours at 96M postings on MySQL, where id
@@ -334,12 +334,12 @@ return new class extends Migration
      * can re-insert, past the mark, a posting the copy already has: the insert skips a key it holds
      * (insertIgnoringKey()), and only that.
      *
-     * Old code that writes while the copy runs (ER-183) deletes a row's postings and inserts them
+     * Old code that writes while the copy runs deletes a row's postings and inserts them
      * again past the ids the copy read. Once the ranges are done, the documents with postings past
      * them are copied again whole, from their current postings, read by document
      * (postings_model_idx), after their copied postings are deleted: both a row the copy had
      * copied and one it had not end exact. The copy follows such writes TAIL_ROUNDS times. Ids are
-     * taken at insert and committed out of order (VA-5): a write in flight when a round reads its
+     * taken at insert and committed out of order: a write in flight when a round reads its
      * boundary commits below it, and its row keeps what the ranges copied. So every model type
      * with a posting past the ids the ranges read is named, whether or not a round copied it.
      *
@@ -392,7 +392,7 @@ return new class extends Migration
         $read      = $max; // the ids the ranges read
         $rewritten = [];
         for ($round = 0; $round < self::TAIL_ROUNDS && ($last = (int) (clone $postings)->max('id')) > $max; $round++) {
-            // VA-6: each re-copy deletes by document, which scanned the whole compact table. BY_MODEL's
+            // Each re-copy deletes by document, which scanned the whole compact table. BY_MODEL's
             // index is built here instead, before the first round, and kept by the swap (renamed);
             // a copy no write followed builds it after the swap, as before.
             if ($round === 0 && DbDialect::presentIndexName(self::BY_DOCUMENT, $this->indexes(self::COMPACT)) === null) {
@@ -423,7 +423,7 @@ return new class extends Migration
 
     /**
      * Copy model type $type's documents $ids again, whole, from their current postings, in place of
-     * what the compact table holds for them (ER-183), in one transaction.
+     * what the compact table holds for them, in one transaction.
      *
      * @param list<string>       $ids
      * @param array<string, int> $columns name => id, recorded as needed
@@ -451,7 +451,7 @@ return new class extends Migration
     }
 
     /**
-     * VA-2: delete the postings whose word the dictionary no longer has. The compact table has no
+     * Delete the postings whose word the dictionary no longer has. The compact table has no
      * term foreign key while the copy runs, and an old-code flush meanwhile (2.0.1's `flush`,
      * `clear`, `rebuild --fresh`) deletes the words it leaves without a posting in the earlier
      * table, so the compact table kept the postings it had copied of them: PostgreSQL and SQL
@@ -513,9 +513,9 @@ return new class extends Migration
     /**
      * INSERT INTO $to ($columns) SELECT $select FROM $from p [JOIN the documents d] WHERE $where, and
      * its bindings: the source drives the read, one range of its primary key (up(): the earlier
-     * table's id; down(): the compact table's leading term_id), or a few documents by key (ER-183). No join to the
+     * table's id; down(): the compact table's leading term_id), or a few documents by key. No join to the
      * dictionaries, whose one row of a type MySQL read first, then walked postings_model_idx for
-     * every posting of the type (ER-179): the names map through CASE expressions (mapped()). The
+     * every posting of the type: the names map through CASE expressions (mapped()). The
      * documents give the length, on the copy into the compact table only, which skips a key it
      * holds already (insertIgnoringKey()).
      *
@@ -574,7 +574,7 @@ return new class extends Migration
      * matches every spelling the dictionary keeps for it). A value $map lacks gives NULL, which the
      * NOT NULL column refuses: a range's names are recorded before its copy.
      *
-     * SQL Server takes 2,100 parameters a statement, and a range can hold more names (VA-7: a
+     * SQL Server takes 2,100 parameters a statement, and a range can hold more names (a
      * searchableText() keyed per attribute, locale or custom field): there the names are nvarchar
      * literals, quoted by the driver, as a bound name is sent.
      *
@@ -674,7 +674,7 @@ return new class extends Migration
         }
 
         // Prefixed as Laravel prefixes its own index names (prefix_indexes): SQL Server names a
-        // primary key once per schema, so two prefixes in one database collided on it (VJ-5).
+        // primary key once per schema, so two prefixes in one database collided on it.
         $primary = DbDialect::indexName(self::PRIMARY);
 
         if ($driver === DbDialect::PGSQL) {

@@ -57,11 +57,11 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         // One write for the collection, re-read with Scout's visibility: no global scopes, and
-        // a trashed model kept while scout.soft_delete is on (ER-72). One write per index type when
+        // a trashed model kept while scout.soft_delete is on. One write per index type when
         // the collection mixes them (Scout's import of a single-table-inheritance parent): each
         // model is indexed under the type of its row's kind, the class the parent's query builds it
         // as, as a rebuild writes it, and is re-synced under the other types of its hierarchy that
-        // may hold it, as delete() removes it from them (RC-3, SA-1, UB-1).
+        // may hold it, as delete() removes it from them.
         $this->indexManager->indexBatch($models, scout: true);
     }
 
@@ -72,7 +72,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             // A queued delete's model, restored with only its Scout key (forceFill() under
             // getScoutKeyName()): a custom one leaves it without the primary key the index row is
             // under, and the qualified key name (Scout 9's default) holds it in an attribute named
-            // "table.id", which getKey() does not read (SA-5).
+            // "table.id", which getKey() does not read.
             $key = $model->getKey();
             if ($key === null) {
                 self::requirePrimaryScoutKey($model);
@@ -85,8 +85,8 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         // Removed under every type of its single-table hierarchy that holds it, not the instance's:
-        // a row created through the parent class as a child is filed under the child (R11-M1), and a
-        // queued delete restores only the key, as the class it was queued with (UD-3). A class whose
+        // a row created through the parent class as a child is filed under the child, and a
+        // queued delete restores only the key, as the class it was queued with. A class whose
         // query hydrates only itself removes under its own type, as before.
         foreach ($keys as $class => $classKeys) {
             foreach ($this->indexManager->filedUnder($class, $classKeys) as $type => $typeKeys) {
@@ -112,7 +112,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         // Scout 10.0 (no PaginatesEloquentModelsUsingDatabase) counts paginate()'s and paginateRaw()'s
         // total itself, after this returns, through this Builder's query() callback and then the
         // matches' keys (Builder::getTotalCount()): an ungrouped or's first branch and a union's other
-        // parts counted rows outside the matches (SD-1). The callback is replaced, once, by the
+        // parts counted rows outside the matches. The callback is replaced, once, by the
         // engine's reading of it, which the engine's own reads also take. Scout 10.1 and later take
         // the engine's total, and the callback stays as given. A one-to-many join is still counted
         // once per joined row there (documented).
@@ -188,7 +188,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * it is every match they accept, in that order (orderedPage()). A page past the total reads no row.
      * A model's getSearchScore() override re-ranks the first max_candidates matches in relevance order,
      * as on SearchBuilder's index path (rerankedPage(); SearchBuilder::searchScoreWindow()), and every
-     * score is passed through it (TE-5).
+     * score is passed through it.
      *
      * @return array{results: Collection, total: int}
      */
@@ -223,10 +223,10 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
 
     /**
      * The page [$offset, $offset + $limit) of $accepted (model_id => BM25 score, best first) under the
-     * model's getSearchScore() override, cut as SearchBuilder's index path cuts it (indexedResults(),
-     * ruling ER-88): the first $window matches re-ranked by their hooked score, a match whose row is
+     * model's getSearchScore() override, cut as SearchBuilder's index path cuts it (indexedResults()):
+     * the first $window matches re-ranked by their hooked score, a match whose row is
      * gone holding no place among them, then the matches past them in BM25 order, each at its rank,
-     * every one with its hooked score (TE-5). Each page reads the window's rows, as the builder's does.
+     * every one with its hooked score. Each page reads the window's rows, as the builder's does.
      *
      * @param  array<int|string, float> $accepted
      * @return array<int|string, float> model_id => hooked score, in page order
@@ -275,7 +275,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * The engine indexes what the package's Searchable trait declares: getSearchableColumns() (or a
      * searchableText() hook), which IndexManager::indexesModel() reads. A model with Scout's trait
      * alone has neither, and was indexed as nothing and searched as nothing, silently, where v2.0.1
-     * threw on the missing method (ruling D3). Indexing and searching it throw again, naming the
+     * threw on the missing method. Indexing and searching it throw again, naming the
      * fix; delete() and flush() only remove rows, as in v2.0.1, so deleting a record still works.
      *
      * @throws \LogicException
@@ -294,7 +294,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * The index is keyed by the model's primary key, where Scout looks a page's models up, and
      * restores a queued delete's model, by getScoutKeyName(). A model with a custom Scout key was
      * indexed, a search then found none of its models, and its queued delete threw a TypeError
-     * (round 10, L10): indexing or searching one throws, naming the fix. A model without its
+     *: indexing or searching one throws, naming the fix. A model without its
      * primary key (the builder's, a restored one) is judged by the key's name alone.
      *
      * @throws \LogicException
@@ -398,7 +398,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         // Scout's search() takes null, and Laravel's ConvertEmptyStringsToNull middleware turns an
-        // empty ?q= into one: an empty query, which matches nothing (ruling D17).
+        // empty ?q= into one: an empty query, which matches nothing.
         $query = trim(Utf8::clean((string) $builder->query));
 
         if (SearchBuilder::belowMinSearchLength($query)) {
@@ -455,7 +455,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
             $wheres[] = [$field, $operator, $value];
         }
 
-        // A global scope counts as a constraint (ruling D12). Scout indexes the rows it hides (its
+        // A global scope counts as a constraint. Scout indexes the rows it hides (its
         // jobs read without global scopes) and loads the page's models through it, so unchecked,
         // a hidden row counted in the relevance-order total while orderBy() skipped it. Two scopes
         // are not constraints: SoftDeletes' (the __soft_deleted where decides trashed rows, as
@@ -490,7 +490,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         }
 
         // The callback's wheres as one group when one is an or, so the builder's where()s above and
-        // the ranking hold for all of them, as a scope's are grouped (RE-1).
+        // the ranking hold for all of them, as a scope's are grouped.
         if ($builder->queryCallback !== null) {
             $wheres = count($query->getQuery()->wheres);
             call_user_func($builder->queryCallback, $query);
@@ -557,16 +557,16 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      * select() may leave the key out or a join may shadow it (RankedCandidates::needsKeyAlias()),
      * the key is read under RankedCandidates::KEY_ALIAS beside the select list, through the query()
      * callback that queryScoutModelsByIds() applies, in a scope applied after the model's own (which
-     * may select()), so a row is matched to its id (ruling D13); RankedCandidates::takeKey() takes the
+     * may select()), so a row is matched to its id; RankedCandidates::takeKey() takes the
      * alias out of the model's attributes and original after it is hydrated, so a retrieved listener
-     * sees it there. Every other model is matched by its own key, and never has the alias (ruling
-     * ER-135). A union is read as one derived table, and an override that reads without the callback
+     * sees it there. Every other model is matched by its own key, and never has the alias.
+     * A union is read as one derived table, and an override that reads without the callback
      * selects no alias: its models are matched by their own key.
      *
      * A model a join repeats is served with its first row. Under an orderBy() that tells its rows
      * apart (RankedCandidates::ordersRepeatedRows()) they are read in the builder's order, so that is
      * its first row by the order, the row orderedPage() placed it by, not whichever the database
-     * returns first (TE-6). The key, which every row of one model shares, is left out of that order.
+     * returns first. The key, which every row of one model shares, is left out of that order.
      *
      * @param  array<int|string> $ids
      * @return array<int|string, \Illuminate\Database\Eloquent\Model>
@@ -579,12 +579,12 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
         $builder->queryCallback = function ($query) use ($callback, $orders) {
             if ($callback !== null) {
                 call_user_func($callback, $query);
-                RankedCandidates::groupOrWheres($query); // the page's ids, which Scout adds next, hold for every branch (RE-1)
+                RankedCandidates::groupOrWheres($query); // the page's ids, which Scout adds next, hold for every branch
             }
 
             // A union is read as one derived table (RankedCandidates::rows()), so the ids Scout then
             // restricts the query to restrict every part of it, not only its first. Its scopes apply
-            // inside that table already. Scout names the key there as the FROM does (TE-7).
+            // inside that table already. Scout names the key there as the FROM does.
             if (($rows = RankedCandidates::rows($query)) !== $query) {
                 $query->setQuery($rows->getQuery())->withoutGlobalScopes();
             }

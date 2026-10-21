@@ -14,7 +14,7 @@ final class Pipeline
 {
     /**
      * The longest term the dictionary stores, in characters. MySQL keys fuzzy_index_terms on
-     * term(191), where two longer terms that share their first 191 characters collide (ER-48).
+     * term(191), where two longer terms that share their first 191 characters collide.
      */
     public const MAX_TERM_LENGTH = 191;
 

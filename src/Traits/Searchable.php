@@ -136,7 +136,7 @@ trait Searchable
      * table) throws a LogicException where the type is read. The class named resolves to its own
      * type, so in a deeper hierarchy each class can name its parent and lands in the root's index.
      * Changing it needs `fuzzy-search:rebuild --fresh` of the type. See IndexManager::indexType(),
-     * which every index read and write goes through (SA-1).
+     * which every index read and write goes through.
      */
     public static function searchIndexType(): string
     {
@@ -309,7 +309,7 @@ trait Searchable
      * on PostgreSQL); where the types cannot be read (Laravel 10 before Schema::getColumns()) every
      * column is a candidate, as before. A json column is picked only where the database reports it
      * as text (SQLite text, MariaDB longtext, SQL Server nvarchar(max)) and the model has no cast
-     * for it (ruling ER-90). Columns whose cast is
+     * for it. Columns whose cast is
      * not text (an enum, an array, a custom cast class) are never selected: detection is a
      * heuristic, and the indexer cannot turn such a value into text. Nor is a column the model
      * hides from serialization ($hidden, or outside a non-empty $visible) or a secret by name:

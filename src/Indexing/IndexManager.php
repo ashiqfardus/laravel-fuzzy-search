@@ -25,7 +25,7 @@ class IndexManager
     /**
      * Tries per index write. Laravel retries a top-level transaction that fails on a deadlock
      * or lock timeout (MySQL 1213/1205, PostgreSQL 40P01, SQL Server 1205, SQLite busy), and a
-     * write is safe to repeat: it claims, re-reads and rewrites the rows from scratch (ER-71).
+     * write is safe to repeat: it claims, re-reads and rewrites the rows from scratch.
      */
     private const ATTEMPTS = 3;
 
@@ -64,15 +64,15 @@ class IndexManager
      * the hierarchy has one index), else its class, as for a Scout model without the trait. A class
      * name resolves the same way; one that no longer exists is its own type. Every index write,
      * delete, flush and search names the type through here, so a child's save and a rebuild of its
-     * parent cannot write two indexes (SA-1).
+     * parent cannot write two indexes.
      *
      * The type is the class itself or a concrete Eloquent model it extends that reads the same table
-     * on the same connection, else a LogicException names the hook (R11-L1, UA-2): a write re-reads
+     * on the same connection, else a LogicException names the hook: a write re-reads
      * the rows through the type's query and a search reads the type's postings, so a sibling's scope
      * left the model unindexed, an unrelated model's index was served, an abstract base or a morph
      * alias could not be read at all, and an ancestor on another table indexed its own rows in the
      * model's place. An ancestor resolves to its own type, so a grandchild whose hook names its
-     * parent lands in the index the parent's rows are in (UA-6), under the declared name however a
+     * parent lands in the index the parent's rows are in, under the declared name however a
      * hook spells it.
      */
     public static function indexType(Model|string $model): string
@@ -126,7 +126,7 @@ class IndexManager
      * The class a row with $model's attributes (or $attributes) hydrates as: its kind, as the
      * hierarchy's parent reads it. A single-table-inheritance parent's newFromBuilder()
      * (tightenco/parental and the like) builds each row as its kind's class, whichever instance
-     * holds it, and a write files a re-read row under that class's type (R11-M1), so a row is filed
+     * holds it, and a write files a re-read row under that class's type, so a row is filed
      * by this class, not the instance's. Asked of a child instance, newFromBuilder() builds a row of
      * the parent's kind as the child (its `new static`). A class that does not override
      * newFromBuilder() hydrates every row as itself. Built without model events.
@@ -148,7 +148,7 @@ class IndexManager
      * of its old one, and the type of the instance's own class unless that is the hierarchy's
      * parent, a class whose own query can also read the row (a subclass that is no kind of it, or
      * the kind the row has just left). Each write re-reads the row through its type's query, so it
-     * files the row there only if that query reads it as one of the type's own (UB-1, UD-3, UD-4).
+     * files the row there only if that query reads it as one of the type's own.
      * Without single-table inheritance, the instance's type alone.
      *
      * @return list<string>
@@ -183,7 +183,7 @@ class IndexManager
      * newFromBuilder() is Eloquent's builds every row as itself: Laravel's default User extends
      * Illuminate\Foundation\Auth\User, concrete and on `users`, which read every row's kind as the
      * framework class, so a rebuild wrote each chunk under it and a save of a child row through
-     * the parent filed it nowhere (VD-5).
+     * the parent filed it nowhere.
      */
     private static function hierarchyRoot(string $class, bool $concrete = false): string
     {
@@ -252,8 +252,8 @@ class IndexManager
      * Take the rows that are gone from the table out of every index type of $class's
      * single-table-inheritance hierarchy but $class's own: `rebuild --fresh` flushes that type
      * alone and indexes the rows its query reads, so a child row deleted without model events (a
-     * query-builder delete()) stayed in the child's index after a fresh rebuild of the parent
-     * (R13-L5). One keyed read of the table per 1,000 documents of each other type. A class whose
+     * query-builder delete()) stayed in the child's index after a fresh rebuild of the parent.
+     * One keyed read of the table per 1,000 documents of each other type. A class whose
      * query hydrates every row as itself has no other type: nothing is read.
      */
     public function unfileGone(string $class): void
@@ -365,7 +365,7 @@ class IndexManager
      * reads it as one of the type's own: a kind it has left drops it, a subclass that is no kind
      * (whose own query reads the row) keeps it. A type change through Scout's update, whose queued
      * job re-reads the row as its new kind, or one made outside the app that a rebuild catches up,
-     * left the row filed under its old kind too (UB-1).
+     * left the row filed under its old kind too.
      *
      * @param array<string, array<int|string, string>> $filed instance class => key => the type it is filed under
      */
@@ -463,10 +463,10 @@ class IndexManager
 
     /**
      * SQL Server: take the index's write lock, an application lock owned by the enclosing
-     * transaction, so its index writes run one at a time (ruling ER-180). Called first in every
+     * transaction, so its index writes run one at a time. Called first in every
      * index write's transaction (claimDocuments(), which write() and removeFromIndex() start
      * with), before any other lock: the claim, the dictionary rows and the model types' and
-     * columns' inserts all come after it; every flush takes it first too (flushing(), ER-188).
+     * columns' inserts all come after it; every flush takes it first too (flushing()).
      * Parallel writers deadlocked there until they lost all
      * their attempts: the claim's MERGE takes HOLDLOCK range locks on the varchar model_id key,
      * whose string order interleaves id ranges ('1000' < '10000' < '1001'); the dictionary's
@@ -557,7 +557,7 @@ class IndexManager
                 // the model type had few rows, MySQL scanned the table, and MariaDB (from about 12
                 // ids) the model type's key prefix, locking every row and gap they passed. So
                 // parallel batches for different rows waited on each other's claims, and on
-                // MariaDB deadlocked until they lost all their attempts (ER-77). One statement:
+                // MariaDB deadlocked until they lost all their attempts. One statement:
                 // a round trip per id added 30% to 300% to a 500-row write.
                 $point    = '(' . $claim->select('model_id', 'doc_length')->where('model_id', '')->lockForUpdate()->toSql() . ')';
                 $bindings = [];
@@ -598,7 +598,7 @@ class IndexManager
      * before it indexed (User::find() then save(), Scout with after_commit off), the snapshot can
      * predate a write of the same row another process committed before the claim was granted: the
      * read found the words the row held before that write, so the counts were given back for those
-     * and the ones that write added kept their doc_count for good (P6-S1, ruling ER-201). There the
+     * and the ones that write added kept their doc_count for good. There the
      * read is checked against the rows as they are now (postingsCurrent()), and read again with FOR
      * UPDATE where it differs.
      *
@@ -623,7 +623,7 @@ class IndexManager
                     ->get(['model_id', 'term_id', 'column_id', 'frequency', 'doc_length']);
 
                 foreach ($rows as $row) {
-                    $row = (object) $row; // an app-wide array fetch mode returns arrays (UC-1)
+                    $row = (object) $row; // an app-wide array fetch mode returns arrays
                     $postings[(string) $row->model_id][(int) $row->term_id][(int) $row->column_id] = [(int) $row->frequency, (int) $row->doc_length];
                 }
             }
@@ -725,7 +725,7 @@ class IndexManager
      * next-key locks, the gaps beside the rows' entries included. A neighbouring row's write inserts
      * its new postings into such a gap, and its own DELETE held the gap that write's insert went
      * into: each write's insert waited on the other's, and one of two single writes in transactions
-     * of yours was the deadlock victim (P6-B1). One point per posting locks that posting only, a
+     * of yours was the deadlock victim. One point per posting locks that posting only, a
      * row only this write's claim reaches. MySQL/MariaDB are told to read the primary key
      * (FORCE INDEX): their plan otherwise followed postings_model_idx, or scanned. A statement holds
      * up to 1,000 postings, grouped by row and column (MySQL's range optimizer abandons a range of
@@ -786,18 +786,18 @@ class IndexManager
      * Run a flush's DELETEs (or flushAll()'s TRUNCATE) in one transaction that holds every index
      * write off until it commits (flush() and flushAll()).
      *
-     * PostgreSQL: lock first (ruling ER-151, SB-1). A write for a new row waited on nothing the
+     * PostgreSQL: lock first. A write for a new row waited on nothing the
      * DELETEs lock: it committed between them, so its document row stayed and its meta increment
      * went into the meta row deleted next, a model with documents and no meta (BM25 found nothing)
      * that no rebuild repaired. SHARE ROW EXCLUSIVE waits for the writes in flight and holds new
      * ones at their claim (claimDocuments()' insert) until the commit; searches only read, and a
      * second flush waits its turn. MySQL/MariaDB get the same from the DELETEs' gap locks, SQLite
      * from its one writer, each held to the commit: `clear --all` ran its DELETEs autocommitted,
-     * one by one, and lost the meta the same way (TB-1). flushAll() keeps it on every path it takes.
+     * one by one, and lost the meta the same way. flushAll() keeps it on every path it takes.
      *
-     * SQL Server: the index write lock first (lockIndexForWrite(), ER-188), as every index write
+     * SQL Server: the index write lock first (lockIndexForWrite()), as every index write
      * takes it, so the flush waits for the writes in flight and new ones wait for its commit. Its
-     * DELETEs ran against the writers' claims and dictionary locks without it: the cycles ER-180
+     * DELETEs ran against the writers' claims and dictionary locks without it: the cycles the write lock removes
      * removed between writers, with no retry on the flush's side.
      */
     private function flushing(\Closure $deletes): void
@@ -817,10 +817,10 @@ class IndexManager
      * columns stay: their ids never change (see dictionaryIds()). Returns false when it deleted the
      * big tables row by row (the command says so: on a large index that is slow).
      *
-     * The big tables are truncated where that takes no waiting (ruling ER-187): a DELETE per table in
+     * The big tables are truncated where that takes no waiting: a DELETE per table in
      * one transaction logged every row, and on a large index filled the log (SQL Server: from 1 GB
      * to 5.4 GB in two minutes at 1M rows), the undo (MySQL) or the WAL (PostgreSQL). Atomic against
-     * index writes on each path (TB-1, see flushing()):
+     * index writes on each path (see flushing()):
      * - PostgreSQL: in flushing()'s transaction, after its lock, in a savepoint, LOCK TABLE the five
      *   … NOWAIT, then one TRUNCATE of them (the model terms with them: their foreign key to the
      *   terms refuses a TRUNCATE of the terms alone, 0A000). Its ACCESS EXCLUSIVE holds index searches off to the
@@ -828,13 +828,13 @@ class IndexManager
      *   with a foreign key to one of them makes it fail and the DELETEs run, rather than emptying
      *   that table. No RESTART IDENTITY.
      * - SQL Server: after flushing()'s index write lock, TRUNCATE the postings, the documents and the
-     *   model terms (ER-197), which no foreign key references, in its transaction. Their schema locks hold searches off to the
+     *   model terms, which no foreign key references, in its transaction. Their schema locks hold searches off to the
      *   commit. A reader holds no lock there past its statement.
      * - MariaDB: TRUNCATE commits on its own, so no transaction: LOCK TABLES … WRITE on the five
      *   holds index writes and searches off from before the first TRUNCATE to UNLOCK TABLES, and a
      *   session may truncate a table it has write-locked: the postings, the documents and the model
      *   terms. Laravel 10 connects to it as mysql.
-     * - MySQL: the DELETEs, as 2.0 did (R13-M3, ruling ER-194). Its LOCK TABLES cannot be told not
+     * - MySQL: the DELETEs, as 2.0 did. Its LOCK TABLES cannot be told not
      *   to wait (no NOWAIT; lock_wait_timeout is a second at least).
      * SQL Server and MariaDB then delete the meta rows (one per model) and the terms: MySQL/MariaDB
      * cannot truncate the terms while the postings' foreign key references them, and the DELETE is
@@ -842,7 +842,7 @@ class IndexManager
      * deletes the model terms before the terms, which would otherwise cascade into them row by
      * row. SQLite: DELETE without WHERE is its truncate.
      *
-     * The exclusive table locks are taken with NOWAIT, never waited for (R13-M3): an app's
+     * The exclusive table locks are taken with NOWAIT, never waited for: an app's
      * transaction that had read one index table (a search) held its shared lock to its end, the
      * clear waited for it holding the tables it had already locked, and the app's next statement on
      * one of those (a search, a sync IndexModelJob) closed the cycle. MySQL and MariaDB killed the
@@ -867,7 +867,7 @@ class IndexManager
     {
         $connection = DB::connection();
         $driver     = $connection->getDriverName();
-        // Each model's words (ER-197), once 2026_10_13_000001 has created them: clear --all also
+        // Each model's words, once 2026_10_13_000001 has created them: clear --all also
         // empties an index before the upgrade's migrations run (UPGRADE: A large index).
         $own        = $connection->getSchemaBuilder()->hasTable('fuzzy_index_model_terms') ? ['fuzzy_index_model_terms'] : [];
         $tables     = ['fuzzy_index_postings', 'fuzzy_index_documents', 'fuzzy_index_meta', ...$own, 'fuzzy_index_terms'];
@@ -968,8 +968,8 @@ class IndexManager
                 // rows of them are gone. A word another model still uses survives the orphan sweep
                 // below, and it kept counting this model's documents: every rebuild --fresh inflated
                 // it. Taking this model's share off instead took off twice a document the dictionary
-                // had already let go of, one whose postings an upgrade's copy kept (ER-183), so the
-                // rebuild the migration's warning names left the word's count short for good (R13-L7).
+                // had already let go of, one whose postings an upgrade's copy kept, so the
+                // rebuild the migration's warning names left the word's count short for good.
                 // One chunk of words at a time, their dictionary rows locked in id order first, as
                 // every write takes them (adjustDocCounts()).
                 DB::table('fuzzy_index_postings')
@@ -984,7 +984,7 @@ class IndexManager
                     }, 'term_id');
 
                 // Bulk delete index data for this model type — DB-side, no PHP memory load. Its own
-                // word counts go whole (ER-197).
+                // word counts go whole.
                 DB::table('fuzzy_index_postings')->where('model_type_id', $typeId)->delete();
                 DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->delete();
             }
@@ -1073,24 +1073,24 @@ class IndexManager
 
     /**
      * name => id of $names in $table, one of the two dictionaries the postings name their model type
-     * and their column through (S8), each name as the column's collation compares it: a
+     * and their column through, each name as the column's collation compares it: a
      * case-insensitive one finds Title for title, as the earlier layout's string columns compared
      * them. Remembered per process and connection, since a row is never deleted and its id never
      * changes; but only outside a transaction, once the one that read it has committed: a write that
      * rolls back takes the rows it inserted with it, and under RefreshDatabase or
      * DatabaseTransactions Laravel runs after-commit callbacks inside the test's own transaction,
-     * which it then rolls back (VJ-1). On PostgreSQL a statement on the connection that sets
+     * which it then rolls back. On PostgreSQL a statement on the connection that sets
      * search_path (a runtime SET of schema-per-tenant) forgets them: each tenant schema numbers its
-     * own, and the config, which connectionKey() reads, does not change (VJ-2). So does a truncate
+     * own, and the config, which connectionKey() reads, does not change. So does a truncate
      * or delete of either dictionary, on any connection: a test that empties the index tables
      * between two writes numbers the names again from 1, and a remembered id then named another
-     * model's type or column, whose search served the first model's rows (VC-1, VD-6). Watched
+     * model's type or column, whose search served the first model's rows. Watched
      * rather than read on every lookup, which added a query to every search.
      *
      * $insert adds the missing names, sorted, so concurrent first writes take them in one order: a
      * write waits for another's uncommitted insert of the same name, then finds it, through a current
      * read on MySQL/MariaDB, whose snapshot may predate it. write() calls this before it locks any
-     * word, so a write waiting here holds no lock another write needs (ER-71's order).
+     * word, so a write waiting here holds no lock another write needs, in the order every write takes them.
      *
      * @param  array<int|string>  $names
      * @return array<string, int>
@@ -1161,7 +1161,7 @@ class IndexManager
      * name => id of the rows of $table whose $column the database finds equal to one of $names: by
      * the stored name itself, or, for a name not stored as it is spelt (letter case, trailing
      * spaces) when the read found anything, one name at a time: two spellings in one call find the
-     * one row a case-insensitive collation keeps for both (VJ-6). $current reads past MySQL's
+     * one row a case-insensitive collation keeps for both. $current reads past MySQL's
      * snapshot.
      *
      * @param  array<string, string> $names name => name
@@ -1222,18 +1222,18 @@ class IndexManager
      * PostgreSQL only: ANALYZE the index tables. On tables it has never analyzed, PostgreSQL takes
      * about one posting per term, and the postings subquery that constrained and ordered searches
      * run (Bm25Scorer::whereRanked()) became a nested loop over every posting for every row: 60–120 s
-     * at 50k rows until autovacuum's first ANALYZE (ruling ER-106). A rebuild ends with this, and an
+     * at 50k rows until autovacuum's first ANALYZE. A rebuild ends with this, and an
      * index write runs it while the statistics do not describe the table ($whenStale; see
      * analyzeUnanalyzedIndex()). A user that does not own a table gets a WARNING, which skips that
      * table and throws nothing.
      *
-     * Not while the postings table is under 16 pages (128 kB, about 1,000 postings; ruling ER-112).
+     * Not while the postings table is under 16 pages (128 kB, about 1,000 postings).
      * Statistics from a tiny first write or rebuild planned the writes after it as if the index held
      * a few rows: inside one transaction, where nothing re-plans until the commit, every posting's
      * foreign-key check scanned the whole terms table, and a 50k-row index took 127 s instead of
      * 10 s. PostgreSQL costs a never-analyzed table at 10 pages at least, which plans them well.
      *
-     * Best-effort (ruling D9): statistics only make searches faster, and the index they describe is
+     * Best-effort: statistics only make searches faster, and the index they describe is
      * written already, so a failure here, in the check's catalog read as in the ANALYZE (a
      * lock_timeout while autovacuum holds the table, a lost connection), is report()ed, not thrown
      * (a lost connection inside a transaction aside, below). Thrown from the check at a commit, it
@@ -1260,7 +1260,7 @@ class IndexManager
             }
 
             $grammar = $connection->getQueryGrammar();
-            // scalar(): an app-wide array fetch mode makes selectOne() return an array (TC-3).
+            // scalar(): an app-wide array fetch mode makes selectOne() return an array.
             $pages   = $connection->scalar(
                 "select pg_relation_size(to_regclass(?)) / current_setting('block_size')::int as pages",
                 [$grammar->wrapTable('fuzzy_index_postings')]
@@ -1271,15 +1271,15 @@ class IndexManager
             }
 
             // The two dictionaries too: a few rows each, which autovacuum's threshold never reaches,
-            // and a read joined to them is planned on a guess otherwise (R13-M2). And each model's
-            // words, which a model's typo, prefix and suggestion reads walk (ER-197).
+            // and a read joined to them is planned on a guess otherwise. And each model's
+            // words, which a model's typo, prefix and suggestion reads walk.
             $tables = array_map(fn (string $table) => $grammar->wrapTable($table), ['fuzzy_index_postings', 'fuzzy_index_terms', 'fuzzy_index_documents', 'fuzzy_index_columns', 'fuzzy_index_model_types', 'fuzzy_index_model_terms']);
 
             // $vacuum (a synchronous rebuild's end): VACUUM the postings too, outside any
             // transaction (VACUUM cannot run in one), so the visibility map lets the ranking's
-            // index-only read of the postings' primary key skip the heap (S8). Not an async
+            // index-only read of the postings' primary key skip the heap. Not an async
             // rebuild's finally(): it runs inside the last job, and the VACUUM of a large index
-            // outran the job timeout (VJ-4); autovacuum sets the map there. Unprepared: VACUUM runs
+            // outran the job timeout; autovacuum sets the map there. Unprepared: VACUUM runs
             // only as a statement of its own.
             if ($vacuum && $connection->transactionLevel() === 0) {
                 $connection->unprepared('VACUUM (ANALYZE) ' . array_shift($tables));
@@ -1323,7 +1323,7 @@ class IndexManager
      * postings table (statisticsStale()), and not before it reaches analyzeIndex()'s 16 pages.
      *
      * Inside the caller's transaction ANALYZE would hold its lock until the commit, so the check
-     * waits for the commit (ruling ER-111): once, however many index writes the transaction held,
+     * waits for the commit: once, however many index writes the transaction held,
      * and not at all when it rolls back, which drops the callback. A bulk import in one transaction
      * (Scout's default config gives every engine write the app's transaction) otherwise left the
      * tables unanalyzed. The check never runs inside a transaction: under DatabaseTransactions,
@@ -1361,7 +1361,7 @@ class IndexManager
      * <= 0: -1, never analyzed, on PostgreSQL 14+; 0, analyzed or indexed while empty) or has more
      * than doubled since they were taken (its pages against relpages). Statistics taken on a small
      * table stood for the table it grew into: after a one-row first write and 50k more rows, every
-     * search took about 100 s (ruling ER-110). This process stops reading the catalog once they
+     * search took about 100 s. This process stops reading the catalog once they
      * describe 10,000 postings or more: autovacuum's 10% scale factor keeps them in proportion from
      * there. It remembers that per search_path too, which it reads on every check: schema-per-tenant
      * PostgreSQL switches it on one connection and database, and a worker that had indexed one
@@ -1377,7 +1377,7 @@ class IndexManager
             return false;
         }
 
-        // As an object whatever the fetch mode: an app-wide array mode makes it an array (TC-3).
+        // As an object whatever the fetch mode: an app-wide array mode makes it an array.
         $table = $connection->selectOne(
             "select reltuples, relpages, pg_relation_size(oid) / current_setting('block_size')::int as pages from pg_class where oid = to_regclass(?)",
             [$connection->getQueryGrammar()->wrapTable('fuzzy_index_postings')]
@@ -1485,7 +1485,7 @@ class IndexManager
      * in chunked upserts, not one per term (on MySQL/MariaDB one per distinct doc_count
      * increment), and so do the postings and document rows.
      *
-     * $scout: the Scout engine's update() (ER-72). The rows are re-read as Scout's own jobs read
+     * $scout: the Scout engine's update(). The rows are re-read as Scout's own jobs read
      * them, without global scopes, and a trashed row stays indexed while scout.soft_delete is on,
      * so Scout's onlyTrashed() and withTrashed() find it. Everything else reads through the
      * model's query: its global scopes, and SoftDeletes, whose trashed rows leave the index.
@@ -1493,7 +1493,7 @@ class IndexManager
      * Each model is indexed under its own index type (indexType()), and re-read through that type's
      * query, one write per type: a single-table-inheritance parent's query hydrates child instances,
      * so a chunk can mix classes. Under the first model's class, a chunk that began with a child was
-     * indexed under the child, and the child's global scope dropped the chunk's parent rows (RC-3).
+     * indexed under the child, and the child's global scope dropped the chunk's parent rows.
      * A saved model's type is that of its row's kind (rowClass()), and the row is re-synced under
      * the other types that may hold it (unfileElsewhere()): Scout's update of a parent instance
      * holding a child row, a row Scout's queued job re-reads as its new kind after a type change,
@@ -1511,7 +1511,7 @@ class IndexManager
             if ($model->exists) {
                 // Under its row's kind: an instance of the parent can hold a child row. The
                 // instance's own type is resolved first, so a hook that names no valid type throws
-                // before anything is written (R11-L1).
+                // before anything is written.
                 self::indexType($model);
                 $type = self::indexType(self::rowClass($model));
                 $byType[$type]['keys'][(string) $model->getKey()] = $model->getKey(); // once: an upsert may touch a row once
@@ -1536,23 +1536,23 @@ class IndexManager
      *  1. claim the models' document rows (claimDocuments()), so a concurrent write for one of
      *     them waits for this one, or this one for it;
      *  2. reload the saved rows (reload()): the text indexed is the row as committed now, so
-     *     whichever write commits last leaves the latest save indexed (ruling ER-68); on
-     *     MySQL/MariaDB inside a transaction of yours, with a locking read before step 1 (ER-202);
+     *     whichever write commits last leaves the latest save indexed; on
+     *     MySQL/MariaDB inside a transaction of yours, with a locking read before step 1;
      *  3. change the doc_count of every term the dictionary holds in one statement per 1,000
-     *     terms, in id order (giving back the old terms, read by currentPostings(), C12; raising
+     *     terms, in id order (giving back the old terms, read by currentPostings(); raising
      *     the new ones);
      *  4. insert the terms the dictionary lacks, sorted; apply the same changes to the model
-     *     type's own counts (adjustModelTerms(), ER-197); then the postings (those the rows no
+     *     type's own counts (adjustModelTerms()); then the postings (those the rows no
      *     longer hold deleted by key, the changed and new ones upserted), document rows and
-     *     meta (C11) of the rows with text.
+     *     meta of the rows with text.
      * Nothing carries over between attempts, so a deadlock retry (ATTEMPTS) redoes it whole.
      * A row that is gone, soft-deleted or left without text leaves the index instead.
      *
      * A re-read row of another index type leaves $modelType's index too: a single-table-inheritance
      * parent's query hydrates a child row as the child, which is indexed under its own type. Under
      * $modelType, the parent's reindexRelated(), a job named with the parent class and a child saved
-     * through a parent instance filed child rows where the child's own saves never reached them
-     * (R11-M1). Such rows are written under their own type after the commit, one level deep: a row
+     * through a parent instance filed child rows where the child's own saves never reached them.
+     * Such rows are written under their own type after the commit, one level deep: a row
      * that type's query hydrates as yet another type is not followed further.
      *
      * @param  list<int|string>     $keys    saved models, reloaded here
@@ -1567,7 +1567,7 @@ class IndexManager
             $ids = array_map('strval', [...$keys, ...array_keys($unsaved)]);
 
             // MySQL/MariaDB inside a transaction of yours: the rows are re-read before the claim, with
-            // a locking read (ER-202, P6-S2). A plain read there sees your transaction's REPEATABLE
+            // a locking read. A plain read there sees your transaction's REPEATABLE
             // READ snapshot, which starts at its first plain read: a row another process deleted
             // since went back into the index, and one it saved and indexed since went back to its
             // older text. A locking read reads the rows as they are now, and its shared locks hold
@@ -1591,7 +1591,7 @@ class IndexManager
             // a query-builder write). Read through the hierarchy's root without global scopes, a
             // live row goes to its kind's type, and a gone one leaves every other type that holds it
             // (filedUnder()), both through the refile below, whose write re-reads with that type's
-            // scopes (VB-1, R13-L5). A write that does not refile (the refile's own, unfileElsewhere()'s)
+            // scopes. A write that does not refile (the refile's own, unfileElsewhere()'s)
             // drops what this finds.
             if (count($reloaded) < count($keys) && self::hydratesOtherClasses($modelType)) {
                 $missed = array_values(array_diff(array_map('strval', $keys), array_map('strval', array_keys($reloaded))));
@@ -1623,7 +1623,7 @@ class IndexManager
                     continue;
                 }
                 // A Scout model may have only the searchableText() hook, which is enough to be
-                // indexed (ruling D11): getSearchableColumns() is the package trait's.
+                // indexed: getSearchableColumns() is the package trait's.
                 $columns  = method_exists($model, 'getSearchableColumns') ? $model->getSearchableColumns() : [];
                 $byColumn = $this->buildTokenFrequencyMap($model, $columns);
                 if ($this->mergeColumnFrequencies($byColumn) !== []) {
@@ -1654,8 +1654,8 @@ class IndexManager
 
             // Every doc_count change to a term the dictionary already holds (the old terms given
             // back, the new ones raised) goes out as one UPDATE per 1,000 terms in id order, so a
-            // write takes its locks on existing terms in the order every other write takes them
-            // (ER-71): giving back old terms, then raising new ones in a second statement, let two
+            // write takes its locks on existing terms in the order every other write takes them:
+            // giving back old terms, then raising new ones in a second statement, let two
             // writes whose terms cross each hold a row the other needed.
             $current  = $this->currentPostings($typeId, $ids, $old);
             $posted   = self::holders($current); // term id => rows holding it
@@ -1664,7 +1664,7 @@ class IndexManager
 
             // PostgreSQL: the words the read found missing go in first, at doc_count 0, sorted by
             // term, ON CONFLICT DO NOTHING; their ids are re-read, and their increments join the
-            // id-ordered UPDATE below (ruling ER-169, TB-3). A word another write committed between
+            // id-ordered UPDATE below. A word another write committed between
             // two writes' reads was existing to one, locked in id order, and new to the other,
             // upserted in term order: the two crossed, and at 16 writers the deadlocks chained until
             // writes lost all three attempts. Here a write holds only rows it inserted itself, which
@@ -1694,7 +1694,7 @@ class IndexManager
             }
             // A word the locking read no longer finds was swept since the read above: a flush of
             // any model deletes every word no posting holds, which a word this write reuses after
-            // re-indexing dropped it can be. It is inserted again below, as a missing one (ER-75).
+            // re-indexing dropped it can be. It is inserted again below, as a missing one.
             $words    = $this->adjustDocCounts($deltas);
             $existing = array_filter($existing, fn ($id) => isset($words[$id]));
 
@@ -1713,15 +1713,15 @@ class IndexManager
             // lookups still work because PHP normalises numeric-string keys the same way on read.
             //
             // Terms the dictionary lacks are inserted, sorted by term (on PostgreSQL, only a word
-            // swept since its insert above, ER-75). A write that inserts one of them first turns
+            // swept since its insert above). A write that inserts one of them first turns
             // this insert into an update of its row: the conflict branch raises it by this write's
             // increment, the inserted row's own doc_count (EXCLUDED, or the MERGE source). So every
-            // write takes its new words in one sorted order (ER-74); a statement per increment, each
+            // write takes its new words in one sorted order; a statement per increment, each
             // sorted only within itself, let two batches take them in opposite orders. MySQL/MariaDB
             // keep a statement per increment with a literal raise: the raise cannot name the
             // inserted row there on both (MySQL deprecates VALUES(), MariaDB has no row alias). Two
             // batches there can still take a shared new word in opposite orders, and a word one
-            // read as existing and the other as new still crosses (TB-3): retried, but at 16
+            // read as existing and the other as new still crosses: retried, but at 16
             // parallel writers a few lose all three attempts, so queued imports need job tries.
             $missing = [];
             foreach ($counts as $term => $increment) {
@@ -1759,19 +1759,19 @@ class IndexManager
             }
 
             // After a sweep, a current read: MySQL's snapshot still shows a swept word's old row
-            // beside the one just inserted (ER-75). This write holds every one of these rows, so
+            // beside the one just inserted. This write holds every one of these rows, so
             // it waits on none.
             $termIds = $existing + $this->termIds(array_map('strval', array_keys($missing)), current: count($words) < count($deltas));
 
             // The model type's own counts follow the dictionary's, now that this write holds every
-            // word it changes (ER-197).
+            // word it changes.
             if ($typeId !== null) {
                 $this->adjustModelTerms($typeId, self::termDeltas($posted, $counts, $termIds, $words));
             }
 
             // One posting per (term, column), with the document's length; a term missing from
             // $termIds means a pre-migration collation collapsed it into a variant: MySQL/MariaDB
-            // *_ci (B25), SQL Server's default.
+            // *_ci, SQL Server's default.
             // Only the postings that change are written: a posting the row still holds at the same
             // frequency and document length is left as it is. What is left in $current, the
             // postings the rows no longer hold, is deleted by its primary key first (deletePostings()).
@@ -1791,7 +1791,7 @@ class IndexManager
                 $this->deletePostings($typeId, $current);
             }
 
-            // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing (C9).
+            // Upserts, not inserts: a concurrent worker's row on the unique key updates instead of failing.
             foreach (array_chunk($postingRows, self::POSTING_ROWS_PER_UPSERT) as $chunk) {
                 DB::table('fuzzy_index_postings')->upsert($chunk, ['term_id', 'model_type_id', 'model_id', 'column_id'], ['frequency', 'doc_length']);
             }
@@ -1823,13 +1823,13 @@ class IndexManager
      * model's searchIndexQuery() eager loads (the relations a searchableText() hook reads) apply
      * to single-row writes as well as to rebuilds. The model's global scopes apply and a trashed
      * row is left out, unless $scout: then no global scope applies, as in Scout's own jobs, and
-     * a trashed row is kept while scout.soft_delete is on (ER-72).
+     * a trashed row is kept while scout.soft_delete is on.
      *
      * $lock reads the rows with shared locks (LOCK IN SHARE MODE): as they are now, not the
-     * transaction's snapshot (write(), ER-202). The relations it eager loads are read without one:
+     * transaction's snapshot (write()). The relations it eager loads are read without one:
      * a shared read of them took next-key and gap locks in the app's own tables, so an insert of a
      * related row near them (a comment for that post, or its neighbour) waited for the app's commit,
-     * for related text that reindexRelated() and a rebuild bring up to date (P7R-4).
+     * for related text that reindexRelated() and a rebuild bring up to date.
      *
      * @param  list<int|string>    $keys
      * @return array<string, Model>
@@ -1840,7 +1840,7 @@ class IndexManager
         $rows        = [];
 
         foreach (array_chunk($keys, 1000) as $chunk) {
-            // From the write connection, as are the relations searchIndexQuery() eager loads (TA-4):
+            // From the write connection, as are the relations searchIndexQuery() eager loads:
             // under a read/write split this read went to the replica outside a transaction on the
             // model's connection (a queue worker; in-process without `sticky`), and a replica behind
             // the commit gave a deleted row back, or the old text, which this write then indexed.
@@ -1854,7 +1854,7 @@ class IndexManager
 
             // Every read of the model's connection from the write side while the chunk loads: a
             // morphTo eager load runs a fresh query per type, which never sees the relation's
-            // useWritePdo() above, and indexed the replica's old parent (UF-1). The app's own
+            // useWritePdo() above, and indexed the replica's old parent. The app's own
             // setting comes back after it.
             $connection = $query->getQuery()->getConnection();
             $previous   = $connection instanceof \Illuminate\Database\Connection ? (fn () => $this->readOnWriteConnection)->call($connection) : null;
@@ -1982,8 +1982,8 @@ class IndexManager
 
     /**
      * Set the dictionary's doc_count of the words $words selects to the sum of the model types' own
-     * counts (fuzzy_index_model_terms, ER-197), where the two differ: the index writes keep that sum
-     * and doc_count equal, so this writes only a count something else left wrong (R13-L7). flush()
+     * counts (fuzzy_index_model_terms), where the two differ: the index writes keep that sum
+     * and doc_count equal, so this writes only a count something else left wrong. flush()
      * calls it with the flushed type's rows of the words gone, and 2026_10_13_000002 on each range of
      * words it counts, so an index 2.0 or an upgrade's copy left with a count too high or too low, or
      * with a word no posting holds any more, comes out exact. The caller holds the words' rows.
@@ -2003,7 +2003,7 @@ class IndexManager
 
     /**
      * SQL Server: run an index write the package owns (no transaction of yours open) at
-     * DEADLOCK_PRIORITY LOW, and give the session its own priority back after it (ruling ER-199).
+     * DEADLOCK_PRIORITY LOW, and give the session its own priority back after it.
      * Under locking read committed (READ_COMMITTED_SNAPSHOT off), the write's re-read of a row waits
      * on a transaction of yours that updated the row and waits in turn for the index write lock,
      * to index inside it (Scout with after_commit off, IndexModelJob::dispatchSync() in
@@ -2043,18 +2043,18 @@ class IndexManager
      * Add term_id => delta (either sign; a result below 0 is floored at 0: unsigned column,
      * concurrent deletes) to doc_count: one UPDATE per 1,000 terms, after a locking read that takes
      * the rows in ascending id order, so every write locks the dictionary rows it touches in the
-     * same order (ER-71). The UPDATE alone would lock them in scan order, which on PostgreSQL is
+     * same order. The UPDATE alone would lock them in scan order, which on PostgreSQL is
      * the rows' physical order and moves with every update. A delta of 0 still locks its row: a
      * posting inserted later checks its term row (MySQL's foreign-key S lock), and must find it
      * locked already rather than wait for it behind another write. It is not updated, though: a
      * re-index nets 0 for every word a row keeps, and `doc_count + 0` still wrote a new row
-     * version on PostgreSQL (S7).
+     * version on PostgreSQL.
      * Ids and deltas are inlined as ints; they come from the database and the tokenizer.
      *
      * @param  array<int, int> $deltas
      * @return array<int, string> the words the locking read found, id => term, as they are now
      *                            (termDeltas() copies them); an id it did not find is a term deleted
-     *                            since the caller read it, by a flush's orphan sweep (ER-75)
+     *                            since the caller read it, by a flush's orphan sweep
      */
     private function adjustDocCounts(array $deltas): array
     {
@@ -2091,7 +2091,7 @@ class IndexManager
      * dictionary stores it, the change], from the words its rows held before ($posted, given back)
      * and hold now ($counts, raised, through $termIds). A word with no id in $termIds gets no
      * posting either (see postingRows()), so it is left out here too, and so is a word held before
-     * that a flush's orphan sweep deleted since (not in $words): its rows went with it (ER-75).
+     * that a flush's orphan sweep deleted since (not in $words): its rows went with it.
      *
      * @param  array<int, int>    $posted  term id => rows holding it (holders())
      * @param  array<string, int> $counts  term => documents holding it
@@ -2119,7 +2119,7 @@ class IndexManager
     }
 
     /**
-     * Apply a write's changes to its model type's rows in fuzzy_index_model_terms (ruling ER-197),
+     * Apply a write's changes to its model type's rows in fuzzy_index_model_terms,
      * as adjustDocCounts() applies them to the dictionary's doc_count: a new row for a word the type
      * did not hold, a change to one it did (floored at 0), and a row that reaches 0 deleted. One
      * upsert per 300 words in term id order (a row binds five values), whatever the changes: the
@@ -2128,7 +2128,7 @@ class IndexManager
      * does. It reads only the existing row, so it needs no reference to the inserted one, which
      * MySQL/MariaDB cannot name alike (see the dictionary's upsert in write()). An upsert per
      * distinct change sent 97 to 100 of them for a 500-row rebuild batch, a fifth of its database
-     * time (P6-B2). The inserted row carries the change, or 0 for a decrease; then one DELETE per
+     * time. The inserted row carries the change, or 0 for a decrease; then one DELETE per
      * 1,000 words of the rows a decrease brought to 0.
      *
      * Called once the write holds the dictionary row of every word in $deltas (adjustDocCounts()'s
@@ -2199,7 +2199,7 @@ class IndexManager
 
     /**
      * One posting row per (term, column), each with the document's length, so the ranking reads no
-     * document row (S8). Terms missing from $termIds are skipped (B25: an un-migrated *_ci
+     * document row. Terms missing from $termIds are skipped (an un-migrated *_ci
      * dictionary, or SQL Server's before 2026_09_30_000001, collapsed them into a variant).
      *
      * @param array<string, int> $columnIds column name => id (columnIds())
@@ -2227,9 +2227,9 @@ class IndexManager
 
     /**
      * Add $docs and $tokens (either may be negative, floored at 0) to the model type's meta row
-     * and recompute avg_doc_length from the now-consistent totals (C11), inside the enclosing
+     * and recompute avg_doc_length from the now-consistent totals, inside the enclosing
      * transaction, so no BM25 read sees the totals and the average disagree. $ensure creates the
-     * row first (race-safe, C10); a removal only updates a row that exists.
+     * row first (race-safe); a removal only updates a row that exists.
      */
     private function adjustMeta(string $modelType, int $docs, int $tokens, bool $ensure): void
     {
@@ -2272,7 +2272,7 @@ class IndexManager
      * the error has rolled back the whole write, and the driver silently opens a new transaction
      * at the next statement, so a re-run would commit the rest of the write without its start.
      * The error is rethrown instead: the write fails and rolls back whole, and the queue retries
-     * it (ER-76). The other databases' upserts take the conflict branch instead.
+     * it. The other databases' upserts take the conflict branch instead.
      */
     private function upsertShared(string $table, array $rows, array $uniqueBy, array $update): void
     {

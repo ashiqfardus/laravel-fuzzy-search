@@ -311,7 +311,7 @@ final class DbDialect
      * connection's table prefix when it prefixes index names (`prefix_indexes`, Laravel's own rule
      * for the names it makes), so that installs with different prefixes can share a schema, where
      * PostgreSQL, SQLite and SQL Server need an index or constraint name to be unique. Without a
-     * prefix, or without `prefix_indexes`, the name as written (ER-216).
+     * prefix, or without `prefix_indexes`, the name as written.
      */
     public static function indexName(string $name): string
     {

@@ -35,7 +35,7 @@ class LevenshteinDriver extends BaseDriver
         }
 
         // Pattern-based matching everywhere else, PostgreSQL included whatever use_native_functions
-        // says (ruling ER-150): pg_trgm's similarity() is not an edit distance, and no one-edit typo
+        // says: pg_trgm's similarity() is not an edit distance, and no one-edit typo
         // of a short word reached its threshold ("jonh" never found "john"). fuzzystrmatch's own
         // levenshtein() rejects values over 255 characters.
         return $this->applyPatternBased($query, $column, $value, $boolean);

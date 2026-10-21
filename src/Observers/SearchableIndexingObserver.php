@@ -63,7 +63,7 @@ class SearchableIndexingObserver
 
         // What a save runs: the job removes the row only if it is still gone or trashed when it reads
         // it under its claim. A removal that did not read it, run after a restore had committed and
-        // indexed the row, took the live row out of the index (SB-2).
+        // indexed the row, took the live row out of the index.
         $this->reindex($model);
     }
 
@@ -89,7 +89,7 @@ class SearchableIndexingObserver
         }
 
         // A save that changes the class the row hydrates as (single-table inheritance's type column)
-        // moves it to another index type, though no searchable column changed (UB-1).
+        // moves it to another index type, though no searchable column changed.
         if (IndexManager::rowClass($model) !== IndexManager::rowClass($model, $model->getRawOriginal())) {
             return true;
         }
@@ -117,11 +117,11 @@ class SearchableIndexingObserver
         $row = clone $model; // as saved or deleted: a later save can change this instance before the commit
 
         // The types are resolved after the commit, so a searchIndexType() that names no valid type
-        // is reported like any failed index write, not thrown from the save (R11-L1). Named by the
+        // is reported like any failed index write, not thrown from the save. Named by the
         // row's kind, now and before the save, not by the instance's class alone: under single-table
         // inheritance a parent instance can hold a child row, which was filed under the child
-        // (R11-M1) and stayed there when the instance was deleted, and a type change through the
-        // child's instance left the child's index and joined no other (UB-1, UD-3, UD-4).
+        // and stayed there when the instance was deleted, and a type change through the
+        // child's instance left the child's index and joined no other.
         self::indexAfterCommit($model->getConnection(), fn () => IndexManager::rowTypes($row), [$key ?? $model->getKey()]); // $key: the old key of a key change
     }
 

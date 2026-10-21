@@ -24,7 +24,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
         // A new application starts with nothing remembered from an earlier one in the process: each
         // test of an app's suite boots one, and Laravel's DatabaseTruncation empties the index tables
         // in between with the event dispatcher unset, so the model types' and columns' ids remembered
-        // from the last test named other rows (VC-1).
+        // from the last test named other rows.
         \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache();
 
         $this->mergeConfigFrom(__DIR__ . '/../config/fuzzy-search.php', 'fuzzy-search');
@@ -78,7 +78,7 @@ class FuzzySearchServiceProvider extends ServiceProvider
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
 
         // The database rebuilt in this process (`migrate:fresh`, a schema dump loaded, which runs no
-        // package migration): the ids remembered name other rows, or none (VD-6).
+        // package migration): the ids remembered name other rows, or none.
         \Illuminate\Support\Facades\Event::listen(
             [\Illuminate\Database\Events\SchemaLoaded::class, \Illuminate\Database\Events\MigrationsEnded::class],
             fn () => \Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::resetPipelineCache()

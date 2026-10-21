@@ -41,8 +41,8 @@ class SearchableObserver
         $updates = $this->shadowValues($model);
 
         // Direct DB updates, to avoid re-triggering the observer: one per shadow column, each only
-        // while its source column still holds the text the code encodes (SB-3), compared exactly
-        // (TB-2: under an accent-insensitive collation an accent-only edit has another code). This
+        // while its source column still holds the text the code encodes, compared exactly
+        // (under an accent-insensitive collation an accent-only edit has another code). This
         // save's own UPDATE has committed already (a plain save() is not in a transaction), so
         // another save of the row can land in between; its code is then the right one, and this
         // write must not replace it.
@@ -73,7 +73,7 @@ class SearchableObserver
      * rows saved before a column existed, or changed without model events. One UPDATE ... CASE
      * per shadow column and 500 rows (at most 2,000 bindings, under SQL Server's 2,100), none for
      * a row whose shadow value is already right, and no model events. Each row's code is written
-     * only while its source column still holds exactly the text the code encodes (SB-3, TB-2: see
+     * only while its source column still holds exactly the text the code encodes (see
      * DbDialect::sameText()): the rebuild
      * indexes a chunk before it backfills the rows it read, and a save in between has written the
      * right code already. The values are keyed by model key, and PHP turns an all-digit key ('12')
@@ -139,7 +139,7 @@ class SearchableObserver
      * The shadow values $model needs written: [shadow column => metaphone code] for each loaded
      * searchable column whose `{column}_metaphone` column exists, leaving out one whose loaded
      * shadow value is already that code, unless this save changed the column: the loaded shadow
-     * can be stale, another save having written its own code since this instance was read (SB-3).
+     * can be stale, another save having written its own code since this instance was read.
      *
      * @return array<string, ?string>
      */
@@ -158,7 +158,7 @@ class SearchableObserver
         foreach ($model->getSearchableColumns() as $column) {
             $metaphoneCol = $column . self::SUFFIX;
             // Per connection, as connectionKey() locates it: another connection's, or another
-            // tenant's (database, server or schema), table of this name may not have the column (SD-2, TC-2).
+            // tenant's (database, server or schema), table of this name may not have the column.
             $cacheKey     = SearchableColumns::connectionKey($connection) . '|' . $table . '.' . $metaphoneCol;
 
             if (!array_key_exists($cacheKey, static::$columnCache)) {
@@ -184,7 +184,7 @@ class SearchableObserver
      * date: the code comes from what those return, which the stored text cannot vouch for (an
      * accessor may read other columns or relations), and a virtual column, an accessor with no
      * column behind it, has no stored text to compare at all. Nor a column that is not
-     * character-typed (R12-L2, SearchableColumns::typesOn()): only a character column stores the
+     * character-typed (SearchableColumns::typesOn()): only a character column stores the
      * text as written, while MySQL's JSON re-formats it (the guard never matched, so the shadow was
      * never written) and PostgreSQL's json has no = operator (every save threw, 42883). Those are
      * written unguarded. Where the types cannot be read (Laravel 10 before Schema::getColumns()),
@@ -203,7 +203,7 @@ class SearchableObserver
     /**
      * The guard's comparison of a column of $model's table, written as SQL, with the bound text:
      * DbDialect::sameText(). Where the types cannot be read (Laravel 10 before 10.30), a JSON column
-     * is guarded too, and PostgreSQL's json has no = operator (every save threw, 42883; R13-L3): the
+     * is guarded too, and PostgreSQL's json has no = operator (every save threw, 42883): the
      * column is compared there as text, trailing spaces aside as on MySQL and SQL Server (a char(n)
      * column reads back padded, and spaces never change a code). json keeps the text as written, so
      * its save writes the code; jsonb re-formats it, as MySQL's JSON does, so their shadow is written

@@ -132,11 +132,11 @@ final class SearchableColumns
     /**
      * Where a table's schema is read from, for the schema caches here and in SearchableObserver:
      * the connection's name, database and table prefix, as Bm25Scorer keys the collation it reads,
-     * and its host and port, and on PostgreSQL its configured search_path (TC-2), as the result
+     * and its host and port, and on PostgreSQL its configured search_path, as the result
      * cache's key holds them. A tenancy package swaps the database behind one connection name,
      * points it at another server whose database has the same name, or (PostgreSQL schema mode)
      * sets its search_path and purges it; and two connections can hold a table of the same name:
-     * none may be answered from another's schema (SD-2). Read from the config, with no query, as
+     * none may be answered from another's schema. Read from the config, with no query, as
      * it runs on every save: a search_path changed with a SET at runtime is not seen.
      */
     public static function connectionKey(Connection $connection): string
@@ -232,7 +232,7 @@ final class SearchableColumns
     public static function isTextType(?string $type): bool
     {
         // Unknown: keep the column, as detection did before types were read. '' is SQLite's
-        // column declared without a type, which stores text as given (ruling ER-60).
+        // column declared without a type, which stores text as given.
         if ($type === null || $type === '') {
             return true;
         }
@@ -250,7 +250,7 @@ final class SearchableColumns
      *
      * A column qualified with the model's own table (`posts.title`, whose first segment is no method
      * of the model: a table-qualified column, as the LIKE path reads it) is the attribute `title`.
-     * Read as an attribute named `posts.title`, which no model has, it was never indexed (VC-5).
+     * Read as an attribute named `posts.title`, which no model has, it was never indexed.
      */
     public static function value(Model $model, string $column): mixed
     {
@@ -263,7 +263,7 @@ final class SearchableColumns
     }
 
     /**
-     * data_get() that never runs a model method (ruling ER-84), for a column name that may come
+     * data_get() that never runs a model method, for a column name that may come
      * from a request (searchIn()). On a model each segment is an attribute, cast or accessor
      * (getAttributeValue()), or a relation already loaded; never getAttribute()'s relation
      * fallback, which calls any method named like the segment (reindex(), an app's own methods).

@@ -79,7 +79,7 @@ class FuzzySearch
     /**
      * @internal applyFuzzyWhere() for SearchBuilder. $wholeTermLength is the whole search term's
      * length under tokenize(), which similar_text's min_percentage bound measures instead of the
-     * token's (ruling ER-59). It is an argument, never an option: whatever a caller passes in
+     * token's. It is an argument, never an option: whatever a caller passes in
      * $options, options() or a macro cannot widen the bound.
      */
     public function applyTermWhere(
@@ -136,7 +136,7 @@ class FuzzySearch
     /**
      * The term on any of $columns, as one where group. Every multi-column entry point comes here:
      * the whereFuzzyMultiple() and fuzzySearch() macros, the Fuzzy scopes, tableSearch() and
-     * FederatedSearch's fallback. The columns share one binding budget (ruling ER-91, see
+     * FederatedSearch's fallback. The columns share one binding budget (see
      * withinBindingBudget()), each keeping at least its plain contains pattern. The group is built
      * apart and then added, as where(Closure) adds it, so the caller's own bindings are not counted
      * and a call within the budget writes the same SQL as before.
@@ -167,11 +167,11 @@ class FuzzySearch
         return $query->addNestedWhereQuery($group);
     }
 
-    /** The most values one search binds of its own (rulings ER-86, ER-91): SQL Server takes 2,100 in all. */
+    /** The most values one search binds of its own: SQL Server takes 2,100 in all. */
     public const MAX_BINDINGS = 2000;
 
     /**
-     * @internal Fit a search's LIKE patterns into MAX_BINDINGS (rulings ER-86, ER-91), the one budget
+     * @internal Fit a search's LIKE patterns into MAX_BINDINGS, the one budget
      * SearchBuilder::prepareQuery() and applyFuzzyWhereMultiple() apply. $build(null) builds with the
      * configured max_patterns; $build($n) builds afresh with at most $n patterns per condition (a
      * term on a column). Each returns how many values the search itself bound. Over the budget, one
@@ -253,7 +253,7 @@ class FuzzySearch
      * other constraints.
      * With no columns the model's $searchable columns are used (Searchable trait models only),
      * without its relation columns (a dotted name whose head is a method of the model, as
-     * SearchBuilder reads it: `author.name`), which are no SQL column of the table (UD-2); when
+     * SearchBuilder reads it: `author.name`), which are no SQL column of the table; when
      * that leaves none, a typed search matches nothing.
      *
      * The columns are SQL columns of the table being queried (or already-qualified `table.column`

@@ -28,7 +28,7 @@ final class TermExpander
      *                                  on for didYouMean(), which hands the words back; off for the typo
      *                                  expansion, which only matches. True judges them on $modelType's
      *                                  class, a class name on that class: the searched one, which
-     *                                  searchIndexType() may index under another type (TA-1).
+     *                                  searchIndexType() may index under another type.
      * @return list<array{term: string, doc_count: int, distance: int}>
      */
     public function candidates(string $term, int $maxDistance, int $pool, ?string $modelType = null, bool|string $visibleOnly = true): array
@@ -43,19 +43,19 @@ final class TermExpander
         // The $pool most common words of the length window, read one length at a time: each read
         // stops after $pool rows in index order, and the window's top $pool are among the lengths'
         // own. One read of the whole window sorted every word in it, a cost that grew with the
-        // dictionary (S1). Separate reads, not a UNION of limited parts, which SQLite and SQL Server
+        // dictionary. Separate reads, not a UNION of limited parts, which SQLite and SQL Server
         // do not accept. Equal counts are cut by id, the newest word first, in each read and in the
         // merge: most words share a small count, so the cut usually falls inside a tie, and without
         // the id the plan's order (which a statistics refresh changes) or the merge's length order
         // picked the words a typo search finds.
         //
-        // A model's words, and its own counts, come from fuzzy_index_model_terms through
-        // (model_type_id, term_length, doc_count, term_id) (ruling ER-197): each read stops after
+        // A model's words, and its own counts, come from fuzzy_index_model_terms through its
+        // model_terms_length_idx (model_type_id, term_length, doc_count, term_id): each read stops after
         // $pool of them, or at the last of its words of that length, so it never reads another
         // model's. Through the shared dictionary, a length where the model had fewer than $pool words
         // was read whole, whichever model posted them: 1M product SKU codes of six characters made
         // a users typo search read all of them (1.2 s on MySQL at 3M words). Unscoped, the
-        // dictionary's (term_length, doc_count, id).
+        // shared dictionary is read, which has no index on term_length any more.
         $from = max(1, $length - $maxDistance);
         $to   = $length + $maxDistance;
         $read = $modelType === null
@@ -129,7 +129,7 @@ final class TermExpander
                 continue;
             }
 
-            // Matching keeps hidden columns (ER-66): the rows a search returns do not depend on the path.
+            // Matching keeps hidden columns: the rows a search returns do not depend on the path.
             $candidates = $this->candidates((string) $term, $maxDistance, $pool, $modelType, visibleOnly: false);
             usort($candidates, fn ($a, $b) => [$a['distance'], $b['doc_count']] <=> [$b['distance'], $a['doc_count']]);
 
@@ -175,7 +175,7 @@ final class TermExpander
      * common by its own document count, so the read is bounded by its words under the prefix: the
      * dictionary's range was read whole, and every word in it probed for the model's postings,
      * whichever model posted it (another model's 30,000 codes under "abc" took 90,000 row reads
-     * for a model with one word there, on MySQL; ER-197). On PostgreSQL that key's
+     * for a model with one word there, on MySQL). On PostgreSQL that key's
      * varchar_pattern_ops serves the LIKE as a range.
      *
      * @param  ?string     $modelType   Only the words this model_type posts (see ownTerms()); null: the
@@ -228,8 +228,8 @@ final class TermExpander
     /**
      * Which of $terms are posted under $modelType in a column $modelClass shows (see
      * visibleColumnsOnly(); null: $modelType's class): SearchBuilder::getDebugInfo() hands its
-     * index_terms back, so it lists only those expansions (ER-87), while the search itself matched
-     * every column (ER-66).
+     * index_terms back, so it lists only those expansions, while the search itself matched
+     * every column.
      *
      * @param  array<int, string> $terms
      * @return list<string>
@@ -247,7 +247,7 @@ final class TermExpander
     }
 
     /**
-     * The words $modelType posts, as the rows of fuzzy_index_model_terms aliased mt (ruling ER-197):
+     * The words $modelType posts, as the rows of fuzzy_index_model_terms aliased mt:
      * term_id, term, term_length and the type's own doc_count, kept with its postings by every index
      * write. The table knows no column, so with $visibleOnly (didYouMean(), suggest() and
      * visible(), which hand the words back) an EXISTS on the type's postings in the columns the
@@ -258,7 +258,7 @@ final class TermExpander
      * MySQL probes the postings once per word, in the read's order, until the read has its rows
      * (FirstMatch), rather than first read every posting of the type in the shown columns: for a
      * model holding most of the index that full read took 10–14 s a term at 1M words, where probing
-     * took 20–70 ms (S1). Probing the dictionary walked other models' words too, so a cost model on
+     * took 20–70 ms. Probing the dictionary walked other models' words too, so a cost model on
      * the meta totals chose between them; the model's own words are nearly all hits, so it always
      * probes. MariaDB ignores the hint (it reaches MariaDB on Laravel 10, whose MariaDB connection
      * is a mysql one); the others plan this read well unhinted.
@@ -284,7 +284,7 @@ final class TermExpander
     }
 
     /**
-     * Only postings of columns the model shows (ER-51, ER-66): not one in $hidden, nor one left out
+     * Only postings of columns the model shows: not one in $hidden, nor one left out
      * of a non-empty $visible, so suggest() and didYouMean(), which hand words back, never offer a
      * hidden column's words. The typo and prefix expansions only match, and keep every column, as
      * the LIKE path does. A word that is also in a visible column is still offered. Postings written
@@ -293,15 +293,15 @@ final class TermExpander
      *
      * A relation column (author.email, indexed through searchableText()) is posted under its dotted
      * name, which the model never lists: it is judged by pathShown() instead, so a column the
-     * related model hides, or a relation the model hides, gives no word either (SF-5), and one
+     * related model hides, or a relation the model hides, gives no word either, and one
      * they show is offered, a non-empty $visible on the model notwithstanding. A dotted name the
-     * model does not declare in $searchable['columns'] gives no word at all (R12-L5).
+     * model does not declare in $searchable['columns'] gives no word at all.
      *
      * The columns are judged on $modelClass, the searched class, not on the type its rows are posted
-     * under (TA-1). Where the two differ (searchIndexType(): a single-table-inheritance child
+     * under. Where the two differ (searchIndexType(): a single-table-inheritance child
      * searched through its parent's index), the type's postings also hold the other classes' rows,
      * whose columns the searched class may not have or may hide differently: only the columns it
-     * declares and shows, and the type's class shows too (R12-L4), are offered, legacy '' postings
+     * declares and shows, and the type's class shows too, are offered, legacy '' postings
      * left out.
      *
      * The postings name a column by its id (IndexManager::columnIds()); a name without one has no
@@ -334,12 +334,12 @@ final class TermExpander
 
         $ids = fn (array $names) => array_values(IndexManager::columnIds($names));
 
-        if ($model::class !== $modelType) { // as PHP names it: a leading backslash or another case is the class itself (R12-L3)
-            // The type's class must show it too (R12-L4): its postings hold every class's rows, and a
+        if ($model::class !== $modelType) { // as PHP names it: a leading backslash or another case is the class itself
+            // The type's class must show it too: its postings hold every class's rows, and a
             // column a sibling hides reached a child that shows it, past the parent's $hidden. A
             // relation only the searched class declares is no method of the type's class, which reads
             // the path as a table-qualified column, by its leaf: it must show the relation's name too
-            // (R13-L4: the parent's $hidden = ['owner'] never counted).
+            // (the parent's $hidden = ['owner'] never counted).
             $type  = new $modelType();
             $flat  = array_filter(array_map('strval', $columns), fn (string $column) => !str_contains($column, '.') && self::shows($model, $column) && self::shows($type, $column));
             $typed = [];
@@ -366,11 +366,11 @@ final class TermExpander
 
         // A dotted name only the searchableText() hook gives (a morphTo path, a relation key the
         // model never declares) has no relation walk to judge it by, and the model never hides a
-        // dotted name: it is withheld, as only a declared, shown path is offered (R12-L5). The
+        // dotted name: it is withheld, as only a declared, shown path is offered. The
         // postings name columns by id, so the dotted ids are read from the column dictionary first,
         // once an expander (SearchBuilder resolves one per call, so a dotted column another process
         // records later is withheld too): as a subquery of each read, on a dictionary no rebuild
-        // analyzed, it made PostgreSQL scan every posting instead of probing them (R13-M2).
+        // analyzed, it made PostgreSQL scan every posting instead of probing them.
         $this->dotted ??= DB::table('fuzzy_index_columns')->where('name', 'like', '%.%')->pluck('id')->map(fn ($id) => (int) $id)->all();
         $withheld = array_diff($this->dotted, $ids($shownPaths));
         if ($withheld !== []) {
@@ -386,11 +386,11 @@ final class TermExpander
      * the dictionary has no builder, so it is written again here. A head that is no method of the
      * model makes a two-part name a table-qualified column, judged by its last part, as
      * SearchBuilder::resolveColumnTarget() reads it. A segment is called only when it may be a
-     * relation by SearchBuilder::isReachableRelation()'s rule for a declared path (ruling ER-50):
+     * relation by SearchBuilder::isReachableRelation()'s rule for a declared path:
      * public, not static, no required parameter, and declared by neither Laravel nor this package;
      * anything else, a call that returns no Relation, or a morphTo (see relation()), hides the column.
      * A belongsToMany pivot column (withPivot()) is no attribute of the related model: toArray() puts
-     * it under the related model's pivot accessor, on the pivot model, and it is judged there (TF-10).
+     * it under the related model's pivot accessor, on the pivot model, and it is judged there.
      */
     private static function pathShown(Model $model, string $column): bool
     {
@@ -440,7 +440,7 @@ final class TermExpander
 
         // A morphTo's related class is each row's own *_type, which no class-level walk knows (on a
         // fresh instance Laravel relates it to the model itself), and docs/relationships.md calls
-        // morphTo paths unsupported: its column is withheld (TF-1).
+        // morphTo paths unsupported: its column is withheld.
         return $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation && !$relation instanceof \Illuminate\Database\Eloquent\Relations\MorphTo
             ? [$method->getName(), $relation->getRelated(), $relation]
             : null;

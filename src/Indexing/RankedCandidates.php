@@ -33,13 +33,13 @@ final class RankedCandidates
      * The models among $rankedIds that $base returns, in rank order and keyed by their ids,
      * $rankedIds read a chunk at a time. A row the query hides, or whose id is stale, is skipped. The
      * key is read under an alias of its own beside the select list, so a row is matched to its id when
-     * the select leaves the key out (ruling D13) or a join's id replaces it. Each chunk is read as
+     * the select leaves the key out or a join's id replaces it. Each chunk is read as
      * Eloquent's get() reads (its scopes applied, then hydrate(), eagerLoadRelations() and, from
      * Laravel 11, the afterQuery() callbacks), but the alias is taken off each row before it is
      * hydrated, so it never reaches a model: not its attributes, a retrieved listener, a cast or an
-     * afterQuery() callback (ruling ER-135). Only a model's first row is hydrated, the first in
+     * afterQuery() callback. Only a model's first row is hydrated, the first in
      * $base's order: an ordered page passes its order, so a join's row is the model's first by it
-     * (TE-6). A union is read as one table (rows()).
+     *. A union is read as one table (rows()).
      *
      * @param  array<int|string> $rankedIds best first
      * @return EloquentCollection<int|string, \Illuminate\Database\Eloquent\Model>
@@ -71,12 +71,12 @@ final class RankedCandidates
 
             // The afterQuery() callbacks see the chunk's models, as they see get()'s, and what they
             // return is served, as get() serves it: a model they were given under its id, and another
-            // instance (withoutRelations() and replicate() return copies, SA-6) under its own key,
+            // instance (withoutRelations() and replicate() return copies) under its own key,
             // where a given model's own key is the id it was read under, else under the id of a given
             // model whose attributes it has (a copy under a join's id or a select() without the key,
-            // TA-3). Any other model is dropped: it cannot be placed in the ranking (a replicate(),
+            // without the key). Any other model is dropped: it cannot be placed in the ranking (a replicate(),
             // which has no key, unless the callback gives it one). An item that is no model (an
-            // array, a DTO) throws: it emptied every page, silently (TA-6). Ruling ER-167 preferred
+            // array, a DTO) throws: it emptied every page, silently. An earlier design preferred
             // running the callbacks once on the ranked, scored page, which SearchBuilder assembles
             // (the page, its scores, the cache's re-read, highlighting), not this read.
             if (method_exists($read, 'applyAfterQueryCallbacks')) {
@@ -212,7 +212,7 @@ final class RankedCandidates
      * joined row, so an ungrouped query counts its distinct keys (COUNT(DISTINCT key) on every
      * driver). A grouped query is counted as a subquery, where the key is out of scope and its groups
      * are the rows; with a join and no select list Laravel selects its FROM's every column there, as
-     * "users as u".* under an alias, which failed, and failed under a fromSub() (R11-L3): it selects
+     * "users as u".* under an alias, which failed, and failed under a fromSub(): it selects
      * those of the table the key is named through. ORDER BY / LIMIT on the query are dropped for the
      * count (PostgreSQL rejects an ORDER BY on a bare aggregate).
      */
@@ -233,8 +233,8 @@ final class RankedCandidates
     }
 
     /**
-     * $base restricted to the matches of $ranked, for a read in an order of the caller's (rulings
-     * ER-82, ER-132); every row it returns is a match. A ranking that holds every match is listed by
+     * $base restricted to the matches of $ranked, for a read in an order of the caller's:
+     * every row it returns is a match. A ranking that holds every match is listed by
      * key, as accepted() checks one, so the rows read are bounded by the ranking, however large the
      * table:
      *  - an integer key, on every database but SQL Server: the whole ranking, inlined;
@@ -269,7 +269,7 @@ final class RankedCandidates
 
         // rank() reads one row per document and term, each term's best first, up to
         // max_postings_per_term of them: the ranking holds every match unless a term's read reached
-        // the cap (TF-9). A term that reaches it ranks that many documents, so a ranking of fewer
+        // the cap. A term that reaches it ranks that many documents, so a ranking of fewer
         // stands in for one whose read is not given.
         $whole = $read === null ? count($ids) < (int) config('fuzzy-search.bm25.max_postings_per_term', 50000) : !$read['cut'];
 
@@ -318,7 +318,7 @@ final class RankedCandidates
      * $ranked cut to the documents $base accepts, in rank order: what a page in rank order serves and
      * its total counts, so a constrained search serves the rows of the unconstrained one that the
      * constraint accepts, and none past the ranking's cap. The ranking is checked by key, so the rows
-     * read are bounded by the ranking, however large the table (rulings D10 and ER-124):
+     * read are bounded by the ranking, however large the table:
      *  - an integer key, on every database but SQL Server: the whole ranking in one read, its ids
      *    inlined as matches() lists them (about 1 ms per 1,000 ids, no binding limit);
      *  - a string key on MySQL or MariaDB: 10,000 bound ids per read (they allow 65,535 bindings),
@@ -330,7 +330,7 @@ final class RankedCandidates
      *    key, so no database can drive the read from them: it reads every row the constraint accepts
      *    (a SoftDeletes table whole). SQL Server compiles every new inlined list (8.7 s for 50,000
      *    ids) and caps a statement's expressions, and its 2,100 bindings allow no long bound list;
-     *    there, and for a string key on PostgreSQL and SQLite, this is D10's shape as it was. On
+     *    there, and for a string key on PostgreSQL and SQLite, this is the shape it had before. On
      *    another connection, where the subquery cannot run, the ranked ids are checked a chunk at a
      *    time.
      *
@@ -391,7 +391,7 @@ final class RankedCandidates
      * list stays — an order may name its alias (withCount()'s posts_count, a selectRaw() column) — and
      * the key is read through an alias of its own. The page is one offset/limit read, however deep.
      *
-     * A join may repeat a model, which is served once, at its first row (ruling ER-108), and so may a
+     * A join may repeat a model, which is served once, at its first row, and so may a
      * derived FROM (a fromSub() holding a join, a union whose parts overlap), whose order is never
      * on the model's own table:
      *  - an order on the model's own columns only reads the model's table, with no join, restricted
@@ -475,7 +475,7 @@ final class RankedCandidates
      * Whether $query's order tells apart the rows a join or a derived FROM repeats a model in: an
      * order on a joined column or a select alias (orderedKeys()'s ROW_NUMBER() and walk), not one on
      * the model's own columns, which all of a model's rows share. The page's models are then read in
-     * that order, so each is served with its first row by it (TE-6).
+     * that order, so each is served with its first row by it.
      */
     public static function ordersRepeatedRows(QueryBuilder $query): bool
     {
@@ -531,7 +531,7 @@ final class RankedCandidates
     /**
      * The largest share of the model's documents (fuzzy_index_meta.total_docs) the words' postings
      * may reach (Bm25Scorer::rank()'s read) for an ordered read with no constraint to be joined to them
-     * (whereMatches(); R11-M4, ruling ER-162). Measured on the COUNT and a page of 20 by an indexed
+     * (whereMatches()). Measured on the COUNT and a page of 20 by an indexed
      * column, at 200k and 1M rows:
      *  - MySQL 9.6: the join read a word in 5 to 10% of the rows 6 to 14 times faster than the
      *    subquery (0.5 s for 3.0 s at 1M rows), and kept a lead to about 60% while it read the
@@ -548,8 +548,8 @@ final class RankedCandidates
      * $base restricted to the documents that hold $terms (Bm25Scorer::whereRanked()), added as a
      * global scope: on MySQL and MariaDB joined to the matched ids of the postings on the model's key
      * only for a $sparse word, its postings at most JOIN_SHARE of the model's documents, and a read
-     * with no constraint (ruling ER-162). The join reads every matched posting, and the servers
-     * materialize it for the COUNT and again for the page (R11-M4). Under a selective where() the
+     * with no constraint. The join reads every matched posting, and the servers
+     * materialize it for the COUNT and again for the page. Under a selective where() the
      * subquery reads only the rows the where accepts: 2 ms for a tenant of 100 rows at 200k rows,
      * where the join took 3.3 s for a word in every row; and for a dense word it reads the table
      * once (0.7 s, where the join took 4.3 s on MySQL). A union, which the servers materialize
@@ -576,7 +576,7 @@ final class RankedCandidates
 
     /**
      * The most rows of the model table an ordered page read may walk on PostgreSQL to reach the end
-     * of its page through the order column's index (ruling ER-223): (offset + limit) / share, the
+     * of its page through the order column's index: (offset + limit) / share, the
      * share of the model's documents its words' postings reach. PostgreSQL pulls whereRanked()'s
      * EXISTS up into a hash semi-join, which reads the table whole whatever the page: at 24M rows
      * for a word in 1.3% of them, 3.3 s warm and 23 to 86 s cold, where a walk of the order column's
@@ -646,7 +646,7 @@ final class RankedCandidates
     }
 
     /**
-     * The wheres of $query from the $from-th on as one group when one of them is an or (RE-1), as
+     * The wheres of $query from the $from-th on as one group when one of them is an or, as
      * Eloquent groups a scope's wheres: a search predicate, a filter() or a Scout where() beside
      * them then holds for all of them, and search($term)->where(A)->orWhere(B) reads
      * (A or B) and <search>, not A or (B and <search>). Wheres with no or stay as they are, so
@@ -668,12 +668,12 @@ final class RankedCandidates
     }
 
     /**
-     * $base, with a union read as one derived table named as the model's table (rulings ER-125,
-     * ER-127; unionAsTable()): every read here restricts the union's rows to ranked ids, adds the key
+     * $base, with a union read as one derived table named as the model's table
+     * (unionAsTable()): every read here restricts the union's rows to ranked ids, adds the key
      * to the select list or orders the rows, and on a union each of those reached only its first part
      * (the other parts were read whole, or their select lists no longer matched). $base itself when
      * it has no union, so a second call changes nothing. A schema-qualified table (billing.invoices)
-     * names it by its last segment: no database takes a qualified alias (TE-7).
+     * names it by its last segment: no database takes a qualified alias.
      *
      * Every read then names the key through that table, so a union whose parts select no key has
      * none to name, and failed with the database's unknown-column error: it throws a LogicException
@@ -703,7 +703,7 @@ final class RankedCandidates
     }
 
     /**
-     * $query, a query with a union, as one derived table named $as, read as the query was (SE-2, the
+     * $query, a query with a union, as one derived table named $as, read as the query was (the
      * index path's rows() and the LIKE and extended paths' SearchBuilder::unionAsTable()):
      *  - an Eloquent query's scopes already apply inside each part, and its eager loads are carried
      *    over;
@@ -795,9 +795,9 @@ final class RankedCandidates
     /**
      * Whether a read of $model's rows must select the key under KEY_ALIAS to know each row's key:
      * when a join may shadow it with another table's column of that name, or the select list is not
-     * provably the model's own key (ruling D13; selectsKey()'s strict answer: another column aliased
-     * as the key, or the key in another case, is not, RA-2). Otherwise each model is matched by its
-     * own key, and the alias never reaches it (ruling ER-135; the Scout engine's map()).
+     * provably the model's own key (selectsKey()'s strict answer: another column aliased
+     * as the key, or the key in another case, is not). Otherwise each model is matched by its
+     * own key, and the alias never reaches it (the Scout engine's map()).
      */
     public static function needsKeyAlias(QueryBuilder $query, Model $model): bool
     {
@@ -821,7 +821,7 @@ final class RankedCandidates
     }
 
     /**
-     * The key as $base's FROM names it (ruling ER-107): the alias's under from('users as u') or
+     * The key as $base's FROM names it: the alias's under from('users as u') or
      * fromSub(…, 'u'), the table's otherwise. "users"."id" under an alias failed on every database.
      * A FROM expression without an alias leaves the bare key.
      */

@@ -46,7 +46,7 @@ class ClearCommand extends Command
 
         // The index the class is searched through: a class indexed under another type
         // (searchIndexType(): a single-table-inheritance child names its parent) clears that type's
-        // index, and then the rows still under its own name from before it named that type (SA-1).
+        // index, and then the rows still under its own name from before it named that type.
         $type = IndexManager::indexType($model);
         $indexManager->flush($type);
         $this->info("Cleared BM25 index for [{$type}].");

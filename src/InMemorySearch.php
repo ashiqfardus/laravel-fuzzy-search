@@ -31,7 +31,7 @@ class InMemorySearch
         $cap = (int) config('fuzzy-search.in_memory.max_items', 10000);
 
         if ($items instanceof LazyCollection) {
-            // Pull at most cap + 1 (ruling ER-99): a lazy source can be huge, or infinite, so
+            // Pull at most cap + 1: a lazy source can be huge, or infinite, so
             // checking the cap must not first materialise the whole thing.
             $items = collect($items->take($cap + 1)->all());
         } elseif (!$items instanceof Collection) {
@@ -105,7 +105,7 @@ class InMemorySearch
             return collect();
         }
 
-        // Ruling ER-46, as every SearchBuilder terminal applies it: '' (or whitespace) throws, and
+        // As SearchBuilder terminal applies it: '' (or whitespace) throws, and
         // lists the items only with allow_empty_search.
         if ($this->term === '') {
             if (!config('fuzzy-search.allow_empty_search', false)) {
@@ -136,7 +136,7 @@ class InMemorySearch
 
         // The working scores, by the item's position: kept beside the items, never on them. A
         // non-match is left untouched, so an object the caller's own collection still holds is
-        // never mutated (ruling ER-98), and a match is written to only under withRelevance(): a
+        // never mutated, and a match is written to only under withRelevance(): a
         // temporary property on every matched object was a dynamic one on an object with declared
         // properties (deprecated since PHP 8.2), and an Error on one that takes none.
         $scores = [];
@@ -149,15 +149,15 @@ class InMemorySearch
             $score = 0;
             foreach ($this->columns as $col) {
                 // Never data_get() on a model: its relation fallback runs any method named like
-                // the column (ruling ER-84).
+                // the column.
                 $raw = SearchableColumns::read($item, $col);
 
-                // An array or a non-Stringable object isn't text (ruling ER-99, in line with
-                // ER-90's auto-detection, which excludes json columns too): skip it instead of
+                // An array or a non-Stringable object isn't text (in line with
+                // the auto-detection of searchable columns, which excludes json columns too): skip it instead of
                 // letting (string) $raw warn "Array to string conversion" (or fatal on an object
                 // with no __toString()) and count it as a match. A date/datetime cast — Carbon on
                 // created_at/updated_at included — implements \Stringable and keeps casting as
-                // before: ER-90 explicitly keeps those columns text-like.
+                // before: the auto-detection explicitly keeps those columns text-like.
                 if ($raw !== null && !is_scalar($raw) && !($raw instanceof \Stringable)) {
                     continue;
                 }

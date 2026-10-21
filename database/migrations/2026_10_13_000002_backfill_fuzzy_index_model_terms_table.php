@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * ER-197: fill fuzzy_index_model_terms, the per-model dictionary of counts 2026_10_13_000001
+ * Fill fuzzy_index_model_terms, the per-model dictionary of counts 2026_10_13_000001
  * creates, from an index written before it: for each model type and word, the number of the type's
  * documents that hold it (count(distinct model_id) of its postings), beside the word and its length.
  * Every index write keeps the table in step from 2026_10_13_000001 on.
@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Schema;
  * added later gets its rows from the index write that adds it), each about $chunk documents by the
  * words' doc_count (a word that common is a range of its own). Each range is one transaction: lock
  * its words, delete its rows, insert them again with one INSERT … SELECT that counts its postings,
- * set the words' dictionary counts to the sum of those rows where they differ (R13-L7), and record
+ * set the words' dictionary counts to the sum of those rows where they differ, and record
  * its end in STATE. Outside a transaction, so every range commits on its own.
  *
  * STATE, which 2026_10_13_000001 creates with last_term_id 0, holds the progress: a run that stopped
@@ -35,7 +35,7 @@ use Illuminate\Support\Facades\Schema;
  * them, as a write locks every word it touches, in ascending id order too, before it writes any
  * posting or model terms row (IndexManager::adjustDocCounts()): whichever locks a shared word first,
  * the other waits for its commit, and neither waits holding a word the other needs. On SQL Server a
- * range takes the index's write lock first instead, as every index write and flush does (ER-180).
+ * range takes the index's write lock first instead, as every index write and flush does.
  * MySQL/MariaDB's REPEATABLE READ also locks the record just past what a statement reads (next-key
  * locking), which a write on the next word can hold: should InnoDB roll the range back as a deadlock
  * victim, the range is retried, as a write is.
@@ -44,7 +44,7 @@ use Illuminate\Support\Facades\Schema;
  * STDERR), naming each model to rebuild with --fresh, when the meta totals changed while it ran. A
  * resumed run names every indexed model: writes made between the stopped run and this one landed in
  * ranges the stopped run had counted, and this run's own snapshot cannot see them (as the compact
- * postings migration's, VA-1, VA-4).
+ * postings migration's).
  */
 return new class extends Migration
 {
@@ -141,11 +141,11 @@ return new class extends Migration
 
         // A word a 2.0 worker added during the upgrade's deploy window has a term_length of 0 on
         // MySQL/MariaDB (UPGRADE: "New migration to run"). The rows below copy the length, and a
-        // model's typo expansion reads it there, so set it first, as 2026_09_17_000001 does (P6-A1).
+        // model's typo expansion reads it there, so set it first, as 2026_09_17_000001 does.
         // Found with a plain read (the range's words are locked above, so it reads them as they
         // are) and set by primary key: an UPDATE by `term_length = 0` went through the
         // (term_length, doc_count, id) index and locked every such word, those of later ranges and
-        // the gap new words go in too, so an index write deadlocked with it (P7R-3).
+        // the gap new words go in too, so an index write deadlocked with it.
         $driver = DB::connection()->getDriverName();
         $length = $driver === DbDialect::SQLSRV
             ? 'LEN(term COLLATE Latin1_General_100_CI_AS_SC)'
@@ -166,7 +166,7 @@ return new class extends Migration
             [$low, $high, $low, $high]
         );
 
-        // The dictionary's counts of the range's words, again from the rows just counted (R13-L7):
+        // The dictionary's counts of the range's words, again from the rows just counted:
         // an index 2.0 wrote can hold a count too high, or a word no posting holds any more, which no
         // flush gave back, and the dictionary would no longer equal the sum of the types' counts.
         IndexManager::recountDictionary(fn ($words) => $words->where('id', '>', $low)->where('id', '<=', $high));

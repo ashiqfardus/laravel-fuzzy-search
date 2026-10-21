@@ -152,7 +152,7 @@ return new class extends Migration
 
     /**
      * SQL Server: the name the postings table has for $index, led by the table prefix under
-     * prefix_indexes or as written in an install made before (ER-216). Under --pretend, which runs
+     * prefix_indexes or as written in an install made before index names carried the prefix. Under --pretend, which runs
      * no select, the prefixed one.
      */
     private function postingsIndex(string $index): string

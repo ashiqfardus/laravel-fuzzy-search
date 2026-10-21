@@ -14,7 +14,7 @@ trait ValidatesInput
     /**
      * $class must exist and be an Eloquent model. $require adds: 'indexable', a model the index
      * can read (getSearchableColumns(): the Searchable trait's, or a Scout model's own; or a
-     * searchableText() hook alone, as IndexManager::indexesModel() accepts, ruling D11); or
+     * searchableText() hook alone, as IndexManager::indexesModel() accepts); or
      * 'searchable', the Searchable trait itself, whose search() returns the fluent builder.
      */
     protected function validModel(string $class, string $require = ''): bool
@@ -46,7 +46,7 @@ trait ValidatesInput
      * A short name ("User") is looked up under App\Models; a qualified one is taken as given,
      * without the leading backslash PHP code writes ("\App\Models\User"): class_exists() accepts
      * it, but the index is keyed by the class name without it, so rebuild indexed a copy no search
-     * read and clear cleared nothing (SA-4).
+     * read and clear cleared nothing.
      */
     protected function modelName(string $name): string
     {
