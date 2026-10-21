@@ -994,7 +994,7 @@ One search binds at most 2,000 values of its own, on every database, so SQL Serv
 
 ### Multi-tenant isolation
 
-A tenant `where()` or `filter()` scopes the rows a search returns, but the BM25 index statistics and the posting cap are model-wide, so tenants sharing one index can influence each other's ranking and learn whether a word occurs. `searchIndexType()` cannot name a per-tenant index (it throws for anything but the model's own class or a same-table parent). For strict isolation do not rank across tenants on one index: use the LIKE algorithms, a database or schema per tenant, or a model class per tenant; see [Multi-tenant isolation](docs/bm25.md#multi-tenant-isolation). Search analytics stores raw terms and has no tenant column: see its [privacy note](docs/analytics.md#privacy).
+A tenant `where()` or `filter()` scopes the rows a search returns, but the BM25 index statistics and the posting cap are model-wide, so tenants sharing one index can influence each other's ranking and learn whether a word occurs. `suggestFrom('index')` is model-wide too: it ignores `where()`, `filter()`, `filterIn()` and every scope, so use it only where every caller may see every row's terms (the default `'auto'` honours them). `searchIndexType()` cannot name a per-tenant index (it throws for anything but the model's own class or a same-table parent). For strict isolation do not rank across tenants on one index: use the LIKE algorithms, a database or schema per tenant, or a model class per tenant; see [Multi-tenant isolation](docs/bm25.md#multi-tenant-isolation). Search analytics stores raw terms and has no tenant column: see its [privacy note](docs/analytics.md#privacy).
 
 ### SQL Injection Safety
 
