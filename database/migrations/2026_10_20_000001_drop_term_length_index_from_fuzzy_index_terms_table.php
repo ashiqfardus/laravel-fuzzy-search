@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Schema;
  * that changed a word's doc_count moved the word's entry in it, and on MySQL/MariaDB took locks in
  * it. A migration of its own, so an install that ran the migrations before it drops it too. An
  * earlier 2.1 build made the index without the id (fuzzy_index_terms_term_length_doc_count_index),
- * which 2026_10_02_000001 replaces when it runs; an install that still holds it loses it here too.
+ * which 2026_10_02_000001 drops when it runs; an install that still holds it loses it here too.
  *
  * Dropping an index reads no rows: quick on every database. Outside a transaction, as
  * 2026_10_01_000001 is, so each drop commits on its own: in one transaction the lock the first drop

@@ -322,11 +322,19 @@ class CompactPostingsMigrationTest extends TestCase
         Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->index(['term_length', 'doc_count'], 'fuzzy_index_terms_term_length_doc_count_index'));
         Schema::table('fuzzy_index_terms', fn (Blueprint $table) => $table->dropIndex('fuzzy_index_terms_term_length_doc_count_id_index'));
         $this->assertNotSame($fresh, $this->convergedSchema());
+        $built = [];
+        DB::listen(function ($query) use (&$built) {
+            if (preg_match('/\b(create|add)\s+index\s+[`"\[]?\w*term_length_doc_count_id_index\b/i', $query->sql)) {
+                $built[] = $query->sql;
+            }
+        });
 
         $this->artisanOk('migrate');
 
         $this->assertSame($fresh, $this->convergedSchema());
         $this->assertSame($before, $this->searches());
+        // N-B5: the earlier build's index goes; the one with the id is not built for 2026_10_20_000001 to drop.
+        $this->assertSame([], $built);
     }
 
     /**
