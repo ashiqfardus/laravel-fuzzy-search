@@ -99,14 +99,20 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     {
         // A negative take() counts as 0, as on InMemorySearch and FederatedSearch: array_slice()
         // cut it from the end, serving every match but the last few, past the default of 15.
-        return $this->results($builder, 0, max(0, (int) ($builder->limit ?? 15)));
+        // Cut to max_candidates, as a page size is: take(1000000) hydrated every match at once.
+        return $this->results($builder, 0, min(max(0, (int) ($builder->limit ?? 15)), $this->maxPageSize()));
+    }
+
+    private function maxPageSize(): int
+    {
+        return SearchBuilder::clampPerPage(PHP_INT_MAX);
     }
 
     public function paginate(Builder $builder, $perPage, $page)
     {
         // Scout resolves ?page to any whole number of at least 1. Capped as SearchBuilder::resolvePage()
         // caps it, so that no offset (plus one page) overflows into a float: past that, every page is empty.
-        $perPage = max(1, (int) $perPage);
+        $perPage = SearchBuilder::clampPerPage((int) $perPage);
         $page    = min(max(1, (int) $page), intdiv(PHP_INT_MAX, $perPage + 1));
 
         // Scout 10.0 (no PaginatesEloquentModelsUsingDatabase) counts paginate()'s and paginateRaw()'s
@@ -137,7 +143,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     public function paginateUsingDatabase(Builder $builder, $perPage, $pageName, $page)
     {
         $page    = $page ?: Paginator::resolveCurrentPage($pageName);
-        $perPage = $perPage ?: $builder->model->getPerPage();
+        $perPage = SearchBuilder::clampPerPage((int) ($perPage ?: $builder->model->getPerPage()));
         $results = $this->paginate($builder, $perPage, $page);
 
         return Container::getInstance()->makeWith(LengthAwarePaginator::class, [
@@ -157,7 +163,7 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
     public function simplePaginateUsingDatabase(Builder $builder, $perPage, $pageName, $page)
     {
         $page    = $page ?: Paginator::resolveCurrentPage($pageName);
-        $perPage = $perPage ?: $builder->model->getPerPage();
+        $perPage = SearchBuilder::clampPerPage((int) ($perPage ?: $builder->model->getPerPage()));
         $results = $this->paginate($builder, $perPage, $page);
 
         return Container::getInstance()->makeWith(Paginator::class, [

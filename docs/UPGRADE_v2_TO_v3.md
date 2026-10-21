@@ -143,6 +143,7 @@ analytics, `suggest()` and the tokenizers.
 
 ### Inverted index, indexing and commands
 
+- **An index-path query uses at most `query.max_tokens` distinct terms** (32 by default): the first ones are used, the rest ignored, with no exception. Raise `query.max_tokens` if your searches are longer; each term reads up to `bm25.max_postings_per_term` rows.
 - **BM25 rankings change where models share words**, and equal scores come back by model key — see [Inverted index](#inverted-index-bm25).
 - **Indexing waits for the transaction to commit**, and writes for one row wait for each other — see [Inverted index](#inverted-index-bm25).
 - **With `indexing.async` off, an index error no longer fails the save.** It is reported to your exception handler instead — see [Inverted index](#inverted-index-bm25).
@@ -216,6 +217,7 @@ analytics, `suggest()` and the tokenizers.
 
 ### Federated, Scout and in-memory search
 
+- **The Scout engine cuts `paginate()`, `simplePaginate()` and `take()` to `max_candidates`** (default 1000), as the builder does ([page sizes](#paginate-page-sizes)). A Scout page of more rows is now `max_candidates` rows; raise the key if you really page in bigger slices.
 - **`FederatedSearch` searches each model with its own algorithm and typo tolerance.** Without `using()` or `typoTolerance()`, every model that uses the `Searchable` trait was searched with `fuzzy` and a typo tolerance of 2, whatever its `$searchable['algorithm']` and `['typo_tolerance']` said. Each model now searches the way `Model::search()` does, with its own configuration (the configured `default_algorithm` and typo tolerance when it declares none), so a `like` model no longer matches typos in a federated search. `using()` and `typoTolerance()` still apply to every model and `options()`, which used to be ignored, now applies to every model too, and `typoTolerance()` now reaches models without the trait as well. Call `->using('fuzzy')->typoTolerance(2)` to keep the old results.
 - **`FederatedSearch` reads the declared columns of models without the `Searchable` trait.** A `Fuzzy`-trait model is searched on its `$fuzzySearchable` (or `getFuzzySearchableColumns()`), and a model with a protected `$searchable['columns']` on those columns; both used to be searched on the guessed `name`/`title`, so results change for such models. A `Fuzzy`-trait model is also searched with its own `$fuzzyAlgorithm` and `$fuzzyOptions` (`default_algorithm` when it declares none) instead of LIKE; call `->using('like')` on the federated search to keep the old matching.
 - **`FederatedSearch` holds models without the `Searchable` trait to `max_candidates`.** Such a model contributes at most `max_candidates` rows (default 1000) to `get()`, the paginators and `getCounts()`, as a `Searchable` model always has; its matches used to be counted and fetched without limit, and a deep page fetched offset + perPage rows from it.
@@ -541,6 +543,8 @@ through `get()`) now agree.
 - **Constrained queries keep the table scan.** When the base query carries a `where()`, a `join()`, a `having()`, a `groupBy()`, a union, a `fromSub()`, a forwarded scope or a global scope other than `SoftDeletes`, the default `'auto'` mode uses the table scan even on an indexed model, because the dictionary is scoped to the model, not to the query. `->suggestFrom('index')` forces the dictionary and ignores those constraints. With `indexing.async` (the default) a trashed row's terms leave the dictionary only when the queued index job runs.
 - **Restore v2.0 behaviour** by calling `->suggestFrom('table')`, which forces the table scan regardless of whether the model is indexed.
 - Un-indexed models are unaffected — they always used, and still use, the table scan.
+- **`filter()` and `filterIn()` narrow suggestions too.** `suggest()` and `didYouMean()` keep only what the filtered search could return, so a tenant written as `filter('tenant_id', $id)` is no longer offered another tenant's words. Under a filter, `'auto'` uses the table scan.
+- **The limit is cut to 50** for `suggest()` and `didYouMean()`, so a `?limit=` from the request cannot multiply their queries.
 
 ## Tokenizers, per-model pipelines, accent folding and stop-word files (new)
 

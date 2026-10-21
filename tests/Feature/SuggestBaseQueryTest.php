@@ -82,13 +82,14 @@ class SuggestBaseQueryTest extends TestCase
 
     public function test_suggest_still_completes_when_the_search_page_is_empty(): void
     {
-        // filter() is one of the search's own predicates: it is compiled with the search and
-        // must not reach the suggestions — that empty page is exactly when the recipe asks
-        // for them.
+        // filter() narrows the suggestions as it narrows the page (a tenant written as a filter
+        // must not be offered another tenant's words), so a filter that empties the page empties
+        // them too; one that keeps the rows still completes.
         $builder = User::search('joh')->searchIn(['name'])->filter('email', 'nobody@example.com');
 
         $this->assertEmpty($builder->get(), 'precondition: the page is empty');
-        $this->assertNotEmpty($builder->suggest(5));
+        $this->assertSame([], $builder->suggest(5));
+        $this->assertNotEmpty(User::search('joh')->searchIn(['name'])->filter('email', 'john@example.com')->suggest(5));
     }
 
     public function test_constraints_the_caller_applied_still_scope_the_suggestions(): void
