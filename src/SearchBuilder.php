@@ -185,6 +185,7 @@ class SearchBuilder
     {
         foreach (SearchableColumns::weights($columns) as $col => $weight) {
             SearchableColumns::validate([$col], SearchableColumns::INVALID_NAME_BRACKETED);
+            $this->guardExposedColumn($col);
             if (!in_array($col, $this->searchableColumns, true)) {
                 $this->searchableColumns[] = $col;
             }
@@ -371,6 +372,59 @@ class SearchBuilder
         return ($type instanceof \ReflectionNamedType && !$type->isBuiltin()
                 && is_a($type->getName(), \Illuminate\Database\Eloquent\Relations\Relation::class, true))
             || $declared();
+    }
+
+    /**
+     * Throws for a column a request could probe the model's withheld values through (searchIn(),
+     * filter(), filterIn() and facet() may be handed request input): one in the $hidden of the
+     * model it belongs to, in any letter case, or named like a secret (SearchableColumns::
+     * isSecretName(), the list auto-detection skips), unless the model lists it, as written, in
+     * $searchable['columns']. A relation path is judged on the related model, reached through
+     * typed relation methods only (isReachableRelation()), which run no query; a joined table's
+     * column, whose model is unknown, by its name alone; filter()'s JSON path (`options->theme`)
+     * by its column. A Query Builder has neither $hidden nor $searchable['columns'] and is not checked.
+     */
+    private function guardExposedColumn(string $column): void
+    {
+        if (!$this->query instanceof EloquentBuilder) {
+            return;
+        }
+
+        $model = $this->query->getModel();
+
+        // Declared config only, as relationPath() reads it: an auto-detected model would run schema SQL here.
+        if (method_exists($model, 'hasDeclaredSearchableColumns') && $model->hasDeclaredSearchableColumns()
+            && in_array($column, $model->getSearchableColumns(), true)) {
+            return;
+        }
+
+        $segments = explode('.', explode('->', $column, 2)[0]);
+        $leaf     = array_pop($segments);
+        $owner    = $model;
+
+        foreach ($segments as $i => $segment) {
+            if ($i === 0 && in_array($segment, $this->queryTableNames(), true)) {
+                // A table of the query, as resolveColumnTarget() reads it: the FROM table is the model's.
+                $from  = array_filter(\Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::fromTable($this->query->toBase()->from) ?? []);
+                $owner = count($segments) === 1 && in_array($segment, array_map(self::lastSegment(...), $from), true) ? $model : null;
+                break;
+            }
+
+            $relation = method_exists($owner, $segment) && $this->isReachableRelation($owner, $segment, fn (): bool => false) ? $owner->{$segment}() : null;
+            $owner    = $relation instanceof \Illuminate\Database\Eloquent\Relations\Relation ? $relation->getRelated() : null;
+
+            if ($owner === null) {
+                break; // no typed relation: a table to be joined, or a path searchIn() refuses unless declared
+            }
+        }
+
+        if (SearchableColumns::isSecretName($leaf)
+            || ($owner !== null && in_array(strtolower($leaf), array_map('strtolower', $owner->getHidden()), true))) {
+            throw new \InvalidArgumentException(
+                "Column [{$column}] is hidden or named like a secret: declare it in " . get_class($model)
+                . "'s \$searchable['columns'] to make it searchable or filterable."
+            );
+        }
     }
 
     /** @return array<string, string> searchIn() column => column for direct (non-relation) targets */
@@ -912,6 +966,7 @@ class SearchBuilder
      */
     public function filter(string $column, mixed $operator, mixed $value = null): self
     {
+        $this->guardExposedColumn($column);
         if ($value === null) {
             $value = $operator;
             $operator = '=';
@@ -925,6 +980,7 @@ class SearchBuilder
      */
     public function filterIn(string $column, array $values): self
     {
+        $this->guardExposedColumn($column);
         $this->filters[] = ['column' => $column, 'operator' => 'IN', 'value' => $values];
         return $this;
     }
@@ -935,6 +991,7 @@ class SearchBuilder
     public function facet(string $column): self
     {
         SearchableColumns::validate([$column]);
+        $this->guardExposedColumn($column);
         $this->facets[] = $column;
         return $this;
     }
