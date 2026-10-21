@@ -207,7 +207,7 @@ class CompactPostingsTest extends TestCase
     {
         $reads = [];
         DB::listen(function (QueryExecuted $query) use (&$reads) {
-            if (str_contains($query->sql, 'fuzzy_index_postings') && stripos($query->sql, 'order by') !== false) {
+            if (str_contains($query->sql, 'fuzzy_index_postings') && stripos($query->sql, 'group by') !== false) { // a word under the cap is read unordered
                 $reads[] = [$query->sql, $query->bindings];
             }
         });
