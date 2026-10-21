@@ -635,6 +635,18 @@ class IndexManager
      * before the write takes its dictionary rows: a write holding a gap and waiting for a word then
      * crosses one holding the word and inserting into the gap.
      *
+     * SQL Server: FORCESEEK (the read never locks there, so no lock hint besides). After an
+     * automatic statistics update with a 0.54% sample (412,817 of 76.9M postings rows), the density
+     * of (model_type_id, model_id) read about 415k distinct values for 4.83M real ones (878 rows a
+     * key estimated, about 16 real), and the plan became a parallel scan of the clustered index with
+     * a hash join, instead of 500 seeks of postings_model_idx: about 13 s for one read of 500 keys,
+     * under the write lock (SQL Server 2022 RTM, 4.8M documents, 76.9M postings rows, package 3.0).
+     * The hint names no index, so it fails (error 8622) while the table has none led by
+     * (model_type_id, model_id): a write meeting the compact postings migration between its table
+     * swap and the build of that index would fail, as it fails on the old layout, without
+     * model_type_id, until the swap. deletePostings() goes without the hint: SQL Server refuses
+     * FORCESEEK on the target table of a DELETE.
+     *
      * @param  array<int|string>                                  $modelIds
      * @param  array<int|string, int>                             $old      the claim's: id => doc_length, for the indexed ones
      * @return array<int|string, array<int, array<int, array{int, int}>>>
@@ -648,6 +660,7 @@ class IndexManager
                     ->where('model_type_id', $typeId)
                     ->whereIn('model_id', $chunk)
                     ->when($lock, fn ($query) => $query->lockForUpdate())
+                    ->when(DB::connection()->getDriverName() === DbDialect::SQLSRV, fn ($query) => $query->lock('with(forceseek)'))
                     ->get(['model_id', 'term_id', 'column_id', 'frequency', 'doc_length']);
 
                 foreach ($rows as $row) {
