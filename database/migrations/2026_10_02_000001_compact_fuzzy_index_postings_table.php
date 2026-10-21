@@ -70,6 +70,17 @@ return new class extends Migration
     /** How many times up() follows the postings old code wrote past the ids it read. */
     private const TAIL_ROUNDS = 5;
 
+    /**
+     * The most names (or ids) one copy statement maps on SQL Server (perPart()). Its optimizer runs
+     * out of stack space on one CASE of a few thousand branches (error 8621): 2022 RTM
+     * (16.0.1000.6) compiled the copy's CASE with 1,921 names and refused 1,922, the copy back's
+     * with 1,930 ids and refused 1,931; 2022 CU27 refused 10,000. A quarter of RTM's, as other
+     * builds and versions may run out sooner. No single statement can take every name of a range:
+     * RTM refused 12,000 names cut into CASEs under one COALESCE (8632), and a join to 40,000
+     * (8623).
+     */
+    private const CASE_BRANCHES = 400;
+
     public function up(): void
     {
         $pretending = DB::connection()->pretending();
@@ -221,12 +232,12 @@ return new class extends Migration
             $this->copy($pretending, 'fuzzy_index_postings', function (int $from, ?int $to) use ($types, $columns) {
                 $ids = DB::table(self::COMPACT)->where('term_id', '>', $from)->when($to !== null, fn ($query) => $query->where('term_id', '<=', $to))->distinct()->pluck('column_id')->all();
 
-                return $ids === [] ? null : $this->copyStatement(
+                return $ids === [] ? null : $this->perPart('p.column_id', array_intersect_key($columns, array_flip($ids)), fn (array $mapped, string $among) => $this->copyStatement(
                     self::COMPACT, 'fuzzy_index_postings',
                     ['term_id', 'model_type', 'model_id', 'column_name', 'frequency'],
-                    ['p.term_id', $this->mapped('p.model_type_id', $types), 'p.model_id', $this->mapped('p.column_id', array_intersect_key($columns, array_flip($ids))), 'p.frequency'],
-                    'p.term_id > ?' . ($to === null ? '' : ' and p.term_id <= ?'), [$from, ...($to === null ? [] : [$to])]
-                );
+                    ['p.term_id', $this->mapped('p.model_type_id', $types), 'p.model_id', $mapped, 'p.frequency'],
+                    'p.term_id > ?' . ($to === null ? '' : ' and p.term_id <= ?') . $among, [$from, ...($to === null ? [] : [$to])]
+                ));
             });
 
             Schema::drop(self::COMPACT);
@@ -290,14 +301,15 @@ return new class extends Migration
     /**
      * down(): copy into $to one range of term ids at a time (the compact table is clustered by
      * term, so a range is one sequential read), each an INSERT … SELECT ($statement) that commits
-     * on its own. A run that stopped part way left whole ranges only, so the copy goes on after the
-     * highest term id $to holds: the terms between it and the end of its range had no posting.
+     * on its own (on SQL Server, several in one transaction: perPart()). A run that stopped part
+     * way left whole ranges only, so the copy goes on after the highest term id $to holds: the
+     * terms between it and the end of its range had no posting.
      * With $source, the count of a range's source rows, it returns how many rows the copy left out.
      * Under --pretend, which runs no select, nothing: each statement maps the names its range
      * holds, which only the data can tell.
      *
-     * @param \Closure(int, ?int): (array{string, list<mixed>}|null) $statement the copy of the term ids in ($from, $to] and its bindings; null for a range with no posting
-     * @param (\Closure(int, ?int): int)|null                        $source    the count of the source's rows in ($from, $to]
+     * @param \Closure(int, ?int): (list<array{string, list<mixed>}>|null) $statement the copy of the term ids in ($from, $to], each statement and its bindings; null for a range with no posting
+     * @param (\Closure(int, ?int): int)|null                              $source    the count of the source's rows in ($from, $to]
      */
     private function copy(bool $pretending, string $to, \Closure $statement, ?\Closure $source = null): int
     {
@@ -305,12 +317,12 @@ return new class extends Migration
         $missed = 0;
 
         foreach ($pretending ? [] : $this->ranges($pretending, $start) as [$low, $high]) {
-            $insert = $statement($low, $high);
-            if ($insert === null) {
+            $inserts = $statement($low, $high);
+            if ($inserts === null) {
                 continue;
             }
 
-            $copied = DB::affectingStatement(...$insert);
+            $copied = count($inserts) === 1 ? DB::affectingStatement(...$inserts[0]) : DB::transaction(fn () => array_sum(array_map(fn (array $insert) => DB::affectingStatement(...$insert), $inserts)));
             if ($source !== null) {
                 $missed += $source($low, $high) - $copied;
             }
@@ -324,10 +336,10 @@ return new class extends Migration
      * range of its primary key, read in order. A range of words was read through
      * postings_unique_idx, which does not hold frequency, so every posting was a lookup of its row,
      * and one word's postings span the whole table: 7 to 9 hours at 96M postings on MySQL, where id
-     * ranges copy them in about 11 minutes. Each range is one INSERT … SELECT, joined to the
-     * documents for the length, with the model type and the column mapped through CASE (mapped()),
-     * no join to the dictionaries. Its names are recorded first, from one grouped read of the range
-     * that also counts its postings.
+     * ranges copy them in about 11 minutes. Each range is one INSERT … SELECT (on SQL Server one
+     * per CASE_BRANCHES of its names: perPart()), joined to the documents for the length, with the
+     * model type and the column mapped through CASE (mapped()), no join to the dictionaries. Its
+     * names are recorded first, from one grouped read of the range that also counts its postings.
      *
      * Each range commits with the mark of the ids it copied (PROGRESS), in one transaction, so a run
      * that stopped part way goes on after the mark. A write the old code made while the copy ran
@@ -369,15 +381,15 @@ return new class extends Migration
             }
 
             // No type with a document row: the range's postings have none to join (an empty CASE is no SQL).
-            [$sql, $bindings] = $counts === [] || $types === [] ? [null, []] : $this->copyStatement(
+            $inserts = $counts === [] || $types === [] ? [] : $this->perPart('p.column_name', array_intersect_key($columns, $counts), fn (array $mapped, string $among) => $this->copyStatement(
                 'fuzzy_index_postings', self::COMPACT,
                 ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
-                ['p.term_id', $this->mapped('p.model_type', $types), 'p.model_id', $this->mapped('p.column_name', array_intersect_key($columns, $counts)), 'p.frequency', 'd.doc_length'],
-                'p.id > ? and p.id <= ?', [$low, $high]
-            );
+                ['p.term_id', $this->mapped('p.model_type', $types), 'p.model_id', $mapped, 'p.frequency', 'd.doc_length'],
+                'p.id > ? and p.id <= ?' . $among, [$low, $high]
+            ));
 
-            $copied = DB::transaction(function () use ($sql, $bindings, $high) {
-                $copied = $sql === null ? 0 : DB::affectingStatement($sql, $bindings);
+            $copied = DB::transaction(function () use ($inserts, $high) {
+                $copied = array_sum(array_map(fn (array $insert) => DB::affectingStatement(...$insert), $inserts));
                 DB::table(self::PROGRESS)->update(['copied_id' => $high]);
 
                 return $copied;
@@ -441,12 +453,14 @@ return new class extends Migration
                 return; // their postings are gone: removed from the index
             }
 
-            DB::affectingStatement(...$this->copyStatement(
+            foreach ($this->perPart('p.column_name', array_intersect_key($columns, array_flip($names)), fn (array $mapped, string $among) => $this->copyStatement(
                 'fuzzy_index_postings', self::COMPACT,
                 ['term_id', 'model_type_id', 'model_id', 'column_id', 'frequency', 'doc_length'],
-                ['p.term_id', $this->mapped('p.model_type', [$type => $typeId]), 'p.model_id', $this->mapped('p.column_name', array_intersect_key($columns, array_flip($names))), 'p.frequency', 'd.doc_length'],
-                'p.model_type = ? and p.model_id in (' . implode(', ', array_fill(0, count($ids), '?')) . ')', [$type, ...$ids]
-            ));
+                ['p.term_id', $this->mapped('p.model_type', [$type => $typeId]), 'p.model_id', $mapped, 'p.frequency', 'd.doc_length'],
+                'p.model_type = ? and p.model_id in (' . implode(', ', array_fill(0, count($ids), '?')) . ')' . $among, [$type, ...$ids]
+            )) as $insert) {
+                DB::affectingStatement(...$insert);
+            }
         });
     }
 
@@ -576,7 +590,7 @@ return new class extends Migration
      *
      * SQL Server takes 2,100 parameters a statement, and a range can hold more names (a
      * searchableText() keyed per attribute, locale or custom field): there the names are nvarchar
-     * literals, quoted by the driver, as a bound name is sent.
+     * literals, quoted by the driver, as a bound name is sent, CASE_BRANCHES at most a statement.
      *
      * @param  array<int|string, int|string> $map
      * @return array{string, list<mixed>}
@@ -593,13 +607,47 @@ return new class extends Migration
                 $bindings[] = $name;
                 $name       = '?';
             } else {
-                $name = $pdo->quote($name);
-                $name = str_starts_with($name, 'N') ? $name : 'N' . $name; // the driver's own N'…' or not, by its encoding
+                $name = $this->literal($name);
             }
             $sql .= $ids ? ' when ' . (int) $value . " then {$name}" : " when {$name} then " . (int) $mapped;
         }
 
         return [$sql . ' end', $bindings];
+    }
+
+    /**
+     * The copy statements for $column's map $map, each built by $statement from the CASE that maps
+     * its names and the condition (' and …', or '') that reads only their rows: one statement, but
+     * on SQL Server one per CASE_BRANCHES names (see there), each reading the rows of its names,
+     * `{$column} in (…)` in the column's collation, as its CASE compares them. The names of a map
+     * come from a grouped or distinct read of the same column (ids are distinct), so no two of them
+     * are equal in that collation: every row is read by one statement, and mapped as one CASE over
+     * the whole map would map it. The caller runs them in one transaction. A row whose name the map
+     * lacks, which only a write committed since the names were read can hold, is read by none,
+     * where one CASE refuses its NULL: it is a write the copy may miss anyway (copyUp()).
+     *
+     * @param  array<int|string, int|string>                                    $map
+     * @param  \Closure(array{string, list<mixed>}, string): array{string, list<mixed>} $statement
+     * @return list<array{string, list<mixed>}>
+     */
+    private function perPart(string $column, array $map, \Closure $statement): array
+    {
+        if (DB::connection()->getDriverName() !== DbDialect::SQLSRV || count($map) <= self::CASE_BRANCHES) {
+            return [$statement($this->mapped($column, $map), '')];
+        }
+
+        $ids = str_ends_with($column, '_id');
+
+        return array_map(fn (array $part) => $statement($this->mapped($column, $part), " and {$column} in ("
+            . implode(', ', array_map(fn ($value) => $ids ? (string) (int) $value : $this->literal((string) $value), array_keys($part))) . ')'), array_chunk($map, self::CASE_BRANCHES, true));
+    }
+
+    /** SQL Server: $name as an nvarchar literal, quoted by the driver as a bound name is sent. */
+    private function literal(string $name): string
+    {
+        $name = DB::connection()->getPdo()->quote($name);
+
+        return str_starts_with($name, 'N') ? $name : 'N' . $name; // the driver's own N'…' or not, by its encoding
     }
 
     /** @return array<string, int>|array<int, string> value => id of $table's $column, every row (a dictionary of a few names) */
