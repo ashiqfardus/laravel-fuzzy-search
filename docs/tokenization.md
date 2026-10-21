@@ -86,7 +86,7 @@ class Article extends Model
 
 Umlauts, accents and other marks are handled per character by every algorithm regardless of
 locale — see "Unicode & Accent Insensitivity" below. `SearchBuilder::locale()` never selected a
-list or a collation; it is deprecated since v2.1.0, does nothing, and is removed in v3.0.0.
+list or a collation; it is deprecated since v3.0.0, does nothing, and is removed in v4.0.0.
 
 ### Unicode & Accent Insensitivity
 
@@ -107,7 +107,7 @@ With `unicode.accent_insensitive` on (the shipped default), every `Model::search
 
 Folding the term never folds the column. An unaccented `cafe` finds `Café` as a substring match (`simple`/`like`) only where the database folds the column: under an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or on PostgreSQL through the explicit `accentInsensitive()` with unaccent and `use_native_functions`. SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. The typo-tolerant algorithms may still reach `Café` from `cafe` as a one-letter typo. Where the database folded the match, scoring and highlighting fold the value too, so `jose` ranks `José Ramírez` as the prefix match it is and highlights `José` (the fold also takes `ł`, `đ`, `æ`, `œ` and `þ` to `l`, `d`, `ae`, `oe` and `th`, as MySQL 8's `utf8mb4_0900_ai_ci`, MariaDB's `uca1400_ai_ci` or `unaccent()` does, so `lukasz` highlights `Łukasz`): on MySQL/MariaDB when the connection's `collation` is accent-insensitive (any but a `_bin`, `_cs` or `_as_` one; it is the connection's setting that is read, not each column's), and on PostgreSQL with that opt-in. On SQL Server an `_AI` collation is not read, so a row it matched that way is scored and highlighted against the term as typed: it ranks lower and is untagged. SQLite's LIKE folds the case of ASCII letters only, so for a term with a non-ASCII character the LIKE path compares the column through the package's `fuzzy_lower()` (a PHP lower-case function registered on the connection): `лев` finds `Лев Толстой` there as it does on MySQL, at the cost of one PHP call per row and column, so such a term is slower on SQLite.
 
-Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm (`metaphone` encodes ASCII letters only, and searches a term whose metaphone code is empty, such as `Иван` or `H2O`, as a plain contains match), and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 2.1.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
+Search terms are handled per character, not per byte, so Bengali, Hindi, Thai and accented Latin work with every algorithm (`metaphone` encodes ASCII letters only, and searches a term whose metaphone code is empty, such as `Иван` or `H2O`, as a plain contains match), and the BM25 tokenizer keeps combining marks (vowel signs, virama, tone marks) attached to their letters. If you indexed such text with a release before 3.0.0, rebuild once with `fuzzy-search:rebuild "App\Models\Product" --fresh`.
 
 ---
 

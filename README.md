@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md) • [Upgrade v2.0→v2.1](docs/UPGRADE_v2.0_TO_v2.1.md)
+**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md) • [Upgrade v2.0→v3.0](docs/UPGRADE_v2_TO_v3.md)
 
 ## Features
 
@@ -91,9 +91,9 @@ Installs with different table prefixes can share a schema (or SQLite file): with
 > php artisan fuzzy-search:upgrade-v1   # scans your app/ for v1-era API usage
 > ```
 >
-> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md): every behaviour change there applies to you too.
+> → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2.0→v3.0 guide](docs/UPGRADE_v2_TO_v3.md): every behaviour change there applies to you too.
 
-> **Upgrading from v2.0.x?** Run the new migrations (`php artisan migrate`), then rebuild once
+> **Upgrading from v2.0.x?** 3.0 is a major release: it breaks code and configs written for 2.0, so read the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0` (a `^2.0` constraint never installs 3.0). Run the new migrations (`php artisan migrate`), then rebuild once
 > per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`) to pick up weighted BM25
 > ranking; a plain rebuild can run while the app indexes, and only `--fresh` needs nothing
 > indexing (see [Artisan Commands](docs/bm25.md#artisan-commands)). Read the guide's behaviour-changes list first: some calls now return
@@ -104,19 +104,19 @@ Installs with different table prefixes can share a schema (or SQLite file): with
 >   counted (about 3 minutes more); from 2.0.x, the table is first rewritten for two earlier
 >   migrations too (about 10 s per million postings each, some 30 minutes more at 6M rows). Index
 >   searches fail until it finishes: migrate under `php artisan down`, or empty the index and
->   rebuild it instead (see the guide's [Inverted index](docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-bm25) section, "A large index").
+>   rebuild it instead (see the guide's [Inverted index](docs/UPGRADE_v2_TO_v3.md#inverted-index-bm25) section, "A large index").
 >   On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty
 >   and take seconds: build each model's index once afterwards (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`).
+> - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit` to `true`;
+>   otherwise an index write inside one of your transactions can deadlock with your other
+>   transactions and reads of the same rows (see the guide's
+>   [Inverted index](docs/UPGRADE_v2_TO_v3.md#inverted-index-bm25) section).
 > - **Restart the queue workers right after migrating** (`php artisan queue:restart`,
 >   `horizon:terminate` under Horizon, `octane:reload` under Octane), and keep them from indexing
 >   until the new code serves. A `rebuild --fresh` a migration's warning asks for runs before the
 >   restart, since it needs nothing indexing.
-> - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit` to `true`;
->   otherwise an index write inside one of your transactions can deadlock with your other
->   transactions and reads of the same rows (see the guide's
->   [Inverted index](docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-bm25) section).
 >
-> → [Upgrade v2.0→v2.1 guide](docs/UPGRADE_v2.0_TO_v2.1.md)
+> → [Upgrade v2.0→v3.0 guide](docs/UPGRADE_v2_TO_v3.md)
 
 ---
 
@@ -439,7 +439,7 @@ User::search('joh')->get();   // matches "john", "johnny", "johanna"
 ```
 
 `partialMatch()` is kept as a no-op for API compatibility — there is nothing to switch on.
-`minMatchLength()` is deprecated since v2.1.0 and does nothing; set the minimum term length with
+`minMatchLength()` is deprecated since v3.0.0 and does nothing; set the minimum term length with
 the `min_search_length` config key; `typo_tolerance.min_word_length` is the shortest word the
 `fuzzy` algorithm and the BM25 typo expansion give typo tolerance to (shorter words still match,
 exactly).
@@ -523,7 +523,7 @@ Product::search('wireless mo')->suggest(5);
 
 `searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use the table scan when the column matters, on a builder whose only column is that one: `User::searchOn(User::query(), $term, ['name'])->suggestFrom('table')->suggest(5)`. `searchIn()` adds to the model's columns, so `User::search($term)->searchIn(['name'])` still scans every column `$searchable` declares (or auto-detection found); weigh one `0` to leave it out (`searchIn(['email' => 0])`).
 
-**Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Neither does a relation column the related model hides, or one under a relation the model hides, also where `searchableText()` indexes it under its dotted name. Declare that name in `$searchable['columns']`, as `'author.email'`, so the check knows it: a dotted name the hook gives undeclared gives the dictionary no word. A `morphTo` path's column (`commentable.title`) gives the dictionary no word at all: the class it reaches is each row's own. A `belongsToMany` pivot column (`'tags.note'` with `withPivot('note')`) gives words only where the related model shows its `pivot` and the pivot model shows the column, as `toArray()` serialises it. Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 2.1 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
+**Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Neither does a relation column the related model hides, or one under a relation the model hides, also where `searchableText()` indexes it under its dotted name. Declare that name in `$searchable['columns']`, as `'author.email'`, so the check knows it: a dotted name the hook gives undeclared gives the dictionary no word. A `morphTo` path's column (`commentable.title`) gives the dictionary no word at all: the class it reaches is each row's own. A `belongsToMany` pivot column (`'tags.note'` with `withPivot('note')`) gives words only where the related model shows its `pivot` and the pivot model shows the column, as `toArray()` serialises it. Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 3.0 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
 
 **Un-indexed models keep the table scan** — the v2.0 behaviour, proposing column values as stored:
 
@@ -676,7 +676,7 @@ $analytics = User::search('john')
 
 - **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale. An `extended()`/`searchBoolean()` query drops no stop words: every word in it stays a term of the query.
 - **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (word => its synonyms; case is ignored, so `'Laptop'` and `'laptop'`, or `'Ägypten'` and `'ägypten'`, are the same word, and the later one set wins; `synonymGroup()` words ignore case too) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
-- **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. The top-level `locale` config key (`'en'` by default) picks the list every other model's index drops (and the query-time list of a preset with `stop_words_enabled`), so out of the box the index drops the 14 English words of `stop_words.en`; to index every word, set `locale` to a code with no `stop_words` entry, or empty that locale's list, and rebuild. (`locale()` on the builder never selected either; it is deprecated since v2.1.0 and does nothing.)
+- **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. The top-level `locale` config key (`'en'` by default) picks the list every other model's index drops (and the query-time list of a preset with `stop_words_enabled`), so out of the box the index drops the 14 English words of `stop_words.en`; to index every word, set `locale` to a code with no `stop_words` entry, or empty that locale's list, and rebuild. (`locale()` on the builder never selected either; it is deprecated since v3.0.0 and does nothing.)
 - **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. Where the database folded the match, scoring and highlighting fold the value too, so `jose` ranks `José Ramírez` as the prefix match it is and highlights `José` (the fold also takes `ł`, `đ`, `æ`, `œ` and `þ` to `l`, `d`, `ae`, `oe` and `th`, as MySQL 8's `utf8mb4_0900_ai_ci`, MariaDB's `uca1400_ai_ci` or `unaccent()` does, so `lukasz` highlights `Łukasz`): on MySQL/MariaDB when the connection's `collation` is accent-insensitive (any but a `_bin`, `_cs` or `_as_` one; it is the connection's setting that is read, not each column's), and on PostgreSQL with that opt-in. On SQL Server an `_AI` collation is not read, so a row it matched that way is scored and highlighted against the term as typed: it ranks lower and is untagged. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
 - Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
 
@@ -705,7 +705,7 @@ $users = User::search('john')
 
 Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`. A value is highlighted at up to `highlighting.max_matches` occurrences (100; `0` for no limit), and the rest of it follows untagged, so a long text that repeats the term cannot blow up `_matches` and `_highlighted`.
 
-Every value in `_highlighted` is safe to render as HTML: a matched column is wrapped in the highlight tag (and escaped first), and — since v2.1.0 — a column that did not match is HTML-escaped too, so the whole array can be echoed with `{!! !!}` without an extra `e()` call.
+Every value in `_highlighted` is safe to render as HTML: a matched column is wrapped in the highlight tag (and escaped first), and — since v3.0.0 — a column that did not match is HTML-escaped too, so the whole array can be echoed with `{!! !!}` without an extra `e()` call.
 
 `_highlighted` and `_matches` hold only columns the row's `toArray()` would show: a column in `$hidden`, or outside a non-empty `$visible`, is still searched and scored but never highlighted. For a relation column the related model's `$hidden`/`$visible` apply too, and so does the parent hiding the relation (`author.name` is left out when `Author` hides `name` or the post hides `author`). The row's own state is read when the search runs, so `makeHidden()`/`makeVisible()` in a `retrieved` listener counts, and `FuzzySearchResource` applies the row's rule again when it renders, so a `makeHidden()` after the search holds there as well, and so does an `unsetRelation()`: a relation path the row no longer holds a related row for is left out. The same rule keeps hidden columns out of `debugScore()`'s `_debug` (`columns`, `weights` and `column_scores`), and `suggest()`'s table scan never offers a word from a hidden column: a column the model hides by `$hidden`/`$visible` is left out of the scan's matching, so rows that match only through it do not crowd out the rows that can yield a suggestion, and a model whose every searchable column is hidden gets `[]` without a query.
 
@@ -785,9 +785,9 @@ User::search('john')->cache(0)->get();
 ],
 ```
 
-`cache.ttl` counts **seconds**; `cache($minutes)` counts **minutes** and overrides it for that query; `cache()` or `cache(null)` caches for `cache.ttl` (before 2.1 `cache(null)` meant "not cached"); `cache(0)` turns caching off for that query, also when `cache.enabled` is on. With `cache.enabled` on, "every search" means every `get()`, `first()` and `simplePaginate()`: `paginate()`, `count()` and `getFacets()` are never cached, and `FederatedSearch::paginate()` reads fresh, like `paginate()`.
+`cache.ttl` counts **seconds**; `cache($minutes)` counts **minutes** and overrides it for that query; `cache()` or `cache(null)` caches for `cache.ttl` (before 3.0 `cache(null)` meant "not cached"); `cache(0)` turns caching off for that query, also when `cache.enabled` is on. With `cache.enabled` on, "every search" means every `get()`, `first()` and `simplePaginate()`: `paginate()`, `count()` and `getFacets()` are never cached, and `FederatedSearch::paginate()` reads fresh, like `paginate()`.
 
-> **Before 2.1 the `cache` block was never read.** If your published `config/fuzzy-search.php` has `'enabled' => true` (the old README showed it), 2.1 caches every `get()`, `first()` and `simplePaginate()` for `ttl` **seconds**, and a `ttl` you wrote as minutes is now read as seconds. Set `'enabled' => false` to keep 2.0's behaviour.
+> **Before 3.0 the `cache` block was never read.** If your published `config/fuzzy-search.php` has `'enabled' => true` (the old README showed it), 3.0 caches every `get()`, `first()` and `simplePaginate()` for `ttl` **seconds**, and a `ttl` you wrote as minutes is now read as seconds. Set `'enabled' => false` to keep 2.0's behaviour.
 
 A key you pass is used as given, so `Cache::forget('user-search-john')` removes it. A generated key starts with `cache.prefix` and covers everything that changes the result: the term, columns and weights, algorithm and options, filters, forwarded `where()`/joins/scopes (the SQL and its bindings), limit and offset, `orderBy()`, highlight tags, `withRelevance()`, `debugScore()`, the index model class, the model class, the names of its eager loads, where it runs — connection name, driver, host, port, database, table prefix and, on PostgreSQL, the `search_path` (one extra `select current_setting('search_path')` per cached search) — and the whole `fuzzy-search` config. Tenants on separate connections, databases or schemas therefore never share an entry, and changing any config value (`min_percentage`, `max_candidates`, a driver option, `cache.ttl` itself) starts a fresh set of entries; the old ones expire with their TTL. A key you name changes only when you change it. A search with a `customScore()` closure is cached only under a key you name: a closure cannot be part of a generated key.
 
@@ -906,7 +906,7 @@ The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestion
 
 ## Livewire Recipe
 
-A search-as-you-type box needs only a client-side debounce — `wire:model.live.debounce.300ms` — plus `->asYouType()` and `->suggest()` on the builder. This replaces `SearchBuilder::debounce()`, deprecated since v2.1.0: by the time the builder runs server-side, the request has already arrived, so a server-side debounce can't do anything.
+A search-as-you-type box needs only a client-side debounce — `wire:model.live.debounce.300ms` — plus `->asYouType()` and `->suggest()` on the builder. This replaces `SearchBuilder::debounce()`, deprecated since v3.0.0: by the time the builder runs server-side, the request has already arrived, so a server-side debounce can't do anything.
 
 This is documentation only — no such component ships with the package or the demo app.
 
@@ -987,7 +987,7 @@ User::search($query)
 
 One search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds, with 100 to spare for your own `where()` and `filter()` values; those are not counted. Each term (every word under `tokenize()`, every `extended()` leaf, its accent-free form, and each synonym, which an `extended()` query does not add) is matched on each column with up to `max_patterns` LIKE patterns. When the patterns would pass 2,000 bindings, every term-and-column pair gets an equal share and always keeps its plain contains pattern, so a very long query matches fewer typo variants instead of failing. A query that needs more than 2,000 values even at one pattern per pair throws `QuerySyntaxException` ("The query is too complex…"). A query within the budget builds the same SQL as before. The multi-column helpers (`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes, `tableSearch()`) share the same budget across their columns.
 
-> `debounce()` is deprecated and does nothing: a request that has already reached the server cannot be debounced. Debounce on the client instead (`wire:model.live.debounce.300ms` in Livewire, or a timer in JavaScript). It will be removed in v3.0.0.
+> `debounce()` is deprecated and does nothing: a request that has already reached the server cannot be debounced. Debounce on the client instead (`wire:model.live.debounce.300ms` in Livewire, or a timer in JavaScript). It will be removed in v4.0.0.
 
 ### SQL Injection Safety
 
@@ -1040,7 +1040,7 @@ try {
 
 ### `FuzzySearchExecuted`
 
-Fired after every `->get()` or `->paginate()` call, and — since v2.1 — after every in-memory search too (`FuzzySearch::on($items)->search(...)->get()`). Useful for monitoring search latency and volume in production.
+Fired after every `->get()` or `->paginate()` call, and — since v3.0 — after every in-memory search too (`FuzzySearch::on($items)->search(...)->get()`). Useful for monitoring search latency and volume in production.
 
 An in-memory search called with an empty term (which throws, or with `allow_empty_search` returns the items unsearched) or with no `searchIn()` columns (which returns nothing) fires no event: nothing was searched, so there's nothing to log. A term shorter than `min_search_length` fires none on any search API, in memory or not. Scout searches never fire it, and neither does a `FederatedSearch` model without the `Searchable` trait (the query macros it is searched with fire no event).
 
@@ -1427,7 +1427,7 @@ Measured on one laptop database at a time, with rows of about 16 indexed words e
 
 - **Size:** about 1.5 GB of index per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows; the earlier postings layout took 2.6 times as much on MySQL and 1.4 times on PostgreSQL), several times the table it indexes. The postings table is most of it. `fuzzy_index_model_terms` holds one row per model and word it indexes, so where models share few words it has about as many rows as the dictionary (5.8 GB at 24M rows on PostgreSQL, 0a05120, beside the dictionary's 3.4 GB; 734 MB at 6M rows on MySQL).
 - **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MariaDB with a 2 GB buffer pool, sixteen searchers managed 198 searches a second at 1M rows and 48 at 3M, once the index outgrew the pool.
-- **Upgrading to 2.1:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL, then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL, about 45 minutes for 24M on PostgreSQL (about 10 with a warm cache), about 70 s for 1M on SQL Server); the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2.0_TO_v2.1.md) (`php artisan down`, or flush and rebuild a large index instead). From 2.0.x only MySQL and MariaDB have an index to copy: on PostgreSQL and SQL Server 2.0.x could not write one, so the PostgreSQL and SQL Server times are for an index a pre-release 2.1 build wrote, and from 2.0.x the migrations take seconds there.
+- **Upgrading to 3.0:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL, then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL, about 45 minutes for 24M on PostgreSQL (about 10 with a warm cache), about 70 s for 1M on SQL Server); the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) (`php artisan down`, or flush and rebuild a large index instead). From 2.0.x only MySQL and MariaDB have an index to copy: on PostgreSQL and SQL Server 2.0.x could not write one, so the PostgreSQL and SQL Server times are for an index a pre-release 3.0 build wrote, and from 2.0.x the migrations take seconds there.
 - **Index builds:** one process rebuilt 1M rows on MariaDB in 199 s, and four built 12M rows on MySQL in 1 hour 55 minutes (1,742 rows a second). SQL Server writes one index chunk at a time per database, so four processes indexed 209 to 225 rows a second there at 1M rows. `rebuild --async` only queues the work: at 3M rows on SQL Server it queued 6,001 jobs in 21 s.
 
 | Database (memory for the engine) | Largest table measured | First page of a rare, mid or common word | Slowest search | Searches or commands past 120 s |
@@ -1437,7 +1437,7 @@ Measured on one laptop database at a time, with rows of about 16 indexed words e
 | PostgreSQL 16 (4 GB `shared_buffers`) | 24M rows | 9 ms, 426 ms, 0.93 s | page 500 of a mid word under `orderBy()` and `paginate()`, 3.2 s | none |
 | SQL Server 2022 (4 GB max server memory; on a separate Windows PC with an NVMe disk, over the local network) | 3M rows | 22 ms, 178 ms, 0.51 s (under `orderBy()`: 28 ms to 0.68 s) | three common words together, 1.5 s | none |
 
-Each row is the largest table measured on that database, on a 2.1.0 release candidate (MySQL on 5dc853c, MariaDB and SQL Server on 115fb66, PostgreSQL on 0a05120). Larger tables were not tried, so these sizes are not limits.
+Each row is the largest table measured on that database, on a 3.0.0 release candidate (MySQL on 5dc853c, MariaDB and SQL Server on 115fb66, PostgreSQL on 0a05120). Larger tables were not tried, so these sizes are not limits.
 
 The LIKE algorithms scan the table: on MariaDB at 1M rows (fb82c82), `simple` took 0.79 s, `fuzzy` 17 s and `levenshtein` 44 s. Keep them for tables under the sizes in the [Algorithm Comparison](#algorithm-comparison), or narrow them with a selective `where()` (a tenant's 0.1% of 1M rows: 20 ms).
 

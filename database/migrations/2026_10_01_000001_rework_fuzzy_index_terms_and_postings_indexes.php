@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Schema;
  * the dictionary (1.3 s a term at 6M rows on MySQL). Through this index it read each length's most
  * common words in index order. The id is in the key for PostgreSQL: InnoDB, SQL Server and SQLite
  * carry the row id in every index already, but PostgreSQL would sort the whole tie group at the
- * cut, usually most words of a length. An earlier 2.1 build of this migration made the index
+ * cut, usually most words of a length. An earlier 3.0 build of this migration made the index
  * without the id (fuzzy_index_terms_term_length_doc_count_index); it is replaced. Nothing else
  * filters on term_length. Since 2026_10_20_000001 nothing reads this index either: every
  * model-scoped dictionary read goes to fuzzy_index_model_terms, and that migration drops it.
@@ -40,7 +40,7 @@ return new class extends Migration
     public $withinTransaction = false;
 
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
-    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
+    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 3.0 build's
     private const LENGTH          = 'fuzzy_index_terms_term_length_index';
     private const TERM_MODEL      = 'postings_term_model_idx';
 

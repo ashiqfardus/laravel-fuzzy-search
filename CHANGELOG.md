@@ -7,12 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1.0] — 2026-09-30
+## [3.0.0] — 2026-09-30
 
-2.1 adds relationship search, a typo-tolerant BM25 index with column weights and a dictionary per model, federated pagination, persisted search analytics, Filament and JSON API integrations and new tokenizers. It also fixes many 2.0.x defects, a few of them security issues. Some existing calls now return, throw or cache differently, and the new migrations rewrite the index tables. Read the [upgrade guide][u] (`docs/UPGRADE_v2.0_TO_v2.1.md` in the package) before you upgrade: it opens with a checklist and every behaviour change, and it is the full reference for each line below.
+**3.0.0 is a major release. It breaks code and configs written for 2.0, so read the [upgrade guide][u] before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0` (a `^2.0` constraint never installs 3.0).** It adds relationship search, a typo-tolerant BM25 index with column weights and a dictionary per model, federated pagination, persisted search analytics, Filament and JSON API integrations and new tokenizers. It also fixes many 2.0.x defects, a few of them security issues. Some existing calls now return, throw or cache differently, and the new migrations rewrite the index tables. Read the [upgrade guide][u] (`docs/UPGRADE_v2_TO_v3.md` in the package) before you upgrade: it opens with a checklist and every behaviour change, and it is the full reference for each line below.
 
 ### Upgrade notes (read first)
 
+- **This is a major release.** Some calls now throw, return other rows or cache where 2.0 did not, a published 2.0 config takes effect for keys 2.0 ignored, and the migrations rewrite the index tables. The upgrade guide lists every break and opens with a checklist. ([guide][u])
 - **Plan the migrations.** Eleven new migrations; ten change the index tables. On MySQL and MariaDB they take a while (the compact postings migration alone takes about 22 minutes for 6M rows on MySQL), and index searches fail until they finish: migrate under `php artisan down` with the indexing workers stopped, or empty the index and rebuild instead. On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty and take seconds; build each model's index once afterwards with `fuzzy-search:rebuild`. ([guide][u-checklist])
 - **Upgrade order.** Stop the indexing workers and saves, `migrate`, then `rebuild --fresh` each model a migration's warning names (nothing may be indexing), then restart the workers and Octane, then run a plain `rebuild` of every other indexed model for weighted ranking (it runs with writers on). ([guide][u-checklist])
 - **Empty terms throw everywhere.** `''` or whitespace throws `EmptySearchTermException` from `count()`, `paginate()`, `getFacets()` and `FuzzySearch::on()` too, unless `allow_empty_search` is on. ([guide][u-exceptions])
@@ -20,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`orderBy()` on the builder is the result order on every path.** The LIKE path re-sorted it away and the extended and index paths ignored it. To shape only the candidate window, order the underlying query: `->query(fn ($q) => $q->orderBy(...))`. ([guide][u-search])
 - **`paginate()` ranks across up to `max_candidates` rows before slicing** (2.0 ranked within the page), and works with `extended()`. ([guide][u-search])
 - **The SQL candidate order changed with an untouched config.** It moves from 2.0.1's hard-coded 100/50/10 (exact/prefix/contains) to `scoring.*`, 100/80/60. PHP rescoring keeps 2.0's values, but a search matching more than `max_candidates` rows (1,000 by default) can pick a different window and top page. ([guide][u-config])
-- **Inert config keys are now read:** `scoring.*`, `highlighting.*`, `performance.max_patterns`, `similar_text.min_percentage`, `cache.*`, `synonyms` and `unicode.normalize`. A config published from 2.0 has `'normalize' => true`, which now NFC-normalises every term. ([guide][u-config])
+- **Inert config keys are now read:** `scoring.*`, `highlighting.*`, `performance.max_patterns`, `similar_text.min_percentage`, `cache.*`, `synonyms` and `unicode.normalize`. A config published from 2.0 has `'normalize' => true`, which now NFC-normalises every term. A published 2.0 `scoring` block (`prefix_match` 50, `contains` 25, `fuzzy_match` 10) now ranks LIKE results, where a fresh install scores 80, 60 and 50: delete the block to take the new defaults. ([guide][u-config])
 - **The `cache.*` config is live.** A published `'enabled' => true` caches every search, `ttl` counts seconds, and every cache key changed. An entry holds row keys and scores, and a hit re-reads the rows for the current request. ([guide][u-caching])
 - **`paginate()` and `simplePaginate()` clamp `perPage`** to between 1 and `max_candidates` on every path, `FederatedSearch` included; the index path clamped at 100. ([guide][u-pages])
 - **`similar_text` enforces `similar_text.min_percentage` (70)**, so long columns return far fewer rows. `0` restores 2.0's results. ([guide][u-search])
@@ -99,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Typo expansion, `asYouType()`, `suggest()`, `didYouMean()` and BM25 document frequency read each model's own words and counts in `fuzzy_index_model_terms`, one word length at a time through its `(model_type_id, term_length, doc_count, term_id)` key, newest word first among equal counts. Another model's words no longer crowd a model's own out, and the cost no longer grows with the shared dictionary. `fuzzy_index_terms.doc_count` is a total across models that no search reads. ([guide][u-bm25])
 - The postings table is compact and clustered by word, with each document's length in the posting. A common word is read as one range: on MySQL at 12M rows its first page takes 0.59 s, and three such words 1.6 s (at 6M rows the old layout took 43 s, and timed out). The index takes about 1.5 GB per million rows on MySQL and 2.9 GB on PostgreSQL (measured at 300,000 rows). ([sizing][r-sizing])
-- The index stores one posting per (term, column), the column by id through `fuzzy_index_columns`. Postings from before 2.1 keep an empty column, which `fuzzy-search:status` reports, and a plain `rebuild` replaces them. ([guide][u-weighted])
+- The index stores one posting per (term, column), the column by id through `fuzzy_index_columns`. Postings from before 3.0 keep an empty column, which `fuzzy-search:status` reports, and a plain `rebuild` replaces them. ([guide][u-weighted])
 - In relevance order on the index path, a model that a one-to-many join repeats is served once. ([guide][u-bm25])
 - `maxPatterns()` and `performance.max_patterns` cap the pattern list of every pattern-based algorithm. The trigram fallback's cap moves from a hard-coded 10 to that key (100). ([guide][u-api])
 - Multi-term `extended()` queries score each leaf term on its own, and an accented term and its folded form count once (the better of the two). ([guide][u-search])
@@ -120,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
-- `debounce()`, `locale()` and `minMatchLength()` raise `E_USER_DEPRECATED`; they were never implemented and will be removed in v3.0.0. `partialMatch()` is documented as a no-op, not deprecated. ([guide][u-deprecations])
+- `debounce()`, `locale()` and `minMatchLength()` raise `E_USER_DEPRECATED`; they were never implemented and will be removed in v4.0.0. `partialMatch()` is documented as a no-op, not deprecated. ([guide][u-deprecations])
+- `ReindexModelJob`, `BaseDriver::getRelevanceExpression()` and `BaseDriver::getRelevanceBindings()` have been deprecated since 2.0 with removal announced for v3.0.0; nothing is removed in 3.0.0, and the removal is now planned for v4.0.0. ([guide][u-deprecations])
 
 ### Removed
 
@@ -242,48 +244,48 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 - **Invalid UTF-8 and NUL bytes** (2.0.x and earlier): `?q=john%C3` was a 500 on PostgreSQL and SQL Server, and a NUL inside a term matched every row on SQLite, PostgreSQL and SQL Server. Both are dropped from every term. ([guide][u-search])
 - **PHP rescoring was a CPU DoS** (2.0.x): `similar_text()` and `levenshtein()` compared whole values, so long values or terms took seconds, in `FuzzySearch::on()` too. They compare at most 255 characters. ([guide][u-search])
 
-[u]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md
-[u-checklist]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#upgrade-checklist
-[u-search]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#search-results
-[u-exceptions]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#exceptions
-[u-caching]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#caching
-[u-indexing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-indexing-and-commands
-[u-federated]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#federated-scout-and-in-memory-search
-[u-api]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#config-and-php-api
-[u-highlighted]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#_highlighted-is-now-escaped-for-every-column
-[u-config]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#config-keys-that-now-take-effect
-[u-removed]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#removed-config-keys
-[u-deprecations]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#deprecations
-[u-pages]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#paginate-page-sizes
-[u-dbfixes]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#database-fixes-you-get-for-free
-[u-relations]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#relationship-search
-[u-extended]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#extended-syntax--and-field-are-operators-now
-[u-bm25]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#inverted-index-bm25
-[u-weighted]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#weighted-bm25-column-weights-on-the-index
-[u-analytics]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#search-analytics-new
-[u-suggest]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#suggest-on-an-indexed-model-now-completes-from-the-dictionary
-[u-tokenizers]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#tokenizers-per-model-pipelines-accent-folding-and-stop-word-files-new
-[u-filament]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/UPGRADE_v2.0_TO_v2.1.md#filament-integration-json-api-resources-and-lastexecution-new
-[d-bm25-how]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#how-it-works
-[d-bm25-setup]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#production-setup
-[d-bm25-typo]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index
-[d-bm25-weights]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#column-weights-on-the-index-bm25f-lite
-[d-bm25-commands]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#artisan-commands
-[d-bm25-sti]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#single-table-inheritance
-[d-bm25-accessors]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/bm25.md#searchable-fields-backed-by-accessors
-[d-relations]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/relationships.md#searching-through-relationships
-[d-extended]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/extended-syntax.md#typo-tolerant-and-field-scoped-terms
-[d-analytics]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/analytics.md#persisted-search-analytics
-[d-tokenizers]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/tokenization.md#tokenizers
-[d-stemming]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/tokenization.md#stemming-optional
-[d-filament]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/integrations.md#filament-integration
-[d-resources]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/integrations.md#json-api-resources
-[d-scout]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/docs/integrations.md#scout-driver
-[r-chaining]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/README.md#chaining-eloquent
-[r-federation]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/README.md#multi-model-federation-search
-[r-recency]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/README.md#recency-boost
-[r-sizing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/README.md#sizing-the-index
-[r-shadow]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v2.1.0/README.md#shadow-columns
+[u]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md
+[u-checklist]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#upgrade-checklist
+[u-search]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#search-results
+[u-exceptions]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#exceptions
+[u-caching]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#caching
+[u-indexing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#inverted-index-indexing-and-commands
+[u-federated]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#federated-scout-and-in-memory-search
+[u-api]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#config-and-php-api
+[u-highlighted]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#_highlighted-is-now-escaped-for-every-column
+[u-config]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#config-keys-that-now-take-effect
+[u-removed]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#removed-config-keys
+[u-deprecations]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#deprecations
+[u-pages]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#paginate-page-sizes
+[u-dbfixes]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#database-fixes-you-get-for-free
+[u-relations]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#relationship-search
+[u-extended]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#extended-syntax--and-field-are-operators-now
+[u-bm25]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#inverted-index-bm25
+[u-weighted]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#weighted-bm25-column-weights-on-the-index
+[u-analytics]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#search-analytics-new
+[u-suggest]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#suggest-on-an-indexed-model-now-completes-from-the-dictionary
+[u-tokenizers]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#tokenizers-per-model-pipelines-accent-folding-and-stop-word-files-new
+[u-filament]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/UPGRADE_v2_TO_v3.md#filament-integration-json-api-resources-and-lastexecution-new
+[d-bm25-how]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#how-it-works
+[d-bm25-setup]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#production-setup
+[d-bm25-typo]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#typo-tolerance-as-you-type-synonyms-and-stop-words-on-the-index
+[d-bm25-weights]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#column-weights-on-the-index-bm25f-lite
+[d-bm25-commands]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#artisan-commands
+[d-bm25-sti]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#single-table-inheritance
+[d-bm25-accessors]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/bm25.md#searchable-fields-backed-by-accessors
+[d-relations]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/relationships.md#searching-through-relationships
+[d-extended]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/extended-syntax.md#typo-tolerant-and-field-scoped-terms
+[d-analytics]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/analytics.md#persisted-search-analytics
+[d-tokenizers]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/tokenization.md#tokenizers
+[d-stemming]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/tokenization.md#stemming-optional
+[d-filament]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#filament-integration
+[d-resources]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#json-api-resources
+[d-scout]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#scout-driver
+[r-chaining]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#chaining-eloquent
+[r-federation]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#multi-model-federation-search
+[r-recency]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#recency-boost
+[r-sizing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#sizing-the-index
+[r-shadow]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#shadow-columns
 
 ## [2.0.1] — 2026-09-16
 
@@ -490,7 +492,7 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
 
-[2.1.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.1...v2.1.0
+[3.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.1...v3.0.0
 [2.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v2.0.0
 [1.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v1.0.0...v1.0.1

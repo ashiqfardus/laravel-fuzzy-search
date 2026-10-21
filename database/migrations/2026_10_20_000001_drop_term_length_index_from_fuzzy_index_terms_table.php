@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Schema;
  * else filters or orders the shared dictionary by term_length or doc_count. Yet every index write
  * that changed a word's doc_count moved the word's entry in it, and on MySQL/MariaDB took locks in
  * it. A migration of its own, so an install that ran the migrations before it drops it too. An
- * earlier 2.1 build made the index without the id (fuzzy_index_terms_term_length_doc_count_index),
+ * earlier 3.0 build made the index without the id (fuzzy_index_terms_term_length_doc_count_index),
  * which 2026_10_02_000001 replaces when it runs; an install that still holds it loses it here too.
  *
  * Dropping an index reads no rows: quick on every database. Outside a transaction, as
@@ -29,7 +29,7 @@ return new class extends Migration
     public $withinTransaction = false;
 
     private const LENGTH_COUNT_ID = 'fuzzy_index_terms_term_length_doc_count_id_index';
-    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 2.1 build's
+    private const LENGTH_COUNT    = 'fuzzy_index_terms_term_length_doc_count_index'; // an earlier 3.0 build's
 
     public function up(): void
     {

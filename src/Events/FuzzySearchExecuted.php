@@ -4,7 +4,7 @@ namespace Ashiqfardus\LaravelFuzzySearch\Events;
 
 /**
  * Fired once per executed search (get(), paginate(), in-memory). The first five parameters are
- * the v2.0 shape; the rest were appended in v2.1 with defaults so existing listeners and
+ * the v2.0 shape; the rest were appended in v3.0 with defaults so existing listeners and
  * third-party dispatchers keep working.
  */
 class FuzzySearchExecuted

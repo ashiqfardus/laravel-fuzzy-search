@@ -553,7 +553,7 @@ is a tag plus release notes, not a file edit.
 
 1. **CI green on the release commit.** Every row of `test-sqlite`, `test-mysql`, `test-pgsql`,
    `test-mariadb`, `test-sqlsrv`, both `test-scout10` legs and `test-lowest`, and all three `test-filament` legs.
-2. **CHANGELOG.** Give `[x.y.z]` its date (`## [2.1.0] — 2026-09-18`, em-dash), keep the
+2. **CHANGELOG.** Give `[x.y.z]` its date (`## [3.0.0] — 2026-09-18`, em-dash), keep the
    subsection order (Upgrade notes / Database migrations, when the release has them, then
    Added / Changed / Deprecated / Removed / Fixed / Security), remove any `PENDING` comment, and add the
    compare link at the bottom: `[x.y.z]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v<prev>...v<new>`.
