@@ -376,7 +376,7 @@ class SearchBuilder
 
     /**
      * Throws for a column a request could probe the model's withheld values through (searchIn(),
-     * filter(), filterIn() and facet() may be handed request input): one in the $hidden of the
+     * filter(), filterIn(), facet() and orderBy() may be handed request input): one in the $hidden of the
      * model it belongs to, in any letter case, or named like a secret (SearchableColumns::
      * isSecretName(), the list auto-detection skips), unless the model lists it, as written, in
      * $searchable['columns']. A relation path is judged on the related model, reached through
@@ -391,12 +391,6 @@ class SearchBuilder
         }
 
         $model = $this->query->getModel();
-
-        // Declared config only, as relationPath() reads it: an auto-detected model would run schema SQL here.
-        if (method_exists($model, 'hasDeclaredSearchableColumns') && $model->hasDeclaredSearchableColumns()
-            && in_array($column, $model->getSearchableColumns(), true)) {
-            return;
-        }
 
         $segments = explode('.', explode('->', $column, 2)[0]);
         $leaf     = array_pop($segments);
@@ -418,13 +412,7 @@ class SearchBuilder
             }
         }
 
-        if (SearchableColumns::isSecretName($leaf)
-            || ($owner !== null && in_array(strtolower($leaf), array_map('strtolower', $owner->getHidden()), true))) {
-            throw new \InvalidArgumentException(
-                "Column [{$column}] is hidden or named like a secret: declare it in " . get_class($model)
-                . "'s \$searchable['columns'] to make it searchable or filterable."
-            );
-        }
+        SearchableColumns::guardExposed($model, $owner, $column, $leaf);
     }
 
     /** @return array<string, string> searchIn() column => column for direct (non-relation) targets */
@@ -1135,6 +1123,7 @@ class SearchBuilder
      */
     public function orderBy(string $column, string $direction = 'asc'): self
     {
+        $this->guardExposedColumn($column); // a request's ?sort= orders by the value: see guardExposedColumn()
         $this->sortBy[] = compact('column', 'direction');
         return $this;
     }

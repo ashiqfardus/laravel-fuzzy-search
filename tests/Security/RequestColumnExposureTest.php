@@ -119,6 +119,8 @@ class RequestColumnExposureTest extends TestCase
             'facet secret'              => [fn (SearchBuilder $b) => $b->facet('api_token'), 'api_token'],
             'filter secret'             => [fn (SearchBuilder $b) => $b->filter('api_token', 'tok-ann'), 'api_token'],
             'filterIn secret'           => [fn (SearchBuilder $b) => $b->filterIn('api_token', ['tok-ann']), 'api_token'],
+            'orderBy hidden'            => [fn (SearchBuilder $b) => $b->orderBy('ssn'), 'ssn'],
+            'orderBy secret'            => [fn (SearchBuilder $b) => $b->orderBy('api_token', 'desc'), 'api_token'],
         ];
     }
 
@@ -174,5 +176,44 @@ class RequestColumnExposureTest extends TestCase
         $this->assertSame(['Bo Ray'], ExposeAuthor::search('bo@')->searchIn(['email'])->filter('email', 'bo@site.test')->filterIn('id', [2])->get()->pluck('name')->all());
         $this->assertSame(['ann@site.test' => 1], ExposeAuthor::search('ann')->facet('email')->getFacets()['email']);
         $this->assertSame(['Second post'], ExposePost::search('bo ray')->searchIn(['author.name'])->get()->pluck('title')->all());
+    }
+
+    /** @return array<string, array{\Closure(\Illuminate\Database\Eloquent\Builder): mixed, string}> */
+    public static function macroColumns(): array
+    {
+        return [
+            'orderByFuzzy hidden'    => [fn ($q) => $q->orderByFuzzy('ssn', '123-45-6789'), 'ssn'],
+            'orderByFuzzy secret'    => [fn ($q) => $q->orderByFuzzy('api_token', 'tok-ann'), 'api_token'],
+            'orderByFuzzy qualified' => [fn ($q) => $q->orderByFuzzy('expose_authors.ssn', '123'), 'expose_authors.ssn'],
+            'whereFuzzy hidden'      => [fn ($q) => $q->whereFuzzy('ssn', '123-45-6789'), 'ssn'],
+            'orWhereFuzzy secret'    => [fn ($q) => $q->orWhereFuzzy('api_token', 'tok-ann'), 'api_token'],
+            'whereFuzzyMultiple'     => [fn ($q) => $q->whereFuzzyMultiple(['name', 'SSN'], 'ann'), 'SSN'],
+            'fuzzySearch'            => [fn ($q) => $q->fuzzySearch('ssn', '123'), 'ssn'],
+        ];
+    }
+
+    #[DataProvider('macroColumns')]
+    public function test_the_eloquent_fuzzy_macros_refuse_a_hidden_or_secret_named_column(\Closure $call, string $column): void
+    {
+        foreach ([ExposeAuthor::class, ExposeAutoAuthor::class] as $class) {
+            try {
+                $call($class::query())->get();
+                $this->fail("{$class}: [{$column}] was accepted");
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString("[{$column}]", $e->getMessage());
+                $this->assertStringContainsString("\$searchable['columns']", $e->getMessage());
+            }
+        }
+    }
+
+    public function test_the_eloquent_fuzzy_macros_take_a_declared_or_ordinary_column(): void
+    {
+        $this->assertCount(2, ExposeDeclaringAuthor::query()->orderByFuzzy('ssn', '123-45-6789')->get());
+        $this->assertContains('Ann Lee', ExposeDeclaringAuthor::query()->whereFuzzy('ssn', '123-45-6789')->pluck('name')->all());
+        $this->assertCount(2, ExposeAuthor::query()->orderByFuzzy('name', 'bo ray')->get());
+        $this->assertSame(['Ann Lee', 'Bo Ray'], ExposeAuthor::query()->orderBy('name')->get()->pluck('name')->all());
+
+        // A query builder has no $hidden or $searchable['columns'] to judge by: not checked, as in the builder.
+        $this->assertNotNull(DB::table('expose_authors')->orderByFuzzy('ssn', '123')->first());
     }
 }

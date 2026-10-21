@@ -5,6 +5,7 @@ namespace Ashiqfardus\LaravelFuzzySearch;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
+use Ashiqfardus\LaravelFuzzySearch\Support\SearchableColumns;
 use Ashiqfardus\LaravelFuzzySearch\Console\IndexCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\ClearCommand;
 use Ashiqfardus\LaravelFuzzySearch\Console\BenchmarkCommand;
@@ -170,33 +171,50 @@ class FuzzySearchServiceProvider extends ServiceProvider
     {
         $fuzzySearch = $this->app->make(FuzzySearch::class);
 
+        // A request can hand these a column, and they match or order rows by its value: refuse one
+        // the model hides or names like a secret, as SearchBuilder does (SearchableColumns::guardExposed()).
+        // The column is the model's own, or a joined table's, judged by name alone. The Query
+        // Builder macros have no model to judge by and are not checked.
+        $guard = function (EloquentBuilder $builder, string $column): void {
+            $model = $builder->getModel();
+            $parts = explode('.', explode('->', $column, 2)[0]);
+            $leaf  = array_pop($parts);
+            $owner = $parts === [] || end($parts) === $model->getTable() ? $model : null;
+            SearchableColumns::guardExposed($model, $owner, $column, $leaf);
+        };
+
         // Basic fuzzy where for Eloquent
-        EloquentBuilder::macro('whereFuzzy', function (string $column, string $value, ?string $algorithm = null, ?array $options = []) use ($fuzzySearch) {
+        EloquentBuilder::macro('whereFuzzy', function (string $column, string $value, ?string $algorithm = null, ?array $options = []) use ($fuzzySearch, $guard) {
+            $guard($this, $column);
             $fuzzySearch->applyFuzzyWhere($this->getQuery(), $column, $value, $algorithm, $options);
             return $this;
         });
 
         // Fuzzy where with OR for Eloquent
-        EloquentBuilder::macro('orWhereFuzzy', function (string $column, string $value, ?string $algorithm = null, ?array $options = []) use ($fuzzySearch) {
+        EloquentBuilder::macro('orWhereFuzzy', function (string $column, string $value, ?string $algorithm = null, ?array $options = []) use ($fuzzySearch, $guard) {
+            $guard($this, $column);
             $fuzzySearch->applyFuzzyWhere($this->getQuery(), $column, $value, $algorithm, $options, 'or');
             return $this;
         });
 
         // Fuzzy search across multiple columns for Eloquent
-        EloquentBuilder::macro('whereFuzzyMultiple', function (array $columns, string $value, ?string $algorithm = null, ?array $options = []) use ($fuzzySearch) {
+        EloquentBuilder::macro('whereFuzzyMultiple', function (array $columns, string $value, ?string $algorithm = null, ?array $options = []) use ($fuzzySearch, $guard) {
+            array_map(fn ($column) => $guard($this, (string) $column), $columns);
             $fuzzySearch->applyFuzzyWhereMultiple($this->getQuery(), $columns, $value, $algorithm, $options);
             return $this;
         });
 
         // Order by fuzzy relevance for Eloquent
-        EloquentBuilder::macro('orderByFuzzy', function (string $column, string $value, string $direction = 'asc') use ($fuzzySearch) {
+        EloquentBuilder::macro('orderByFuzzy', function (string $column, string $value, string $direction = 'asc') use ($fuzzySearch, $guard) {
+            $guard($this, $column);
             $fuzzySearch->applyFuzzyOrder($this->getQuery(), $column, $value, $direction);
             return $this;
         });
 
         // Scope-based fuzzy search for Eloquent
-        EloquentBuilder::macro('fuzzySearch', function (string|array $columns, string $value, ?array $options = []) use ($fuzzySearch) {
+        EloquentBuilder::macro('fuzzySearch', function (string|array $columns, string $value, ?array $options = []) use ($fuzzySearch, $guard) {
             $columns = is_array($columns) ? $columns : [$columns];
+            array_map(fn ($column) => $guard($this, (string) $column), $columns);
             $fuzzySearch->applyFuzzyWhereMultiple($this->getQuery(), $columns, $value, null, $options);
             return $this;
         });
