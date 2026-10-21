@@ -3,6 +3,8 @@
 namespace Ashiqfardus\LaravelFuzzySearch\Tests\Unit\Indexing;
 
 use Ashiqfardus\LaravelFuzzySearch\Indexing\PorterStemmer;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 
 class PorterStemmerTest extends TestCase
@@ -52,6 +54,25 @@ class PorterStemmerTest extends TestCase
             if ($this->hasFactory()) {
                 $this->assertNotNull($e->getPrevious(), 'the factory exception is kept as previous');
             }
+        }
+    }
+
+    /**
+     * wamania/php-stemmer 2.0.0 throws a ValueError (an Error, not an Exception) for a language it
+     * does not know. In its own process: the factory it declares must not reach the other tests.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
+    public function test_an_unknown_language_is_invalid_argument_when_the_factory_throws_an_error(): void
+    {
+        eval('namespace Wamania\\Snowball; class StemmerFactory { public static function create($language) { throw new \\ValueError("not a language"); } }');
+
+        try {
+            new PorterStemmer('Klingon');
+            $this->fail('Expected InvalidArgumentException.');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame("Language 'Klingon' is not supported.", $e->getMessage());
+            $this->assertInstanceOf(\ValueError::class, $e->getPrevious());
         }
     }
 

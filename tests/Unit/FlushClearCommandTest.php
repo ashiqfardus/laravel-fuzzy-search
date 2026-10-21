@@ -71,4 +71,33 @@ class FlushClearCommandTest extends TestCase
             app(IndexManager::class)->flush(User::class);
         }
     }
+
+    /**
+     * A flush that fails part way (MySQL/MariaDB commit it in batches) leaves documents whose
+     * postings are gone: a rebuild without --fresh counts their words a second time. The commands
+     * say to run the same command again first.
+     */
+    public function test_a_failed_clear_or_rebuild_fresh_says_to_run_it_again_before_anything_else(): void
+    {
+        app(IndexManager::class)->indexBatch(User::all());
+        $failing = true;
+        DB::connection()->beforeExecuting(function (string $sql) use (&$failing) {
+            if ($failing && preg_match('/^\s*delete from [`"\[]?fuzzy_index_/i', $sql)) {
+                throw new \RuntimeException('connection lost');
+            }
+        });
+
+        $this->artisan('fuzzy-search:clear', ['model' => User::class])
+            ->expectsOutputToContain('The clear did not finish: connection lost')
+            ->expectsOutputToContain('fuzzy-search:clear "' . User::class . '" again before any other index command')
+            ->assertExitCode(1);
+        $this->artisan('fuzzy-search:clear', ['--all' => true])
+            ->expectsOutputToContain('fuzzy-search:clear --all again before any other index command')
+            ->assertExitCode(1);
+        $this->artisan('fuzzy-search:rebuild', ['model' => User::class, '--fresh' => true])
+            ->expectsOutputToContain('The flush did not finish: connection lost')
+            ->expectsOutputToContain('fuzzy-search:rebuild "' . User::class . '" --fresh again before any other index command')
+            ->assertExitCode(1);
+        $failing = false;
+    }
 }

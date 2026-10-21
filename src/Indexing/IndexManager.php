@@ -842,6 +842,10 @@ class IndexManager
      * takes it, so the flush waits for the writes in flight and new ones wait for its commit. Its
      * DELETEs ran against the writers' claims and dictionary locks without it: the cycles the write lock removes
      * removed between writers, with no retry on the flush's side.
+     *
+     * A deadlock or, on SQLite, a refused write ("database is locked": the transaction reads
+     * before its first DELETE, and another connection's commit between them cannot be waited out)
+     * runs it again, from the top: every step deletes by type or recounts from what is left.
      */
     private function flushing(\Closure $deletes): void
     {
@@ -852,7 +856,7 @@ class IndexManager
             }
 
             $deletes();
-        });
+        }, self::ATTEMPTS);
     }
 
     /**
@@ -905,7 +909,8 @@ class IndexManager
      * PostgreSQL a refusal rolls back to a savepoint (the transaction would be aborted otherwise);
      * SQL Server rolls back the whole transaction on one, so it checks both first. On MySQL and
      * MariaDB outside a transaction of yours the DELETEs run in bounded transactions
-     * (clearInBatches()); one interrupted part way is finished by running it again.
+     * (clearInBatches()); one interrupted part way is finished by running it again,
+     * before any rebuild or other indexing (see flushInBatches()).
      *
      * ponytail: on MySQL/MariaDB each TRUNCATE commits on its own, under the table locks: no other session
      * sees the index half cleared, but a clear interrupted part way leaves it so until it is run
@@ -1163,7 +1168,7 @@ class IndexManager
      * privilege, a foreign key) is final. Between tries it holds flushing()'s lock, so index writes
      * wait those moments too, as they wait for the clear. Anything else goes up, a
      * DeadlockException too: Laravel rolls back no savepoint for one, so flushing()'s transaction
-     * rolls back whole and the index stays as it was.
+     * rolls back whole (and runs again, up to ATTEMPTS times) and the index stays as it was.
      *
      * ponytail: 5 tries 200 ms apart, then the DELETEs; make them configurable if an index under
      * constant load keeps deleting row by row.
@@ -1191,7 +1196,7 @@ class IndexManager
      * words. Then one transaction deletes what a write between the batches left, the documents
      * first, as flushInBatches() ends: the index ends empty, as one DELETE would leave it. A search
      * meanwhile finds it partly emptied, and an interrupted one leaves it so; run it again, when the
-     * index is idle, so it truncates.
+     * index is idle, so it truncates, and before any rebuild or other indexing (see flushInBatches()).
      *
      * @param  list<string>  $tables  the index tables there are (no model terms before 2026_10_13_000001)
      */
@@ -1212,11 +1217,44 @@ class IndexManager
         DB::table('fuzzy_index_meta')->delete();
         $this->deleteInBatches('fuzzy_index_terms', [], 'id');
 
-        DB::transaction(function () use ($tables) {
+        self::atRepeatableRead(fn () => DB::transaction(function () use ($tables) {
             foreach (['fuzzy_index_documents', ...array_diff($tables, ['fuzzy_index_documents'])] as $table) {
                 DB::table($table)->delete();
             }
-        }, self::ATTEMPTS);
+        }, self::ATTEMPTS));
+    }
+
+    /**
+     * Run $run, a batched flush's or clear's final transaction, at REPEATABLE READ, and put the
+     * session's own level back after. Its argument is that the DELETE of the type's documents,
+     * which comes first, holds every write of the type off its claim (claimDocuments()) with the
+     * gap locks it takes; at READ COMMITTED it takes none, so a write could claim a new document
+     * after the words to count again were read, and leave its postings deleted and its words
+     * counted. It is the session's level, not the next transaction's, so a deadlock's retry keeps
+     * it. In a transaction of yours (its level above 0) nothing changes: the batched path does not
+     * run there.
+     */
+    private static function atRepeatableRead(\Closure $run): mixed
+    {
+        $connection = DB::connection();
+        if ($connection->transactionLevel() > 0) {
+            return $run();
+        }
+        try {
+            $was = $connection->scalar('select @@session.transaction_isolation');
+        } catch (\Illuminate\Database\QueryException) {
+            $was = $connection->scalar('select @@session.tx_isolation'); // MariaDB before 11.1, MySQL before 8.0
+        }
+        $was = str_replace('-', ' ', strtoupper((string) $was));
+        if ($was === 'REPEATABLE READ' || !in_array($was, ['READ UNCOMMITTED', 'READ COMMITTED', 'SERIALIZABLE'], true)) {
+            return $run();
+        }
+        $connection->unprepared('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        try {
+            return $run();
+        } finally {
+            $connection->unprepared("SET SESSION TRANSACTION ISOLATION LEVEL {$was}");
+        }
     }
 
     /**
@@ -1244,9 +1282,13 @@ class IndexManager
      * new ones off to its commit; then the postings and model terms those writes left, their words
      * locked in id order and recounted; then the meta row. Its plain reads come after that DELETE,
      * so they see every write it waited for. The type ends empty and every count exact, as after
-     * one DELETE; the transaction touches only what was written meanwhile. A search during the
+     * one DELETE; the transaction touches only what was written meanwhile. The DELETE's gap locks
+     * are what hold the new writes off, and READ COMMITTED takes none, so the transaction runs at
+     * REPEATABLE READ whatever the session is set to (atRepeatableRead()). A search during the
      * flush still finds the model partly emptied. Interrupted part way, it is finished by running
-     * it again, before any rebuild: each step goes on from what is left.
+     * it again, before any rebuild or other indexing: each step goes on from what is left, but the
+     * documents it has not reached have lost their postings while the counts still hold them, so a
+     * rebuild without --fresh, or a save, raises their words a second time (the commands say so).
      */
     private function flushInBatches(string $modelType): void
     {
@@ -1267,7 +1309,7 @@ class IndexManager
         }
         $this->deleteInBatches('fuzzy_index_documents', ['model_type' => $modelType], 'model_id');
 
-        DB::transaction(function () use ($modelType) {
+        self::atRepeatableRead(fn () => DB::transaction(function () use ($modelType) {
             DB::table('fuzzy_index_documents')->where('model_type', $modelType)->delete();
             $typeId = self::modelTypeId($modelType);
             if ($typeId !== null) {
@@ -1284,7 +1326,7 @@ class IndexManager
                 }
             }
             DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
-        }, self::ATTEMPTS);
+        }, self::ATTEMPTS));
 
         $this->deleteUnpostedWords();
     }
@@ -1342,7 +1384,7 @@ class IndexManager
      * busy, its rows are deleted by type: in one transaction, but on MySQL/MariaDB outside a
      * transaction of yours in bounded ones (flushInBatches()), the last of which deletes what a write
      * between them left: a search meanwhile finds the type partly emptied, and a flush interrupted
-     * part way is finished by running it again.
+     * part way is finished by running it again, before any rebuild or other indexing.
      */
     public function flush(string $modelClass): void
     {

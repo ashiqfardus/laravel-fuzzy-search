@@ -20,7 +20,11 @@ class ClearCommand extends Command
     public function handle(IndexManager $indexManager): int
     {
         if ($this->option('all')) {
-            $truncated = $indexManager->flushAll();
+            try {
+                $truncated = $indexManager->flushAll();
+            } catch (\Throwable $e) {
+                return $this->unfinished($e, 'php artisan fuzzy-search:clear --all');
+            }
             $this->info('Cleared BM25 index for all models.');
             if (!$truncated) {
                 $this->warn('It was deleted row by row, not truncated, because the index tables were busy (or TRUNCATE is not allowed). On a large index, run it again when the index is idle, so it truncates, before rebuilding.');
@@ -48,15 +52,33 @@ class ClearCommand extends Command
         // (searchIndexType(): a single-table-inheritance child names its parent) clears that type's
         // index, and then the rows still under its own name from before it named that type.
         $type = IndexManager::indexType($model);
-        $indexManager->flush($type);
-        $this->info("Cleared BM25 index for [{$type}].");
+        try {
+            $indexManager->flush($type);
+            $this->info("Cleared BM25 index for [{$type}].");
 
-        if ($type !== $model && $this->indexHolds($model)) {
-            $indexManager->flush($model);
-            $this->info("Cleared BM25 index for [{$model}].");
+            if ($type !== $model && $this->indexHolds($model)) {
+                $indexManager->flush($model);
+                $this->info("Cleared BM25 index for [{$model}].");
+            }
+        } catch (\Throwable $e) {
+            return $this->unfinished($e, "php artisan fuzzy-search:clear \"{$model}\"");
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * A clear that failed part way (MySQL/MariaDB delete in batches that commit one by one, so the
+     * index may be partly emptied) is finished only by running it again: a rebuild or any other
+     * index write before that counts the documents left a second time.
+     */
+    private function unfinished(\Throwable $e, string $command): int
+    {
+        report($e);
+        $this->error("The clear did not finish: {$e->getMessage()}");
+        $this->line("Run <comment>{$command}</comment> again before any other index command (a rebuild or a save that is indexed counts what is left a second time).");
+
+        return self::FAILURE;
     }
 
     /** Whether the index holds rows under $modelType, as the meta row or a document: read from the write connection, as the clear reads. */

@@ -18,11 +18,12 @@ class PorterStemmer implements StemmerInterface
         // 2.0 and later build a stemmer through StemmerFactory (language name or ISO code, any
         // case); 1.x has one concrete class per language, Wamania\Snowball\<Language>. The class
         // names are strings: 1.x has no StemmerFactory and 2.0 and later have no
-        // Wamania\Snowball\English, so each one's presence tells the versions apart.
+        // Wamania\Snowball\English, so each one's presence tells the versions apart. An unknown
+        // language throws a ValueError in 2.0.0, which is an Error, not an Exception.
         if (class_exists('Wamania\\Snowball\\StemmerFactory')) {
             try {
                 $this->stemmer = \Wamania\Snowball\StemmerFactory::create($language);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 throw new \InvalidArgumentException("Language '{$language}' is not supported.", 0, $e);
             }
             return;

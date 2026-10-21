@@ -459,6 +459,47 @@ class ScoutEngineTest extends TestCase
         $this->assertSame($productPostings, $postings(Product::class));
     }
 
+    /**
+     * On a read/write split without sticky, the list of indexed classes deleteIndex() flushes
+     * came from the read connection: a replica that had not yet seen a class's meta row left
+     * that class's index in place.
+     */
+    public function test_delete_index_lists_the_indexed_classes_on_the_write_connection(): void
+    {
+        if (!class_exists(\Laravel\Scout\EngineManager::class)) {
+            $this->markTestSkipped('laravel/scout not installed.');
+        }
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('The replica is a second database on a MySQL/MariaDB test server.');
+        }
+        $db      = $this->app['db'];
+        $replica = $db->connection()->getDatabaseName() . '_replica';
+        try {
+            $db->unprepared("CREATE DATABASE IF NOT EXISTS `{$replica}`");
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->markTestSkipped('The test connection cannot create a second database: ' . $e->getMessage());
+        }
+        $db->unprepared("DROP TABLE IF EXISTS `{$replica}`.`fuzzy_index_meta`");
+        $db->unprepared("CREATE TABLE `{$replica}`.`fuzzy_index_meta` LIKE `" . $db->connection()->getDatabaseName() . '`.`fuzzy_index_meta`');
+
+        config(['scout.prefix' => 'test_']);
+        $engine = $this->makeEngine();
+        $engine->update(ScoutIndexedUser::all());
+        $this->assertGreaterThan(0, $this->namedPostings()->where('model_type', ScoutIndexedUser::class)->count());
+
+        // A replica that has not seen the class's meta row: its copy of the table is empty.
+        config(['database.connections.split' => ['read' => ['database' => $replica], 'write' => [], 'sticky' => false] + config('database.connections.integration')]);
+        $db->setDefaultConnection('split');
+        try {
+            $engine->deleteIndex('test_users');
+        } finally {
+            $db->setDefaultConnection('integration');
+            $db->purge('split');
+        }
+
+        $this->assertSame(0, $this->namedPostings()->where('model_type', ScoutIndexedUser::class)->count());
+    }
+
     // -------------------------------------------------------------------------
     // orderBy(): an explicit order replaces the relevance order, as on Scout's database engine
     // -------------------------------------------------------------------------
