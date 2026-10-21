@@ -700,6 +700,72 @@ class ClearAllTest extends TestCase
         $this->assertFlushedBesideProducts($keep);
     }
 
+    /**
+     * The final transaction of a batched flush or clear, on a server set to READ COMMITTED: its
+     * DELETE of the documents takes no gap lock there, so a write of the same type could claim a
+     * new document while the transaction ran, and the postings and model terms it left were deleted
+     * without their words being counted again. The transaction runs at REPEATABLE READ, whatever
+     * the session was set to, and the session is put back.
+     */
+    public function test_a_write_during_the_final_transaction_of_a_flush_at_read_committed_leaves_the_counts_exact(): void
+    {
+        $keep = $this->readCommittedWriteDuringTheFinalTransaction('select distinct [`"]?term_id[`"]? from [`"]?fuzzy_index_postings[`"]? where [`"]?model_type_id[`"]? = \\?');
+
+        app(IndexManager::class)->flush(User::class);
+
+        $this->assertSame('READ-COMMITTED', $this->isolation(), 'the session setting is put back');
+        $this->assertFlushedBesideProducts($keep);
+    }
+
+    private function isolation(): string
+    {
+        try {
+            return (string) DB::scalar('select @@session.transaction_isolation');
+        } catch (\Throwable) {
+            return (string) DB::scalar('select @@session.tx_isolation');
+        }
+    }
+
+    /**
+     * Set the session to READ COMMITTED, and have another session add a user and index it right
+     * after the statement matching $after, in the final transaction (after the flush has read the
+     * words it will count again). Returns what the other model's rows were.
+     */
+    private function readCommittedWriteDuringTheFinalTransaction(string $after): array
+    {
+        $model = User::class;
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB flush and clear in batches, and set an isolation level.');
+        }
+        $this->indexShared();
+        $keep = $this->productRows();
+        $this->flushRows(5);
+        config(['database.connections.app' => config('database.connections.integration')]);
+        DB::statement('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        $done = false;
+        DB::listen(function ($query) use (&$done, $model, $after) {
+            if ($done || $query->connectionName !== 'integration' || !preg_match('/^\s*' . $after . '\s*$/i', $query->sql)) {
+                return;
+            }
+            $done = true;
+            DB::setDefaultConnection('app');
+            try {
+                // At REPEATABLE READ the DELETE's gap locks hold this write off: it gives up at once.
+                DB::statement('SET SESSION innodb_lock_wait_timeout = 1');
+                $text = $model === User::class ? 'name' : 'title';
+                $row  = $model === User::class ? ['email' => 'quokka@example.com'] : [];
+                $id   = DB::table((new $model())->getTable())->insertGetId([$text => 'Quokka Galaxy', 'created_at' => now(), 'updated_at' => now()] + $row);
+                app(IndexManager::class)->indexBatch($model::query()->whereIn('id', [1, $id])->get());
+            } catch (\Throwable) {
+                // held off: the flush's transaction is what the test is about
+            } finally {
+                DB::setDefaultConnection('integration');
+            }
+        });
+
+        return $keep;
+    }
+
     /** @return array<string, array{string}> */
     public static function clearBatches(): array
     {

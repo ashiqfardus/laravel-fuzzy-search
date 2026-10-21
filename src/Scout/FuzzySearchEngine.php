@@ -655,7 +655,14 @@ class FuzzySearchEngine extends Engine implements PaginatesWithItsOwnTotal
      */
     public function deleteIndex($name): void
     {
-        foreach (DB::table('fuzzy_index_meta')->pluck('model_type') as $class) {
+        // The write connection lists them: on a read/write split without sticky, a replica that has
+        // not yet received a class's first write would leave that class's index in place.
+        $classes = IndexManager::readingTheWriteConnection(
+            DB::connection(),
+            fn () => DB::table('fuzzy_index_meta')->pluck('model_type')
+        );
+
+        foreach ($classes as $class) {
             if (!class_exists($class) || !method_exists($class, 'searchableAs')) {
                 continue;
             }

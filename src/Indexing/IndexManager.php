@@ -1199,11 +1199,44 @@ class IndexManager
         DB::table('fuzzy_index_meta')->delete();
         $this->deleteInBatches('fuzzy_index_terms', [], 'id');
 
-        DB::transaction(function () use ($tables) {
+        self::atRepeatableRead(fn () => DB::transaction(function () use ($tables) {
             foreach (['fuzzy_index_documents', ...array_diff($tables, ['fuzzy_index_documents'])] as $table) {
                 DB::table($table)->delete();
             }
-        }, self::ATTEMPTS);
+        }, self::ATTEMPTS));
+    }
+
+    /**
+     * Run $run, a batched flush's or clear's final transaction, at REPEATABLE READ, and put the
+     * session's own level back after. Its argument is that the DELETE of the type's documents,
+     * which comes first, holds every write of the type off its claim (claimDocuments()) with the
+     * gap locks it takes; at READ COMMITTED it takes none, so a write could claim a new document
+     * after the words to count again were read, and leave its postings deleted and its words
+     * counted. It is the session's level, not the next transaction's, so a deadlock's retry keeps
+     * it. In a transaction of yours (its level above 0) nothing changes: the batched path does not
+     * run there.
+     */
+    private static function atRepeatableRead(\Closure $run): mixed
+    {
+        $connection = DB::connection();
+        if ($connection->transactionLevel() > 0) {
+            return $run();
+        }
+        try {
+            $was = $connection->scalar('select @@session.transaction_isolation');
+        } catch (\Illuminate\Database\QueryException) {
+            $was = $connection->scalar('select @@session.tx_isolation'); // MariaDB before 11.1, MySQL before 8.0
+        }
+        $was = str_replace('-', ' ', strtoupper((string) $was));
+        if ($was === 'REPEATABLE READ' || !in_array($was, ['READ UNCOMMITTED', 'READ COMMITTED', 'SERIALIZABLE'], true)) {
+            return $run();
+        }
+        $connection->unprepared('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        try {
+            return $run();
+        } finally {
+            $connection->unprepared("SET SESSION TRANSACTION ISOLATION LEVEL {$was}");
+        }
     }
 
     /**
@@ -1231,7 +1264,9 @@ class IndexManager
      * new ones off to its commit; then the postings and model terms those writes left, their words
      * locked in id order and recounted; then the meta row. Its plain reads come after that DELETE,
      * so they see every write it waited for. The type ends empty and every count exact, as after
-     * one DELETE; the transaction touches only what was written meanwhile. A search during the
+     * one DELETE; the transaction touches only what was written meanwhile. The DELETE's gap locks
+     * are what hold the new writes off, and READ COMMITTED takes none, so the transaction runs at
+     * REPEATABLE READ whatever the session is set to (atRepeatableRead()). A search during the
      * flush still finds the model partly emptied. Interrupted part way, it is finished by running
      * it again, before any rebuild: each step goes on from what is left.
      */
@@ -1254,7 +1289,7 @@ class IndexManager
         }
         $this->deleteInBatches('fuzzy_index_documents', ['model_type' => $modelType], 'model_id');
 
-        DB::transaction(function () use ($modelType) {
+        self::atRepeatableRead(fn () => DB::transaction(function () use ($modelType) {
             DB::table('fuzzy_index_documents')->where('model_type', $modelType)->delete();
             $typeId = self::modelTypeId($modelType);
             if ($typeId !== null) {
@@ -1271,7 +1306,7 @@ class IndexManager
                 }
             }
             DB::table('fuzzy_index_meta')->where('model_type', $modelType)->delete();
-        }, self::ATTEMPTS);
+        }, self::ATTEMPTS));
 
         $this->deleteUnpostedWords();
     }
