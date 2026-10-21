@@ -1528,7 +1528,7 @@ To time the LIKE algorithms on your own app's tables, use `php artisan fuzzy-sea
 
   SQLite runs every pair. MySQL 8 and PostgreSQL 14 run the PHP 8.2–8.5 pairs, and MariaDB 11.4 and SQL Server 2022 the PHP 8.3–8.5 pairs, with Laravel 10, 12 and 13.
 - Any supported database — MySQL 8+, MariaDB 11.4 (CI); 10.6+ expected, PostgreSQL 14+, SQLite, or SQL Server 2022
-- Optional: Laravel Scout 10.x or 11.x for the [Scout driver](#scout-driver) (semantic and hybrid search are not supported); Filament 3.3, 4.x or 5.x for the [Filament integration](#filament-integration)
+- Optional: Laravel Scout 10.1 or later (or 11.x) for the [Scout driver](#scout-driver) (semantic and hybrid search are not supported); Filament 3.3, 4.x or 5.x for the [Filament integration](#filament-integration)
 
 ---
 

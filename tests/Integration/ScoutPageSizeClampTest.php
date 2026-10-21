@@ -57,28 +57,8 @@ class ScoutPageSizeClampTest extends TestCase
         parent::tearDown();
     }
 
-    private function skipOnScout100(): void
-    {
-        if (!interface_exists(\Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase::class)) {
-            $this->markTestSkipped('Scout 10.0 builds paginate()\'s paginator itself, so the engine does not cut its page.');
-        }
-    }
-
-    public function test_on_scout_10_0_a_page_is_not_cut_so_every_match_stays_reachable(): void
-    {
-        if (interface_exists(\Laravel\Scout\Contracts\PaginatesEloquentModelsUsingDatabase::class)) {
-            $this->markTestSkipped('Scout 10.1 and later hand the engine the paginator, which cuts the page.');
-        }
-
-        $page = ScoutClampDoc::scoutSearch('zed')->paginate(1_000_000);
-        $this->assertCount(12, $page->items());
-        $this->assertSame(12, $page->total());
-        $this->assertCount(12, ScoutClampDoc::scoutSearch('zed')->simplePaginate(1_000_000)->items());
-    }
-
     public function test_paginate_cuts_the_page_size_to_max_candidates(): void
     {
-        $this->skipOnScout100();
         $page = ScoutClampDoc::scoutSearch('zed')->paginate(1_000_000);
 
         $this->assertCount(5, $page->items());
@@ -88,7 +68,6 @@ class ScoutPageSizeClampTest extends TestCase
 
     public function test_simple_paginate_cuts_the_page_size_to_max_candidates(): void
     {
-        $this->skipOnScout100();
         $page = ScoutClampDoc::scoutSearch('zed')->simplePaginate(1_000_000);
 
         $this->assertCount(5, $page->items());
