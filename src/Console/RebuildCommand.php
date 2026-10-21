@@ -60,17 +60,26 @@ class RebuildCommand extends Command
 
         $chunkSize = (int) config('fuzzy-search.indexing.chunk_size', 500);
         $queue     = $this->option('queue') ?? config('fuzzy-search.indexing.queue', 'default');
-        $total     = IndexQuery::for($modelClass)->count();
+        $rebuild   = function () use ($modelClass, $chunkSize, $queue, $indexManager) {
+            $total = IndexQuery::for($modelClass)->count();
 
-        // Without --fresh, the documents of rows deleted, trashed or left out by searchIndexQuery()
-        // without model events are removed after the walk (IndexManager::prune()). --fresh flushed them.
-        $prune = !$this->option('fresh');
+            // Without --fresh, the documents of rows deleted, trashed or left out by searchIndexQuery()
+            // without model events are removed after the walk (IndexManager::prune()). --fresh flushed them.
+            $prune = !$this->option('fresh');
 
-        if ($this->option('async')) {
-            return $this->rebuildAsync($modelClass, $chunkSize, $queue, $total, $prune);
-        }
+            if ($this->option('async')) {
+                return $this->rebuildAsync($modelClass, $chunkSize, $queue, $total, $prune);
+            }
 
-        return $this->rebuildSync($modelClass, $chunkSize, $indexManager, $total, $prune);
+            return $this->rebuildSync($modelClass, $chunkSize, $indexManager, $total, $prune);
+        };
+
+        // After --fresh every read of the rows goes to the write connection, as the flush's did: a
+        // read replica behind the primary left out a row saved just before the flush, which had
+        // taken that save's own index write out, so the row stayed out of the index.
+        return $this->option('fresh')
+            ? IndexManager::readingTheWriteConnection((new $modelClass())->getConnection(), $rebuild)
+            : $rebuild();
     }
 
     private function rebuildSync(string $modelClass, int $chunkSize, IndexManager $indexManager, int $total, bool $prune): int

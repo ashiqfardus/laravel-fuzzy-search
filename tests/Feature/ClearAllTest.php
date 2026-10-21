@@ -665,6 +665,341 @@ class ClearAllTest extends TestCase
         $this->assertFlushedBesideProducts($keep);
     }
 
+    /** @return array<string, array{string}> the table a batch deleted from, after whose commit another session writes */
+    public static function flushBatches(): array
+    {
+        return [
+            'after a postings batch'  => ['postings'],
+            'after a chunk of words'  => ['model_terms'],
+            'after a documents batch' => ['documents'],
+        ];
+    }
+
+    /**
+     * N-B2: 2.0.1 flushed a model in one transaction; the batched flush of MySQL/MariaDB commits
+     * each batch, so a write of the model between two of them (a queue worker re-indexing a saved
+     * row, indexing a new one) kept postings and a document the later batches had passed, and raised
+     * the shared words' counts and the model's own for good. The flush ends with one transaction
+     * that deletes what is left of the type and counts its words again: the type ends empty, and
+     * every count a fresh count, as 2.0.1's single transaction left them.
+     */
+    #[DataProvider('flushBatches')]
+    public function test_a_write_between_the_batches_of_a_flush_leaves_the_type_empty_and_the_counts_exact(string $table): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB flush in batches; elsewhere the flush is one transaction.');
+        }
+        $this->indexShared();
+        $keep = $this->productRows();
+        $this->flushRows(5);
+        $ran = $this->writeBetweenBatches($table);
+
+        app(IndexManager::class)->flush(User::class);
+
+        $this->assertTrue($ran(), 'the write ran between two batches');
+        $this->assertFlushedBesideProducts($keep);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function clearBatches(): array
+    {
+        return [
+            'after a documents batch' => ['documents'],
+            'after a batch of words'  => ['terms'],
+        ];
+    }
+
+    /** N-B2, clear --all: a write between its batches leaves nothing behind either. */
+    #[DataProvider('clearBatches')]
+    public function test_a_write_between_the_batches_of_clear_all_leaves_the_index_empty(string $table): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB clear in batches; elsewhere the clear is one transaction.');
+        }
+        $this->indexBoth();
+        $dictionaries = $this->dictionaries();
+        $this->flushRows(5);
+        // LOCK TABLES refused, and not for a lock wait: no more tries, the batches run.
+        DB::connection()->beforeExecuting(function (string $sql) {
+            if (preg_match('/^\s*lock tables/i', $sql)) {
+                throw new \Illuminate\Database\QueryException(DB::getDefaultConnection(), $sql, [], new \PDOException('SQLSTATE[42000]: Syntax error or access violation: 1044 Access denied'));
+            }
+        });
+        $ran = $this->writeBetweenBatches($table, Product::class); // the first model type the clear's batches delete
+
+        $this->assertFalse(app(IndexManager::class)->flushAll());
+
+        $this->assertTrue($ran(), 'the write ran between two batches');
+        $this->assertCleared($dictionaries);
+    }
+
+    /**
+     * Once a batch that deleted from fuzzy_index_$table has committed, save row 1 of $model with
+     * other words and add a row, and index both from another session, as a queue worker would
+     * between two batches. Returns a closure that tells whether it ran.
+     */
+    private function writeBetweenBatches(string $table, string $model = User::class): \Closure
+    {
+        config(['database.connections.app' => config('database.connections.integration')]);
+        $last = null;
+        $done = false;
+        DB::listen(function ($query) use (&$last) {
+            if ($query->connectionName === 'integration' && preg_match('/^\s*delete from [`"\[]?fuzzy_index_(\w+)/i', $query->sql, $match)) {
+                $last = $match[1];
+            }
+        });
+        DB::connection()->getEventDispatcher()->listen(\Illuminate\Database\Events\TransactionCommitted::class, function ($event) use ($table, $model, &$last, &$done) {
+            if ($done || $event->connectionName !== 'integration' || $last !== $table) {
+                return;
+            }
+            $done = true;
+            DB::setDefaultConnection('app');
+            try {
+                $text = $model === User::class ? 'name' : 'title';
+                $row  = $model === User::class ? ['email' => 'quokka@example.com'] : [];
+                DB::table((new $model())->getTable())->where('id', 1)->update([$text => 'Zebra Laptop']);
+                $id = DB::table((new $model())->getTable())->insertGetId([$text => 'Quokka Galaxy', 'created_at' => now(), 'updated_at' => now()] + $row);
+                app(IndexManager::class)->indexBatch($model::query()->whereIn('id', [1, $id])->get());
+            } finally {
+                DB::setDefaultConnection('integration');
+            }
+        });
+
+        return function () use (&$done) {
+            return $done;
+        };
+    }
+
+    /** @return array<string, array{bool}> whether the replica stopped before the flushed model was indexed, or before the other */
+    public static function replicas(): array
+    {
+        return [
+            'the replica has not seen the other model'   => [false],
+            'the replica has not seen the flushed model' => [true],
+        ];
+    }
+
+    /**
+     * N-B1: on a connection with a read/write split, without sticky (a queue worker's first query),
+     * MySQL/MariaDB read whether another model had documents, and listed the rows of each batch,
+     * outside a transaction: from the replica. One that had not seen the products yet let the flush
+     * of the users truncate them; one that had not seen the users left their words behind, and
+     * deleted their postings in one statement. Every read of the clear now goes to the write
+     * connection.
+     */
+    #[DataProvider('replicas')]
+    public function test_a_flush_on_a_read_write_split_reads_the_write_connection(bool $usersLast): void
+    {
+        $replica = $this->replicaOrSkip();
+        try {
+            DB::table('users')->insert([
+                ['name' => 'Apple Laptop', 'email' => 'tablet@example.com', 'created_at' => now(), 'updated_at' => now()],
+                ['name' => 'Galaxy Phone', 'email' => 'pro@example.com', 'created_at' => now(), 'updated_at' => now()],
+            ]);
+            app(IndexManager::class)->indexBatch($usersLast ? Product::all() : User::all());
+            $this->freezeReplica($replica);
+            app(IndexManager::class)->indexBatch($usersLast ? User::all() : Product::all());
+            $keep = $this->productRows();
+            $this->flushRows(5);
+
+            $statements = $this->onReplicaSplit($replica, fn () => $this->statements(fn () => app(IndexManager::class)->flush(User::class)));
+
+            $this->assertFlushedBesideProducts($keep);
+            $this->assertEmpty(preg_grep('/^truncate /', $statements), implode("\n", $statements));
+            $this->assertGreaterThan(2, count(preg_grep('/^delete from fuzzy_index_postings\b/', $statements)), 'batches of the rows the write connection holds');
+        } finally {
+            DB::unprepared("DROP DATABASE IF EXISTS `{$replica}`");
+        }
+    }
+
+    /**
+     * N-B1, clear --all: while another session's transaction holds a read of the index, MySQL looked
+     * for its lock on the replica, found none and sent LOCK TABLES, which waited behind it; and the
+     * batches listed the models from a replica that held none, so every document stayed.
+     */
+    public function test_clear_all_on_a_read_write_split_reads_the_write_connection(): void
+    {
+        $replica = $this->replicaOrSkip();
+        try {
+            $this->freezeReplica($replica);
+            $this->indexBoth();
+            $dictionaries = $this->dictionaries();
+            $this->flushRows(5);
+            $locks = [];
+
+            DB::beginTransaction();
+            try {
+                DB::table('fuzzy_index_documents')->count(); // its metadata lock is held to its end
+                $truncated = $this->onReplicaSplit($replica, function () use (&$locks) {
+                    DB::connection()->beforeExecuting(function (string $sql) use (&$locks) {
+                        if (preg_match('/^\s*lock tables/i', $sql)) {
+                            $locks[] = $sql;
+                        }
+                    });
+
+                    return app(IndexManager::class)->flushAll();
+                });
+            } finally {
+                DB::rollBack();
+            }
+
+            $this->assertFalse($truncated);
+            $this->assertCleared($dictionaries);
+            if ($this->dbDriver === 'mysql') {
+                $this->assertSame([], $locks, 'the lock check reads the write connection, which sees the reader');
+            }
+        } finally {
+            DB::unprepared("DROP DATABASE IF EXISTS `{$replica}`");
+        }
+    }
+
+    /**
+     * N-B1: a truncate sets foreign_key_checks and lock_wait_timeout on its session and puts them
+     * back. It read the values to put back on the read connection, another session, so the write
+     * connection kept the read session's values for the rest of the process.
+     */
+    public function test_a_truncate_on_a_read_write_split_gives_the_write_session_its_settings_back(): void
+    {
+        $replica = $this->replicaOrSkip();
+        try {
+            app(IndexManager::class)->indexBatch(User::all());
+            $this->freezeReplica($replica);
+
+            [$statements, $settings] = $this->onReplicaSplit($replica, function () {
+                DB::unprepared('SET SESSION foreign_key_checks = 0, lock_wait_timeout = 7');
+                $statements = $this->statements(fn () => app(IndexManager::class)->flush(User::class));
+
+                return [$statements, [(int) DB::scalar('select @@session.foreign_key_checks', [], false), (int) DB::scalar('select @@session.lock_wait_timeout', [], false)]];
+            });
+
+            $this->assertNotEmpty(preg_grep('/^truncate table fuzzy_index_terms\b/', $statements), implode("\n", $statements));
+            $this->assertSame([0, 7], $settings);
+        } finally {
+            DB::unprepared("DROP DATABASE IF EXISTS `{$replica}`");
+        }
+    }
+
+    /**
+     * N-B1: where a table of the app's references the words, a truncate deletes them, so the
+     * reference cascades. It looked for such a key on the read connection's database, the replica,
+     * found none, and truncated the words, leaving the app's row pointing at nothing.
+     */
+    public function test_a_truncate_on_a_read_write_split_sees_the_apps_foreign_key_to_the_words(): void
+    {
+        $replica = $this->replicaOrSkip();
+        Schema::dropIfExists('split_refs');
+        try {
+            app(IndexManager::class)->indexBatch(User::all());
+            $this->freezeReplica($replica);
+            Schema::create('split_refs', function ($table) {
+                $table->id();
+                $table->foreignId('term_id')->constrained('fuzzy_index_terms')->cascadeOnDelete();
+            });
+            DB::table('split_refs')->insert(['term_id' => DB::table('fuzzy_index_terms')->min('id')]);
+
+            $this->onReplicaSplit($replica, fn () => app(IndexManager::class)->flush(User::class));
+
+            $this->assertSame(0, DB::table('fuzzy_index_terms')->count());
+            $this->assertSame(0, DB::table('split_refs')->count(), 'the words\' DELETE cascades: no row of the app\'s points at nothing');
+        } finally {
+            Schema::dropIfExists('split_refs');
+            DB::unprepared("DROP DATABASE IF EXISTS `{$replica}`");
+        }
+    }
+
+    /**
+     * N-B1: with read and write on one server (a split whose read host is the primary, or a proxy),
+     * the read connection is a second session: a read of the clear between LOCK TABLES and UNLOCK
+     * TABLES waited behind the write session's own table locks, for lock_wait_timeout (a year by
+     * default), so `clear <model>` hung. clear --all, clear <model> and rebuild --fresh, on both
+     * the truncate and the batched path, send no statement through the read connection. Its
+     * session gives up a lock wait after 5 s here, so a read there fails instead of hanging.
+     */
+    public function test_the_clears_and_rebuild_fresh_send_nothing_through_the_read_connection(): void
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('The counted read connection is a MySQL/MariaDB session; elsewhere every read of a clear runs in its transaction, on the write connection.');
+        }
+        config(['database.connections.split' => ['read' => [], 'write' => [], 'sticky' => false] + config('database.connections.integration')]);
+        $config = config('database.connections.integration');
+        $read   = new ReadCountingPdo(
+            "mysql:host={$config['host']};port={$config['port']};dbname={$config['database']};charset=utf8mb4",
+            $config['username'],
+            $config['password'],
+            [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION, \PDO::ATTR_EMULATE_PREPARES => false]
+        );
+        $read->exec('SET SESSION lock_wait_timeout = 5, innodb_lock_wait_timeout = 5');
+        $run = function (string $command, array $arguments) use ($read): array {
+            $read->reads = [];
+            DB::setDefaultConnection('split');
+            try {
+                DB::connection()->setReadPdo($read);
+                $this->artisan($command, $arguments)->assertExitCode(0)->run();
+            } finally {
+                DB::setDefaultConnection('integration');
+            }
+
+            return $read->reads;
+        };
+
+        try {
+            $this->indexBoth();
+            $this->flushRows(5);
+            $this->assertSame([], $run('fuzzy-search:clear', ['model' => User::class]), 'clear <model> beside another model: batches');
+            $this->assertSame([], $run('fuzzy-search:rebuild', ['model' => User::class, '--fresh' => true]), 'rebuild --fresh beside another model');
+            $this->assertGreaterThan(0, DB::table('fuzzy_index_documents')->where('model_type', User::class)->count());
+            $this->assertSame([], $run('fuzzy-search:clear', ['--all' => true]), 'clear --all: LOCK TABLES and TRUNCATE');
+            $this->assertSame(0, DB::table('fuzzy_index_documents')->count());
+
+            app(IndexManager::class)->indexBatch(User::all());
+            $this->assertSame([], $run('fuzzy-search:rebuild', ['model' => User::class, '--fresh' => true]), 'rebuild --fresh of the only model: LOCK TABLES and TRUNCATE');
+            $this->assertSame([], $run('fuzzy-search:clear', ['model' => User::class]), 'clear <model> of the only model: LOCK TABLES and TRUNCATE');
+            $this->assertSame(0, DB::table('fuzzy_index_documents')->count());
+        } finally {
+            DB::purge('split');
+        }
+    }
+
+    /** The name of a second database on the test server, for a replica (MySQL/MariaDB); skips elsewhere. */
+    private function replicaOrSkip(): string
+    {
+        if (!in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Only MySQL and MariaDB clear outside a transaction; elsewhere every read of the clear is in its transaction, on the write connection.');
+        }
+        $replica = DB::connection()->getDatabaseName() . '_replica';
+        try {
+            DB::unprepared("CREATE DATABASE IF NOT EXISTS `{$replica}`");
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->markTestSkipped('The test connection cannot create a second database: ' . $e->getMessage());
+        }
+
+        return $replica;
+    }
+
+    /** Copy the index tables as they are now into $replica: a replica that applies no write after this. */
+    private function freezeReplica(string $replica): void
+    {
+        $primary = DB::connection()->getDatabaseName();
+        foreach ([...self::TABLES, 'fuzzy_index_model_types', 'fuzzy_index_columns'] as $table) {
+            DB::unprepared("DROP TABLE IF EXISTS `{$replica}`.`{$table}`");
+            DB::unprepared("CREATE TABLE `{$replica}`.`{$table}` LIKE `{$primary}`.`{$table}`");
+            DB::unprepared("INSERT INTO `{$replica}`.`{$table}` SELECT * FROM `{$primary}`.`{$table}`");
+        }
+    }
+
+    /** Run $run on a default connection that reads from $replica and writes to the test database, without sticky. */
+    private function onReplicaSplit(string $replica, \Closure $run): mixed
+    {
+        config(['database.connections.split' => ['read' => ['database' => $replica], 'write' => [], 'sticky' => false] + config('database.connections.integration')]);
+        DB::setDefaultConnection('split');
+        try {
+            return $run();
+        } finally {
+            DB::setDefaultConnection('integration');
+            DB::purge('split');
+        }
+    }
+
     /** Index the users and the products, with words both hold (apple, laptop, galaxy …). */
     private function indexShared(): void
     {
@@ -887,5 +1222,19 @@ class ClearAllTest extends TestCase
     {
         DB::unprepared("DECLARE @kill nvarchar(max) = N''; SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{$user}'; EXEC (@kill);"
             . " IF USER_ID('{$user}') IS NOT NULL DROP USER [{$user}]; IF SUSER_ID('{$user}') IS NOT NULL DROP LOGIN [{$user}]");
+    }
+}
+
+/** A read connection that records each statement it prepares (every select Laravel sends). */
+class ReadCountingPdo extends \PDO
+{
+    /** @var list<string> */
+    public array $reads = [];
+
+    public function prepare(string $query, array $options = []): \PDOStatement|false
+    {
+        $this->reads[] = $query;
+
+        return parent::prepare($query, $options);
     }
 }

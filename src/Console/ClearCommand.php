@@ -59,10 +59,10 @@ class ClearCommand extends Command
         return self::SUCCESS;
     }
 
-    /** Whether the index holds rows under $modelType, as the meta row or a document. */
+    /** Whether the index holds rows under $modelType, as the meta row or a document: read from the write connection, as the clear reads. */
     private function indexHolds(string $modelType): bool
     {
-        return DB::table('fuzzy_index_meta')->where('model_type', $modelType)->exists()
-            || DB::table('fuzzy_index_documents')->where('model_type', $modelType)->exists();
+        return DB::table('fuzzy_index_meta')->useWritePdo()->where('model_type', $modelType)->exists()
+            || DB::table('fuzzy_index_documents')->useWritePdo()->where('model_type', $modelType)->exists();
     }
 }
