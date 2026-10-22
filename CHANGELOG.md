@@ -289,11 +289,11 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 [d-filament]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#filament-integration
 [d-resources]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#json-api-resources
 [d-scout]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#scout-driver
-[r-chaining]: docs/usage.md#chaining-eloquent
-[r-federation]: docs/scoring.md#multi-model-federation-search
-[r-recency]: docs/scoring.md#recency-boost
-[r-sizing]: docs/performance.md#sizing-the-index
-[r-shadow]: docs/algorithms.md#shadow-columns
+[r-chaining]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/usage.md#chaining-eloquent
+[r-federation]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/scoring.md#multi-model-federation-search
+[r-recency]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/scoring.md#recency-boost
+[r-sizing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/performance.md#sizing-the-index
+[r-shadow]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/algorithms.md#shadow-columns
 
 ## [2.0.1] — 2026-09-16
 
