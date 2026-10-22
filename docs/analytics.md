@@ -6,7 +6,7 @@
 
 ## Persisted Search Analytics
 
-Opt-in, DB-backed search analytics: every `FuzzySearchExecuted` event can be written to a table (`analytics.table`, `fuzzy_search_logs` by default) for later reporting, instead of (or alongside) the live event listener in [Events](../README.md#events).
+Opt-in, DB-backed search analytics: every `FuzzySearchExecuted` event can be written to a table (`analytics.table`, `fuzzy_search_logs` by default) for later reporting, instead of (or alongside) the live event listener in [Events](usage.md#events).
 
 ```php
 // config/fuzzy-search.php

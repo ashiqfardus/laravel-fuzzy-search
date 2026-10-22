@@ -10,7 +10,7 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 
 **Demo:** [laravel-fuzzy-search-demo](https://github.com/ashiqfardus/laravel-fuzzy-search-demo) - See the package in action!
 
-**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Algorithms](#search-algorithms) • [BM25 Index](#bm25-inverted-index) • [Extended Syntax](#extended-search-syntax) • [Scout Driver](#scout-driver) • [Performance](#performance--scaling) • [Compatibility](#algorithm--database-compatibility) • [Upgrade v1→v2](docs/UPGRADE_v1_TO_v2.md) • [Upgrade v2→v3](docs/UPGRADE_v2_TO_v3.md)
+**Documentation:** [Installation](#installation) • [Quick Start](#quick-start) • [Usage guide](docs/usage.md) • [Algorithms](docs/algorithms.md) • [Scoring](docs/scoring.md) • [BM25 Index](docs/bm25.md) • [Performance](docs/performance.md) • [Configuration & CLI](docs/configuration.md) • [Integrations](docs/integrations.md) • [Upgrade v2→v3](docs/UPGRADE_v2_TO_v3.md)
 
 ## Features
 
@@ -35,28 +35,14 @@ A powerful, **zero-config** fuzzy search package for Laravel with fluent API. Wo
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Search Algorithms](#search-algorithms)
-- [Field Weighting & Scoring](#field-weighting--scoring)
-- [Text Processing](#text-processing)
-- [Result Presentation](#result-presentation)
-- [Performance & Indexing](#performance--indexing)
 - [BM25 Inverted Index](#bm25-inverted-index)
 - [Extended Search Syntax](#extended-search-syntax)
-- [Scout Driver](#scout-driver)
-- [Filament Integration](#filament-integration)
-- [JSON API Resources](#json-api-resources)
-- [Livewire Recipe](#livewire-recipe)
-- [Pagination](#pagination)
-- [Reliability & Safety](#reliability--safety)
-- [Events](#events)
+- [Integrations](#integrations)
 - [Persisted Search Analytics](#persisted-search-analytics)
-- [Configuration](#configuration)
-- [CLI Tools](#cli-tools)
-- [Performance & Scaling](#performance--scaling)
-- [Algorithm × Database Compatibility](#algorithm--database-compatibility)
+- [Performance at scale](#performance-at-scale)
+- [Documentation](#documentation)
 - [Testing](#testing)
 - [Requirements](#requirements)
-
-**Deep dives:** [BM25 index](docs/bm25.md) • [Extended syntax](docs/extended-syntax.md) • [Relationships](docs/relationships.md) • [Text processing & tokenization](docs/tokenization.md) • [Integrations](docs/integrations.md) • [Analytics](docs/analytics.md)
 
 ---
 
@@ -93,31 +79,13 @@ Installs with different table prefixes can share a schema (or SQLite file): with
 >
 > → [Full upgrade guide](docs/UPGRADE_v1_TO_v2.md), then the [v2→v3 guide](docs/UPGRADE_v2_TO_v3.md): every behaviour change there applies to you too.
 
-> **Upgrading from v2.0.x?** 3.0 is a major release: it breaks code and configs written for 2.0, so read the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0` (a `^2.0` constraint never installs 3.0). Run the new migrations (`php artisan migrate`), then rebuild once
-> per model (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`) to pick up weighted BM25
-> ranking; a plain rebuild can run while the app indexes, and only `--fresh` needs nothing
-> indexing (see [Artisan Commands](docs/bm25.md#artisan-commands)). Read the guide's behaviour-changes list first: some calls now return
-> other rows, throw, or cache where 2.0 did not. Before you deploy:
->
-> - **On MySQL and MariaDB a large index takes a while to migrate.** The postings are rewritten
->   into a compact layout, then each model's words are counted; from 2.0.x, the table is first
->   rewritten for two earlier migrations too. From 2.0.1 at 1M rows on MySQL (15.9M postings) the
->   whole upgrade took 4 m 33 s (RC3 7c96ec9, migrations unchanged in the release); the
->   compact copy alone took about 22 minutes for 6M rows (67be9e1, before its later fixes). Index
->   searches fail until it finishes: migrate under `php artisan down`, or empty the index and
->   rebuild it instead (see the guide's [Inverted index](docs/UPGRADE_v2_TO_v3.md#inverted-index-bm25) section, "A large index").
->   On PostgreSQL and SQL Server 2.0.x could not write the index, so the migrations find it empty
->   and take seconds: build each model's index once afterwards (`php artisan fuzzy-search:rebuild "App\Models\YourModel"`).
-> - **SQL Server:** turn on `READ_COMMITTED_SNAPSHOT`, or set `scout.after_commit` to `true`;
->   otherwise an index write inside one of your transactions can deadlock with your other
->   transactions and reads of the same rows (see the guide's
->   [Inverted index](docs/UPGRADE_v2_TO_v3.md#inverted-index-bm25) section).
-> - **Restart the queue workers right after migrating** (`php artisan queue:restart`,
->   `horizon:terminate` under Horizon, `octane:reload` under Octane), and keep them from indexing
->   until the new code serves. A `rebuild --fresh` a migration's warning asks for runs before the
->   restart, since it needs nothing indexing.
->
-> → [Upgrade v2→v3 guide](docs/UPGRADE_v2_TO_v3.md)
+> **Upgrading from v2.0.x?** 3.0 is a major release: it breaks code and configs written for 2.0, so read the
+> [upgrade guide](docs/UPGRADE_v2_TO_v3.md) before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0`
+> (a `^2.0` constraint never installs 3.0). In short: run the new migrations under `php artisan down` (on MySQL and MariaDB a
+> large index takes a while: from 2.0.1 at 1M rows the whole upgrade took 4 m 33 s on MySQL, RC3 7c96ec9), rebuild each model
+> once (a plain rebuild can run while the app indexes; only `--fresh` needs nothing indexing, so run a `rebuild --fresh` a
+> migration's warning asks for before the restart), turn on `READ_COMMITTED_SNAPSHOT` (or `scout.after_commit`) on SQL Server,
+> and restart the queue workers right after migrating. The guide opens with the step-by-step checklist.
 
 ---
 
@@ -148,11 +116,11 @@ Without `take()` (or `limit()`), `get()` returns only the first 15 matches: on `
 - `bio`, `summary`, `excerpt` (weight: 3)
 - `slug`, `sku`, `code` (weight: 2-6)
 
-If none of these exist, it falls back to the first five text columns of the model's `$fillable`, in its order (declare `$searchable['columns']` for more), then to the first remaining column. Only text columns qualify (char, varchar, text of any size, nvarchar, citext, and MySQL enum/set, matched by the exact type name): a numeric, boolean or date column, or a PostgreSQL enum, is never auto-detected, in any branch, so a `$fillable` `user_id` or `total` is skipped. JSON and UUID columns are skipped where the database has a JSON or UUID type, and detected where it stores them as text (JSON on SQLite, MariaDB and SQL Server; a `char(36)` UUID on MySQL and SQLite). A column the model casts to a JSON type (`array`, `json`, `object`, `collection`, `AsArrayObject`, `AsCollection`, or an `encrypted:` form of them) is never detected, on any database. On SQLite, MariaDB and SQL Server, cast a JSON column, or declare `$searchable['columns']`, to keep its JSON text out of a zero-config search and the index. It never picks a column the model hides from serialization (`$hidden`, or one outside a non-empty `$visible`), a secret-named column (any name containing `password`; `token` or a name ending in `_token`; `secret`, `api_key` or `private_key` as a whole underscore-separated part of the name (`secret_note`, `stripe_api_key`, `webhook_secret` — not `secretary_name`); or a name ending in `recovery_codes`; a broad `*_key` rule is deliberately left out, so `sort_key` stays searchable), `id` or the timestamps. Names match in any letter case. It reads the model class's default `$hidden` and `$visible`, so a column hidden at runtime with `makeHidden()` is still searched and indexed. A model where no column qualifies (every text column hidden, say) has nothing to search: its search matches nothing (no rows, a count of 0, no event), and so does `FuzzySearch::tableSearch()` on it, while `extended()` throws `SearchableColumnsNotFoundException`. Declare `$searchable['columns']` to search it.
+If none of these exist, it falls back to the first text columns of `$fillable`. It never picks a hidden or secret-named column, `id` or the timestamps: see [Auto-detection](docs/usage.md#auto-detection) for the exact rules.
 
 ### Manual Column Configuration
 
-You can manually specify which columns to search and their weights. On PostgreSQL and SQL Server each must be a text column (see [Notes](#notes) under the database compatibility table):
+You can manually specify which columns to search and their weights. On PostgreSQL and SQL Server each must be a text column (see [Notes](docs/algorithms.md#notes) under the database compatibility table):
 
 ```php
 class User extends Model
@@ -182,7 +150,7 @@ $users = User::search('john')
     ->get();
 ```
 
-A column name passed to `searchIn()`, `filter()`, `filterIn()`, `facet()` and `orderBy()`, or to the Eloquent `whereFuzzy()`, `orWhereFuzzy()`, `whereFuzzyMultiple()`, `orderByFuzzy()` and `fuzzySearch()` macros may come from the request, so two kinds are refused with `InvalidArgumentException` unless `$searchable['columns']` lists them: a column named like a secret (`password`, `token`, `*_token`, `api_key`, …) in all of them, and a column in the model's `$hidden` (or the related model's, for a path like `author.email`) in `searchIn()`, `facet()` and `orderByFuzzy()`, whose matching, counts or similarity order reveal its content. An equality `filter()`/`filterIn()` or a plain `orderBy()` on a hidden column (a `tenant_id`, a sort field) is allowed. Declaring a column needs the `Searchable` trait: a model without it cannot allow a secret-named column in the `whereFuzzy()`-style macros (add the trait, or search a Query Builder). A table-qualified macro column is compared as written, so declare `users.api_key` if you call it that way. `preset()` columns, `searchOn()`'s third argument, a Filament resource's searchable attributes, a Scout `orderBy()` and `FederatedSearch::searchIn()` on a model without the trait are checked the same way. None of this applies to a Query Builder source (`DB::table()`), where no column is checked: allowlist request-supplied columns yourself.
+Column names that may come from the request are checked: a secret-named or hidden column is refused unless `$searchable['columns']` lists it (see [Request-supplied columns](docs/usage.md#request-supplied-columns)).
 
 ### Fluent API
 
@@ -200,83 +168,7 @@ $users = User::search('john doe')
     ->paginate(15);
 ```
 
-### Chaining Eloquent
-
-`search()` returns a builder that forwards ordinary Eloquent calls, local scopes and eager loads, so it reads like any other query:
-
-```php
-$users = User::search('john')
-    ->where('is_active', true)
-    ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
-    ->with('profile')
-    ->verified()                 // local scope
-    ->query(fn ($q) => $q->where('tenant_id', auth()->user()->tenant_id))
-    ->paginate(15);
-```
-
-Executing methods that would bypass the search conditions (`delete()`, `exists()`, `pluck()`, `update()`, …) are not forwarded and throw a `BadMethodCallException` — call `get()`, `first()`, `count()` or `paginate()` instead.
-
-The search holds for every condition you forward: `->where('status', 'active')->orWhere('featured', true)` reads `(status = active or featured) and <the search>`, as if you had grouped the two yourself, and `filter()` holds for both branches too.
-
-`latest()`, `oldest()`, `inRandomOrder()` and `reorder()` are forwarded to the underlying query: they only shape which rows make it into the candidate window, since the relevance `ORDER BY` is appended after them and PHP-side rescoring re-sorts by `_score` whenever `withRelevance` is on (the default) — call `withRelevance(false)` if you want the forwarded order to stick. The builder's own `orderBy()` is different: it replaces the relevance order on every path (see [Pagination](#pagination)). The closure passed to `when()`, `unless()` or `tap()` receives the underlying Eloquent builder, not the `SearchBuilder`.
-
-Under a join (a forwarded `join()`, one inside `query()`, or a global scope's), the model's own searched columns are qualified with its table (or the FROM alias) automatically, so a joined table with a column of the same name is not ambiguous; to search the joined table's column, write it dotted: `searchIn(['teams.name'])`. Select the model's columns (`select('users.*')`) as with any Eloquent join, or the joined table's same-named columns (`id`, `name`) overwrite the model's attributes, and scoring, highlighting and `useInvertedIndex()` read the wrong values.
-
-### Searching Relationships
-
-Dotted column names — `posts.title`, `author.name`, nested paths — search through Eloquent relations (`belongsTo`, `hasMany`, `belongsToMany`) on the LIKE and extended paths, compiling to `whereHas()` (a portable `EXISTS` subquery):
-
-```php
-User::search('smith')->searchIn(['posts.title', 'profile.bio'])->get();
-```
-
-A dotted segment is followed as a relation only when it is a public, non-static method with no required parameters that neither Laravel nor this package defines, and that either declares a `Relation` return type (`BelongsTo`, `HasMany`, …) or is on a path the model lists in `$searchable['columns']`. Anything else throws `InvalidArgumentException` — `App\Models\Author::company is not a relation: declare a Relation return type or list the path in $searchable['columns']` — before any SQL runs, and the method is never called: `searchIn()` can carry request input, and `searchIn(['unguard.body'])` must not run `unguard()`. That check stops method calls, not column access: a secret-named column, or one in the model's `$hidden`, is refused by `searchIn()` unless `$searchable['columns']` lists it (see Manual Column Configuration); any other column is searched, so still check request-supplied columns against an allowlist. Nested paths are checked segment by segment, and the error names the segment that failed. A dotted name whose first segment is not a method at all is still a table-qualified column (`posts.title`). Relations defined by Laravel's own traits (for example `Notifiable::notifications()`) are not followed; wrap one in a method of your own with a return type. An undotted `searchIn()` name is never a method call either. On every path (highlighting on `useInvertedIndex()`, PHP scoring, `suggest()` and `FuzzySearch::on()` over models), it is read from the row as an attribute, a cast or an accessor, or as a relation that is already loaded: `searchIn(['reindex'])` reads nothing and runs nothing.
-
-A relation you eager-load yourself keeps your constraint: `->with('author:id,name')` or `->with(['comments' => fn ($q) => $q->where('approved', true)])` is what the results carry, and the search eager-loads only the paths you did not load. Write the relation in `with()` as its method is declared (`author`, not `Author`): Eloquent treats another spelling as a second relation, and the search's own load of `author` is then unconstrained. A `searchIn()` path, by contrast, is matched to its methods whatever its case: `Author.name` is `author.name`.
-
-Your constraint limits what is **loaded**, not which rows **match**. Relation matching sees every related row, so a post still matches through an unapproved comment. To match approved comments only, `searchIn()` a relation method that carries the constraint (`approvedComments.body`, where `approvedComments()` returns `$this->hasMany(Comment::class)->where('approved', true)`).
-
-A column select must include the searched column, and for a nested path the key the next relation needs (`author:id,name,company_id` for `author.company.name`). A column the select leaves out scores nothing and is left out of `_highlighted` and `_matches`.
-
-A relation `searchIn()` reads is loaded even after `without()`. To keep it out of a response, constrain it with `with()`, hide it (`$hidden`/`makeHidden()`), or shape the response with an API resource.
-
-A dotted name whose first part names a table of the query — the FROM table, a joined table, or either one's alias — is always that table's column, and no model method is looked at: `->join('items', …)->searchIn(['items.name'])` works even when the model has an `items()` method. A relation whose name equals a joined table's name is therefore read as that table's column; alias the join (`join('items as i', …)`) if you mean the relation. Such a table's column is searched in SQL; the model row does not carry it, so it adds nothing to `_score` or `_highlighted` unless you select it under the model's own column name.
-
-The BM25 inverted index does not join relations at query time — define `searchableText()` on the model to put related text into the index instead.
-
-`SearchableIndexingObserver` indexes a model only when it has searchable columns — the ones declared in `$searchable['columns']` or, when none are declared, the auto-detected string-like columns. A model with neither is skipped on save, even if it defines `searchableText()`. Auto-detection never selects a column cast to `encrypted` or `hashed`. Nor does it select a column the model hides from serialization (`$hidden`, or any column outside a non-empty `$visible`), or a secret-named column (any name containing `password`; `token` or a name ending in `_token`; `secret`, `api_key` or `private_key` as a whole underscore-separated part of the name (`secret_note`, `stripe_api_key`, `webhook_secret` — not `secretary_name`); or a name ending in `recovery_codes`; a broad `*_key` rule is deliberately left out, so `sort_key` stays searchable), in any letter case. An auto-detected column is indexed as the model's raw attribute value, not through a get accessor, and its `*_metaphone` shadow column is filled from the same value, so an accessor that decrypts or reformats it never reaches the index. Only the index reads the stored value: `suggest()`'s table scan, relevance scoring and highlighting read an auto-detected column through its accessor, as in 2.0, so for a column an accessor decrypts, declare `$searchable['columns']` without it, or hide it (`$hidden`); otherwise `suggest()`'s table scan can return words from the decrypted value of rows the query can see. Declaring a column in `$searchable['columns']`, or overriding `getSearchableColumns()`, is what opts into its accessor. A column you *declare* with the `encrypted` cast has its **decrypted** text written to the index, and `suggest()` and `didYouMean()` serve it.
-
-Auto-detection does not keep a column out of the index in these cases. Put the column in `$hidden`, or declare `$searchable['columns']` without it:
-
-- **A masking accessor** (`Str::mask()` on an email) is bypassed: the index, `suggest()` and `didYouMean()` serve the unmasked value, and the shadow column encodes it.
-- **Encryption that decrypts into the model's attributes in memory** (spatie/laravel-ciphersweet does this when a model is retrieved) is invisible to the package: the plaintext is indexed, while the LIKE search matches the ciphertext in the database.
-- **A column hidden at runtime** (`makeHidden()`, `setHidden()`, or a `getHidden()` that changes per request) is still searched and indexed: detection reads the model class's default `$hidden` and `$visible`, once per process. Highlighting reads the row's own state, so a column the row hides is not highlighted (see [Highlighted Results](#highlighted-results)).
-
-→ Full guide: [docs/relationships.md](docs/relationships.md)
-
-### Eloquent & Query Builder Support
-
-```php
-// Eloquent
-User::whereFuzzy('name', 'john')->get();
-User::whereFuzzy('name', 'john')->orWhereFuzzy('email', 'john', 'like')->get();
-User::whereFuzzyMultiple(['name', 'email'], 'john')->get();
-User::where('email', 'like', '%john%')->orderByFuzzy('email', 'john')->get();
-
-// Query Builder
-DB::table('users')->whereFuzzy('name', 'john')->get();
-DB::table('products')->fuzzySearch(['title', 'description'], 'laptop')->get();
-```
-
-The same macros exist on the Eloquent builder and the query builder:
-
-- `whereFuzzy(string $column, string $value, ?string $algorithm = null, ?array $options = [])` — adds the algorithm's predicate (default: `default_algorithm`) with `AND`.
-- `orWhereFuzzy(string $column, string $value, ?string $algorithm = null, ?array $options = [])` — the same predicate joined with `OR`, e.g. a second column with a different algorithm.
-- `orderByFuzzy(string $column, string $value, string $direction = 'asc')` — orders by the position of `$value` in `$column` (`LOCATE()`/`POSITION()`/`INSTR()`/`CHARINDEX()`), so with `'asc'` the earliest occurrence comes first. A row that does not contain `$value` has position 0 and sorts **before** every match, so filter to rows containing the term first. The position follows the database's case rules: case-insensitive under MySQL's default collation, case-sensitive on PostgreSQL and SQLite. A direction other than `asc`/`desc`, or a column that is not letters, digits, underscores and dots, throws `InvalidArgumentException`.
-
-The macros (and the deprecated `Fuzzy` scopes) use the column as written, like `where()`: under a join, qualify it yourself (`whereFuzzy('users.name', 'john')`), or a joined table's column of the same name makes it ambiguous. A qualified column's table is written unprefixed, as in `where()`; the connection's table prefix is added for you.
-
-`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes and `FuzzySearch::tableSearch()` bind at most 2,000 values of their own, as a search does, so SQL Server's 2,100-parameter limit holds; your own `where()` values are not counted. Each column gets up to `max_patterns` LIKE patterns. When the columns together would pass 2,000, each gets an equal share and always keeps its plain contains pattern. A call with too many columns for even one pattern each throws `QuerySyntaxException` ("The query is too complex…"). `whereFuzzy()` on one column is bounded by `max_patterns` alone.
+**More:** chaining Eloquent, relationships, the query builder, text processing, highlighting and debugging, pagination, safety and events are in the [usage guide](docs/usage.md).
 
 ---
 
@@ -302,508 +194,9 @@ User::search('stephen')->using('metaphone')->get(); // More accurate phonetic �
 User::search('laptop')->using('similar_text')->get(); // Contains "laptop", at least 70% similar (min_percentage)
 ```
 
-> ⚠️ **`metaphone` requires one-time setup.** Unlike the other algorithms, it searches against a precomputed `{column}_metaphone` shadow column. Calling `using('metaphone')` without it throws `RuntimeException`. Run the three commands shown in [Shadow Columns](#shadow-columns) once per searchable column.
+> ⚠️ **`metaphone` requires one-time setup.** Unlike the other algorithms, it searches against a precomputed `{column}_metaphone` shadow column. Calling `using('metaphone')` without it throws `RuntimeException`. Run the three commands shown in [Shadow Columns](docs/algorithms.md#shadow-columns) once per searchable column.
 
-### Shadow Columns
-
-Most algorithms compute their score on the fly during the SQL query. **Metaphone is the exception** — PHP's `metaphone()` function isn't available in SQL, so the package precomputes the phonetic code on every save and stores it in a sibling column.
-
-For a `users` table with a `name` column, that means adding a `name_metaphone` column right next to it. Each row's `name_metaphone` holds the phonetic code (e.g. `Stephen` → `STFN`, `Steven` → `STFN`, `Stefan` → `STFN`). At search time, the query is a simple equality check against the precomputed code — fast, no per-row PHP calls. The code covers the whole value, so `smith` finds a row whose name is `Smith` but not `Jane Smith` (whose code is that of both words): to match one word of a longer value, use `soundex` (which matches the first or the last word) or the index (`useInvertedIndex()`, any word).
-
-**Setup (one-time per column):**
-
-```bash
-# 1. Generate the migration that adds the shadow column + index
-php artisan fuzzy-search:add-shadow-column "App\Models\User" name --type=metaphone
-
-# 2. Apply it
-php artisan migrate
-
-# 3. Fill it for the rows you already have (saves fill it from then on)
-php artisan fuzzy-search:rebuild "App\Models\User"
-```
-
-A rebuild writes only the rows whose shadow value is missing or out of date, one UPDATE per 500 rows, and it rebuilds the model's BM25 index too. `--type` accepts `metaphone` only. A code is cut to 191 characters, so a long value (a bio, a description) fits the column the command generates, and the `string()` column earlier releases generated (255, or 191 under `Schema::defaultStringLength(191)`).
-
-After this, the `SearchableObserver` keeps `name_metaphone` in sync automatically on every `save()` and `update()`. A shadow is written only while its column still holds exactly the text the code encodes (accents and letter case included, also under MySQL's and MariaDB's accent-insensitive collations), so a save racing another save of the same row, or a rebuild, never leaves one text's code beside the other text. A declared column read through an accessor, a cast or a date has no stored text its code comes from, and its shadow is written unguarded; so is a column that is not character-typed, such as a JSON column (MySQL re-formats the JSON it stores). On Laravel 10 releases before 10.30, which cannot read column types, every column stays guarded and a JSON column is compared as its stored text: MySQL's JSON and PostgreSQL's `jsonb` re-format that text, so their shadow is written by `fuzzy-search:rebuild` rather than on save.
-
-**What gets generated:**
-
-```php
-// database/migrations/{timestamp}_add_name_metaphone_to_users_table.php
-Schema::table('users', function (Blueprint $table) {
-    $table->string('name_metaphone', 191)->nullable()->after('name');
-    $table->index('name_metaphone');
-});
-```
-
-**Safety guards in the command:**
-
-- The model must exist and be an Eloquent model.
-- The model must live in your app namespace — vendor/framework classes are rejected.
-- The column name is sanitized to `[a-zA-Z0-9_]` only — blocks SQL injection through the argument.
-
-### Typo Tolerance
-
-```php
-// Auto typo tolerance based on word length
-User::search('jonh')->get();  // Finds "John"
-
-// Configure tolerance level
-User::search('john')
-    ->typoTolerance(1)  // Allow 1 typo
-    ->get();
-
-// Disable typo tolerance
-User::search('john')
-    ->typoTolerance(0)
-    ->get();
-```
-
-### Multi-Word Token Search
-
-```php
-// Searches each word independently and combines results
-User::search('john doe developer')
-    ->tokenize()        // Split into tokens
-    ->matchAll()        // All tokens must match (AND)
-    ->get();
-
-User::search('john doe developer')
-    ->tokenize()
-    ->matchAny()        // Any token can match (OR)
-    ->get();
-```
-
-### In-Memory Mode
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Facades\FuzzySearch;
-
-$matches = FuzzySearch::on($staticArray)->search('term')->searchIn(['name'])->get();
-```
-
-> **Supported methods:** `search`, `searchIn`, `take`, `skip`, `withRelevance`, `get`.
-> Any other `SearchBuilder` method (e.g. `extended()`, `using()`, `preset()`, `paginate()`) will throw a `\BadMethodCallException` to prevent silent failures.
-
-Without `searchIn()` there is no column to search, so a search matches nothing. An empty (or whitespace-only) term throws `EmptySearchTermException`, as every other search does, unless `allow_empty_search` is on; then it returns the items unsearched. Over Eloquent models, a column is read as an attribute, cast or accessor. A dotted `searchIn()` name follows only relations already loaded, so call `load('author')` before searching `author.name`. Case is folded in every script, the way `Model::search()` scores (`ÉCOLE` finds `école`, `МОСКВА` finds `москва`), a term is cut at `query.max_term_length` characters (default 128), and `similar_text()` compares at most the first 255 characters of a value and of the term.
-
-A result stays a read model. With relevance on (the default), each matched item gets `_score` and `_raw_score`: attributes on an Eloquent model, keys on an array, properties on an object. So `save()` on a matched model fails with an unknown-column error: re-fetch it by key first, or `unset($model->_score, $model->_raw_score)` before saving. `withRelevance(false)` adds neither. An item that did not match is left exactly as it was. On an object the two are dynamic properties: a class with declared properties raises PHP's dynamic-property deprecation for them, and a `readonly` class cannot take them, so search such objects with `withRelevance(false)`, which writes nothing onto an item.
-
----
-
-## Field Weighting & Scoring
-
-### Weighted Columns
-
-```php
-User::search('john')
-    ->searchIn([
-        'name' => 10,       // Highest priority
-        'username' => 8,
-        'email' => 5,
-        'bio' => 1,         // Lowest priority
-    ])
-    ->get();
-```
-
-A weight of `0` takes a column out of the search on every path (LIKE, `extended()` and `useInvertedIndex()`): a row that holds the term only there is not matched or counted, `suggest()`'s table scan offers no word from it, and an `extended()` field scope on it (`email:john`) is an unknown field. Weights are integers, so a fraction below 1 is `0`. A search whose every column weighs `0` matches nothing. Dictionary completions are model-wide and still offer its words; hide the column (`$hidden`) to keep them out.
-
-### Relevance Scoring
-
-```php
-$users = User::search('john')
-    ->withRelevance()
-    ->get();
-
-foreach ($users as $user) {
-    echo "{$user->name}: {$user->_score}";
-}
-```
-
-Search results are read models. The values a search adds are real attributes on each row: `_score` and `_raw_score`; `_highlighted` and `_matches` with `highlight()` (or `highlighting.enabled`); `_debug` with `debugScore()`; `_model_type` and `_model_class` on a `FederatedSearch` result; and `_score` on every Scout result (`get()`, `paginate()`, `cursor()`). So `save()` on a result tries to write them as columns and fails with an unknown-column error. To change a row you found, re-fetch it by key (`User::find($user->getKey())`), or `unset()` those attributes before saving. `withRelevance(false)` adds no `_score` or `_raw_score`, except on the index path (`useInvertedIndex()`), which adds both whatever `withRelevance()` says.
-
-### Prefix Boosting
-
-```php
-// Boost results that start with the search term
-User::search('john')
-    ->prefixBoost(2.5)  // 2.5x score for prefix matches
-    ->get();
-```
-
-### Partial Match Support
-
-Substring matching is always on: every pattern-based algorithm searches for `%term%`, so a
-partial term matches without any extra call.
-
-```php
-User::search('joh')->get();   // matches "john", "johnny", "johanna"
-```
-
-`partialMatch()` is kept as a no-op for API compatibility — there is nothing to switch on.
-`minMatchLength()` is deprecated since v3.0.0 and does nothing; set the minimum term length with
-the `min_search_length` config key; `typo_tolerance.min_word_length` is the shortest word the
-`fuzzy` algorithm and the BM25 typo expansion give typo tolerance to (shorter words still match,
-exactly).
-A plain term shorter than `min_search_length` characters (default 2) matches nothing on every
-search API — `get()`, `first()`, `paginate()` (total 0), `simplePaginate()`, `count()`,
-`getFacets()`, `FederatedSearch`, `FuzzySearch::on()` and the Scout engine — and fires no event.
-`extended()`/`searchBoolean()` queries are not measured, and neither are the query-builder
-helpers (the `whereFuzzy`-style macros, the `Fuzzy` scopes and `tableSearch()`). `suggest()` and
-`didYouMean()` keep their own two-character floor.
-
-### Custom Scoring Hooks
-
-```php
-User::search('john')
-    ->customScore(function ($item, $baseScore) {
-        // Boost verified users
-        if ($item->is_verified) {
-            return $baseScore * 1.5;
-        }
-        // Penalize inactive users
-        if (!$item->is_active) {
-            return $baseScore * 0.5;
-        }
-        return $baseScore;
-    })
-    ->get();
-```
-
-The callback runs once per row on every path, LIKE, extended and `useInvertedIndex()`, before normalisation, and results are ranked by what it returns. It receives the row's column score on the LIKE and extended paths, and its BM25 raw score on the index path.
-
-A model that uses `Searchable` can also override `getSearchScore(float $baseScore): float` (see the model example under [Per-Model Customization](#per-model-customization)). It runs once per row on every path that scores in PHP, with the same score, before `customScore()` and `boostRecent()` and before normalisation, and results are ranked by what it returns. On the index path these three hooks re-rank the first `max_candidates` matches, just as the LIKE path rescores its first `max_candidates` rows, so a boosted row among them can reach page 1. The Scout engine runs `getSearchScore()` the same way (the other two belong to the builder), so a Scout search ranks the model as `useInvertedIndex()` does. Pages past that window keep the BM25 order, and every match is on exactly one page. Each page then also reads the window's rows, at most `max_candidates` of them. The trait's own method returns the score unchanged.
-
-### Recency Boost
-
-Boost newer records in search results. The boost decays linearly across the window: a row
-created this instant gets the full multiplier, one at the end of the window gets none, and the
-multiplier in between is
-
-```
-1 + (multiplier - 1) x (1 - age_in_days / days)
-```
-
-so with `boostRecent(1.5, 'created_at', 30)` a row created today scores x1.5, a 15-day-old row
-x1.25 and a 29-day-old row x1.0167. Rows older than the window are untouched (x1.0). A date in
-the future (a scheduled `published_at`, or clock skew) counts as age 0: the full multiplier.
-
-```php
-// Newest rows get 1.5x, decaying to 1.0x at 30 days old
-User::search('john')
-    ->boostRecent(1.5, 'created_at', 30)
-    ->get();
-
-// With defaults: 1.5x at age 0, created_at column, 30-day window
-User::search('john')
-    ->boostRecent()
-    ->get();
-```
-
-The boost multiplies the score after `getSearchScore()` and `customScore()`, on every path; on `useInvertedIndex()` it multiplies the BM25 raw score and re-ranks the first `max_candidates` matches (see [Custom Scoring Hooks](#custom-scoring-hooks)). The column is read as an attribute, cast or accessor, or a relation you eager-loaded (`'author.published_at'`), never by calling a model method of that name, so it is safe to take from a request. A value that is no date (a string that does not parse, an array or JSON cast, an object without `__toString()`) gives no boost.
-
-### Search Suggestions / Autocomplete
-
-Get autocomplete suggestions based on search term:
-
-```php
-$suggestions = User::search('joh')
-    ->searchIn(['name', 'email'])
-    ->suggest(5);
-
-// Returns: ['John', 'Johnny', 'Johanna', ...]
-```
-
-**Indexed models complete from the dictionary.** When the model has been indexed (a `fuzzy_index_meta` row exists for it — see [BM25 Inverted Index](#bm25-inverted-index)), `suggest()` completes the *last whitespace-separated word* of the term against that model's own words, ordered by how many of this model's rows hold each word (`fuzzy_index_model_terms`), equal counts newest word first; any earlier words are kept as typed and prefixed back. Completions are the dictionary's lower-case terms, not the value as stored in the column:
-
-```php
-// Product is indexed; only "mo" is completed, "wireless " is kept as typed
-Product::search('wireless mo')->suggest(5);
-
-// Returns: ['wireless monitor', 'wireless mouse', 'wireless modem', ...]
-```
-
-`searchIn()` does **not** narrow dictionary completions: they are scoped to the model, not to its columns, so a name box on an indexed model can be offered a fragment that only occurs in an email column. Use the table scan when the column matters, on a builder whose only column is that one: `User::searchOn(User::query(), $term, ['name'])->suggestFrom('table')->suggest(5)`. `searchIn()` adds to the model's columns, so `User::search($term)->searchIn(['name'])` still scans every column `$searchable` declares (or auto-detection found); weigh one `0` to leave it out (`searchIn(['email' => 0])`).
-
-**Hidden columns are never offered.** A column the model hides (`$hidden`, or one outside a non-empty `$visible`) gives no word to `suggest()`, from the table scan or the dictionary, or to `didYouMean()`. Neither does a relation column the related model hides, or one under a relation the model hides, also where `searchableText()` indexes it under its dotted name. Declare that name in `$searchable['columns']`, as `'author.email'`, so the check knows it: a dotted name the hook gives undeclared gives the dictionary no word. A `morphTo` path's column (`commentable.title`) gives the dictionary no word at all: the class it reaches is each row's own. A `belongsToMany` pivot column (`'tags.note'` with `withPivot('note')`) gives words only where the related model shows its `pivot` and the pivot model shows the column, as `toArray()` serialises it. Searches still match it, including their typo and as-you-type expansions, and return only the row's visible attributes. Dictionary postings written before 3.0 carry no column name, so for a model that hides one of its searchable columns they are left out of suggestions too until you run `fuzzy-search:rebuild --fresh`.
-
-**Un-indexed models keep the table scan** — the v2.0 behaviour, proposing column values as stored:
-
-```php
-// User has no fuzzy_index_meta row
-User::search('joh')->searchIn(['name'])->suggest(5);
-
-// Returns: ['John', 'Johnny', ...] — the value as stored, not lower-cased
-```
-
-The scan reads at most `limit × 3` matching rows: those whose first searched column holds the shortest values (then by value), so long values do not crowd the short completions out; to find them, the database sorts every matching row. A base query with an order, a `distinct()` or a `groupBy()` of its own, a global scope's included, is read in its own order instead.
-
-**What scopes a suggestion.** `filter()` and `filterIn()` narrow suggestions like a `where()`: they narrow the table scan and the `didYouMean()` check, and under one `'auto'` uses the table scan. The constraints you put on the builder's base query (`where()`, `join()`, `query()` and Eloquent calls forwarded through the builder, plus the model's global scopes) are honoured as follows. What counts as a constraint is a WHERE, a JOIN, a HAVING or a GROUP BY clause, a union or a FROM subquery (`fromSub()`); an aliased table (`from('users as u')`) alone is not one.
-
-- **The table scan** (an un-indexed model, `suggestFrom('table')`, or `'auto'` under a constraint) runs on the base query, so every one of those constraints narrows it.
-- **`suggest()` in `'auto'` mode on an indexed model** completes from the dictionary only when the base query is unconstrained. A `where()`, a `join()`, a forwarded scope or a global scope switches it to the table scan. The `SoftDeletes` scope does not count, because with `indexing.enabled` on, deleting a row drops its terms from the index. With `indexing.async` (the default) that happens when the queued `IndexModelJob` runs, so until then a trashed row's terms can still be offered; a query-builder `delete()` fires no model events, so its rows' terms stay until you rebuild. Use `suggestFrom('table')` or sync indexing if that matters.
-- **`suggestFrom('index')`** always completes from the model's dictionary. It is model-wide and ignores `where()`, `filter()`, `filterIn()` and every scope, so use it only where every caller may see every row's terms.
-- **`didYouMean()`** always offers the model's own dictionary terms only. Under a `where()`, a `join()` or a global scope (`SoftDeletes` excepted, with the same queue lag) it keeps only terms posted for at least one row the query can see. It checks up to `max_candidates` of each term's rows, and a term whose visible rows fall outside those is dropped rather than shown. It checks at most `max($limit * 3, 10)` terms, so a narrow query can get fewer alternatives than `$limit`. The `$limit` of `suggest()` and `didYouMean()` is cut to 50.
-- **A plain query builder** given `useInvertedIndex(Model::class)` follows the same rules with its own `where()`s and joins, which its index search honours too. The model's global scopes apply to its index search and to `didYouMean()`, but not to its table scan (a query builder has no model scopes), so `'auto'` completes model-wide from the dictionary when the builder carries no constraint of its own.
-
-`suggestFrom('auto'|'index'|'table')` overrides which source `suggest()` uses; `'auto'` (the default) picks the dictionary when the model is indexed and the base query is unconstrained (see above), and the table scan otherwise:
-
-```php
-User::search('joh')->suggestFrom('index')->suggest(5); // dictionary only, model-wide (ignores where() and scopes) — [] if the model isn't indexed
-User::search('joh')->suggestFrom('table')->suggest(5); // table scan only, even on an indexed model
-```
-
-### "Did You Mean" Spell Correction
-
-Get alternative spellings when search has typos:
-
-```php
-$alternatives = User::search('jonh')->didYouMean(3);  // Typo
-
-// Returns, for example with users named Jon, Jane and John: [
-//     ['term' => 'jon', 'distance' => 1, 'confidence' => 0.75],
-//     ['term' => 'jane', 'distance' => 2, 'confidence' => 0.5],
-//     ['term' => 'john', 'distance' => 2, 'confidence' => 0.5],   // a transposition is two edits
-// ]
-```
-
-The closest term comes first, then the most common one. How far it reaches scales with the term's length: 1 edit for 2–3 characters, 2 for 4–5, 3 from 6. Alternatives come from the searched model's own terms in the BM25 dictionary (`fuzzy_index_terms`), so the model must be indexed; another model's terms are never offered. `searchIn()` does not narrow them: like dictionary completions, they are the model's terms from every indexed column. A builder with no Eloquent model (a plain query builder, without `useInvertedIndex(Model::class)`) gets `[]`.
-
-A phrase is corrected word by word: `User::search('charli brwn')->didYouMean(1)` returns `charlie brown` with a distance of 2 (the edits of each word added up). A word the model's dictionary holds stays as typed, and a phrase with no word to correct, or none with an alternative, returns `[]`. The first phrase takes every misspelled word's closest alternative, the second the next closest, and so on.
-
-### Multi-Model Federation Search
-
-Search across multiple models simultaneously:
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\FederatedSearch;
-
-$results = FederatedSearch::across([User::class, Product::class, Post::class])
-    ->search('laptop')
-    ->using('fuzzy')
-    ->limit(20)
-    ->get();
-
-// Each result includes _model_type and _model_class
-foreach ($results as $result) {
-    echo $result->_model_type;  // 'User', 'Product', or 'Post'
-}
-
-// Get grouped results
-$grouped = FederatedSearch::across([User::class, Product::class])
-    ->search('test')
-    ->getGrouped();
-
-// Get counts per model — match counts, not page sizes: limit() does not shrink them
-// (limitPerModel() and max_candidates do, see the note below), and they add up to exactly
-// what paginate()->total() reports
-$counts = FederatedSearch::across([User::class, Product::class])
-    ->search('test')
-    ->getCounts();  // ['User' => 5, 'Product' => 3]
-
-// Cap how many rows each model may contribute before merging (default: limit())
-$results = FederatedSearch::across([User::class, Product::class])
-    ->search('laptop')
-    ->limitPerModel(5)
-    ->limit(20)
-    ->get();
-
-// Tie-break order for equal scores (and the whole order when withRelevance(false))
-$results = FederatedSearch::across([User::class, Product::class])
-    ->search('laptop')
-    ->orderByModel([Product::class, User::class])
-    ->get();
-
-// Page across all models with a real, globally ranked total
-$page = FederatedSearch::across([User::class, Product::class])
-    ->search('laptop')
-    ->paginate(15);
-
-// paginate()'s total() counts only reachable rows. One rule: each model contributes the
-// smaller of its match count, limitPerModel() and max_candidates (default 1000, see
-// "max_candidates Tuning" below — a ranked search reads at most that many candidates per
-// model). So the page count never promises more rows than the search can return, and
-// getCounts() reports the same per-model numbers total() adds up.
-$page = FederatedSearch::across([User::class, Product::class])
-    ->search('laptop')
-    ->limitPerModel(5)
-    ->paginate(15);
-
-// Cursor-less "load more" pagination — on LIKE, cheaper than paginate() when you only need hasMorePages()
-// (it skips the count); on the index both rank each model once, and paginate()'s total comes with it
-$page = FederatedSearch::across([User::class, Product::class])
-    ->search('laptop')
-    ->simplePaginate(15);
-
-// Search every Searchable model through its BM25 inverted index instead of LIKE
-$page = FederatedSearch::across([User::class, Product::class])
-    ->search('laptop')
-    ->useInvertedIndex()
-    ->paginate(15);
-```
-
-Each model is searched the way `Model::search()` searches it, with its own `$searchable` configuration — algorithm, typo tolerance, stop words, synonyms, accent handling and options. `using()`, `typoTolerance()` and `options()` on the federated search override them for every model (`options()` takes the same driver options as `SearchBuilder::options()`, such as `max_distance`; `typoTolerance()` wins over its `max_distance`). Narrowing the columns with `searchIn()` overrides only the column list. A model without the `Searchable` trait is searched with LIKE — or, with the `Fuzzy` trait, with its own `getFuzzyAlgorithm()` and `getFuzzyOptions()` (its `$fuzzyAlgorithm`, default `default_algorithm`, and `$fuzzyOptions`), which `using()`, `options()` and `typoTolerance()` override — on the `searchIn()` columns its table has; without `searchIn()`, on its declared `$searchable['columns']`, else — with the `Fuzzy` trait — on `getFuzzySearchableColumns()` (its `$fuzzySearchable`, `name` by default), else on whichever of `name` and `title` its table has, and a model with none of these contributes nothing. Every model, with the trait or without, contributes at most `max_candidates` rows.
-
-`useInvertedIndex()` searches each model with the `Searchable` trait through its BM25 inverted index, exactly as `Model::search($term)->useInvertedIndex()` does (under `searchIn()`, `searchOn()` with those columns), rows and counts alike: a model whose index was never built matches nothing. On the index, `using()` and `options()` are not read, and `typoTolerance()` sets how many edits a query word is expanded by in the index's dictionary. A model without the `Searchable` trait is still searched with LIKE or its `Fuzzy` algorithm, as above. Each `Searchable` model's `_score` is normalised to its own top hit (1.0), on the index as on LIKE, and a model without the trait carries no `_score` and sorts as 0. `useInvertedIndex(false)` turns it off.
-
-A relation column (`author.name`) passed to the federated `searchIn()` is ignored. A model with none of the named columns on its table contributes nothing and is left out of `getCounts()`; one with some of them is searched on those only. Relation columns a model declares in `$searchable['columns']` are searched, as `Model::search()` searches them.
-
-### Search Analytics
-
-Per-query debug information about the builder you are holding — nothing is stored. For DB-backed reporting across searches (popular terms, zero-result terms, latency by path) see [Persisted Search Analytics](#persisted-search-analytics).
-
-Get detailed analytics about your search configuration:
-
-```php
-$analytics = User::search('john')
-    ->searchIn(['name' => 10, 'email' => 5])
-    ->using('levenshtein')
-    ->typoTolerance(2)
-    ->getAnalytics();
-
-// Returns: [
-//     'search_term' => 'john',
-//     'algorithm' => 'levenshtein',
-//     'columns_searched' => ['name', 'email'],
-//     'typo_tolerance' => 2,
-//     'tokenized' => false,
-//     'stop_words_active' => false,
-//     ...
-// ]
-```
-
----
-
-## Text Processing
-
-- **Stop-word filtering** — `ignoreStopWords()` drops common words from a query: pass a locale (`'de'`; built-in lists cover eight locales) or an array of words. For a list kept in a file, point a `stop_words.{locale}` config entry at it (an absolute path, one word per line) and pass that locale. An `extended()`/`searchBoolean()` query drops no stop words: every word in it stays a term of the query.
-- **Synonyms** — `withSynonyms()` and `synonymGroup()` expand a query to related terms. The `synonyms` config key sets the default synonyms (word => its synonyms; case is ignored, so `'Laptop'` and `'laptop'`, or `'Ägypten'` and `'ägypten'`, are the same word, and the later one set wins; `synonymGroup()` words ignore case too) of every `SearchBuilder` search — `Model::search()`, a query-builder source, a `Searchable` model in `FederatedSearch`, Filament global search — as if `withSynonyms()` were called first. A model's `$searchable['synonyms']` and a query's `withSynonyms()` are merged on top, and a word they also set takes their synonyms. An `extended()`/`searchBoolean()` query applies no synonyms, from any of these sources: its terms are the ones the user wrote, and expanding them would change what its AND requires. The Scout engine, `FuzzySearch::on()` and the query-builder macros (`whereFuzzy()`, the `Fuzzy` scopes, `tableSearch()`) apply none either.
-- **Per-locale stop words** — `ignoreStopWords('de')` picks a locale's list at query time and `$searchable['locale']` picks one for a model's index pipeline. The top-level `locale` config key (`'en'` by default) picks the list every other model's index drops (and the query-time list of a preset with `stop_words_enabled`), so out of the box the index drops the 14 English words of `stop_words.en`; to index every word, set `locale` to a code with no `stop_words` entry, or empty that locale's list, and rebuild. (`locale()` on the builder never selected either; it is deprecated since v3.0.0 and does nothing.)
-- **Unicode & accent insensitivity** — on by default (`unicode.accent_insensitive`): a term is also searched in its accent-free form, beside the typed one, so `Müller` finds `Zoë Müller` and `Muller`, and `café` finds `cafe`. The other way round, `cafe` finding `Café` as a substring match (`simple`/`like`) needs the column folded, which the package does only through the database (the typo-tolerant algorithms may still reach `Café` as a one-letter typo): an accent-insensitive collation on MySQL/MariaDB (`utf8mb4_unicode_ci`, `utf8mb4_0900_ai_ci`), or `accentInsensitive()` on PostgreSQL with the unaccent extension and `use_native_functions=true` (see Notes). SQLite, and PostgreSQL without native functions, cannot fold the column side; SQL Server follows the column's collation. Where the database folded the match, scoring and highlighting fold the value too, so `jose` ranks `José Ramírez` as the prefix match it is and highlights `José` (the fold also takes `ł`, `đ`, `æ`, `œ` and `þ` to `l`, `d`, `ae`, `oe` and `th`, as MySQL 8's `utf8mb4_0900_ai_ci`, MariaDB's `uca1400_ai_ci` or `unaccent()` does, so `lukasz` highlights `Łukasz`): on MySQL/MariaDB when the connection's `collation` is accent-insensitive (any but a `_bin`, `_cs` or `_as_` one; it is the connection's setting that is read, not each column's), and on PostgreSQL with that opt-in. On SQL Server an `_AI` collation is not read, so a row it matched that way is scored and highlighted against the term as typed: it ranks lower and is untagged. `unicodeNormalize()` NFC-normalises the term (needs ext-intl), so a decomposed `naïve` finds a stored precomposed `naïve`; `naïve` finding `naive` comes from the accent folding above. Text is handled per character, not per byte, so combining marks stay attached to their base letters.
-- Index-time options — the tokenizer, per-model pipelines, accent folding on the index, and optional stemming — sit apart from the query-time behavior above; changing any of them needs `php artisan fuzzy-search:rebuild "App\Models\YourModel" --fresh`.
-
-→ Full guide: [docs/tokenization.md](docs/tokenization.md)
-
----
-
-## Result Presentation
-
-### Highlighted Results
-
-```php
-$users = User::search('john')
-    ->highlight('em')  // Wrap matches in <em> tags
-    ->get();
-
-foreach ($users as $user) {
-    echo $user->_highlighted['name'];  // "Hello <em>John</em> Doe"
-}
-
-// Custom highlight
-$users = User::search('john')
-    ->highlight('<mark class="highlight">', '</mark>')
-    ->get();
-```
-
-Set `highlighting.enabled = true` in the config to highlight every search without calling `highlight()`. A value is highlighted at up to `highlighting.max_matches` occurrences (100; `0` for no limit), and the rest of it follows untagged, so a long text that repeats the term cannot blow up `_matches` and `_highlighted`.
-
-Every value in `_highlighted` is safe to render as HTML: a matched column is wrapped in the highlight tag (and escaped first), and — since v3.0.0 — a column that did not match is HTML-escaped too, so the whole array can be echoed with `{!! !!}` without an extra `e()` call.
-
-`_highlighted` and `_matches` hold only columns the row's `toArray()` would show: a column in `$hidden`, or outside a non-empty `$visible`, is still searched and scored but never highlighted. For a relation column the related model's `$hidden`/`$visible` apply too, and so does the parent hiding the relation (`author.name` is left out when `Author` hides `name` or the post hides `author`). The row's own state is read when the search runs, so `makeHidden()`/`makeVisible()` in a `retrieved` listener counts, and `FuzzySearchResource` applies the row's rule again when it renders, so a `makeHidden()` after the search holds there as well, and so does an `unsetRelation()`: a relation path the row no longer holds a related row for is left out. The same rule keeps hidden columns out of `debugScore()`'s `_debug` (`columns`, `weights` and `column_scores`), and `suggest()`'s table scan never offers a word from a hidden column: a column the model hides by `$hidden`/`$visible` is left out of the scan's matching, so rows that match only through it do not crowd out the rows that can yield a suggestion, and a model whose every searchable column is hidden gets `[]` without a query.
-
-### Debug / Explain-Score Mode
-
-```php
-$users = User::search('john')
-    ->debugScore()
-    ->get();
-
-foreach ($users as $user) {
-    print_r($user->_debug);
-    // For "John Doe" <john@example.com>, with columns name => 10 and email => 5:
-    // [
-    //     'term' => 'john',
-    //     'algorithm' => 'fuzzy',
-    //     'typo_tolerance' => 2,
-    //     'prefix_boost' => 1.0,
-    //     'columns' => ['name', 'email'],
-    //     'weights' => ['name' => 10, 'email' => 5],
-    //     'column_scores' => ['name' => 800.0, 'email' => 400.0],
-    //     'final_score' => 1.0,
-    // ]
-}
-```
-
-`column_scores` is each column's score times its weight (`john` is a prefix of both values, worth `scoring.prefix_match` = 80: 80 × 10 and 80 × 5), and `final_score` is the row's `_score`. `prefix_boost` is what `prefixBoost()` set (1.0 when not called). On `useInvertedIndex()` `algorithm` is `bm25` and `column_scores` is empty, because BM25 scores whole documents. `algorithm` is `extended` for an `extended()` query.
-
----
-
-## Performance & Indexing
-
-### Async Indexing (Queue Support)
-
-```php
-// In config/fuzzy-search.php
-'indexing' => [
-    'enabled' => true,          // without this the indexing observer returns early
-    'async' => true,
-    'queue' => 'search-indexing',
-    'chunk_size' => 500,
-    'job' => [
-        'tries'   => 3,             // attempts before the index job is marked failed
-        'backoff' => [10, 60, 300], // seconds before the 2nd, 3rd, ... attempt
-        'timeout' => 120,           // seconds a single job may run
-    ],
-],
-
-// Re-index a single model
-use Ashiqfardus\LaravelFuzzySearch\Jobs\IndexModelJob;
-IndexModelJob::dispatch(User::class, $user->id)->onQueue(config('fuzzy-search.indexing.queue')); // dispatch() alone uses the default queue
-```
-
-### Caching
-
-```php
-// Cache get() (and first()/simplePaginate(), which go through it) for 60 minutes
-User::search('john')->cache(60)->get();
-
-// No argument: the cache.ttl config (seconds)
-User::search('john')->cache()->get();
-
-// A key of your own, used as given
-User::search('john')->cache(60, 'user-search-john')->get();
-
-// With cache.enabled on, turn caching off for one query
-User::search('john')->cache(0)->get();
-```
-
-```php
-// config/fuzzy-search.php
-'cache' => [
-    'enabled' => false,          // true: cache every search without calling cache()
-    'driver'  => 'default',      // a store from config/cache.php, or 'default' for the app's
-    'ttl'     => 3600,           // seconds
-    'prefix'  => 'fuzzy_search_',// generated keys start with this
-],
-```
-
-`cache.ttl` counts **seconds**; `cache($minutes)` counts **minutes** and overrides it for that query; `cache()` or `cache(null)` caches for `cache.ttl` (before 3.0 `cache(null)` meant "not cached"); `cache(0)` turns caching off for that query, also when `cache.enabled` is on. With `cache.enabled` on, "every search" means every `get()`, `first()` and `simplePaginate()`: `paginate()`, `count()` and `getFacets()` are never cached, and `FederatedSearch::paginate()` reads fresh, like `paginate()`.
-
-> **Before 3.0 the `cache` block was never read.** If your published `config/fuzzy-search.php` has `'enabled' => true` (the old README showed it), 3.0 caches every `get()`, `first()` and `simplePaginate()` for `ttl` **seconds**, and a `ttl` you wrote as minutes is now read as seconds. Set `'enabled' => false` to keep 2.0's behaviour.
-
-A key you pass is used as given, so `Cache::forget('user-search-john')` removes it. A generated key starts with `cache.prefix` and covers everything that changes the result: the term, columns and weights, algorithm and options, filters, forwarded `where()`/joins/scopes (the SQL and its bindings), limit and offset, `orderBy()`, highlight tags, `withRelevance()`, `debugScore()`, the index model class, the model class, the names of its eager loads, where it runs — connection name, driver, host, port, database, table prefix and, on PostgreSQL, the `search_path` (one extra `select current_setting('search_path')` per cached search) — and the whole `fuzzy-search` config. Tenants on separate connections, databases or schemas therefore never share an entry, and changing any config value (`min_percentage`, `max_candidates`, a driver option, `cache.ttl` itself) starts a fresh set of entries; the old ones expire with their TTL. A key you name changes only when you change it. A search with a `customScore()` closure is cached only under a key you name: a closure cannot be part of a generated key.
-
-A cached entry holds only arrays and scalars. By default that is each model's key with its `_score` and `_raw_score`. Rows of a search with a join, a union, an aliased FROM (`from('users as u')`) or a `fromSub()`, or without the key selected, are stored as their attributes, as the database returned them. A plain query builder's rows are stored as arrays. It therefore reads back on every store under Laravel 13's `cache.serializable_classes => false`.
-
-A hit re-reads models stored by key, in the cached order, through the current query. That applies its global scopes, its eager loads with their constraints, and its `retrieved` listeners, so `with(['reviews' => fn ($q) => $q->where('user_id', auth()->id())])` is never served to another user. Models stored as attributes are rebuilt from them instead: their `retrieved` listeners and the current eager loads run the same way, but the query does not read them again.
-
-On a hit:
-- A model deleted since the entry was written is left out when the rows were stored by key. Rows stored as attributes (a join, a union, an aliased FROM) and a plain query builder's rows are served as they were stored until the entry expires: a deleted row is served until the TTL ends. A row stored as attributes (a join, a union, an aliased FROM, a `fromSub()` or a select without the key) is stored without the model's `$hidden` attributes, so after a cache hit `makeVisible()` finds them empty; don't cache such a query if you show hidden columns from it. With a `$visible` list, the attributes outside it are still stored in the cache store (it filters serialisation, and a joined or aliased column must read the same on a hit as on a miss).
-- `_highlighted`, `_matches` and `_debug` are computed for the current request, so each viewer sees their own `makeVisible()`/`makeHidden()`.
-- The rows are still the ones the cached search found: a row that no longer matches stays until the entry expires.
-
-A hit costs the keyed read (none for rows stored as attributes) plus the eager-load queries. It fires no `FuzzySearchExecuted` event and writes no analytics row.
+Shadow columns, typo tolerance, multi-word and in-memory search, how the algorithms compare and what each one does on each database: [docs/algorithms.md](docs/algorithms.md). Field weights, relevance scoring and its hooks, suggestions, "did you mean" and multi-model federation: [docs/scoring.md](docs/scoring.md).
 
 ---
 
@@ -815,7 +208,7 @@ A real inverted index for large tables, across seven tables: `fuzzy_index_terms`
 php artisan fuzzy-search:rebuild "App\Models\Post"    # build once; with indexing.enabled on, saves keep it in sync
 ```
 
-With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild also removes the documents of rows such a write deleted or trashed, or that the model's `searchIndexQuery()` leaves out. A row moved out of a global scope keeps its document until `IndexModelJob::dispatch(Post::class, $id)` repairs it (the job removes a row that is gone or hidden) or a `rebuild --fresh`.
+With `indexing.enabled` set to `true` (it ships `false`; see [Async Indexing](docs/performance.md#async-indexing-queue-support)), the index follows Eloquent model events, once the save's transaction commits. Writes that fire no model events leave it stale: `Model::query()->update()`, `insert()`, a query-builder `delete()`, `saveQuietly()`, `Model::withoutEvents()` and raw SQL. Re-index rows written this way with `php artisan fuzzy-search:rebuild "App\Models\Post"`. A plain rebuild also removes the documents of rows such a write deleted or trashed, or that the model's `searchIndexQuery()` leaves out. A row moved out of a global scope keeps its document until `IndexModelJob::dispatch(Post::class, $id)` repairs it (the job removes a row that is gone or hidden) or a `rebuild --fresh`.
 
 ```php
 Post::search('tolkien')->useInvertedIndex()->get();
@@ -823,9 +216,9 @@ Post::search('tolkien')->useInvertedIndex()->get();
 
 - **Column weights (BM25F-lite)** — `searchIn()` / `$searchable['columns']` weights scale ranking on the index too, not only the LIKE/Levenshtein paths.
 - **Typo tolerance & as-you-type** — the index expands each query term through its own term dictionary, so `typoTolerance()` and `asYouType()` work without an exact token match.
-- On MariaDB at 1M rows (fb82c82) an index search for a common word took 0.12 s where `fuzzy` LIKE took 17 s; on a small table, LIKE is simpler to operate.
+- **When to use it** — On MariaDB at 1M rows (fb82c82) an index search for a common word took 0.12 s where `fuzzy` LIKE took 17 s; on a small table, LIKE is simpler to operate.
 - **Single-table inheritance** — each row is indexed under its own class; return the parent from each child's `searchIndexType()` to index the hierarchy once ([docs/bm25.md](docs/bm25.md#single-table-inheritance)).
-- **Writes** — the indexer indexes the row as it is stored when it writes, two writes for the same row wait for each other instead of counting it twice, and with `indexing.async` off an index error is reported to your exception handler, naming the model and key (`IndexModelJob::dispatch($model, $key)` repairs it), not thrown from `save()`. Indexing inside an open transaction (Scout with `after_commit` off and no queue, or `searchable()` inside `DB::transaction()`) can deadlock: on MySQL, MariaDB and PostgreSQL once the transaction holds two or more index writes, and on SQL Server under its default locking read committed even with one (turn on `READ_COMMITTED_SNAPSHOT` or set `scout.after_commit`), and such a deadlock is thrown from `save()`, not retried: set `scout.after_commit` to `true`; see [Production Setup](docs/bm25.md#production-setup). On MySQL/MariaDB one such write does not deadlock with a neighbouring row's (it deletes and writes only the postings that change, by primary key), and it reads the row with a shared lock held until your transaction ends; but while a transaction with two or more runs, its deadlock can roll back either side, the one-write transaction too. On PostgreSQL the package analyzes the index tables after a rebuild and as they grow, and a failure to analyze is reported, not thrown (a connection lost inside an open transaction is thrown); after a `pg_restore`, or a bulk import into a model's own table, run `ANALYZE` yourself (same section).
+- **Writes** — saves reach the index once their transaction commits; with `indexing.async` off an index error is reported to your exception handler, naming the model and key, not thrown from `save()`. Indexing inside a transaction of yours can deadlock: set `scout.after_commit` to `true`, and see [Index writes inside transactions](docs/bm25.md#index-writes-inside-transactions).
 
 → Full guide: [docs/bm25.md](docs/bm25.md)
 
@@ -847,237 +240,29 @@ Extended queries always run on the LIKE path — `->useInvertedIndex()` is ignor
 
 ---
 
-## Scout Driver
+## Integrations
 
-The Scout engine adapter is bundled in this package and registers automatically when `laravel/scout` is installed — no separate driver package needed. It supports Laravel Scout 10.1 or later and 11.x.
+### Scout driver
+
+The Scout engine is bundled and registers automatically when `laravel/scout` 10.1 or later (or 11.x) is installed:
 
 ```
 SCOUT_DRIVER=fuzzy-search
 ```
 
-It wraps the same `IndexManager` + `Bm25Scorer` used by `Model::search()->useInvertedIndex()`, so Scout searches share the same index and the same relevance scoring — there is no separate index to keep in sync. Scout's semantic and hybrid search (`semantic()`, `hybrid()`, Scout 11.6+) are not supported by this engine: both throw `NotSupportedException`.
+It searches the same BM25 index, with the same scoring, as `useInvertedIndex()`, so there is no second index to keep in sync. A model on it needs the package's `Searchable` trait beside Scout's. An empty or null query matches nothing, with or without `allow_empty_search`. Semantic and hybrid search (Scout 11.6+) are not supported. Ordering, global scopes and tenant constraints, soft deletes and limits: [Scout driver](docs/integrations.md#scout-driver).
 
-A model on this driver needs the package's `Searchable` trait beside Scout's, as the [recipe](docs/integrations.md#usage) shows, or a `searchableText()` hook of its own. A model with Scout's trait alone has nothing to index: indexing or searching it throws `LogicException`, naming the trait. Under `scout.soft_delete`, deleting a `SoftDeletes` one re-indexes it, so `delete()` trashes the row and then throws; the row stays trashed.
+### Filament
 
-`orderBy()`, `orderByDesc()`, `latest()` and `oldest()` replace the relevance order, as on Scout's database engine: the matches come back in that order (ties by key, descending), every match past `bm25.max_postings_per_term` included, and `_score` still carries each one's BM25 score (0 past that cap). The query is searched on its first `query.max_term_length` characters (default 128), as `useInvertedIndex()` searches it.
+`HasFuzzyGlobalSearch` swaps a Resource's LIKE-based global search for fuzzy search, and `FuzzySearch::tableSearch(['name'])` does the same for a table column (Filament 3.3, 4.x and 5.x): [Filament integration](docs/integrations.md#filament-integration).
 
-The engine counts and pages through the model's global scopes, and through the constraints you put on Scout's builder with `where()`, `whereIn()` and `whereNotIn()`: a row either hides is neither served nor counted. On Scout 10.1 and later the engine builds `paginate()` and `simplePaginate()` itself, with the total it has already counted. See [Authorization](docs/integrations.md#authorization).
+### JSON API resources
 
-`take()` and, on Scout 10.1+, the page size of `paginate()` and `simplePaginate()` are cut to `max_candidates` (1000 by default), and a query uses its first `query.max_tokens` distinct terms. Without `take()`, `get()` returns only the first 15 matches; `paginate()` defaults to the model's `getPerPage()` (15). An empty or null query matches nothing, with or without `allow_empty_search`. Scout searches fire no `FuzzySearchExecuted` event.
+`FuzzySearchResource` and `FuzzySearchCollection::fromBuilder()` wrap results into API responses with the package's `_score`/`_highlighted` fields: [JSON API resources](docs/integrations.md#json-api-resources).
 
-→ Full guide: [docs/integrations.md](docs/integrations.md#scout-driver)
+### Livewire
 
----
-
-## Filament Integration
-
-`HasFuzzyGlobalSearch` swaps a Filament Resource's LIKE-based global search for fuzzy search — typo tolerance, relevance ordering, highlighted details — while everything else about the Resource stays as defined.
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Integrations\Filament\HasFuzzyGlobalSearch;
-
-class UserResource extends Resource
-{
-    use HasFuzzyGlobalSearch; // global search
-}
-
-FuzzySearch::tableSearch(['name']); // for individual table columns
-```
-
-Supports Filament v3, v4 and v5. Filament is a soft dependency — nothing in this package requires it unless you use the trait or helper.
-
-→ Full guide: [docs/integrations.md](docs/integrations.md#filament-integration)
-
----
-
-## JSON API Resources
-
-`FuzzySearchResource` wraps one result row, and `FuzzySearchCollection::fromBuilder()` wraps a paginated search, into normal Laravel API responses with the package's underscore-prefixed fields alongside the plain attributes.
-
-```php
-$q = $request->query('q');
-abort_unless(is_string($q) && filled($q), 422, 'Enter a search term.'); // an empty q or ?q[]= would be a 500
-
-return FuzzySearchCollection::fromBuilder(User::search($q)->highlight('mark'), perPage: 20);
-```
-
-The response's `meta` carries `query`, `algorithm`, `latency_ms` and `suggestions` (populated only when the search matched nothing: an empty page past the last one beside a non-zero total gets none). `_highlighted` values are already HTML-escaped — render them directly, don't escape again.
-
-→ Full guide: [docs/integrations.md](docs/integrations.md#json-api-resources)
-
----
-
-## Livewire Recipe
-
-A search-as-you-type box needs only a client-side debounce — `wire:model.live.debounce.300ms` — plus `->asYouType()` and `->suggest()` on the builder. This replaces `SearchBuilder::debounce()`, deprecated since v3.0.0: by the time the builder runs server-side, the request has already arrived, so a server-side debounce can't do anything.
-
-This is documentation only — no such component ships with the package or the demo app.
-
-→ Full guide: [docs/integrations.md](docs/integrations.md#livewire-recipe)
-
----
-
-## Pagination
-
-### Stable Ranking
-
-```php
-// Results maintain consistent order across pages
-$page1 = User::search('john')->stableRanking()->paginate(10, page: 1);
-$page2 = User::search('john')->stableRanking()->paginate(10, page: 2);
-```
-
-An explicit `orderBy()` replaces the relevance order on every path — LIKE, `extended()` and `useInvertedIndex()` — and on every terminal: rows come back in that order (several calls apply in the order given), `_score` is still attached, and `stableRanking()` adds the primary key ascending as the final tiebreak unless an `orderBy()` already names the key (on the LIKE and extended paths, under a join that repeats a model, the selected columns follow it: see the pagination note). The relevance order applies only when no `orderBy()` was set. `?page` is read as a whole number of at least 1 on every paginator: `?page=abc`, `?page=0`, `?page=-3` and `?page[]=1` are page 1; likewise `page(0)` or a negative page is page 1 and `skip(-n)` is `skip(0)`. On the LIKE and extended paths `get()` and `first()` of such a search, and of one with `withRelevance(false)`, read only the rows up to the end of the page, where a relevance-ranked search reads up to `max_candidates` to rescore them; `_score` is then normalised over the rows read.
-
-### Pagination Methods
-
-```php
-// Offset pagination
-$users = User::search('john')->paginate(15);
-
-// Simple pagination (no total count - faster; best for infinite scroll)
-$users = User::search('john')->simplePaginate(15);
-
-// SearchBuilder::paginate() and simplePaginate() clamp perPage to max_candidates (default 1000)
-// on every search path — LIKE, extended and BM25 alike — because that is the widest window the
-// ranking is built from; a perPage below 1 becomes 1. take()/limit() are your explicit limit and
-// are not clamped: on the index path take(n) hydrates n models, while on the LIKE and extended
-// paths the max_candidates candidate window still bounds them. FederatedSearch::paginate() and
-// simplePaginate() clamp perPage the same way.
-$users = User::search('john')->paginate(2000);  // perPage() === 1000
-
-// cursorPaginate() always throws BadMethodCallException — it bypasses PHP-side
-// relevance scoring. Use simplePaginate() above instead.
-
-// Manual pagination
-$users = User::search('john')
-    ->take(10)
-    ->skip(20)
-    ->get();
-```
-
----
-
-## Reliability & Safety
-
-### Fallback Search Strategy
-
-When the primary algorithm matches no rows, the same search is re-run with each fallback in order until one matches. A page past the primary's matches, such as `simplePaginate()` page 2 or a `skip()`, is empty: a fallback runs only when the primary matched nothing at all, never to fill a page. Works with `get()`, `first()`, `paginate()`, `simplePaginate()` and `count()`; filters and `where()` constraints carry over to each attempt.
-
-```php
-User::search('jonh')
-    ->using('simple')        // plain LIKE — no match for the typo
-    ->fallback('fuzzy')      // transposition pattern finds "John"
-    ->fallback('soundex')    // tried only if fuzzy also finds nothing
-    ->get();
-
-// A term the dictionary cannot reach (bm25.fuzzy.candidate_pool) still gets a safety net:
-Product::search('smartwach')
-    ->useInvertedIndex()
-    ->fallback('fuzzy')
-    ->get();
-```
-
-One `FuzzySearchExecuted` event fires per attempt, so analytics can tell which algorithm answered.
-
-### Query Complexity Limits
-
-```php
-User::search($query)
-    ->maxPatterns(50)  // Cap the LIKE patterns generated per column (default: performance.max_patterns = 100)
-    ->get();
-```
-
-One search binds at most 2,000 values of its own, on every database, so SQL Server's 2,100-parameter limit holds, with 100 to spare for your own `where()` and `filter()` values; those are not counted. Each term (every word under `tokenize()`, every `extended()` leaf, its accent-free form, and each synonym, which an `extended()` query does not add) is matched on each column with up to `max_patterns` LIKE patterns. When the patterns would pass 2,000 bindings, every term-and-column pair gets an equal share and always keeps its plain contains pattern, so a very long query matches fewer typo variants instead of failing. A query that needs more than 2,000 values even at one pattern per pair throws `QuerySyntaxException` ("The query is too complex…"). A query within the budget builds the same SQL as before. The multi-column helpers (`whereFuzzyMultiple()`, `fuzzySearch()`, the `Fuzzy` scopes, `tableSearch()`) share the same budget across their columns.
-
-> `debounce()` is deprecated and does nothing: a request that has already reached the server cannot be debounced. Debounce on the client instead (`wire:model.live.debounce.300ms` in Livewire, or a timer in JavaScript). It will be removed in v4.0.0.
-
-### Multi-tenant isolation
-
-A tenant `where()` or `filter()` scopes the rows a search returns, but the BM25 index statistics and the posting cap are model-wide, so tenants sharing one index can influence each other's ranking and learn whether a word occurs. `suggestFrom('index')` is model-wide too: it ignores `where()`, `filter()`, `filterIn()` and every scope, so use it only where every caller may see every row's terms (the default `'auto'` honours them). `searchIndexType()` cannot name a per-tenant index (it throws for anything but the model's own class or a same-table parent). For strict isolation do not rank across tenants on one index: use the LIKE algorithms, a database or schema per tenant, or a model class per tenant; see [Multi-tenant isolation](docs/bm25.md#multi-tenant-isolation). Search analytics stores raw terms and has no tenant column: see its [privacy note](docs/analytics.md#privacy).
-
-### SQL Injection Safety
-
-All queries use parameterized bindings. Search terms are automatically sanitized.
-
-```php
-// Safe - input is sanitized
-User::search("'; DROP TABLE users; --")->get();
-```
-
-### Exception Handling
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Exceptions\LaravelFuzzySearchException;
-use Ashiqfardus\LaravelFuzzySearch\Exceptions\EmptySearchTermException;
-use Ashiqfardus\LaravelFuzzySearch\Exceptions\InvalidAlgorithmException;
-
-// Catch all fuzzy search exceptions
-try {
-    $results = User::search($term)->get();
-} catch (LaravelFuzzySearchException $e) {
-    Log::error('Search failed', $e->toArray());
-}
-
-// Catch specific exceptions
-try {
-    $results = User::search('')->get();
-} catch (EmptySearchTermException $e) {
-    return response()->json(['error' => 'Please enter a search term']);
-}
-
-try {
-    $results = User::search('test')->using('invalid')->get();
-} catch (InvalidAlgorithmException $e) {
-    return response()->json(['error' => $e->getMessage()]);
-}
-```
-
-**Available Exceptions:**
-- `LaravelFuzzySearchException` - Base exception (catch all)
-- `EmptySearchTermException` - Search term is empty (or only whitespace) while `allow_empty_search` is false — thrown by every terminal: `get()`, `first()`, `paginate()`, `simplePaginate()`, `count()` and `getFacets()`, on the LIKE and index paths, and by `FuzzySearch::on()`'s `get()` (with `allow_empty_search` on, every one of them lists every row); `extended()`/`searchBoolean()` queries are exempt
-- `InvalidAlgorithmException` - Invalid algorithm specified
-- `InvalidConfigException` - Configuration error
-- `SearchableColumnsNotFoundException` - No searchable columns found
-- `QuerySyntaxException` - Invalid `extended()` / `searchBoolean()` query: an unknown or ambiguous field, bad operator syntax (an unbalanced parenthesis, an unterminated quote, a misplaced `~` or `!`), a query with no searchable terms (`|`, `()`, a lone `!`) or a field scope with no term (`name:`), a query of more than `query.max_tokens` tokens (32 by default; every word, `|` and parenthesis counts), or parentheses nested deeper than `query.max_depth` (16)
-
----
-
-## Events
-
-### `FuzzySearchExecuted`
-
-Fired after every `->get()` or `->paginate()` call, and — since v3.0 — after every in-memory search too (`FuzzySearch::on($items)->search(...)->get()`). Useful for monitoring search latency and volume in production.
-
-An in-memory search called with an empty term (which throws, or with `allow_empty_search` returns the items unsearched) or with no `searchIn()` columns (which returns nothing) fires no event: nothing was searched, so there's nothing to log. A term shorter than `min_search_length` fires none on any search API, in memory or not. Scout searches never fire it, and neither does a `FederatedSearch` model without the `Searchable` trait (the query macros it is searched with fire no event).
-
-```php
-use Ashiqfardus\LaravelFuzzySearch\Events\FuzzySearchExecuted;
-
-Event::listen(FuzzySearchExecuted::class, function ($event) {
-    Log::info('search', [
-        'term'      => $event->searchTerm,
-        'columns'   => $event->columns,
-        'algorithm' => $event->algorithm,
-        'count'     => $event->candidateCount,
-        'ms'        => $event->latencyMs,
-        'results'   => $event->resultCount,
-        'path'      => $event->path,
-        'model'     => $event->modelClass,
-    ]);
-});
-```
-
-Properties:
-
-- `searchTerm` (string) — the user's query
-- `columns` (array) — columns being searched
-- `algorithm` (string) — algorithm used: `fuzzy`, `levenshtein`, `soundex`, `metaphone`, `trigram`, `similar_text`, `simple` (`using('like')` reports `simple`), `like` (from `fallback('like')` or `default_algorithm => 'like'`, which keep the name as given), `bm25`, `extended` (extended-syntax searches) or `in_memory` (`FuzzySearch::on()`)
-- `candidateCount` (int) — matches before the page/limit cut: on `get()` (so `first()` and `simplePaginate()` too), the rows fetched for rescoring (at most `max_candidates`), or on `useInvertedIndex()` the index's ranked matches; on `paginate()`, the total match count
-- `latencyMs` (float) — total search time in milliseconds
-- `resultCount` (int) — rows returned to the caller; `-1` when unknown
-- `path` (string) — which code path answered: `like`, `bm25`, `extended`, or `in_memory`
-- `modelClass` (`?string`) — the Eloquent model class searched; `null` for query-builder and in-memory searches
+A search-as-you-type box needs a client-side debounce (`wire:model.live.debounce.300ms`) plus `asYouType()` and `suggest()`: [Livewire recipe](docs/integrations.md#livewire-recipe).
 
 ---
 
@@ -1096,404 +281,28 @@ The `SearchAnalytics` facade also reports `averageLatency()` by path and `volume
 
 ---
 
-## Configuration
+## Performance at scale
 
-### Config File
-
-```php
-// config/fuzzy-search.php
-
-return [
-    'default_algorithm' => 'fuzzy',
-    
-    'typo_tolerance' => [
-        'enabled' => true,
-        'max_distance' => 2,
-        'min_word_length' => 4,  // No typo tolerance for short words
-    ],
-    
-    'scoring' => [
-        'exact_match' => 100,
-        'prefix_match' => 80,
-        'contains' => 60,
-        'fuzzy_match' => 50,
-    ],
-    
-    'stop_words' => [
-        'en' => ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'is', 'it'],
-        'de' => ['der', 'die', 'das', 'und', 'oder', 'aber'],
-    ],
-    
-    'synonyms' => [
-        // Default synonyms of every SearchBuilder search except extended()/searchBoolean()
-        // (word => its synonyms; case is ignored):
-        // 'laptop' => ['notebook', 'computer'],
-    ],
-    
-    'indexing' => [
-        'enabled' => false,
-        'async' => true,
-        'queue' => 'default',
-    ],
-    
-    'cache' => [
-        'enabled' => false,
-        'driver' => 'default',  // any cache store name, or 'default' for the app's
-        'ttl' => 3600,          // seconds
-    ],
-    
-    'max_candidates' => 1000,   // top level, not under 'performance'
-    
-    'performance' => [
-        'max_patterns' => 100,
-    ],
-];
-```
-
-### Config Presets
-
-Presets are **predefined search configurations** for common use cases. Instead of manually configuring multiple options every time, use a single preset name.
-
-**Without preset (verbose):**
-```php
-Post::search('laravel')
-    ->searchIn(['title' => 10, 'body' => 5, 'excerpt' => 3])
-    ->using('fuzzy')
-    ->typoTolerance(2)
-    ->ignoreStopWords('en')
-    ->accentInsensitive()
-    ->get();
-```
-
-**With preset (clean):**
-```php
-Post::search('laravel')->preset('blog')->get();
-```
-
-#### Available Presets
-
-| Preset | Best For | Algorithm | Typo Tolerance | Features |
-|--------|----------|-----------|----------------|----------|
-| `blog` | Blog posts, articles | fuzzy | 2 | Stop words, accent-insensitive |
-| `ecommerce` | Product search | fuzzy | 1 | Weighted product columns, no stop words |
-| `users` | User/contact search | levenshtein | 2 | Accent-insensitive |
-| `phonetic` | Name pronunciation | soundex | 0 | Phonetic matching |
-| `exact` | SKUs, codes, IDs | simple | 0 | Plain LIKE, no typo patterns |
-
-#### Preset Configuration Reference
-
-```php
-// config/fuzzy-search.php
-'presets' => [
-    'blog' => [
-        'columns' => ['title' => 10, 'body' => 5, 'excerpt' => 3],
-        'algorithm' => 'fuzzy',
-        'typo_tolerance' => 2,
-        'stop_words_enabled' => true,
-        'accent_insensitive' => true,
-    ],
-    
-    'ecommerce' => [
-        'columns' => ['name' => 10, 'description' => 5, 'sku' => 8, 'brand' => 6],
-        'algorithm' => 'fuzzy',
-        'typo_tolerance' => 1,
-        'partial_match' => true,
-        'stop_words_enabled' => false,
-    ],
-    
-    'users' => [
-        'columns' => ['name' => 10, 'email' => 8, 'username' => 9],
-        'algorithm' => 'levenshtein',
-        'typo_tolerance' => 2,
-        'accent_insensitive' => true,
-    ],
-    
-    'phonetic' => [
-        'columns' => ['name' => 10],
-        'algorithm' => 'soundex',
-        'typo_tolerance' => 0,
-    ],
-    
-    'exact' => [
-        'algorithm' => 'simple',
-        'typo_tolerance' => 0,
-        'partial_match' => true,
-    ],
-],
-```
-
-#### Using Presets
-
-```php
-User::search('john')->preset('users')->get();
-Post::search('laravel')->preset('blog')->get();
-Product::search('laptop')->preset('ecommerce')->get();
-Contact::search('steven')->preset('phonetic')->get();  // Finds "Stephen"
-Product::search('SKU-12345')->preset('exact')->get();
-```
-
-A preset's `columns` are added to the search's columns, the way `searchIn()` adds them, but only the ones the table has: `users` names `name`, `email` and `username`, and on a table of `name` and `email` it searches those two. A preset with none of its columns on the table adds none, and its algorithm and other settings still apply. A column you name with `searchIn()` is never dropped, so a wrong one still fails with an unknown-column error. A dotted column, and every column when the query joins another table or the table cannot be listed, is kept as given. To search other columns than the preset names, publish the config and change its `columns`, or drop its `columns` key and pass the columns with `searchIn()`:
-
-```php
-// config/fuzzy-search.php — the users preset without its columns
-'users' => [
-    'algorithm' => 'levenshtein',
-    'typo_tolerance' => 2,
-    'accent_insensitive' => true,
-],
-```
-
-```php
-User::search('john')->preset('users')->searchIn(['name' => 10, 'email' => 8])->get();
-```
-
-#### Override Preset Settings
-
-```php
-// Use blog preset but with higher typo tolerance
-Post::search('laravel')
-    ->preset('blog')
-    ->typoTolerance(3)  // Override preset's default of 2
-    ->get();
-```
-
-#### Create Custom Presets
-
-```php
-// config/fuzzy-search.php
-'presets' => [
-    'documents' => [
-        'columns' => ['title' => 10, 'content' => 8, 'tags' => 5],
-        'algorithm' => 'trigram',
-        'typo_tolerance' => 2,
-        'stop_words_enabled' => true,
-        'locale' => 'en',
-    ],
-],
-```
-
-```php
-Document::search('report')->preset('documents')->get();
-```
-
-### Per-Model Customization
-
-```php
-class Product extends Model
-{
-    use Searchable;
-
-    protected array $searchable = [
-        'columns' => [
-            'title' => 10,
-            'description' => 5,
-            'sku' => 8,
-        ],
-        'algorithm' => 'fuzzy',
-        'typo_tolerance' => 2,
-        'stop_words' => ['the', 'a', 'an'],
-        'synonyms' => [
-            'laptop' => ['notebook', 'computer'],
-        ],
-        'accent_insensitive' => true,
-    ];
-
-    // Custom scoring logic: runs once per row before normalisation, on the LIKE, extended and index paths and in the Scout engine
-    public function getSearchScore(float $baseScore): float
-    {
-        return $this->is_featured ? $baseScore * 1.5 : $baseScore;
-    }
-}
-```
+Measured on 3.0.0 release candidates, one database at a time, with rows of about 16 indexed words each: MySQL and MariaDB to 12M rows, PostgreSQL to 24M and SQL Server to 6M, with no search or command past 120 s at any of them. The first page of a rare, mid and common word and the slowest search per database, the index size, memory, index builds and upgrade times are in [Sizing the index](docs/performance.md#sizing-the-index); async indexing, caching and tuning in [docs/performance.md](docs/performance.md).
 
 ---
 
-## CLI Tools
+## Documentation
 
-### Indexing Commands
-
-```bash
-# Build / rebuild BM25 index for a model
-php artisan fuzzy-search:rebuild "App\Models\User"
-
-# Rebuild with fresh index (flushes the model's index first; asks no confirmation)
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh
-
-# Rebuild asynchronously (for large tables)
-php artisan fuzzy-search:rebuild "App\Models\User" --fresh --async --queue=indexing
-
-# Remove a model's index entries (the same as fuzzy-search:clear "App\Models\User"; asks no confirmation)
-php artisan fuzzy-search:flush "App\Models\User"
-
-# Clear BM25 index for a model (asks no confirmation); a renamed or deleted model's rows go by its old class name
-php artisan fuzzy-search:clear "App\Models\User"
-
-# Clear BM25 index for all models (asks no confirmation). It truncates where it can; while other
-# sessions use the index tables, or where TRUNCATE is not allowed, it deletes row by row (on MySQL/MariaDB in
-# bounded batches), which is slow on a large index: run it again when the index is idle, so it truncates,
-# before rebuilding. See docs/bm25.md#artisan-commands
-php artisan fuzzy-search:clear --all
-
-# Show index statistics (total docs, tokens, avg length per model; the dictionary's unique terms for all models together)
-# and list postings that predate column weighting
-# (past 1,000,000 indexed tokens that check, which reads every posting, runs only with --legacy)
-php artisan fuzzy-search:status
-php artisan fuzzy-search:status --legacy
-```
-
-`--async` dispatches a Laravel job batch, which needs the `job_batches` table: create it once with `php artisan make:queue-batches-table` (Laravel 10: `php artisan queue:batches-table`) and `php artisan migrate`. Without it, the command stops before touching the index.
-
-Run `flush`, `clear` and `rebuild --fresh` (which flushes first) while nothing is indexing any model; see [Artisan Commands](docs/bm25.md#artisan-commands) for why.
-
-`flush`, `clear`, `clear --all` and `rebuild --fresh` delete index entries as soon as they run. None of them asks for confirmation, in production either, so that non-interactive deploy scripts keep working. Guard them in your own production scripts.
-
-Every command exits with status 1 when it cannot act on its input: a class that is not an Eloquent model (for `rebuild`, one it cannot index; for `benchmark` and `explain`, one without the `Searchable` trait), `--iterations` below 1, a `--days` below 0 or a `--limit` below 1 (or either one not a whole number), or an `add-shadow-column --type` other than `metaphone`.
-
-### Benchmark & Debug Commands
-
-`fuzzy-search:analytics` and `fuzzy-search:analytics:prune` are documented under [Persisted Search Analytics](#persisted-search-analytics).
-
-```bash
-# Benchmark search performance
-php artisan fuzzy-search:benchmark "App\Models\User" --term="john" --iterations=100
-
-# Explain a search query
-php artisan fuzzy-search:explain User --term="john"
-```
-
-`benchmark` and `explain` run real searches, but turn `analytics.enabled` and `cache.enabled` off for the run (and restore them), so they write no analytics row and a cache hit is never timed as a search. An unknown `--algorithm` or an empty `--term` prints the message and exits with 1.
-
----
-
-## Performance & Scaling
-
-### Algorithm Comparison
-
-| Algorithm | Typo Tolerance | Best For |
-|-----------|----------------|----------|
-| **simple** | None | Exact matches, SKUs |
-| **fuzzy** | High | General purpose |
-| **soundex** | Phonetic | Name searches |
-| **trigram** | Medium (a shared three-letter run) | Similarity matching |
-| **levenshtein** | Configurable | Precise typo matching |
-| **BM25 index** | Native (dictionary expansion) | Large tables, ranked results |
-
-The LIKE algorithms scan the table, the index reads only the matched words' postings: on MariaDB at 1M rows (fb82c82), `simple` took 0.79 s, `fuzzy` 17 s and `levenshtein` 44 s, and an index search for a common word 0.12 s (see [Sizing the index](#sizing-the-index)).
-
-**At scale:** an index search reads the postings of the words it matches, not the table, so its cost follows how common the searched words are, and the index has to fit in the database's memory to stay fast. For measured numbers, see [Sizing the index](#sizing-the-index); `php artisan fuzzy-search:benchmark` times the LIKE algorithms on your own tables, and `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()` times an index search in your app. Three reads grow with the data:
-
-- **Common words.** Every posting of a matched word is read and ranked before `bm25.max_postings_per_term` cuts the ranking: the cap bounds PHP's memory, not that read. A word in a few percent of the rows is the expensive case. A word's postings are one range of the postings table, read in order, each with its document's length, so no other table is read, and the word's document count within the model comes from the per-model dictionary (`fuzzy_index_model_terms`), one keyed read, not a count over those postings: on MySQL with a 4 GB buffer pool, one such word (in 7% of 12M rows of about 16 indexed words each, 5dc853c) takes 0.59 s for its first page and three together 1.6 s; on PostgreSQL with 4 GB of `shared_buffers` at 24M rows (0a05120), 0.93 s and 2.7 s. A `where()` does not shorten that read: the word's postings are read for the whole model before the `where()` and the cap apply. `typoTolerance(0)` and Scout's exact terms skip only the typo expansion. For a selective filter over a common word, the LIKE path with an index on the filtered column is the fast path (20 ms on MariaDB at 1M rows, fb82c82, for a filter holding 0.1% of them).
-- **Typo expansion** takes each query term's most common neighbours from the searched model's own words, by its own document count (`fuzzy_index_model_terms`): one index read per word length in the window around the term, each stopping at `bm25.fuzzy.candidate_pool` (500) of the model's words or at the last of them. Once the model has more rows than `bm25.max_postings_per_term`, a word in more than half of them is never an expansion, so a misspelling never reads a stop word's postings (`smith` into `with`, a word in 999,967 of 1M rows). Another model's words never enter it, however many share a length. So where another model's distinct codes fill a word length (product SKUs of six digits, say), a typo search of a users model no longer reads them. `asYouType()` and `suggest()` read the model's own words under the prefix the same way, through `(model_type_id, term)`: a 4-letter `asYouType()` search at 24M rows on PostgreSQL took 2.1 s (0a05120), where it took 40 s through the shared dictionary (10fd1cc); the ranking read is now most of it. `typoTolerance(0)` skips the expansion.
-- **`orderBy()` past the cap.** A ranking capped at `bm25.max_postings_per_term` (when one word's read reaches that many rows, one per document holding it: a word in more than 50,000 of the model's rows) restricts the ordered read through the postings: a subquery that reads the rows the query accepts (a common word's first ordered page took 4.3 s on MySQL at 12M rows, 2.9 s on MariaDB at 12M, 0.61 s on SQL Server at 6M and 3.0 s on PostgreSQL at 24M; on PostgreSQL at 24M rows (0a05120) a whole ordered search took 21 ms for a rare word to 3.2 s for page 500 of a mid word). On MySQL and MariaDB a query with no constraint whose words are in at most a tenth of the rows joins the matched ids on the model's key instead, one key lookup per match. On SQL Server the same subquery serves any ranking past `bm25.candidate_chunk` matches (200 by default), and compares `model_id` with the key in the key's own type too, so the matches are looked up by key: on SQL Server 2022 RTM at 3M rows, the page statement for a word in 395 of them took 2.9 ms (1fd04b9), where the subquery read the whole table in 4,625 ms (e0b475d); the whole search 29 ms and 4.8 s. See [docs/bm25.md](docs/bm25.md#usage).
-
-### When to Use BM25 vs LIKE
-
-**Use BM25 (`useInvertedIndex()`) when:**
-- The table is large enough that a LIKE scan is slow (see [Sizing the index](#sizing-the-index))
-- Result ranking/relevance quality matters
-- You have queue workers running
-
-**Use LIKE / fuzzy when:**
-- Small tables, where a LIKE scan is already quick and the index only adds writes to every save
-
-### `max_candidates` Tuning
-
-For the LIKE/Levenshtein paths, SQL candidates are fetched then re-scored in PHP. The candidate set size is controlled by `max_candidates` (default: 1000). Lower this on large tables to reduce memory usage:
-
-```php
-// config/fuzzy-search.php
-'max_candidates' => 500,  // top-level key; fetch fewer candidates on large tables
-```
-
-### Recommended Optimizations
-
-```php
-// For large tables: the BM25 index, plus a cache for repeated searches
-User::search('john')
-    ->useInvertedIndex()
-    ->cache(60)
-    ->get();
-
-// On the LIKE path, fewer columns and fewer patterns: searchOn() replaces the model's
-// column list for this search (searchIn() after Model::search() only adds columns)
-User::searchOn(User::query(), 'john', ['name' => 10])
-    ->maxPatterns(50)
-    ->get();
-```
-
-Key tips:
-1. **Use the BM25 index** when a LIKE scan is too slow on your table (see Sizing the index)
-2. **Enable caching** for repeated searches
-3. **Limit columns** — declare only the fields worth searching in `$searchable['columns']`, or pass a shorter list to `Model::searchOn(Model::query(), $term, [...])` for one search. `searchIn()` cannot narrow a `Searchable` model's search: it adds columns, and its list form sets their weight to 1
-4. **Use `simple` algorithm** when typo tolerance isn't needed
-5. **Set `max_candidates`** to prevent excessive memory usage on large tables
-6. **Use `take()`** to cap result sets
-7. **Eager load relationships** to avoid N+1 queries
-
-### Sizing the index
-
-Measured on one laptop database at a time, with rows of about 16 indexed words each (a short name, a description, a brand and a unique SKU, so the dictionary grows with the table). Your words, columns and hardware will move these numbers: time your own index searches, a common word and a rare one, through `lastExecution()->latencyMs` after a `useInvertedIndex()` search's `get()` or `paginate()` (`fuzzy-search:benchmark` times only the LIKE algorithms).
-
-- **Size:** several times the table it indexes, the postings table most of it: 33.2 GB at 12M rows on MySQL (2.8 GB per million rows; built on 5dc853c in several runs; information_schema's estimate); 19.80 GB at 6M rows on SQL Server (3.3 GB per million; used pages; built in several runs); about 64 GB at 24M rows on PostgreSQL (2.7 GB per million; 0a05120; written by the compact migration's copy). `fuzzy_index_model_terms` holds one row per model and word it indexes, so where models share few words it has about as many rows as the dictionary (5,817 MB at 24M rows on PostgreSQL, 0a05120, beside the dictionary's 3,477 MB; 1.43 GB at 12M rows on MySQL, beside 0.86 GB).
-- **Memory:** keep the index in the buffer pool (`innodb_buffer_pool_size`, `shared_buffers`). Once it no longer fits, searches for common words read from disk and concurrent searches queue: on MariaDB with a 2 GB buffer pool, sixteen searchers managed 198 searches a second at 1M rows and 48 at 3M (fb82c82), once the index outgrew the pool.
-- **Upgrading to 3.0:** the compact postings migration copies the postings table, about 22 minutes for 6M rows (96M postings) on MySQL and 1 hour 45 minutes for 24M rows on PostgreSQL (both on 67be9e1, before the migration's later fixes), then `2026_10_13_000002` counts each model's words from it (about 3 minutes for 6M rows on MySQL and 70 s for 1M on SQL Server, on 81bedf8; 33 minutes for 24M rows on PostgreSQL with a cold cache, on c2b2c1d, and 11 with a warm one, on 81bedf8; all before 8274a49 changed how it sets a range's words left at length 0); from 2.0.1 at 1M rows on MySQL (15.9M postings), on RC3 7c96ec9, whose migrations are the release's: `term_length` 18 s, `column_name` 13 s, the `model_id` widening 2 m 47 s, the compact copy 58 s, the words backfill 15 s, 4 m 33 s in all, and the rollback to 2.0.1 4 m 36 s; the new code's index searches fail until it finishes, and the old code's from its swap at the end: see the [upgrade guide](docs/UPGRADE_v2_TO_v3.md) (`php artisan down`, or flush and rebuild a large index instead). From 2.0.x only MySQL and MariaDB have an index to copy: on PostgreSQL and SQL Server 2.0.x could not write one, so the PostgreSQL and SQL Server times are for an index a pre-release 3.0 build wrote, and from 2.0.x the migrations take seconds there.
-- **Index builds:** one process rebuilt 1M rows on MariaDB in 199 s (fb82c82), and four built 12M rows on MySQL in 1 hour 55 minutes (1,742 rows a second; 5dc853c) and on MariaDB, from an empty index, in 2 hours 25 minutes (1,377 a second; 599508a). SQL Server writes one index chunk at a time per database, so four processes indexed 209 to 225 rows a second there at 1M rows (999ee0d, before the change to how a write reads a batch's postings there). `rebuild --async` only queues the work: at 3M rows on SQL Server it queued 6,001 jobs in 21 s (47918e9), and 12M rows in 40 s on MySQL and 40 s on MariaDB (RC3 7c96ec9), 6M in 41 s on SQL Server (616b9d7) and 24M in 68 s on PostgreSQL (0a05120).
-
-| Database (memory for the engine) | Largest table measured | First page of a rare, mid or common word | Slowest search | Searches past 120 s |
-|---|---|---|---|---|
-| MySQL 9.6 (4 GB buffer pool) | 12M rows | 8 ms, 156 ms, 0.59 s | a common word under `orderBy()` and `paginate()`, 4.3 s | none |
-| MariaDB 11.4 (4 GB buffer pool) | 12M rows | 12 ms, 161 ms, 0.57 s | a common word under `orderBy()` and `paginate()`, 2.9 s | none |
-| PostgreSQL 16 (4 GB `shared_buffers`) | 24M rows | 9 ms, 426 ms, 0.93 s | page 500 of a mid word under `orderBy()` and `paginate()`, 3.2 s | none |
-| SQL Server 2022 (4 GB max server memory; on a separate Windows PC with an NVMe disk, over the local network) | 6M rows | 27 ms, 327 ms, 0.37 s (under `orderBy()`: 34 ms to 0.61 s) | a 4-letter `asYouType()` prefix, 1.3 s | none |
-
-Each row is the largest table measured on that database, on a 3.0.0 release candidate (MySQL on 5dc853c, PostgreSQL on 0a05120, MariaDB on 7c96ec9, SQL Server on 616b9d7; MariaDB's 12M index was built on 599508a, SQL Server's 6M on fb82c82 to 3.41M rows and on 599508a after). Larger tables were not tried, so these sizes are not limits.
-
-The LIKE algorithms scan the table: on MariaDB at 1M rows (fb82c82), `simple` took 0.79 s, `fuzzy` 17 s and `levenshtein` 44 s. Keep them for tables under the sizes in the [Algorithm Comparison](#algorithm-comparison), or narrow them with a selective `where()` (a tenant's 0.1% of 1M rows: 20 ms).
-
----
-
-## Algorithm × Database Compatibility
-
-This table shows what each algorithm does at the SQL level on each supported database. "Native" = the database's own function. "Pattern fallback" = PHP generates LIKE patterns. On SQLite, whose LIKE folds ASCII letters only, a LIKE term with a non-ASCII character (`лев`, `Ünal`) is compared through the package's own `fuzzy_lower()` function, registered on the connection, so it matches whatever the case; it costs one PHP call per row and column, so it is slower than an ASCII term there. SQLite's own `lower()` and `LIKE` are not replaced.
-
-| Algorithm | MySQL 8 | MariaDB 11.4 (CI); 10.6+ expected | PostgreSQL 14 | SQLite | SQL Server |
-|---|---|---|---|---|---|
-| **simple** / **like** | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'` | `ILIKE '%term%'` | `LIKE '%term%' ESCAPE '!'` | `LIKE '%term%' ESCAPE '!'`; case-insensitivity follows the column's collation |
-| **fuzzy** | LIKE pattern set (typo patterns, transpositions) | LIKE pattern set | ILIKE pattern set | LIKE pattern set | LIKE pattern set |
-| **levenshtein** | Native `LEVENSHTEIN()` UDF if `use_native_functions=true`, else pattern set | Same as MySQL | ILIKE pattern set, whatever `use_native_functions` says (pg_trgm's `similarity()` is not an edit distance) | Pattern set | Pattern set |
-| **trigram** | LIKE pattern set | LIKE pattern set | Native `similarity()` via pg_trgm if `use_native_functions=true`, else ILIKE pattern set | LIKE pattern set | LIKE pattern set |
-| **soundex** | Native `SOUNDEX()` — always on, applied to first or last word | Native `SOUNDEX()` — always on | Native `SOUNDEX()` via `fuzzystrmatch` if `use_native_functions=true` (a term whose first letter is not ASCII, or follows a character that is not, takes the pattern fallback, and such a stored word is not compared; ASCII punctuation or digits before the first letter, as in `"Mila"`, `(Mila)` or `2Mila`, are skipped), else pattern fallback | Package-registered `fuzzy_soundex()` (PHP's `soundex()`) on the first or last word | Native `SOUNDEX()` on the first or last word |
-| **metaphone** | Shadow column `{col}_metaphone` + exact `=` match. PHP's `metaphone()` encodes ASCII letters only, and drops H, W and Y before no vowel, so a term whose metaphone code is empty (`99`, `Иван`, `東京`, `H2O`, `Hy`) is matched as `LIKE '%term%'` on the column itself | Same as MySQL | Same (`ILIKE` for a term whose metaphone code is empty) | Same as MySQL | Same as MySQL |
-| **similar_text** | `LIKE '%term%'` and `CHAR_LENGTH(col) <= ?` (the `min_percentage` bound); `similar_text()` scores in PHP after fetch | Same | `ILIKE '%term%'` and `CHAR_LENGTH(col) <= ?`; PHP scores | `LIKE` and `LENGTH(col) <= ?` | `LIKE` and `LEN(CAST(col AS NVARCHAR(MAX)) + N'x') - 1 <= ?` |
-
-MariaDB behaves as MySQL 8 for every algorithm (native SOUNDEX/LEVENSHTEIN paths included).
-
-### Notes
-
-- **Literal `%` and `_`:** the package escapes them in a search term so they match themselves. PostgreSQL escapes with a backslash, its LIKE default, and escapes a backslash in the term too. SQLite and SQL Server have no default escape character, and MySQL and MariaDB lose theirs under the `NO_BACKSLASH_ESCAPES` SQL mode, so on all four the package escapes with `!` (a `!` in the term included, and on SQL Server a `[`, which is a wildcard there) and every LIKE a search writes carries `ESCAPE '!'`, which works in every SQL mode, pattern sets included (only the deprecated, unused `getRelevanceExpression()` / `getRelevanceBindings()` driver methods predate this).
-- **`use_native_functions`** in `config/fuzzy-search.php` gates optional DB extensions. `SOUNDEX()` is built in on MySQL, MariaDB and SQL Server, and SQLite uses the package's own `fuzzy_soundex()` function, all always active — no flag needed; `soundex` matches by sound on those four and on PostgreSQL with `fuzzystrmatch`, and uses the pattern fallback on PostgreSQL without it. The flag is only relevant for: Levenshtein UDF (MySQL), pg_trgm/fuzzystrmatch (PostgreSQL), unaccent (PostgreSQL).
-- **Levenshtein UDF (MySQL):** Not installed by default. See [this gist](https://gist.github.com/yohgaki/9315991) or your DB package manager. With it, `using('levenshtein')` on MySQL and MariaDB compares the whole column value with the term: a row matches only when the value as a whole is within `levenshtein.max_distance` edits of the term, so a word inside a longer value is not found (`john` no longer finds `John Doe`), where the pattern set finds the term, or a near miss of it, anywhere in the value.
-- **pg_trgm (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS pg_trgm;`
-- **fuzzystrmatch (PostgreSQL):** `CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`
-- **unaccent (PostgreSQL, for an explicit `accentInsensitive()`):** `CREATE EXTENSION IF NOT EXISTS unaccent;` + `use_native_functions=true`. `unaccent(col) ILIKE unaccent(?)` is then ORed beside the chosen algorithm. It runs only when the search opts in explicitly (`->accentInsensitive()`, `$searchable['accent_insensitive']` or a preset); the global `unicode.accent_insensitive` default never uses it. Without the extension an explicit opt-in fails with `function unaccent(…) does not exist`.
-- **MySQL accent insensitive:** Use `utf8mb4_unicode_ci` or `utf8mb4_0900_ai_ci` collation on the column.
-- **Non-text columns (PostgreSQL, SQL Server):** a column you declare in `$searchable['columns']` or pass to `searchIn()` must be a text column there. An integer, decimal or date column is searched by its digits on MySQL, MariaDB and SQLite, but on PostgreSQL every search that names it throws (`operator does not exist: bigint ~~* unknown`), and on SQL Server every search for a term that is not a number does (`Conversion failed when converting the nvarchar value …`). To search such a column on those two, expose it as text (a generated or computed text column, or a view) and declare that column. Auto-detection never picks a non-text column.
-- **`similar_text` under an accent-insensitive collation:** on MySQL/MariaDB with `utf8mb4_unicode_ci` or `utf8mb4_0900_ai_ci`, `similar_text`'s LIKE also matches accent variants (`Jöhn` for `john`). The `min_percentage` length bound still applies to them: an accent variant has the same length, so the bound approximates PHP's percentage there.
-- **`similar_text.min_percentage`:** a match contains the term, so its `similar_text()` percentage is `200·t / (t + v)` for a `t`-character term and a `v`-character value, counted in characters. PHP's `similar_text()` counts bytes, so for single-byte text the bound is exactly its percentage, and for multibyte text a close approximation. The bound keeps values of at most `t·(200 − p) / p` characters: at the default 70, about 1.86 times the term's length. Under `tokenize()` the whole search term's length sets the bound for every token (whole-value similarity), so `john doe` still finds `John Doe`. On SQL Server a character outside the BMP counts as 2. `0` turns the bound off and restores 2.0's results.
-- **`distinct()` on the LIKE and extended paths:** a `SELECT DISTINCT` can be ordered only by what it selects, so under `distinct()` the search adds no relevance `ORDER BY`. With no `orderBy()`, the search reads them by the key when the select includes it (`*`, the model's `table.*` or the key), else by every column it selects (an aliased one by its alias, or by its column when another selected column has the alias's name, and a query builder's `*` over a table with no `id` by every column of the table); on PostgreSQL, `distinct('col')` (`DISTINCT ON`) is read by its own columns first, as PostgreSQL requires. Under a join that repeats a model, the key is followed by the other selected columns, and a select of the joined table's `table.*` is read by that table's columns. The rows PHP rescoring ranks are the first `max_candidates` distinct matches in that order, not the best ones, and `paginate()`'s pages past `max_candidates` are read in the same order, so the pages partition the matches. A select of raw expressions only has no column to order by: on SQL Server, give that search an `orderBy()` on a selected column, or its pages past `max_candidates` fail. `stableRanking()` orders by the key only when the select includes it.
-- **Metaphone shadow column:** Run `php artisan fuzzy-search:add-shadow-column {Model} {column} --type=metaphone`, then `php artisan migrate`, then `php artisan fuzzy-search:rebuild {Model}` to fill it for existing rows (see [Shadow Columns](#shadow-columns)).
-
-### PHP-Side Scoring
-
-Regardless of algorithm, after SQL candidates are fetched:
-
-1. `similar_text()` and `levenshtein()` run in PHP on each candidate, on at most the first 255 characters of the value and of the term (both are O(n·m)); a value within that length scores exactly as it always has. An `extended()` query scores each leaf term on its own and adds the scores up; the similarity/Levenshtein floor is spent only while the leaf terms' total length stays within 255 characters (the first leaf always gets it), and the remaining leaves score by their exact, prefix or contains tier alone, so a many-term query costs about one capped comparison per value. While accent folding is on, an accented term and its accent-free form count once: a row scores the better of the two, never their sum, and in an `extended()` query a leaf and its folded form are one leaf for scoring. With folding off, `müller | muller` are two separate terms and add up.
-2. Results are re-sorted by the combined PHP score (higher = better), unless `orderBy()` set an explicit order.
-3. `limit/offset` is applied on the PHP-sorted collection (not in SQL).
-
-Top-N results are always the most relevant N from the candidate set (not just the first N SQL rows). Candidate set size is controlled by `max_candidates` (default: 1000).
-
-> **Pagination note:** `paginate()` ranks globally across up to `max_candidates` rows before slicing. Rows past that window are served in database order and scored within their page. That includes a page that runs across the boundary, so every match is on exactly one page. Add `stableRanking()` so the database order has no ties that two pages' queries could break differently. Under a join that repeats a model (one row per variant), the key ties that model's rows, so on the LIKE and extended paths the pages follow the key and then the selected columns (every column of a selected `table.*`; no raw expression, and no PostgreSQL `json`, `xml` or geometric (`point`, `line`, `lseg`, `box`, `path`, `polygon`, `circle`) column or array of one, or SQL Server `text`, `ntext`, `image`, `xml` or spatial column, which no `ORDER BY` takes; on Laravel 10 before 10.30, which cannot read column types, PostgreSQL and SQL Server keep the key alone): add an `orderBy()` on the joined table's key (`variants.id`) for a specific order, or when the select has no such column. `simplePaginate()` runs through `get()`, so on the LIKE and extended paths it serves only that window: its last page ends at `max_candidates` rows.
+| Guide | What it covers |
+|---|---|
+| [Usage guide](docs/usage.md) | Eloquent chaining, relationships, text processing, highlighting, debugging, pagination, safety, events |
+| [Search algorithms](docs/algorithms.md) | Each LIKE algorithm, shadow columns, typo tolerance, how they compare, per-database behaviour |
+| [Scoring](docs/scoring.md) | Field weights, relevance, prefix and recency boosts, scoring hooks, suggestions, "did you mean", federation |
+| [BM25 index](docs/bm25.md) | The inverted index: setup, production, writes, commands, tuning |
+| [Performance and sizing](docs/performance.md) | Async indexing, caching, `max_candidates`, measured sizes and timings |
+| [Configuration and CLI](docs/configuration.md) | The config file, presets, per-model customization, every Artisan command |
+| [Extended syntax](docs/extended-syntax.md) | Fuse.js-style operators |
+| [Relationships](docs/relationships.md) | Searching related models |
+| [Tokenization](docs/tokenization.md) | Stop words, synonyms, stemming, locales |
+| [Integrations](docs/integrations.md) | Scout, Filament, JSON API resources, Livewire |
+| [Analytics](docs/analytics.md) | Persisted search analytics |
+| [Upgrade v2→v3](docs/UPGRADE_v2_TO_v3.md) · [v1→v2](docs/UPGRADE_v1_TO_v2.md) | Breaking changes and the upgrade checklist |
 
 ---
 
@@ -1510,7 +319,7 @@ composer test-coverage
 composer benchmark
 ```
 
-To time the LIKE algorithms on your own app's tables, use `php artisan fuzzy-search:benchmark "App\Models\User" --term="john"` (see [CLI Tools](#cli-tools)); time an index search through `lastExecution()->latencyMs`.
+To time the LIKE algorithms on your own app's tables, use `php artisan fuzzy-search:benchmark "App\Models\User" --term="john"` (see [CLI Tools](docs/configuration.md#cli-tools)); time an index search through `lastExecution()->latencyMs`.
 
 ---
 
@@ -1529,7 +338,7 @@ To time the LIKE algorithms on your own app's tables, use `php artisan fuzzy-sea
 
   SQLite runs every pair. MySQL 8 and PostgreSQL 14 run the PHP 8.2–8.5 pairs, and MariaDB 11.4 and SQL Server 2022 the PHP 8.3–8.5 pairs, with Laravel 10, 12 and 13.
 - Any supported database — MySQL 8+, MariaDB 11.4 (CI); 10.6+ expected, PostgreSQL 14+, SQLite, or SQL Server 2022
-- Optional: Laravel Scout 10.1 or later (or 11.x) for the [Scout driver](#scout-driver) (semantic and hybrid search are not supported); Filament 3.3, 4.x or 5.x for the [Filament integration](#filament-integration)
+- Optional: Laravel Scout 10.1 or later (or 11.x) for the [Scout driver](#scout-driver) (semantic and hybrid search are not supported); Filament 3.3, 4.x or 5.x for the [Filament integration](docs/integrations.md#filament-integration)
 
 ---
 

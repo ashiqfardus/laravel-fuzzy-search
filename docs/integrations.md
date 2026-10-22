@@ -206,7 +206,7 @@ class UserResource extends Resource
 }
 ```
 
-For each searchable attribute that matched, a highlighted entry is added to `details`, keyed by `Str::headline()` of the attribute (`email` → `Email`). Only attributes listed in the record's `_matches` are promoted — a column that did not match is never sniffed for the highlight tag, so a record's own literal `<mark>…</mark>` text is never rendered as HTML just because a *different* column matched (see [Highlighted Results](../README.md#highlighted-results)).
+For each searchable attribute that matched, a highlighted entry is added to `details`, keyed by `Str::headline()` of the attribute (`email` → `Email`). Only attributes listed in the record's `_matches` are promoted — a column that did not match is never sniffed for the highlight tag, so a record's own literal `<mark>…</mark>` text is never rendered as HTML just because a *different* column matched (see [Highlighted Results](usage.md#highlighted-results)).
 
 > A promoted highlighted attribute replaces a plain `details` entry with the same label. If `getGlobalSearchResultDetails()` already returns `'Email' => $record->email` and `email` is both searchable and a match, the highlighted version overwrites it — pick a different label, or a different searchable attribute, to keep both.
 
