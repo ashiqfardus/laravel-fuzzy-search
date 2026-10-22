@@ -37,6 +37,18 @@ class LongListSoft extends Model
     protected $guarded = [];
 }
 
+/** -4e's soft-delete table with a searchable name, its ranking cut at bm25.max_postings_per_term in the test. */
+class LongListCapped extends Model
+{
+    use \Ashiqfardus\LaravelFuzzySearch\Traits\Searchable, SoftDeletes;
+
+    protected $table   = 'long_list_capped';
+    protected $guarded = [];
+    public $timestamps = false;
+
+    protected array $searchable = ['columns' => ['name' => 1]];
+}
+
 /** A MySQL connection that reports a server older than the VALUES table's floor (8.0.21). */
 class MySql8020Pdo extends \PDO
 {
@@ -103,6 +115,7 @@ class LongRankingListTest extends TestCase
         Schema::dropIfExists('long_list_items');
         Schema::dropIfExists('long_list_codes');
         Schema::dropIfExists('long_list_soft');
+        Schema::dropIfExists('long_list_capped');
 
         parent::tearDown();
     }
@@ -265,13 +278,14 @@ class LongRankingListTest extends TestCase
      *
      * @return array{0: mixed, 1: list<array{plan: string, switch: string}>}
      */
-    private function whileReading(\Closure $read): array
+    private function whileReading(\Closure $read, string $marker = '(values row('): array
     {
         $seen    = [];
         $reading = false;
+        $active  = true; // a listener stays registered: it reads only while $read runs
 
-        DB::listen(function ($query) use (&$seen, &$reading) {
-            if ($reading || !str_contains($query->sql, '(values row(')) {
+        DB::listen(function ($query) use (&$seen, &$reading, &$active, $marker) {
+            if (!$active || $reading || !str_contains($query->sql, $marker)) {
                 return;
             }
 
@@ -283,7 +297,11 @@ class LongRankingListTest extends TestCase
             $reading = false;
         });
 
-        return [$read(), $seen];
+        try {
+            return [$read(), $seen];
+        } finally {
+            $active = false;
+        }
     }
 
     /**
@@ -340,6 +358,61 @@ class LongRankingListTest extends TestCase
         $this->assertSame(array_slice($tenant, 0, 20), $page);
     }
 
+    /**
+     * Over a capped ranking the matches are restricted through the postings subquery
+     * (RankedCandidates::whereMatches()), and beside a selective constraint and an indexed soft-delete
+     * column MySQL intersected the two indexes there too, reading the soft-delete index whole (a
+     * count at 24M rows: 2.4 s, 60 ms by the tenant's index), or walked the order column's index for
+     * a page (0.57 s, 39 ms): the count and the page are read with both switches off.
+     */
+    public function test_a_constrained_capped_ranking_reads_no_soft_delete_index_whole(): void
+    {
+        if (!$this->readsValues()) {
+            $this->markTestSkipped('The plans are MySQL\'s (8.0.21 or later), read with EXPLAIN FORMAT=TREE.');
+        }
+
+        Schema::dropIfExists('long_list_capped');
+        Schema::create('long_list_capped', function ($table) {
+            $table->id();
+            $table->string('name');
+            $table->unsignedInteger('tenant_id')->index();
+            $table->unsignedInteger('price')->index();
+            $table->unsignedInteger('cat')->index();
+            $table->unsignedInteger('brand')->index();
+            $table->unsignedInteger('stock')->index();
+            $table->timestamp('deleted_at')->nullable()->index();
+        });
+
+        foreach (array_chunk(range(1, 20000), 1000) as $chunk) {
+            DB::table('long_list_capped')->insert(array_map(fn (int $j) => [
+                'name' => "Quokka {$j}", 'tenant_id' => $j % 997, 'price' => ($j * 7919) % 100000, 'cat' => $j % 50, 'brand' => $j % 300, 'stock' => $j % 1000,
+            ], $chunk));
+        }
+
+        LongListCapped::query()->chunkById(2000, fn ($items) => app(\Ashiqfardus\LaravelFuzzySearch\Indexing\IndexManager::class)->indexBatch($items));
+        DB::statement('ANALYZE TABLE long_list_capped, fuzzy_index_postings, fuzzy_index_terms, fuzzy_index_documents');
+
+        $tenant = array_values(array_filter(range(1, 20000), fn (int $j) => $j % 997 === 7));
+        $query  = RankedCandidates::matches(LongListCapped::query()->where('tenant_id', 7), [1 => 1.0], ['quokka'], LongListCapped::class, [], ['share' => 1.0, 'cut' => true]);
+
+        [$total, $counted] = $this->whileReading(fn () => RankedCandidates::countModels($query), 'fuzzy_index_postings');
+        [$page, $paged]    = $this->whileReading(fn () => RankedCandidates::orderedKeys((clone $query)->orderBy('price')->orderBy('id')->toBase(), 'long_list_capped.id', 0, 20), 'fuzzy_index_postings');
+
+        foreach ([...$counted, ...$paged] as $statement) {
+            $this->assertStringNotContainsString('Intersect rows', $statement['plan']);
+            $this->assertStringNotContainsString('long_list_capped_deleted_at_index', $statement['plan']);
+            $this->assertStringContainsString('index_merge_intersection=off', $statement['switch']);
+            $this->assertStringContainsString('prefer_ordering_index=off', $statement['switch']);
+        }
+
+        $prices = LongListCapped::query()->whereIn('id', $tenant)->pluck('price', 'id')->all();
+        usort($tenant, fn (int $a, int $b) => [$prices[$a], $a] <=> [$prices[$b], $b]);
+
+        $this->assertCount(2, [...$counted, ...$paged]);
+        $this->assertSame(count($tenant), $total);
+        $this->assertSame(array_slice($tenant, 0, 20), $page);
+    }
+
     /** planned() puts the session's optimizer_switch back as it was, after a read and after a read that throws, and has it set while the read runs. */
     public function test_the_session_optimizer_switch_is_put_back_after_a_long_ranking_read(): void
     {
@@ -373,7 +446,10 @@ class LongRankingListTest extends TestCase
         $this->assertSame($before, $switch());
     }
 
-    /** A session lost inside the window: the read runs on the new one, which never had the switches, and nothing is put back on it. */
+    /**
+     * A session lost inside the window: the read runs on the new one, which never had the switches,
+     * and nothing is put back, neither on it nor on the old one, which the server has closed.
+     */
     public function test_a_reconnect_inside_a_long_ranking_read_keeps_its_rows(): void
     {
         if (!$this->readsValues()) {
@@ -383,12 +459,15 @@ class LongRankingListTest extends TestCase
         $default     = (string) DB::scalar('select @@session.optimizer_switch');
         $ranked      = self::ranking(50000, false);
         $before      = DB::connection()->getPdo();
+        $config      = DB::connection()->getConfig();
         $reconnected = false;
 
-        DB::connection()->beforeExecuting(function (string $sql) use (&$reconnected) {
+        DB::connection()->beforeExecuting(function (string $sql) use (&$reconnected, $config) {
             if (!$reconnected && str_contains($sql, '(values row(')) {
                 $reconnected = true;
+                $old         = (int) DB::scalar('select connection_id()');
                 DB::reconnect();
+                (new \PDO("mysql:host={$config['host']};port={$config['port']};dbname={$config['database']}", $config['username'], $config['password']))->exec("kill {$old}");
             }
         });
 

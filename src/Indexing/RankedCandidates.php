@@ -323,14 +323,10 @@ final class RankedCandidates
      */
     private static function whereKeyIn(Builder $query, string $key, array $ids, bool $inline): Builder
     {
-        $connection = $query->getQuery()->getConnection();
-
-        if (count($ids) > self::LIST && $connection->getDriverName() === DbDialect::MYSQL
-            && DbDialect::readsValuesRows((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION))) {
+        if (count($ids) > self::LIST && self::switchable($query->getQuery())) {
             $rows = $inline ? array_map(fn ($id) => 'row(' . (int) $id . ')', $ids) : array_fill(0, count($ids), 'row(?)');
 
-            self::$valued ??= new \WeakMap();
-            self::$valued[$query->getQuery()] = true;
+            self::switching($query->getQuery());
 
             return $query->whereIn($key, $query->getQuery()->newQuery()
                 ->fromRaw('(values ' . implode(', ', $rows) . ') as fuzzy_ranked', $inline ? [] : array_values($ids))
@@ -340,31 +336,53 @@ final class RankedCandidates
         return $inline ? $query->whereIntegerInRaw($key, $ids) : $query->whereIn($key, $ids);
     }
 
-    /** @var \WeakMap<QueryBuilder, true>|null the queries whereKeyIn() gave a VALUES table, which planned() reads */
-    private static ?\WeakMap $valued = null;
+    /** The optimizer switches planned() turns off. */
+    private const SWITCHES = 'index_merge_intersection=off,prefer_ordering_index=off';
+
+    /** @var \WeakMap<QueryBuilder, true>|null the queries whereKeyIn() and whereMatches() marked for planned() */
+    private static ?\WeakMap $switched = null;
+
+    /** Whether $query's server takes planned()'s switches: MySQL 8.0.21 or later (DbDialect::readsValuesRows()). */
+    private static function switchable(QueryBuilder $query): bool
+    {
+        $connection = $query->getConnection();
+
+        return $connection->getDriverName() === DbDialect::MYSQL
+            && DbDialect::readsValuesRows((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION));
+    }
+
+    /** Marks $query, for planned() to read with SWITCHES off. */
+    private static function switching(QueryBuilder $query): void
+    {
+        self::$switched ??= new \WeakMap();
+        self::$switched[$query] = true;
+    }
 
     /** Whether planned() has the switches on: a read inside it runs as it is. */
     private static bool $planning = false;
 
     /**
      * $run, the statement that reads $read, with MySQL's index_merge_intersection and
-     * prefer_ordering_index off when whereKeyIn() gave $read a VALUES table (or $carried, a read that
-     * holds it). The session's optimizer_switch is read (through the connection, which reconnects a
+     * prefer_ordering_index off when whereKeyIn() (a VALUES table of ranked ids) or whereMatches()
+     * (the postings subquery) marked $read, or $carried, a read that holds it. The session's optimizer_switch is read (through the connection, which reconnects a
      * lost session and tries again), set on the PDO $read's selects run on, and put back as it was,
      * around the statement alone: $run returns rows, and every model they become, with its events
      * and eager loads, is made after. Query listeners and the base query's beforeQuery() and
      * afterQuery() callbacks fire inside, and see the switches, which change plans, not results. If
      * the connection reconnected inside $run, its new session never had them, and nothing is put
      * back; a failed put-back changes no result either, so neither ends a read that ran in an
-     * error, and an exception of $run goes up as it is. With the ranked ids as a table, beside a
-     * selective constraint and an indexed soft-delete column (tenant_id = ? and deleted_at is null),
-     * MySQL intersected the two indexes and read deleted_at's whole: 85 ms at 1M rows and 0.5 s at
-     * 4M, where the tenant's index took 1 to 7 ms. Off that, an ordered page walked the order
-     * column's index for its 20 rows: 7 s at 4M rows for 50,000 ids, 46 ms by the tenant's index.
+     * error, and an exception of $run goes up as it is. Beside a selective constraint and an indexed
+     * soft-delete column (tenant_id = ? and deleted_at is null), MySQL intersected the two indexes and
+     * read deleted_at's whole: with the ranked ids as a table, 85 ms at 1M rows and 0.5 s at 4M,
+     * where the tenant's index took 1 to 7 ms; through the postings, a count at 24M rows took 2.4 s,
+     * 60 ms by the tenant's index. With intersection off, an ordered page walked the order column's
+     * index for its 20 rows: 7 s at 4M rows over 50,000 ranked ids, 46 ms by the tenant's index;
+     * 0.57 s at 24M through the postings, 39 ms. Off both, the capped rankings' other ordered reads
+     * at 24M took as long as before (their plans the same).
      */
     private static function planned(QueryBuilder $read, \Closure $run, ?QueryBuilder $carried = null): mixed
     {
-        if (self::$planning || !isset(self::$valued[$carried ?? $read])) {
+        if (self::$planning || !isset(self::$switched[$carried ?? $read])) {
             return $run();
         }
 
@@ -373,7 +391,7 @@ final class RankedCandidates
         $session    = fn () => $read->useWritePdo ? $connection->getPdo() : $connection->getReadPdo();
         $pdo        = $session();
 
-        $pdo->exec("set session optimizer_switch = 'index_merge_intersection=off,prefer_ordering_index=off'");
+        $pdo->exec("set session optimizer_switch = '" . self::SWITCHES . "'");
         self::$planning = true;
 
         try {
@@ -463,14 +481,20 @@ final class RankedCandidates
             return array_intersect_key($ranked, array_flip(self::keys($base, array_keys($ranked), null, $bound ? 10000 : null)));
         }
 
-        $accepted = [];
+        // The stream's rows are only read here, under planned(): no yield leaves it.
+        $read     = self::keyRead(self::whereMatches($base, $terms, $modelType, $columnWeights));
+        $accepted = self::planned($read, function () use ($read, $ranked) {
+            $accepted = [];
 
-        foreach (self::keyRead(self::whereMatches($base, $terms, $modelType, $columnWeights))->cursor() as $row) {
-            $row = (object) $row; // an app-wide array fetch mode returns arrays
-            if ($row->{self::KEY_ALIAS} !== null && isset($ranked[$row->{self::KEY_ALIAS}])) {
-                $accepted[$row->{self::KEY_ALIAS}] = true;
+            foreach ($read->cursor() as $row) {
+                $row = (object) $row; // an app-wide array fetch mode returns arrays
+                if ($row->{self::KEY_ALIAS} !== null && isset($ranked[$row->{self::KEY_ALIAS}])) {
+                    $accepted[$row->{self::KEY_ALIAS}] = true;
+                }
             }
-        }
+
+            return $accepted;
+        });
 
         return array_intersect_key($ranked, $accepted);
     }
@@ -669,7 +693,11 @@ final class RankedCandidates
      * the postings per row the query reads (a selective where(), a denser word's first page walking
      * the order column's index). A denser word keeps a string key's cast alone: compared as it is,
      * an nvarchar key's first page merged the table whole with the word's postings (47 ms at 200k
-     * rows for a word in a quarter of them, 0.5 ms walking the order column's index).
+     * rows for a word in a quarter of them, 0.5 ms walking the order column's index). On MySQL 8.0.21
+     * or later its statements run under planned()'s switches: beside a selective constraint and an
+     * indexed soft-delete column, MySQL intersected the two indexes and read the soft-delete index
+     * whole (a count at 24M rows: 2.4 s, 60 ms by the tenant's index), or walked the order column's
+     * index for a page (0.57 s, 39 ms).
      */
     private static function whereMatches(Builder $base, array $terms, string $modelType, array $columnWeights, bool $sparse = false, ?float $share = null): Builder
     {
@@ -678,9 +706,14 @@ final class RankedCandidates
         $model = $base->getQuery()->getConnection()->getDriverName() === DbDialect::SQLSRV
             ? ($sparse || in_array($model->getKeyType(), ['int', 'integer'], true) ? $model : null)
             : ($sparse && self::unconstrained($base) ? $model : null);
+        $switchable = self::switchable($base->getQuery());
 
-        return (clone $base)->withGlobalScope(self::MATCHES, function (Builder $query) use ($key, $terms, $modelType, $columnWeights, $model, $share) {
+        return (clone $base)->withGlobalScope(self::MATCHES, function (Builder $query) use ($key, $terms, $modelType, $columnWeights, $model, $share, $switchable) {
             app(Bm25Scorer::class)->whereRanked($query->getQuery(), $key, $terms, $modelType, $columnWeights, $model);
+
+            if ($switchable) {
+                self::switching($query->getQuery());
+            }
 
             // The share its words' postings reach, kept with the EXISTS it added, for walkToPage().
             $wheres = $query->getQuery()->wheres;
