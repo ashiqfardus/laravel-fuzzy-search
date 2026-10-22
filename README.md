@@ -283,7 +283,7 @@ The `SearchAnalytics` facade also reports `averageLatency()` by path and `volume
 
 ## Performance at scale
 
-Measured on 3.0.0 release candidates, one database at a time, with rows of about 16 indexed words each: MySQL and MariaDB to 12M rows, PostgreSQL to 24M and SQL Server to 6M, with no search or command past 120 s at any of them. The first page of a rare, mid and common word and the slowest search per database, the index size, memory, index builds and upgrade times are in [Sizing the index](docs/performance.md#sizing-the-index); async indexing, caching and tuning in [docs/performance.md](docs/performance.md).
+Measured on 3.0.0 and its release candidates, one database at a time, with rows of about 16 indexed words each: MySQL and PostgreSQL to 24M rows, MariaDB to 12M and SQL Server to 6M, with no search or command past 120 s at any of them. The first page of a rare, mid and common word and the slowest search per database, the index size, memory, index builds and upgrade times are in [Sizing the index](docs/performance.md#sizing-the-index); async indexing, caching and tuning in [docs/performance.md](docs/performance.md).
 
 ---
 
