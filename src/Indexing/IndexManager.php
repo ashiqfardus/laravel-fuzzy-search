@@ -1299,14 +1299,14 @@ class IndexManager
     {
         $this->markFlushing($modelType);
         $typeId = self::modelTypeId($modelType);
-        $words  = ''; // the type's word ids, 4 bytes each (pack 'N*')
+        $words  = ''; // the type's word ids, 8 bytes each (pack 'J*': ids are bigint)
         if ($typeId !== null) {
             $this->deleteInBatches('fuzzy_index_postings', ['model_type_id' => $typeId], 'model_id');
 
             $after = 0;
             while (($ids = DB::table('fuzzy_index_model_terms')->where('model_type_id', $typeId)->where('term_id', '>', $after)
                 ->orderBy('term_id')->limit(1000)->pluck('term_id')->map(fn ($id) => (int) $id)->all()) !== []) {
-                $words .= pack('N*', ...$ids);
+                $words .= pack('J*', ...$ids);
                 $after  = end($ids);
                 DB::transaction(function () use ($typeId, $ids) {
                     DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
@@ -1359,7 +1359,7 @@ class IndexManager
     }
 
     /**
-     * The words the flush's chunks handled (their ids packed 4 bytes each, in id order), counted
+     * The words the flush's chunks handled (their ids packed 8 bytes each with 'J', in id order), counted
      * again from the models' own counts, 1,000 words a transaction in id order as the chunks are. A
      * save of the flushed type between the flush's chunk of its words and its last transaction can
      * give a posting back from a doc_count the chunk had already cut to the other models' share,
@@ -1369,8 +1369,8 @@ class IndexManager
      */
     private function recountWords(string $packed): void
     {
-        foreach (str_split($packed, 4000) as $chunk) {
-            $ids = array_values(unpack('N*', $chunk));
+        for ($offset = 0; $offset < strlen($packed); $offset += 8000) {
+            $ids = array_values(unpack('J*', substr($packed, $offset, 8000)));
             DB::transaction(function () use ($ids) {
                 DB::table('fuzzy_index_terms')->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
                 self::recountDictionary(fn ($words) => $words->whereIn('id', $ids));

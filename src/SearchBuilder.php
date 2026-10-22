@@ -1351,8 +1351,8 @@ class SearchBuilder
      * row than the one cached, even when the key is cached once (first(), take(), a page, a search
      * on the joined column). A fromSub() can hold such a join where $base->joins does not show it,
      * so a FROM other than the model's own table counts as one (CacheAliasedFromTest). Any other rows
-     * are stored as the attributes the database returned for them, less the model's $hidden ones and, with a $visible list, those outside it: the
-     * cache store is shared, and a hit never serialises them.
+     * are stored as the attributes the database returned for them, less the model's $hidden ones (attributes outside a
+     * $visible list are still stored: $visible only filters serialisation): the cache store is shared, and a hit never serialises them.
      */
     private function cachePayload(Collection $results, array $decoration): array
     {
