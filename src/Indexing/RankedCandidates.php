@@ -243,6 +243,8 @@ final class RankedCandidates
      *    JOIN_SHARE of the model's documents), but over a union (see listsWhole()), or on SQLite:
      *    the whole ranking, bound, while the statement stays under the database's placeholder limit
      *    (65,535; SQLite's 32,766, or 999 before 3.32);
+     *  - on MySQL, a list of more than 1,000 ids as a VALUES table (whereKeyIn()), so its page and
+     *    total are not planned without the range optimizer;
      *  - any key: a ranking of at most one bm25.candidate_chunk.
      * Otherwise, on the index's own connection, the postings restrict it (Bm25Scorer::whereRanked()):
      * they bind no id, and let every match through, those rank() left out past
@@ -292,10 +294,44 @@ final class RankedCandidates
         $ids = self::keysFor($model, $ids);
         $key = self::keyColumn($base);
 
-        // whereKey()'s shape, on the key as the FROM names it: an integer list inlined, not bound.
-        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => $int
-            ? $query->whereIntegerInRaw($key, $ids)
-            : $query->whereIn($key, $ids));
+        return (clone $base)->withGlobalScope(self::MATCHES, fn (Builder $query) => self::whereKeyIn($query, $key, $ids, $int));
+    }
+
+    /**
+     * The most ids whereKeyIn() lists on MySQL; a longer list is a VALUES table there. MariaDB turns
+     * an IN list of as many into such a table itself (in_predicate_conversion_threshold).
+     */
+    private const LIST = 1000;
+
+    /**
+     * $query restricted to the keys $ids, a list of them as whereKey() writes it (integers inlined
+     * when $inline, else bound), on the key as the FROM names it. On MySQL 8.0.19 or later a list of
+     * more than LIST ids is a VALUES table instead, key in (select column_0 from (values row(…), …)):
+     * MySQL's range optimizer plans an IN list within range_optimizer_max_mem_size (8 MB by default),
+     * each secondary index taking a share per id (it carries the key), and past that line it plans
+     * none (warning 3170) and reads the table whole. At 24M rows and six indexes the line was 8,400
+     * ids: a check of 50,000 ranked ids took 8 to 10 s, and the total of an ordered page of 43,000
+     * matches 2.2 s; a COUNT(DISTINCT key) on eight indexes crossed it at 5,800. The VALUES table
+     * takes no range, and its exact row count lets the plan read the ranked ids by key or a selective
+     * constraint's index (50,000 ids at 2M rows: 138 ms, where the list read the table whole in
+     * 205 ms). Below 8.0.19 the list stays.
+     *
+     * @param array<int|string> $ids
+     */
+    private static function whereKeyIn(Builder $query, string $key, array $ids, bool $inline): Builder
+    {
+        $connection = $query->getQuery()->getConnection();
+
+        if (count($ids) > self::LIST && $connection->getDriverName() === DbDialect::MYSQL
+            && DbDialect::readsValuesRows((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION))) {
+            $rows = $inline ? array_map(fn ($id) => 'row(' . (int) $id . ')', $ids) : array_fill(0, count($ids), 'row(?)');
+
+            return $query->whereIn($key, $query->getQuery()->newQuery()
+                ->fromRaw('(values ' . implode(', ', $rows) . ') as fuzzy_ranked', $inline ? [] : array_values($ids))
+                ->select('column_0'));
+        }
+
+        return $inline ? $query->whereIntegerInRaw($key, $ids) : $query->whereIn($key, $ids);
     }
 
     /**
@@ -330,9 +366,9 @@ final class RankedCandidates
      * constraint accepts, and none past the ranking's cap. The ranking is checked by key, so the rows
      * read are bounded by the ranking, however large the table:
      *  - an integer key, on every database but SQL Server: the whole ranking in one read, its ids
-     *    inlined as matches() lists them (about 1 ms per 1,000 ids, no binding limit);
+     *    inlined (no binding limit), on MySQL past 1,000 of them as a VALUES table (whereKeyIn());
      *  - a string key on MySQL or MariaDB: 10,000 bound ids per read (they allow 65,535 bindings),
-     *    but over a union (see readsUnion());
+     *    on MySQL as a VALUES table, but over a union (see readsUnion());
      *  - otherwise a ranking of at most max(bm25.candidate_chunk, max_candidates) ids, a chunk at a
      *    time (keys()). A longer one, on the index's own connection, is read in one query through the
      *    postings subquery (Bm25Scorer::whereRanked()), however many rows match, streamed (cursor())
@@ -359,7 +395,7 @@ final class RankedCandidates
         if ($int && $driver !== DbDialect::SQLSRV) {
             $key  = self::keyColumn($base);
             $ids  = array_keys($ranked);
-            $read = (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIntegerInRaw($key, $ids));
+            $read = (clone $base)->withGlobalScope(self::class, fn (Builder $query) => self::whereKeyIn($query, $key, $ids, true));
 
             return array_intersect_key($ranked, array_flip(self::keysOf(self::keyRead($read))));
         }
@@ -893,7 +929,7 @@ final class RankedCandidates
     {
         $chunk = self::keysFor($base->getModel(), $chunk);
 
-        return (clone $base)->withGlobalScope(self::class, fn (Builder $query) => $query->whereIn($key, $chunk));
+        return (clone $base)->withGlobalScope(self::class, fn (Builder $query) => self::whereKeyIn($query, $key, $chunk, false));
     }
 
     /**

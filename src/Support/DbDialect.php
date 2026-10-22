@@ -25,6 +25,16 @@ final class DbDialect
     }
 
     /**
+     * Whether a server of the mysql driver, by its version (PDO::ATTR_SERVER_VERSION), reads a
+     * table of VALUES ROW()s: MySQL from 8.0.19, never MariaDB, which Laravel 10 reaches through
+     * the mysql driver too and whose VALUES has no ROW().
+     */
+    public static function readsValuesRows(string $serverVersion): bool
+    {
+        return stripos($serverVersion, 'mariadb') === false && version_compare($serverVersion, '8.0.19', '>=');
+    }
+
+    /**
      * Quote a (possibly table-qualified) column for the given driver.
      * Splits on "." so `users.name` becomes `users`.`name`, not a single identifier.
      * $tablePrefix is the connection's table prefix: the grammar writes the FROM table (and its
