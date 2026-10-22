@@ -7,6 +7,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] — 2026-10-22
+
+### Fixed
+
+- MySQL: a relevance search whose ranking held more ids than MySQL's range optimizer plans (warning 3170, past `range_optimizer_max_mem_size`: about 8,400 ids on a table with six indexes, fewer with more) read the whole table, in the check against a constraint or SoftDeletes, and in the total that `orderBy()` with `paginate()`, `simplePaginate()` or `take()` reads before its page. On MySQL 8.0.21 and later a ranking of more than 1,000 ids is checked, ordered and counted through a `VALUES` table of the ids instead of an `IN` list. ([guide][301-bm25])
+- MySQL 8.0.21 and later: those statements, and a capped ranking's reads through `fuzzy_index_postings`, run with `index_merge_intersection` and `prefer_ordering_index` off for the session, set on the connection the read uses and put back right after. With them on, a selective filter beside an indexed `deleted_at` read the whole `deleted_at` index, or walked the order column's index for a page. ([guide][301-bm25])
+- MariaDB, which turns a long `IN` list into such a table itself, MySQL before 8.0.21, PostgreSQL, SQLite and SQL Server send the same SQL as in 3.0.0.
+
+Measured at 24M rows on MySQL 9.6, 536ae87 (3.0.0) against dfd5ca8 (the fix), p50:
+
+- a common word under SoftDeletes: 11.3 s → 1.14 s;
+- a common word under `orderBy()` and `paginate()`: 2.27 s → 0.25 s;
+- the same under a tenant filter beside an indexed `deleted_at`: 3.35 s → 1.17 s.
+
+One read is slower: the page of a common word under `orderBy()` on an indexed column took 35 ms on 3.0.0, which walked that column's index once the range optimizer had given up on the list, and takes 121 ms now; the total read before it went from 2.15 s to 0.11 s.
+
+[301-bm25]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.1/docs/bm25.md#how-it-works
+
 ## [3.0.0] — 2026-10-22
 
 **3.0.0 is a major release. It breaks code and configs written for 2.0, so read the [upgrade guide][u] before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0` (a `^2.0` constraint never installs 3.0).** It adds relationship search, a typo-tolerant BM25 index with column weights and a dictionary per model, federated pagination, persisted search analytics, Filament and JSON API integrations and new tokenizers. It also fixes many 2.0.x defects, a few of them security issues. Some existing calls now return, throw or cache differently, and the new migrations rewrite the index tables. Read the [upgrade guide][u] (`docs/UPGRADE_v2_TO_v3.md` in the package) before you upgrade: it opens with a checklist and every behaviour change, and it is the full reference for each line below.
@@ -104,7 +122,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The postings table is compact and clustered by word, with each document's length in the posting. A common word is read as one range: on MySQL at 12M rows its first page took 0.59 s and three such words 1.6 s (5dc853c); at 6M rows the old layout took 43 s and three timed out (5220f97). The index took 2.8 GB per million rows at 12M rows on MySQL (built on 5dc853c) and 2.7 GB at 24M on PostgreSQL (0a05120). ([sizing][r-sizing])
 - The index stores one posting per (term, column), the column by id through `fuzzy_index_columns`. Postings from before 3.0 keep an empty column, which `fuzzy-search:status` reports, and a plain `rebuild` replaces them. ([guide][u-weighted])
 - In relevance order on the index path, a model that a one-to-many join repeats is served once. ([guide][u-bm25])
-- On MySQL 8.0.21 and later, a relevance search checks a ranking of more than 1,000 ids against its constraints, and orders and counts its matches, through a `VALUES` table of the ids instead of an `IN` list, each such statement run with `index_merge_intersection` and `prefer_ordering_index` off for the session and the session's `optimizer_switch` put back after. MySQL's range optimizer gives up on a long `IN` list (warning 3170, past `range_optimizer_max_mem_size`: about 8,400 ids on a table with six indexes, fewer with more) and reads the whole table: at 24M rows a common word under SoftDeletes took 8 to 11 s, and the total of an ordered page 2.2 s (536ae87). The two switches keep a constraint's own index in use: with them on, a tenant filter beside an indexed `deleted_at` read the whole `deleted_at` index, or walked the order column's index (7 s at 4M rows). A capped ranking's reads through `fuzzy_index_postings` run with the same two switches off, since the same filter's count there read the whole `deleted_at` index (2.4 s at 24M rows, 60 ms after) and its page walked the order column's index (0.57 s, 39 ms after). MariaDB, which makes such a table of a long list itself, and the other databases keep the list. ([guide][u-bm25])
 - `maxPatterns()` and `performance.max_patterns` cap the pattern list of every pattern-based algorithm. The trigram fallback's cap moves from a hard-coded 10 to that key (100). ([guide][u-api])
 - Multi-term `extended()` queries score each leaf term on its own, and an accented term and its folded form count once (the better of the two). ([guide][u-search])
 - `FederatedSearch` searches a `Fuzzy`-trait model with its own `$fuzzyAlgorithm` and `$fuzzyOptions`. A model without the `Searchable` trait contributes at most `max_candidates` rows. ([guide][u-federated])
@@ -289,11 +306,11 @@ These are defects in 2.0.x. Changes already listed under Upgrade notes are not r
 [d-filament]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#filament-integration
 [d-resources]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#json-api-resources
 [d-scout]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/integrations.md#scout-driver
-[r-chaining]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/usage.md#chaining-eloquent
-[r-federation]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/scoring.md#multi-model-federation-search
-[r-recency]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/scoring.md#recency-boost
-[r-sizing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/performance.md#sizing-the-index
-[r-shadow]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/docs/algorithms.md#shadow-columns
+[r-chaining]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#chaining-eloquent
+[r-federation]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#multi-model-federation-search
+[r-recency]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#recency-boost
+[r-sizing]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#sizing-the-index
+[r-shadow]: https://github.com/ashiqfardus/laravel-fuzzy-search/blob/v3.0.0/README.md#shadow-columns
 
 ## [2.0.1] — 2026-09-16
 
@@ -500,6 +517,7 @@ A powerful, zero-config fuzzy search package for Laravel with fluent API. Works 
 
 [Full Documentation](https://github.com/ashiqfardus/laravel-fuzzy-search)
 
+[3.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.1...v3.0.0
 [2.0.1]: https://github.com/ashiqfardus/laravel-fuzzy-search/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/ashiqfardus/laravel-fuzzy-search/releases/tag/v2.0.0
