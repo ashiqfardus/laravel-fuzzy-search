@@ -57,7 +57,7 @@ final class RankedCandidates
 
             // A model's first row: a join may repeat it, and MariaDB gives a ROLLUP's summary row the
             // last group's key under the alias, where its own key is NULL. A row without one is skipped.
-            foreach (self::selectKey($read->getQuery(), $key)->get() as $row) {
+            foreach (self::planned($read->getQuery(), fn () => self::selectKey($read->getQuery(), $key)->get()) as $row) {
                 $row = (object) $row; // an app-wide array fetch mode (PDO::FETCH_ASSOC) returns arrays
                 $id  = $row->{self::KEY_ALIAS};
                 unset($row->{self::KEY_ALIAS});
@@ -165,9 +165,9 @@ final class RankedCandidates
      *
      * @return array<int|string>
      */
-    private static function keysOf(QueryBuilder $read): array
+    private static function keysOf(QueryBuilder $read, ?QueryBuilder $carried = null): array
     {
-        return $read->pluck(self::KEY_ALIAS)->whereNotNull()->values()->all();
+        return self::planned($read, fn () => $read->pluck(self::KEY_ALIAS), $carried)->whereNotNull()->values()->all();
     }
 
     /** $query's select list, every column when it names none, with $key beside it under KEY_ALIAS. */
@@ -227,10 +227,10 @@ final class RankedCandidates
                 $query->columns ??= [substr($key, 0, strrpos($key, '.')) . '.*'];
             }
 
-            return (int) $query->getCountForPagination();
+            return (int) self::planned($query, fn () => $query->getCountForPagination());
         }
 
-        return (int) $query->distinct()->getCountForPagination([$key]);
+        return (int) self::planned($query, fn () => $query->distinct()->getCountForPagination([$key]));
     }
 
     /**
@@ -305,16 +305,19 @@ final class RankedCandidates
 
     /**
      * $query restricted to the keys $ids, a list of them as whereKey() writes it (integers inlined
-     * when $inline, else bound), on the key as the FROM names it. On MySQL 8.0.19 or later a list of
-     * more than LIST ids is a VALUES table instead, key in (select column_0 from (values row(…), …)):
-     * MySQL's range optimizer plans an IN list within range_optimizer_max_mem_size (8 MB by default),
-     * each secondary index taking a share per id (it carries the key), and past that line it plans
-     * none (warning 3170) and reads the table whole. At 24M rows and six indexes the line was 8,400
-     * ids: a check of 50,000 ranked ids took 8 to 10 s, and the total of an ordered page of 43,000
+     * when $inline, else bound), on the key as the FROM names it. On MySQL 8.0.21 or later
+     * (DbDialect::readsValuesRows()) a list of more than LIST ids is a VALUES table instead, key in
+     * (select column_0 from (values row(…), …)), read under planned()'s optimizer switches. MySQL's
+     * range optimizer plans an IN list within range_optimizer_max_mem_size (8 MB by default), each
+     * secondary index taking a share per id (it carries the key), and past that line it plans none
+     * (warning 3170) and reads the table whole. At 24M rows and six indexes the line was 8,400 ids:
+     * a check of 50,000 ranked ids took 8 to 11 s, and the total of an ordered page of 43,000
      * matches 2.2 s; a COUNT(DISTINCT key) on eight indexes crossed it at 5,800. The VALUES table
      * takes no range, and its exact row count lets the plan read the ranked ids by key or a selective
-     * constraint's index (50,000 ids at 2M rows: 138 ms, where the list read the table whole in
-     * 205 ms). Below 8.0.19 the list stays.
+     * constraint's index: at 4M rows, a check of 50,000 ids took 137 ms where the list read the table
+     * whole in 567 ms. On a smaller table the scan it replaces can be the faster read: at 1M rows a
+     * dense ordered page of 50,000 ids took 85 ms, where the list, past the line, walked the order
+     * column's index in 17 ms. Below 8.0.21 the list stays.
      *
      * @param array<int|string> $ids
      */
@@ -326,12 +329,66 @@ final class RankedCandidates
             && DbDialect::readsValuesRows((string) $connection->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION))) {
             $rows = $inline ? array_map(fn ($id) => 'row(' . (int) $id . ')', $ids) : array_fill(0, count($ids), 'row(?)');
 
+            self::$valued ??= new \WeakMap();
+            self::$valued[$query->getQuery()] = true;
+
             return $query->whereIn($key, $query->getQuery()->newQuery()
                 ->fromRaw('(values ' . implode(', ', $rows) . ') as fuzzy_ranked', $inline ? [] : array_values($ids))
                 ->select('column_0'));
         }
 
         return $inline ? $query->whereIntegerInRaw($key, $ids) : $query->whereIn($key, $ids);
+    }
+
+    /** @var \WeakMap<QueryBuilder, true>|null the queries whereKeyIn() gave a VALUES table, which planned() reads */
+    private static ?\WeakMap $valued = null;
+
+    /** Whether planned() has the switches on: a read inside it runs as it is. */
+    private static bool $planning = false;
+
+    /**
+     * $run, the statement that reads $read, with MySQL's index_merge_intersection and
+     * prefer_ordering_index off when whereKeyIn() gave $read a VALUES table (or $carried, a read that
+     * holds it). The session's optimizer_switch is read, set and put back as it was, on the PDO
+     * $read's selects run on, around the statement alone: $run returns rows, and every model they
+     * become, with its events and eager loads, is made after. If putting it back fails, an exception
+     * of $run still goes up. With the ranked ids as a table, beside a selective constraint and an
+     * indexed soft-delete column (tenant_id = ? and deleted_at is null), MySQL intersected the two
+     * indexes and read deleted_at's whole: 85 ms at 1M rows and 0.5 s at 4M, where the tenant's
+     * index took 1 to 7 ms. Off that, an ordered page walked the order column's index for its 20
+     * rows: 7 s at 4M rows for 50,000 ids, 46 ms by the tenant's index.
+     */
+    private static function planned(QueryBuilder $read, \Closure $run, ?QueryBuilder $carried = null): mixed
+    {
+        if (self::$planning || !isset(self::$valued[$carried ?? $read])) {
+            return $run();
+        }
+
+        $connection = $read->getConnection();
+        $pdo        = $read->useWritePdo ? $connection->getPdo() : $connection->getReadPdo();
+        $switch     = (string) $pdo->query('select @@session.optimizer_switch')->fetchColumn();
+        $failed     = false;
+
+        $pdo->exec("set session optimizer_switch = 'index_merge_intersection=off,prefer_ordering_index=off'");
+        self::$planning = true;
+
+        try {
+            return $run();
+        } catch (\Throwable $e) {
+            $failed = true;
+
+            throw $e;
+        } finally {
+            self::$planning = false;
+
+            try {
+                $pdo->exec('set session optimizer_switch = ' . $pdo->quote($switch));
+            } catch (\Throwable $restore) {
+                if (!$failed) {
+                    throw $restore;
+                }
+            }
+        }
     }
 
     /**
@@ -466,7 +523,7 @@ final class RankedCandidates
                 $page->orderBy($sort['column'], $sort['direction']);
             }
 
-            return self::keysOf($page->offset($offset)->limit($limit));
+            return self::keysOf($page->offset($offset)->limit($limit), $query);
         }
 
         if ($order === 'joined') {
@@ -487,7 +544,7 @@ final class RankedCandidates
                 $page->orderBy('fuzzy_order_' . $i, $sort['direction']);
             }
 
-            return self::keysOf($page->offset($offset)->limit($limit));
+            return self::keysOf($page->offset($offset)->limit($limit), $query);
         }
 
         self::selectKey($query, $qualifiedKey);
@@ -496,18 +553,23 @@ final class RankedCandidates
             return self::keysOf(self::walkToPage($query, $offset, $limit)->offset($offset)->limit($limit));
         }
 
-        $keys = [];
+        // The walk's rows are only read here, under planned(): no yield leaves it.
+        $keys = self::planned($query, function () use ($query, $offset, $limit) {
+            $keys = [];
 
-        foreach ($query->lazy(1000) as $row) {
-            $row = (object) $row; // an app-wide array fetch mode returns arrays
-            if ($row->{self::KEY_ALIAS} !== null) {
-                $keys[$row->{self::KEY_ALIAS}] = true;
+            foreach ($query->lazy(1000) as $row) {
+                $row = (object) $row; // an app-wide array fetch mode returns arrays
+                if ($row->{self::KEY_ALIAS} !== null) {
+                    $keys[$row->{self::KEY_ALIAS}] = true;
+                }
+
+                if (count($keys) >= $offset + $limit) {
+                    break;
+                }
             }
 
-            if (count($keys) >= $offset + $limit) {
-                break;
-            }
-        }
+            return $keys;
+        });
 
         return array_slice(array_keys($keys), $offset, $limit);
     }

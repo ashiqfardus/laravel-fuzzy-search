@@ -28,12 +28,21 @@ class LongListCode extends Model
     protected $guarded    = [];
 }
 
-/** A MySQL connection that reports a server older than VALUES ROW() (8.0.19). */
-class MySql8018Pdo extends \PDO
+/** -4e's soft-delete table: deleted_at indexed beside five other indexes, tenant_id among them. */
+class LongListSoft extends Model
+{
+    use SoftDeletes;
+
+    protected $table   = 'long_list_soft';
+    protected $guarded = [];
+}
+
+/** A MySQL connection that reports a server older than the VALUES table's floor (8.0.21). */
+class MySql8020Pdo extends \PDO
 {
     public function getAttribute(int $attribute): mixed
     {
-        return $attribute === \PDO::ATTR_SERVER_VERSION ? '8.0.18' : parent::getAttribute($attribute);
+        return $attribute === \PDO::ATTR_SERVER_VERSION ? '8.0.20' : parent::getAttribute($attribute);
     }
 }
 
@@ -41,9 +50,11 @@ class MySql8018Pdo extends \PDO
  * A long ranking checked by key on MySQL. Its range optimizer plans an IN list within
  * range_optimizer_max_mem_size (8 MB by default), and the memory per id grows with the table's
  * secondary indexes, each of which carries the key: at 24M rows and six of them, 8,400 ids past the
- * line, it planned none (warning 3170) and read the table whole, 8 to 10 s for a common word under
+ * line, it planned none (warning 3170) and read the table whole, 8 to 11 s for a common word under
  * SoftDeletes. The tables here have the same six indexes, and every statement a check runs is
  * explained on MySQL and MariaDB with no 3170 allowed; the line does not depend on the table's rows.
+ * The VALUES table that replaces a long list on MySQL is read with two optimizer switches off
+ * (RankedCandidates::planned()), and the plan it runs is checked, as is the session's switch after.
  */
 class LongRankingListTest extends TestCase
 {
@@ -91,6 +102,7 @@ class LongRankingListTest extends TestCase
     {
         Schema::dropIfExists('long_list_items');
         Schema::dropIfExists('long_list_codes');
+        Schema::dropIfExists('long_list_soft');
 
         parent::tearDown();
     }
@@ -148,29 +160,40 @@ class LongRankingListTest extends TestCase
         $this->assertNotEmpty($log);
 
         if (in_array($this->dbDriver, ['mysql', 'mariadb'], true)) {
-            // As text: after a server-side prepared statement SHOW WARNINGS returns only 1295 (not
-            // supported in the prepared statement protocol), whatever the statement raised.
-            $connection = DB::connection();
-            $pdo        = $connection->getPdo();
-            $emulated   = $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
-            $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
+            foreach ($log as $statement) {
+                [, $codes] = $this->explained('explain', $statement['query'], $statement['bindings']);
 
-            try {
-                foreach ($log as $statement) {
-                    $explain = $pdo->prepare('explain ' . $statement['query']);
-                    $connection->bindValues($explain, $connection->prepareBindings($statement['bindings']));
-                    $explain->execute();
-                    $explain->fetchAll();
-                    $codes = array_map('intval', array_column($pdo->query('show warnings')->fetchAll(\PDO::FETCH_ASSOC), 'Code'));
-
-                    $this->assertNotContains(3170, $codes, 'Planned without the range optimizer: ' . substr($statement['query'], 0, 200));
-                }
-            } finally {
-                $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, $emulated);
+                $this->assertNotContains(3170, $codes, 'Planned without the range optimizer: ' . substr($statement['query'], 0, 200));
             }
         }
 
         return $result;
+    }
+
+    /**
+     * $explain (explain, explain format=tree) of $sql, sent as text, with the warnings it raised:
+     * after a server-side prepared statement SHOW WARNINGS returns only 1295 (not supported in the
+     * prepared statement protocol), and MySQL does not prepare EXPLAIN FORMAT=TREE.
+     *
+     * @return array{0: string, 1: list<int>} the plan's text and the warnings' codes
+     */
+    private function explained(string $explain, string $sql, array $bindings): array
+    {
+        $connection = DB::connection();
+        $pdo        = $connection->getPdo();
+        $emulated   = $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
+        $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
+
+        try {
+            $statement = $pdo->prepare($explain . ' ' . $sql);
+            $connection->bindValues($statement, $connection->prepareBindings($bindings));
+            $statement->execute();
+            $plan = implode("\n", array_map(fn (array $row) => implode(' ', array_map('strval', $row)), $statement->fetchAll(\PDO::FETCH_NUM)));
+
+            return [$plan, array_map('intval', array_column($pdo->query('show warnings')->fetchAll(\PDO::FETCH_ASSOC), 'Code'))];
+        } finally {
+            $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, $emulated);
+        }
     }
 
     public function test_accepted_checks_a_long_integer_ranking_without_a_table_scan(): void
@@ -194,29 +217,160 @@ class LongRankingListTest extends TestCase
         $this->assertSame(self::shown($ranked, true), array_keys($accepted));
     }
 
-    public function test_only_mysql_from_8_0_19_reads_values_rows(): void
+    public function test_only_mysql_from_8_0_21_reads_values_rows(): void
     {
-        foreach (['8.0.19' => true, '9.6.0' => true, '8.0.36-0ubuntu0.22.04.1' => true, '8.0.18' => false, '5.7.44' => false, '5.5.5-10.11.6-MariaDB' => false, '11.4.2-MariaDB-ubu2404' => false] as $version => $reads) {
+        $versions = [
+            '8.0.21' => true, '8.0.21-log' => true, '9.6.0' => true, '8.4.3' => true, '8.0.36-0ubuntu0.22.04.1' => true, '8.0.35-27' => true,
+            '8.0.mysql_aurora.3.04.0' => true,
+            '8.0.20' => false, '8.0.19' => false, '8.0.19-log' => false, '5.7.44' => false, '5.7.44-log' => false,
+            '5.5.5-10.11.6-MariaDB' => false, '11.4.2-MariaDB-ubu2404' => false, '11.4.13-MariaDB-ubu2404' => false,
+            '8.0.31-Vitess' => false, '5.7.25-TiDB-v7.5.0' => false, '8.0.11-TiDB-v8.1.0' => false, '' => false,
+        ];
+
+        foreach ($versions as $version => $reads) {
             $this->assertSame($reads, \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::readsValuesRows((string) $version), (string) $version);
         }
     }
 
-    /** A list of more than 1,000 ids is a VALUES table on MySQL from 8.0.19 only; a shorter one, and any elsewhere, keeps its list. */
+    /** A list of more than 1,000 ids is a VALUES table on MySQL from 8.0.21 only; a shorter one, and any elsewhere, keeps its list. */
     public function test_a_list_past_1000_ids_is_a_values_table_on_mysql_only(): void
     {
-        $sql = fn (int $length) => RankedCandidates::matches(LongListItem::query(), self::ranking($length, false), ['item'], LongListItem::class, [], ['share' => 0.001, 'cut' => false])->toSql();
+        $sql    = fn (int $length) => RankedCandidates::matches(LongListItem::query(), self::ranking($length, false), ['item'], LongListItem::class, [], ['share' => 0.001, 'cut' => false])->toSql();
+        $values = $this->dbDriver === 'mysql' && \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::readsValuesRows((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION));
 
         $this->assertStringNotContainsString('values', $sql(1000));
         $this->assertStringContainsString('in (1, 100001, 100002', $sql(1000));
-        $this->assertSame($this->dbDriver === 'mysql', str_contains($sql(1001), 'in (select `column_0` from (values row(1), row(100001), row(100002)'));
+        $this->assertSame($values, str_contains($sql(1001), 'in (select `column_0` from (values row(1), row(100001), row(100002)'));
 
-        if ($this->dbDriver === 'mysql') {
+        if ($values) {
             $config = DB::connection()->getConfig();
-            DB::connection()->setPdo(new MySql8018Pdo("mysql:host={$config['host']};port={$config['port']};dbname={$config['database']}", $config['username'], $config['password']));
+            DB::connection()->setPdo(new MySql8020Pdo("mysql:host={$config['host']};port={$config['port']};dbname={$config['database']}", $config['username'], $config['password']));
 
             $this->assertStringNotContainsString('values', $sql(1001));
             $this->assertStringContainsString('in (1, 100001, 100002', $sql(1001));
         }
+    }
+
+    /** Whether this connection reads a long list as a VALUES table (RankedCandidates::whereKeyIn()). */
+    private function readsValues(): bool
+    {
+        return $this->dbDriver === 'mysql'
+            && \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::readsValuesRows((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION));
+    }
+
+    /**
+     * Runs $read and returns, beside its result, the plan (EXPLAIN FORMAT=TREE) and the session's
+     * optimizer_switch of each statement it ran with a VALUES table, read right after it ran, in its
+     * session as it was then.
+     *
+     * @return array{0: mixed, 1: list<array{plan: string, switch: string}>}
+     */
+    private function whileReading(\Closure $read): array
+    {
+        $seen    = [];
+        $reading = false;
+
+        DB::listen(function ($query) use (&$seen, &$reading) {
+            if ($reading || !str_contains($query->sql, '(values row(')) {
+                return;
+            }
+
+            $reading = true;
+            $seen[]  = [
+                'plan'   => $this->explained('explain format=tree', $query->sql, $query->bindings)[0],
+                'switch' => (string) DB::scalar('select @@session.optimizer_switch'),
+            ];
+            $reading = false;
+        });
+
+        return [$read(), $seen];
+    }
+
+    /**
+     * With a selective constraint beside an indexed soft-delete column, MySQL intersected the two
+     * indexes over the VALUES table and read the soft-delete index whole (0.5 s at 4M rows, where the
+     * tenant's index took 7 ms): the read is planned with index_merge_intersection off.
+     */
+    public function test_a_constrained_long_ranking_reads_no_soft_delete_index_whole(): void
+    {
+        if (!$this->readsValues()) {
+            $this->markTestSkipped('The plans are MySQL\'s (8.0.21 or later), read with EXPLAIN FORMAT=TREE.');
+        }
+
+        Schema::dropIfExists('long_list_soft');
+        Schema::create('long_list_soft', function ($table) {
+            $table->id();
+            $table->unsignedInteger('tenant_id')->index();
+            $table->unsignedInteger('price')->index();
+            $table->unsignedInteger('cat')->index();
+            $table->unsignedInteger('brand')->index();
+            $table->unsignedInteger('stock')->index();
+            $table->timestamp('deleted_at')->nullable()->index();
+        });
+
+        foreach (array_chunk(range(1, 20000), 1000) as $chunk) {
+            DB::table('long_list_soft')->insert(array_map(fn (int $j) => [
+                'tenant_id' => $j % 997, 'price' => ($j * 7919) % 100000, 'cat' => $j % 50, 'brand' => $j % 300, 'stock' => $j % 1000,
+            ], $chunk));
+        }
+
+        DB::statement('ANALYZE TABLE long_list_soft');
+
+        $ids    = range(1, 20000, 13); // 1,539 ids, spread through the table
+        $ranked = array_combine($ids, array_map(fn (int $i) => (float) (20000 - $i), $ids));
+        $tenant = array_values(array_filter($ids, fn (int $id) => $id % 997 === 7));
+        $base   = fn () => LongListSoft::query()->where('tenant_id', 7);
+        $query  = RankedCandidates::matches($base(), $ranked, ['item'], LongListSoft::class, [], ['share' => 0.001, 'cut' => false]);
+
+        [$total, $counted]   = $this->whileReading(fn () => RankedCandidates::countModels($query));
+        [$page, $paged]      = $this->whileReading(fn () => RankedCandidates::orderedKeys((clone $query)->orderBy('price')->orderBy('id')->toBase(), 'long_list_soft.id', 0, 20));
+        [$accepted, $listed] = $this->whileReading(fn () => array_keys(RankedCandidates::accepted($base(), $ranked, ['item'], LongListSoft::class, [])));
+
+        foreach ([...$counted, ...$paged, ...$listed] as $statement) {
+            $this->assertStringNotContainsString('Intersect rows', $statement['plan']);
+            $this->assertStringNotContainsString('long_list_soft_deleted_at_index', $statement['plan']);
+        }
+
+        $prices = LongListSoft::query()->whereIn('id', $tenant)->pluck('price', 'id')->all();
+        usort($tenant, fn (int $a, int $b) => [$prices[$a], $a] <=> [$prices[$b], $b]);
+
+        $this->assertCount(3, [...$counted, ...$paged, ...$listed]);
+        $this->assertSame(count($tenant), $total);
+        $this->assertEqualsCanonicalizing($tenant, $accepted);
+        $this->assertSame(array_slice($tenant, 0, 20), $page);
+    }
+
+    /** planned() puts the session's optimizer_switch back as it was, after a read and after a read that throws, and has it set while the read runs. */
+    public function test_the_session_optimizer_switch_is_put_back_after_a_long_ranking_read(): void
+    {
+        if (!$this->readsValues()) {
+            $this->markTestSkipped('The switches are MySQL\'s (8.0.21 or later).');
+        }
+
+        $switch = fn () => (string) DB::scalar('select @@session.optimizer_switch');
+        $before = $switch();
+        $query  = RankedCandidates::matches(LongListItem::query(), self::ranking(50000, false), ['item'], LongListItem::class, [], ['share' => 0.001, 'cut' => false]);
+
+        [, $counted] = $this->whileReading(fn () => RankedCandidates::countModels($query));
+        [, $listed]  = $this->whileReading(fn () => RankedCandidates::accepted(LongListItem::query(), self::ranking(50000, false), ['item'], LongListItem::class, []));
+        [, $ordered] = $this->whileReading(fn () => RankedCandidates::orderedKeys((clone $query)->orderBy('price')->orderBy('id')->toBase(), 'long_list_items.id', 0, 20));
+
+        foreach ([...$counted, ...$listed, ...$ordered] as $statement) {
+            $this->assertStringContainsString('index_merge_intersection=off', $statement['switch']);
+            $this->assertStringContainsString('prefer_ordering_index=off', $statement['switch']);
+        }
+
+        $this->assertCount(3, [...$counted, ...$listed, ...$ordered]);
+        $this->assertSame($before, $switch());
+
+        try {
+            RankedCandidates::accepted(LongListItem::query()->where('no_such_column', 1), self::ranking(50000, false), ['item'], LongListItem::class, []);
+            $this->fail('The read should have thrown.');
+        } catch (\Illuminate\Database\QueryException $e) {
+            $this->assertStringContainsString('no_such_column', $e->getMessage());
+        }
+
+        $this->assertSame($before, $switch());
     }
 
     public function test_matches_lists_a_long_integer_ranking_without_a_table_scan(): void
