@@ -106,7 +106,17 @@ class ConstrainedIndexCostTest extends TestCase
         $this->seedZebras(150, 1100);
         $this->assertSame(1097, SoftDeletedUser::search('zebra')->typoTolerance(0)->useInvertedIndex()->count());
 
-        $this->assertSame($long, $this->costs(), 'the same queries however many rows match');
+        // Past 1,000 ranked ids (1,100 here, 150 above) MySQL 8.0.21+ checks a ranking through a VALUES
+        // table under RankedCandidates::planned()'s window, which reads the session's optimizer_switch
+        // through the connection (one counted statement) and sets and puts it back on the PDO (not
+        // counted). Each terminal opens one window: its ranking's check by key (accepted()).
+        $windows = $this->dbDriver === 'mysql' && 1100 > 1000
+            && \Ashiqfardus\LaravelFuzzySearch\Support\DbDialect::readsValuesRows((string) DB::connection()->getPdo()->getAttribute(\PDO::ATTR_SERVER_VERSION))
+            ? array_fill_keys(array_keys($long), 1)
+            : array_fill_keys(array_keys($long), 0);
+        $expected = array_map(fn (int $cost, int $opened) => $cost + $opened, $long, $windows);
+
+        $this->assertSame(array_combine(array_keys($long), $expected), $this->costs(), 'the same queries however many rows match, and one more per optimizer-switch window past 1,000 ranked ids on MySQL 8.0.21+: ' . json_encode($windows));
 
         // By key on SQL Server: a read per 20 ids where the subquery takes 1, never more than 100 / 20 of them.
         $this->assertSame([], array_filter($short, fn ($cost, $terminal) => $cost > $long[$terminal] + 100 / 20 - 1, ARRAY_FILTER_USE_BOTH), json_encode([$short, $long]));

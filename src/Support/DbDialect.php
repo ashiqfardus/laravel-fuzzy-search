@@ -25,6 +25,24 @@ final class DbDialect
     }
 
     /**
+     * Whether a server of the mysql driver, by its version (PDO::ATTR_SERVER_VERSION), takes a long
+     * key list as a table of VALUES ROW()s (RankedCandidates::whereKeyIn()): MySQL from 8.0.21, which
+     * has VALUES ROW() (8.0.19) and the prefer_ordering_index switch (8.0.21), its leading x.y.z
+     * compared, and Aurora MySQL 3 ("8.0.mysql_aurora.3…", 8.0.23 and later). Never MariaDB, which
+     * Laravel 10 reaches through the mysql driver too and whose VALUES has no ROW(), nor Vitess or
+     * TiDB, which speak MySQL but plan their own way.
+     */
+    public static function readsValuesRows(string $serverVersion): bool
+    {
+        if (preg_match('/mariadb|vitess|tidb/i', $serverVersion) === 1) {
+            return false;
+        }
+
+        return str_starts_with($serverVersion, '8.0.mysql_aurora.')
+            || (preg_match('/^\d+\.\d+\.\d+/', $serverVersion, $version) === 1 && version_compare($version[0], '8.0.21', '>='));
+    }
+
+    /**
      * Quote a (possibly table-qualified) column for the given driver.
      * Splits on "." so `users.name` becomes `users`.`name`, not a single identifier.
      * $tablePrefix is the connection's table prefix: the grammar writes the FROM table (and its

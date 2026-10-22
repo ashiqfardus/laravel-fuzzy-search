@@ -122,7 +122,7 @@ Measured on one laptop database at a time, with rows of about 16 indexed words e
 | PostgreSQL 16 (4 GB `shared_buffers`) | 24M rows | 9 ms, 426 ms, 0.93 s | page 500 of a mid word under `orderBy()` and `paginate()`, 3.2 s | none |
 | SQL Server 2022 (4 GB max server memory; on a separate Windows PC with an NVMe disk, over the local network) | 6M rows | 27 ms, 327 ms, 0.37 s (under `orderBy()`: 34 ms to 0.61 s) | a 4-letter `asYouType()` prefix, 1.3 s | none |
 
-Each row is the largest table measured on that database, on 3.0.0 or a release candidate of it (MySQL on 3.0.0 itself, 536ae87, PostgreSQL on 0a05120, MariaDB on 7c96ec9, SQL Server on 616b9d7; MySQL's 24M index was built on 5dc853c to 12M rows and on 536ae87 after, MariaDB's 12M on 599508a, SQL Server's 6M on fb82c82 to 3.41M rows and on 599508a after). Larger tables were not tried, so these sizes are not limits.
+Each row is the largest table measured on that database, on 3.0.0 as first tagged or a release candidate of it (MySQL on 536ae87, 3.0.0 as first tagged, PostgreSQL on 0a05120, MariaDB on 7c96ec9, SQL Server on 616b9d7; MySQL's 24M index was built on 5dc853c to 12M rows and on 536ae87 after, MariaDB's 12M on 599508a, SQL Server's 6M on fb82c82 to 3.41M rows and on 599508a after). Larger tables were not tried, so these sizes are not limits.
 
 The LIKE algorithms scan the table: on MariaDB at 1M rows (fb82c82), `simple` took 0.79 s, `fuzzy` 17 s and `levenshtein` 44 s. Keep them for tables under the sizes in the [Algorithm Comparison](algorithms.md#algorithm-comparison), or narrow them with a selective `where()` (a tenant's 0.1% of 1M rows: 20 ms).
 
