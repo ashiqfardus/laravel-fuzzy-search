@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.0] — 2026-09-30
+## [3.0.0] — 2026-10-22
 
 **3.0.0 is a major release. It breaks code and configs written for 2.0, so read the [upgrade guide][u] before you move to it with `composer require ashiqfardus/laravel-fuzzy-search:^3.0` (a `^2.0` constraint never installs 3.0).** It adds relationship search, a typo-tolerant BM25 index with column weights and a dictionary per model, federated pagination, persisted search analytics, Filament and JSON API integrations and new tokenizers. It also fixes many 2.0.x defects, a few of them security issues. Some existing calls now return, throw or cache differently, and the new migrations rewrite the index tables. Read the [upgrade guide][u] (`docs/UPGRADE_v2_TO_v3.md` in the package) before you upgrade: it opens with a checklist and every behaviour change, and it is the full reference for each line below.
 
