@@ -349,14 +349,18 @@ final class RankedCandidates
     /**
      * $run, the statement that reads $read, with MySQL's index_merge_intersection and
      * prefer_ordering_index off when whereKeyIn() gave $read a VALUES table (or $carried, a read that
-     * holds it). The session's optimizer_switch is read, set and put back as it was, on the PDO
-     * $read's selects run on, around the statement alone: $run returns rows, and every model they
-     * become, with its events and eager loads, is made after. If putting it back fails, an exception
-     * of $run still goes up. With the ranked ids as a table, beside a selective constraint and an
-     * indexed soft-delete column (tenant_id = ? and deleted_at is null), MySQL intersected the two
-     * indexes and read deleted_at's whole: 85 ms at 1M rows and 0.5 s at 4M, where the tenant's
-     * index took 1 to 7 ms. Off that, an ordered page walked the order column's index for its 20
-     * rows: 7 s at 4M rows for 50,000 ids, 46 ms by the tenant's index.
+     * holds it). The session's optimizer_switch is read (through the connection, which reconnects a
+     * lost session and tries again), set on the PDO $read's selects run on, and put back as it was,
+     * around the statement alone: $run returns rows, and every model they become, with its events
+     * and eager loads, is made after. Query listeners and the base query's beforeQuery() and
+     * afterQuery() callbacks fire inside, and see the switches, which change plans, not results. If
+     * the connection reconnected inside $run, its new session never had them, and nothing is put
+     * back; a failed put-back changes no result either, so neither ends a read that ran in an
+     * error, and an exception of $run goes up as it is. With the ranked ids as a table, beside a
+     * selective constraint and an indexed soft-delete column (tenant_id = ? and deleted_at is null),
+     * MySQL intersected the two indexes and read deleted_at's whole: 85 ms at 1M rows and 0.5 s at
+     * 4M, where the tenant's index took 1 to 7 ms. Off that, an ordered page walked the order
+     * column's index for its 20 rows: 7 s at 4M rows for 50,000 ids, 46 ms by the tenant's index.
      */
     private static function planned(QueryBuilder $read, \Closure $run, ?QueryBuilder $carried = null): mixed
     {
@@ -365,27 +369,23 @@ final class RankedCandidates
         }
 
         $connection = $read->getConnection();
-        $pdo        = $read->useWritePdo ? $connection->getPdo() : $connection->getReadPdo();
-        $switch     = (string) $pdo->query('select @@session.optimizer_switch')->fetchColumn();
-        $failed     = false;
+        $switch     = (string) ((array) $connection->selectOne('select @@session.optimizer_switch as s', [], !$read->useWritePdo))['s'];
+        $session    = fn () => $read->useWritePdo ? $connection->getPdo() : $connection->getReadPdo();
+        $pdo        = $session();
 
         $pdo->exec("set session optimizer_switch = 'index_merge_intersection=off,prefer_ordering_index=off'");
         self::$planning = true;
 
         try {
             return $run();
-        } catch (\Throwable $e) {
-            $failed = true;
-
-            throw $e;
         } finally {
             self::$planning = false;
 
-            try {
-                $pdo->exec('set session optimizer_switch = ' . $pdo->quote($switch));
-            } catch (\Throwable $restore) {
-                if (!$failed) {
-                    throw $restore;
+            if ($session() === $pdo) {
+                try {
+                    $pdo->exec('set session optimizer_switch = ' . $pdo->quote($switch));
+                } catch (\Throwable) {
+                    // A lost session took the switches with it; a live one keeps them, which changes plans, not results.
                 }
             }
         }

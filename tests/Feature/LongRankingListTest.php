@@ -373,6 +373,54 @@ class LongRankingListTest extends TestCase
         $this->assertSame($before, $switch());
     }
 
+    /** A session lost inside the window: the read runs on the new one, which never had the switches, and nothing is put back on it. */
+    public function test_a_reconnect_inside_a_long_ranking_read_keeps_its_rows(): void
+    {
+        if (!$this->readsValues()) {
+            $this->markTestSkipped('The switches are MySQL\'s (8.0.21 or later).');
+        }
+
+        $default     = (string) DB::scalar('select @@session.optimizer_switch');
+        $ranked      = self::ranking(50000, false);
+        $before      = DB::connection()->getPdo();
+        $reconnected = false;
+
+        DB::connection()->beforeExecuting(function (string $sql) use (&$reconnected) {
+            if (!$reconnected && str_contains($sql, '(values row(')) {
+                $reconnected = true;
+                DB::reconnect();
+            }
+        });
+
+        $accepted = RankedCandidates::accepted(LongListItem::query(), $ranked, ['item'], LongListItem::class, []);
+
+        $this->assertTrue($reconnected);
+        $this->assertNotSame($before, DB::connection()->getPdo());
+        $this->assertSame(self::shown($ranked, false), array_keys($accepted));
+        $this->assertSame($default, (string) DB::scalar('select @@session.optimizer_switch'));
+    }
+
+    /** A session the server closed before the window: reading the switch reconnects, and the read runs and puts it back on the new one. */
+    public function test_a_session_lost_before_a_long_ranking_read_is_reconnected(): void
+    {
+        if (!$this->readsValues()) {
+            $this->markTestSkipped('The switches are MySQL\'s (8.0.21 or later).');
+        }
+
+        $default = (string) DB::scalar('select @@session.optimizer_switch');
+        $ranked  = self::ranking(50000, false);
+        $session = (int) DB::scalar('select connection_id()');
+        $config  = DB::connection()->getConfig();
+
+        (new \PDO("mysql:host={$config['host']};port={$config['port']};dbname={$config['database']}", $config['username'], $config['password']))->exec("kill {$session}");
+
+        $accepted = RankedCandidates::accepted(LongListItem::query(), $ranked, ['item'], LongListItem::class, []);
+
+        $this->assertSame(self::shown($ranked, false), array_keys($accepted));
+        $this->assertNotSame($session, (int) DB::scalar('select connection_id()'));
+        $this->assertSame($default, (string) DB::scalar('select @@session.optimizer_switch'));
+    }
+
     public function test_matches_lists_a_long_integer_ranking_without_a_table_scan(): void
     {
         $this->assertMatchesListed(LongListItem::class, false, 50000);
